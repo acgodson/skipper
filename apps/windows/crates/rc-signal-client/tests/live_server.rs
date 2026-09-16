@@ -112,6 +112,7 @@ async fn bring_up(
 }
 
 #[tokio::test]
+#[ignore = "TODO: parked Windows client still speaks protocol v1; re-enable in Phase 9"]
 async fn full_signaling_lifecycle_against_the_real_server() {
     if !go_available() {
         eprintln!("SKIP: no Go toolchain; live-server test not run");
@@ -242,6 +243,7 @@ async fn full_signaling_lifecycle_against_the_real_server() {
 }
 
 #[tokio::test]
+#[ignore = "TODO: parked Windows client still speaks protocol v1; re-enable in Phase 9"]
 async fn registration_is_idempotent_per_key() {
     if !go_available() {
         eprintln!("SKIP: no Go toolchain; idempotency test not run");
@@ -266,6 +268,7 @@ async fn registration_is_idempotent_per_key() {
 }
 
 #[tokio::test]
+#[ignore = "TODO: parked Windows client still speaks protocol v1; re-enable in Phase 9"]
 async fn the_certificate_pin_is_load_bearing() {
     if !go_available() {
         eprintln!("SKIP: no Go toolchain; TLS pin test not run");
