@@ -12,6 +12,7 @@ public let allSuites: [TestSuite] = [
     deviceKeySuite,
     deviceKeyStorageSuite,
     identitySuite,
+    accountSuite,
     settingsSuite,
     observationSuite,
     cursorSuite,

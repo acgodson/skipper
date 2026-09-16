@@ -39,6 +39,39 @@ enum WindowID {
     static let main = "main"
 }
 
+/// Delivers `skipperdesk://` URLs from LaunchServices to whoever is interested.
+///
+/// It is a bus rather than a direct call because the two ends cannot reach each
+/// other: the URL arrives at the `NSApplicationDelegate`, and the object that
+/// knows what to do with it is the `AppModel` the SwiftUI scene owns. It also
+/// buffers, because a URL that launches the app arrives before the model is
+/// built and must not be dropped.
+@MainActor
+final class URLCallbackBus {
+
+    static let shared = URLCallbackBus()
+
+    private var pending: [URL] = []
+
+    var handler: ((URL) -> Void)? {
+        didSet {
+            guard handler != nil, !pending.isEmpty else { return }
+            let queued = pending
+            pending = []
+            queued.forEach { handler?($0) }
+        }
+    }
+
+    func receive(_ url: URL) {
+        RCLog.info("url: opened \(url.scheme ?? "?")://\(url.host ?? "?")")
+        guard let handler else {
+            pending.append(url)
+            return
+        }
+        handler(url)
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Keep the process alive when the last window closes — the menu-bar item
@@ -49,6 +82,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Held for the life of the run when RC_INPUT_SELFTEST=1.
     private var inputSelfTest: InputSelfTest?
+
+    /// The `skipperdesk` scheme is declared in the bundle's `CFBundleURLTypes`
+    /// (scripts/build.sh), so LaunchServices turns `open "skipperdesk://link?…"`
+    /// into this call — the browser's half of the API.md §1.1 handoff.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        urls.forEach { URLCallbackBus.shared.receive($0) }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)

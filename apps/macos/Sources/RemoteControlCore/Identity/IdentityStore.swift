@@ -49,7 +49,7 @@ public final class IdentityStore: ObservableObject {
     /// exactly one device key, so `rc-node` and the multi-instance scripts would
     /// otherwise fight over the same slot. Never true for a shipped app, whose
     /// identity directory is always the default one.
-    public static func usesDevFileIdentity(fileStore: IdentityFileStore) -> Bool {
+    nonisolated public static func usesDevFileIdentity(fileStore: IdentityFileStore) -> Bool {
         ProcessInfo.processInfo.environment["SKIPPER_DEV_FILE_IDENTITY"] == "1"
             || !fileStore.isDefaultLocation
     }

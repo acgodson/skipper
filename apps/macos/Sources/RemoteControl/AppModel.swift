@@ -26,6 +26,11 @@ final class AppModel: ObservableObject {
     @Published var coordinator: SessionCoordinator?
     @Published var selfPresence = SelfPresence()
 
+    /// PHASE 1.4: this Mac's link to a SkipperDesk account (protocol/API.md §1).
+    /// Nil only when there is no identity, because the link is bound to the
+    /// device key. Controllers never need it; only a host does (SCOPE §3.1).
+    @Published var account: AccountLinker?
+
     @Published var sessionState: SessionState = .idle
     @Published var connectError: String?
     @Published var isConnecting = false
@@ -70,6 +75,7 @@ final class AppModel: ObservableObject {
         self.settings = settings
         self.permissions = PermissionsModel()
         loadIdentity()
+        startAccount()
         startTransport()
         if let peer = DeviceID.canonicalize(settings.savedPeerDeviceID) {
             presence.watch(deviceID: peer)
@@ -156,6 +162,7 @@ final class AppModel: ObservableObject {
         bind(launchAtLogin)
         bind(selfPresence)
         bind(coordinator)
+        bind(account)
         bindPresence(presence)
 
         // Switching role must rebuild the transport: the role is baked into
@@ -348,9 +355,55 @@ final class AppModel: ObservableObject {
             return
         }
         loadIdentity()
+        startAccount()
         // `identity` is a fresh object; the old subscription pointed at the
         // discarded one.
         rewireObservation()
+    }
+
+    // MARK: - Account
+
+    /// Brings up the account link and subscribes to the URL scheme the browser
+    /// answers on. The stored token is restored in the background; the UI shows
+    /// "unlinked" until the server has confirmed otherwise.
+    private func startAccount() {
+        guard let identity else { return }
+        let account = AccountLinker(identity: identity)
+        self.account = account
+        URLCallbackBus.shared.handler = { [weak self] url in
+            self?.account?.handleCallback(url)
+        }
+        Task { await account.restore() }
+        startAutoLinkIfRequested()
+    }
+
+    /// TEST HOOK, off unless `RC_AUTOLINK=1`, and refused unless
+    /// `RC_IDENTITY_DIR` is set so it can never fire against a real install.
+    ///
+    /// It presses "Link this Mac" for a verification script. Everything after
+    /// that is the real flow: the browser opens the sign-in page, the one-time
+    /// code comes back over `skipperdesk://link`, and the token is exchanged
+    /// against the real API — none of which a script can start without a hand
+    /// on the mouse.
+    private func startAutoLinkIfRequested() {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["RC_AUTOLINK"] == "1", environment["RC_IDENTITY_DIR"] != nil else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if case .unlinked = account?.state { account?.beginLink() }
+        }
+    }
+
+    func linkAccount() { account?.beginLink() }
+
+    func cancelAccountLink() { account?.cancelLink() }
+
+    func unlinkAccount() {
+        Task { await account?.unlink() }
+    }
+
+    func retryAccount() {
+        Task { await account?.restore() }
     }
 
     // MARK: - Host
