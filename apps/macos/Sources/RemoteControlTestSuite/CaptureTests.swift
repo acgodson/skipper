@@ -3,11 +3,6 @@ import CoreGraphics
 import RCTestKit
 import RemoteControlCore
 
-// The numbers in this file are all worked out by hand and written literally.
-// That is the point: an implementation that letterboxes on the wrong axis, or
-// forgets the bar offset, or divides by the view size instead of the video size,
-// produces plausible-looking coordinates that only these exact values reject.
-
 public let videoGeometrySuite = TestSuite("VideoGeometry", [
 
     TestCase("aspect fit: identical aspect ratios fill the container exactly") {
@@ -17,14 +12,12 @@ public let videoGeometrySuite = TestSuite("VideoGeometry", [
     },
 
     TestCase("aspect fit: content wider than the container leaves bars top and bottom") {
-        // 16:9 inside 4:3. Width binds; 800 / (16/9) = 450 high, (600-450)/2 = 75 of bar.
         let rect = RemoteDisplayGeometry.aspectFit(content: CGSize(width: 1600, height: 900),
                                                    within: CGSize(width: 800, height: 600))
         try expectClose(rect, CGRect(x: 0, y: 75, width: 800, height: 450))
     },
 
     TestCase("aspect fit: content taller than the container leaves bars left and right") {
-        // 9:16 inside 4:3. Height binds; 600 * (900/1600) = 337.5 wide, (800-337.5)/2 = 231.25.
         let rect = RemoteDisplayGeometry.aspectFit(content: CGSize(width: 900, height: 1600),
                                                    within: CGSize(width: 800, height: 600))
         try expectClose(rect, CGRect(x: 231.25, y: 0, width: 337.5, height: 600))
@@ -49,13 +42,11 @@ public let videoGeometrySuite = TestSuite("VideoGeometry", [
                         CGPoint(x: 800, y: 450))
         try expectClose(try expectNotNil(geometry.normalized(fromView: CGPoint(x: 400, y: 225))),
                         CGPoint(x: 0.5, y: 0.5))
-        // 200 view points from the left of an 800-point view is a quarter across.
         try expectClose(try expectNotNil(geometry.normalized(fromView: CGPoint(x: 200, y: 45))),
                         CGPoint(x: 0.25, y: 0.1))
     },
 
     TestCase("horizontal bars: the bar offset is subtracted before scaling") {
-        // videoRect = (0, 75, 800, 450); scale = 1600/800 = 2.
         let geometry = RemoteDisplayGeometry(remoteSize: CGSize(width: 1600, height: 900),
                                              viewSize: CGSize(width: 800, height: 600))
         try expectClose(geometry.videoRect, CGRect(x: 0, y: 75, width: 800, height: 450))
@@ -64,17 +55,13 @@ public let videoGeometrySuite = TestSuite("VideoGeometry", [
                         CGPoint(x: 0, y: 0))
         try expectClose(try expectNotNil(geometry.remotePixel(fromView: CGPoint(x: 800, y: 525))),
                         CGPoint(x: 1600, y: 900))
-        // The centre of the VIEW is the centre of the VIDEO here, but only
-        // because the bars are symmetric; the y arithmetic still has to happen.
         try expectClose(try expectNotNil(geometry.remotePixel(fromView: CGPoint(x: 400, y: 300))),
                         CGPoint(x: 800, y: 450))
-        // 150 view points below the top bar -> 300 remote pixels down.
         try expectClose(try expectNotNil(geometry.remotePixel(fromView: CGPoint(x: 100, y: 225))),
                         CGPoint(x: 200, y: 300))
     },
 
     TestCase("vertical bars: the bar offset is subtracted before scaling") {
-        // videoRect = (231.25, 0, 337.5, 600); scale = 900/337.5 = 2.6666…
         let geometry = RemoteDisplayGeometry(remoteSize: CGSize(width: 900, height: 1600),
                                              viewSize: CGSize(width: 800, height: 600))
         try expectClose(geometry.videoRect, CGRect(x: 231.25, y: 0, width: 337.5, height: 600))
@@ -99,7 +86,6 @@ public let videoGeometrySuite = TestSuite("VideoGeometry", [
                                              viewSize: CGSize(width: 800, height: 600))
         try expectNil(vertical.remotePixel(fromView: CGPoint(x: 231.24, y: 300)))
         try expectNil(vertical.remotePixel(fromView: CGPoint(x: 568.76, y: 300)))
-        // Outside the view entirely.
         try expectNil(vertical.remotePixel(fromView: CGPoint(x: -5, y: -5)))
         try expectNil(vertical.remotePixel(fromView: CGPoint(x: 5000, y: 5000)))
     },
@@ -107,18 +93,14 @@ public let videoGeometrySuite = TestSuite("VideoGeometry", [
     TestCase("clamping pins a point to the video edge with exact values") {
         let geometry = RemoteDisplayGeometry(remoteSize: CGSize(width: 1600, height: 900),
                                              viewSize: CGSize(width: 800, height: 600))
-        // Above the video: y clamps to the top edge, x is unaffected.
         try expectClose(geometry.clampedNormalized(fromView: CGPoint(x: 400, y: 0)),
                         CGPoint(x: 0.5, y: 0.0))
-        // Below: bottom edge.
         try expectClose(geometry.clampedNormalized(fromView: CGPoint(x: 400, y: 600)),
                         CGPoint(x: 0.5, y: 1.0))
-        // Far off to the left AND above: both axes clamp.
         try expectClose(geometry.clampedNormalized(fromView: CGPoint(x: -900, y: -900)),
                         CGPoint(x: 0.0, y: 0.0))
         try expectClose(geometry.clampedNormalized(fromView: CGPoint(x: 9000, y: 9000)),
                         CGPoint(x: 1.0, y: 1.0))
-        // A point already inside is returned unchanged by the clamping path too.
         try expectClose(geometry.clampedNormalized(fromView: CGPoint(x: 200, y: 300)),
                         CGPoint(x: 0.25, y: 0.5))
     },
@@ -158,9 +140,6 @@ public let videoGeometrySuite = TestSuite("VideoGeometry", [
     },
 
     TestCase("resizing the controller window does not change the remote coordinate space") {
-        // The SAME point, expressed as a fraction of the video, must produce the
-        // same normalised coordinate at any window size. This is PLAN.md §2's
-        // guarantee that a resize cannot change the remote display.
         let small = RemoteDisplayGeometry(remoteSize: CGSize(width: 1600, height: 900),
                                           viewSize: CGSize(width: 400, height: 300))
         let large = RemoteDisplayGeometry(remoteSize: CGSize(width: 1600, height: 900),
@@ -214,25 +193,18 @@ public let qualitySuite = TestSuite("Quality", [
     },
 
     TestCase("sharp caps the long edge at 2560, never native 5K") {
-        // Even the resolution-preferring mode is capped. Encoding the native
-        // Retina grid is what produced 94% CPU and 3.3 Mbps of an idle desktop.
         let profile = QualityProfile.profile(for: .sharp, displayWidth: 3024, displayHeight: 1964)
         try expectClose(profile.scaleResolutionDownBy, 3024.0 / 2560.0, tolerance: 1e-12)
         try expectEqual(profile.encodeWidth, 2560)
-        try expectEqual(profile.encodeHeight, 1662)     // 1964 / 1.18125 = 1662.54 -> even
+        try expectEqual(profile.encodeHeight, 1662)
         try expectEqual(profile.maxFramerate, 30)
     },
 
     TestCase("auto caps the long edge at 1920 and keeps the aspect ratio") {
-        // 1920 (not the original 2560) is PLAN.md 5's "~1080p effective". Streaming
-        // the native Retina grid is what pinned the encoder at 94% CPU.
         let profile = QualityProfile.profile(for: .auto, displayWidth: 3024, displayHeight: 1964)
         try expectClose(profile.scaleResolutionDownBy, 3024.0 / 1920.0, tolerance: 1e-12)
         try expectEqual(profile.encodeWidth, 1920)
-        try expectEqual(profile.encodeHeight, 1246)     // 1964 / 1.575 = 1246.98 -> even
-        // Aspect ratio survives the rounding to within a thousandth.
-        // Rounding both edges to even drifts the ratio slightly; 0.002 is the
-        // real bound at this size, and still tight enough to catch a squashed image.
+        try expectEqual(profile.encodeHeight, 1246)
         try expectClose(Double(profile.encodeWidth) / Double(profile.encodeHeight),
                         3024.0 / 1964.0, tolerance: 0.002)
     },
@@ -241,7 +213,7 @@ public let qualitySuite = TestSuite("Quality", [
         let profile = QualityProfile.profile(for: .smooth, displayWidth: 3024, displayHeight: 1964)
         try expectClose(profile.scaleResolutionDownBy, 3024.0 / 1280.0, tolerance: 1e-12)
         try expectEqual(profile.encodeWidth, 1280)
-        try expectEqual(profile.encodeHeight, 832)      // 1964 / 2.3625 = 831.32 -> even
+        try expectEqual(profile.encodeHeight, 832)
     },
 
     TestCase("a display already below the cap is never upscaled") {
@@ -263,7 +235,6 @@ public let qualitySuite = TestSuite("Quality", [
     },
 
     TestCase("encode dimensions are always even (H.264 4:2:0)") {
-        // 1365 is odd and 1365/1.0 stays odd; 2049 forces a fractional scale.
         let odd = QualityProfile.profile(for: .sharp, displayWidth: 1365, displayHeight: 767)
         try expectEqual(odd.encodeWidth % 2, 0)
         try expectEqual(odd.encodeHeight % 2, 0)
@@ -402,10 +373,10 @@ public let videoStatsSuite = TestSuite("VideoStatistics", [
         earlier.bytesSent = 50_000
         earlier.framesEncoded = 90
         var later = VideoStatistics()
-        later.bytesReceived = 350_000       // 250_000 bytes in 2 s = 1 Mbps
-        later.framesDecoded = 160           // 60 frames in 2 s = 30 fps
-        later.bytesSent = 300_000           // 250_000 bytes in 2 s = 1 Mbps
-        later.framesEncoded = 120           // 30 frames in 2 s = 15 fps
+        later.bytesReceived = 350_000
+        later.framesDecoded = 160
+        later.bytesSent = 300_000
+        later.framesEncoded = 120
 
         try expectClose(VideoStatistics.bitrate(from: earlier, to: later, seconds: 2, direction: .inbound),
                         1_000_000)

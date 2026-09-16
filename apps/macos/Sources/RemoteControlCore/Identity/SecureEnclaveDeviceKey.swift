@@ -22,19 +22,6 @@ public enum SecureEnclaveError: Error, LocalizedError {
     }
 }
 
-/// A P-256 key generated inside the Secure Enclave.
-///
-/// The private half never exists outside the chip; what is persisted is an
-/// opaque blob that only this Mac can turn back into a usable key, kept in the
-/// Keychain beside the software fallback.
-///
-/// The access control is `.privateKeyUsage` with no biometric or passcode
-/// factor. A host Mac has to answer a controller while nobody is sitting at it,
-/// so requiring user presence would make unattended access impossible.
-///
-/// Creation needs the `com.apple.application-identifier` entitlement, which in
-/// turn needs a Developer ID signature: an ad-hoc or locally signed build fails
-/// with `errSecMissingEntitlement` (-34018) and falls back to `KeychainDeviceKey`.
 public final class SecureEnclaveDeviceKey: DeviceSigningKey {
 
     private let key: SecureEnclave.P256.Signing.PrivateKey

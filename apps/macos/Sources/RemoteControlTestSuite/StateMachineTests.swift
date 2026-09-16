@@ -2,16 +2,6 @@ import Foundation
 import RCTestKit
 import RemoteControlCore
 
-/// What `StateMachineScenarioTests.swift` cannot prove.
-///
-/// The rules of PROTOCOL.md §4 are pinned by the shared vectors, which now run
-/// through the FFI, so nothing that a scenario already asserts is repeated here.
-/// What is left is the part of the machine's Swift surface that the vectors do
-/// not touch and `SessionCoordinator` depends on: the identity it reads back,
-/// the remembered access code it consults before deciding to prompt, the
-/// configured timings it passes in from `RCConfig`, and the phase summaries the
-/// UI renders.
-
 private func grant(_ id: String = "sess-1", token: String = "tok-1",
                    host: String = "481930275", controller: String = "111222333") -> SessionGrantPayload {
     SessionGrantPayload(sessionId: id, sessionToken: token, expiresAt: 0, ttlSec: 600,

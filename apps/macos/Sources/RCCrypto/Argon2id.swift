@@ -1,19 +1,5 @@
 import Foundation
 
-/// Argon2id (RFC 9106), the only access-code KDF the signaling server accepts
-/// (PROTOCOL.md §2.3, `alg: "argon2id"`).
-///
-/// This must agree byte-for-byte with `golang.org/x/crypto/argon2`'s `IDKey`,
-/// because the host computes the verifier and the server recomputes it from a
-/// controller's plaintext. If they disagree every `connect_req` fails with
-/// `bad_code` — which is exactly what `scripts/test-transport.sh` step (b)
-/// catches, and it is the assertion that actually proves this file correct.
-/// The RFC 9106 §5.3 vector is asserted in the unit suite as well.
-///
-/// PERFORMANCE NOTE: the inner loops use raw pointers rather than `Array`.
-/// At the protocol's parameters (64 MiB, 3 passes) a bounds-checked, ARC-managed
-/// version takes minutes in a debug build, which would make both the app and the
-/// test suite unusable. The memory is a single flat allocation of `UInt64`.
 public enum Argon2id {
 
     public enum Error: Swift.Error, LocalizedError {
@@ -27,23 +13,16 @@ public enum Argon2id {
     }
 
     private static let blockBytes = 1024
-    private static let qwords = 128          // 1024 / 8
+    private static let qwords = 128
     private static let syncPoints = 4
     private static let versionNumber: UInt32 = 0x13
     private static let typeArgon2id: UInt32 = 2
 
-    /// The parameter set PROTOCOL.md recommends and `auth.MakeVerifier` uses.
     public static let recommendedTime: UInt32 = 3
     public static let recommendedMemoryKiB: UInt32 = 65536
     public static let recommendedParallelism: UInt32 = 1
     public static let recommendedLength: UInt32 = 32
 
-    /// - Parameters:
-    ///   - password: raw password bytes (the UTF-8 access code).
-    ///   - salt: ≥ 8 bytes (the protocol requires ≥ 16).
-    ///   - secret / associatedData: RFC 9106 `K` and `X`. Unused by this protocol,
-    ///     but present because the RFC test vector exercises them and that vector
-    ///     is how this implementation is proven correct.
     public static func hash(
         password: [UInt8],
         salt: [UInt8],
@@ -63,12 +42,10 @@ public enum Argon2id {
         }
 
         let lanes = Int(parallelism)
-        // m' = 4 * p * floor(m / 4p)
         let memoryBlocks = (Int(memoryKiB) / (syncPoints * lanes)) * (syncPoints * lanes)
         let laneLength = memoryBlocks / lanes
         let segmentLength = laneLength / syncPoints
 
-        // ---- H0 (RFC 9106 §3.2) --------------------------------------------
         var pre = Blake2b(digestLength: 64)
         pre.update(le32(parallelism))
         pre.update(le32(length))
@@ -82,7 +59,6 @@ public enum Argon2id {
         pre.update(le32(UInt32(associatedData.count))); pre.update(associatedData)
         let h0 = pre.finalize()
 
-        // ---- Memory ---------------------------------------------------------
         let memory = UnsafeMutablePointer<UInt64>.allocate(capacity: memoryBlocks * qwords)
         memory.initialize(repeating: 0, count: memoryBlocks * qwords)
         let scratchR = UnsafeMutablePointer<UInt64>.allocate(capacity: qwords)
@@ -100,7 +76,6 @@ public enum Argon2id {
             addresses.deallocate(); input.deallocate(); tmp.deallocate()
         }
 
-        // ---- The first two blocks of every lane -----------------------------
         for lane in 0..<lanes {
             for column in 0..<2 {
                 let seed = h0 + le32(UInt32(column)) + le32(UInt32(lane))
@@ -114,13 +89,9 @@ public enum Argon2id {
             }
         }
 
-        // ---- Passes ----------------------------------------------------------
         for pass in 0..<Int(iterations) {
             for slice in 0..<syncPoints {
                 for lane in 0..<lanes {
-                    // Argon2id: the first two slices of the first pass address
-                    // memory data-INdependently (argon2i); everything after is
-                    // data-dependent (argon2d). That split is what "id" means.
                     let dataIndependent = (pass == 0 && slice < 2)
                     if dataIndependent {
                         for i in 0..<qwords { input[i] = 0 }
@@ -172,7 +143,6 @@ public enum Argon2id {
             }
         }
 
-        // ---- Finalisation: XOR the last block of every lane -------------------
         var final = [UInt64](repeating: 0, count: qwords)
         for lane in 0..<lanes {
             let base = (lane * laneLength + laneLength - 1) * qwords
@@ -181,7 +151,6 @@ public enum Argon2id {
         return variableHash(bytes(of: final), length: Int(length))
     }
 
-    /// Convenience over the shapes the protocol actually uses.
     public static func hash(
         password: String, salt: Data,
         iterations: UInt32, memoryKiB: UInt32, parallelism: UInt32, length: UInt32
@@ -207,7 +176,6 @@ public enum Argon2id {
         return out
     }
 
-    /// RFC 9106 §3.2 `H'` — BLAKE2b stretched to an arbitrary output length.
     private static func variableHash(_ input: [UInt8], length: Int) -> [UInt8] {
         if length <= 64 {
             var state = Blake2b(digestLength: length)
@@ -233,7 +201,6 @@ public enum Argon2id {
         return out
     }
 
-    /// `B[offset] = G(B[previous], B[ref])`, XOR-accumulated after the first pass.
     private static func mixBlocks(
         _ memory: UnsafeMutablePointer<UInt64>,
         offset: Int, previous: Int, ref: Int, xor: Bool,
@@ -252,8 +219,6 @@ public enum Argon2id {
         }
     }
 
-    /// `addresses = G(G(input, 0), 0)` — RFC 9106 §3.4.1.2. With a zero right
-    /// operand, G reduces to `G(X, 0) = P(X) ^ X`.
     private static func nextAddresses(
         _ address: UnsafeMutablePointer<UInt64>,
         _ input: UnsafeMutablePointer<UInt64>,
@@ -267,7 +232,6 @@ public enum Argon2id {
         for i in 0..<qwords { address[i] ^= tmp[i] }
     }
 
-    /// The Argon2 permutation: BlaMka P over the 8 rows, then the 8 columns.
     private static func permute(_ b: UnsafeMutablePointer<UInt64>) {
         for i in 0..<8 {
             let o = i * 16
@@ -310,7 +274,6 @@ public enum Argon2id {
         round(v3, v4, v9, v14)
     }
 
-    /// RFC 9106 §3.4.1.2 reference-block selection.
     private static func indexAlpha(
         random: UInt64, lanes: Int, segmentLength: Int,
         sliceIndex: Int, laneIndex: Int, index: Int, pass: Int, laneLength: Int
@@ -328,7 +291,6 @@ public enum Argon2id {
         }
         if index == 0 || refLane == laneIndex { m -= 1 }
 
-        // relativePosition = m - 1 - floor(m * J1^2 / 2^64), in 64-bit arithmetic.
         let size = UInt64(max(m, 0))
         let j1 = random & 0xffff_ffff
         var relative = (j1 &* j1) >> 32

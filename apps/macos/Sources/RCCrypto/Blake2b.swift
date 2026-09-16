@@ -1,16 +1,5 @@
 import Foundation
 
-/// BLAKE2b (RFC 7693), unkeyed and keyed, with an arbitrary digest length 1...64.
-///
-/// WHY THIS IS HERE: `register` and `refresh_code` carry an **Argon2id** verifier
-/// (PROTOCOL.md §2.3) and Argon2 is built on BLAKE2b. Neither CryptoKit nor
-/// CommonCrypto ships BLAKE2b or Argon2, and the project takes exactly one
-/// third-party dependency (libwebrtc), so the primitive is implemented here.
-///
-/// It is checked against the RFC 7693 Appendix A vector *and*, transitively,
-/// against Go's `golang.org/x/crypto/argon2` every time the live server accepts
-/// a `connect_req` for a code we registered — which is the assertion that
-/// actually matters.
 public struct Blake2b {
 
     public static let maxDigestLength = 64
@@ -59,8 +48,6 @@ public struct Blake2b {
         var offset = 0
         while offset < bytes.count {
             if bufferLength == Blake2b.blockBytes {
-                // Never compress the final block here: BLAKE2b needs to know which
-                // block is last so it can set the finalisation flag.
                 increment(by: UInt64(Blake2b.blockBytes))
                 compress(buffer, last: false)
                 bufferLength = 0

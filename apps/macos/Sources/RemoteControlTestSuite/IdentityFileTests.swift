@@ -3,9 +3,6 @@ import RCTestKit
 import RemoteControlCore
 import SkipperCore
 
-/// Every case runs against a throwaway directory under the system temp dir, so
-/// the user's real `~/Library/Application Support/RemoteControl/identity.json`
-/// is never read, written or deleted by the test suite.
 func withTempIdentityDirectory(_ body: (URL) throws -> Void) throws {
     let directory = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("rc-tests-\(UUID().uuidString)", isDirectory: true)
@@ -13,8 +10,6 @@ func withTempIdentityDirectory(_ body: (URL) throws -> Void) throws {
     try body(directory)
 }
 
-/// `expectNotNil` cannot infer the type through a nested generic here, and an
-/// explicit annotation at every call site would drown the assertions.
 func requireLoaded(
     _ store: IdentityFileStore,
     file: StaticString = #file,
@@ -30,8 +25,6 @@ private func mode(of url: URL) throws -> Int16 {
     try SecureFile.currentMode(of: url)
 }
 
-/// A complete, genuinely valid record: real nine-digit ID, real 12-symbol code,
-/// real P-256 key. Everything `load()` validates has to actually hold.
 private func sampleRecord() throws -> IdentityRecord {
     IdentityRecord(
         deviceID: try DeviceID.generateLocal(),
@@ -88,7 +81,6 @@ public let identityFileSuite = TestSuite("IdentityFileStore", [
             let record = try sampleRecord()
             try store.save(record)
 
-            // Deliberately loosen it, exactly as a bad backup restore would.
             try FileManager.default.setAttributes(
                 [.posixPermissions: NSNumber(value: Int16(0o644))],
                 ofItemAtPath: store.fileURL.path
@@ -100,7 +92,6 @@ public let identityFileSuite = TestSuite("IdentityFileStore", [
             try expect(loaded.permissionWarning!.contains("0644"), "the warning must name the mode it found")
             try expectEqual(try mode(of: store.fileURL), 0o600, "and must actually be repaired on disk")
 
-            // A second load finds it already correct and says nothing.
             try expectNil(try requireLoaded(store).permissionWarning)
         }
     },
@@ -147,7 +138,6 @@ public let identityFileSuite = TestSuite("IdentityFileStore", [
             try expect(error.errorDescription!.contains("NOT been replaced"),
                        "the message must tell the user their identity was left alone")
 
-            // THE POINT OF THIS CASE: the bytes on disk are untouched.
             try expectEqual(try Data(contentsOf: store.fileURL), damaged,
                             "loading a corrupt file must not rewrite or delete it")
         }
@@ -174,7 +164,6 @@ public let identityFileSuite = TestSuite("IdentityFileStore", [
             let store = IdentityFileStore(directory: directory)
             try SecureFile.ensureDirectory(directory)
 
-            // deviceId that is not nine digits, valid everything else.
             let bad: [String: Any] = [
                 "schemaVersion": 1,
                 "deviceId": "12",
@@ -202,7 +191,6 @@ public let identityFileSuite = TestSuite("IdentityFileStore", [
                 "schemaVersion": 1,
                 "deviceId": try DeviceID.generateLocal(),
                 "accessCode": try AccessCode.generate(),
-                // 32 bytes of 0xFF is above the curve order: not a usable scalar.
                 "privateKey": Data(repeating: 0xFF, count: 32).base64EncodedString(),
                 "createdAt": "2026-08-19T00:00:00Z",
             ]
@@ -238,8 +226,6 @@ public let identityFileSuite = TestSuite("IdentityFileStore", [
             let goodBytes = try Data(contentsOf: IdentityFileStore(directory: directory).fileURL)
 
             struct Interrupted: Error {}
-            // Same store, but the write is aborted after the temp file exists and
-            // has been fsynced — the exact window a crash would land in.
             let failing = IdentityFileStore(directory: directory, beforeRename: { throw Interrupted() })
             let replacement = try sampleRecord()
             try expectThrowsSync { try failing.save(replacement) }
@@ -251,7 +237,6 @@ public let identityFileSuite = TestSuite("IdentityFileStore", [
             try expectEqual(reloaded, good, "the previous identity must still load")
             try expectNotEqual(reloaded.deviceID, replacement.deviceID)
 
-            // And no half-written temp file is left behind holding key material.
             let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path)
                 .filter { $0.contains(".tmp-") }
             try expect(leftovers.isEmpty, "temp files left behind: \(leftovers)")
@@ -290,9 +275,6 @@ public let identityFileSuite = TestSuite("IdentityFileStore", [
 
 // MARK: - Helpers
 
-/// `expectThrows` in RCTestKit is async; these bodies are synchronous. This keeps
-/// the call sites readable without making every case pointlessly async, and it
-/// reports through the runner like any other assertion rather than trapping.
 func expectThrowsSync(
     _ description: String = "an error",
     file: StaticString = #file,

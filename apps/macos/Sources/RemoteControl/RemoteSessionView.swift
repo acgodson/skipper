@@ -1,12 +1,6 @@
 import SwiftUI
 import RemoteControlCore
 
-/// The controller's session screen: the remote desktop, full window.
-///
-/// This replaces the connect form entirely while a session is live. Before
-/// Phase 4 the app stayed on the settings form after connecting, which read as
-/// "nothing happened" — the single most confusing thing about the app. A live
-/// session now looks like a live session, and the way back is one button.
 struct RemoteSessionView: View {
 
     @EnvironmentObject private var model: AppModel
@@ -27,10 +21,6 @@ struct RemoteSessionView: View {
                         session: coordinator,
                         capturingKeyboard: model.keyboardCaptureActive,
                         onVideoSizeChange: { videoSize = $0 },
-                        // These samples are already in the remote display's
-                        // coordinate space. The view hands the full event
-                        // straight to the input sender; this copy only drives
-                        // the toolbar read-out.
                         onPointerSample: { sample, _ in lastPointer = sample })
                 }
                 if !hasPicture {
@@ -40,8 +30,6 @@ struct RemoteSessionView: View {
                     ReconnectingOverlay(overPicture: hasPicture)
                 }
 
-                // The floating palette sits over the picture, bottom-right, out
-                // of the way of a menu bar or a Dock on the remote screen.
                 VStack {
                     Spacer()
                     HStack {
@@ -50,9 +38,6 @@ struct RemoteSessionView: View {
                     }
                 }
 
-                // Where are my keystrokes going? This is the whole answer, and
-                // it is drawn ON the picture rather than tucked into a toolbar,
-                // because being wrong about it is genuinely disorienting.
                 if model.keyboardCaptureActive {
                     RoundedRectangle(cornerRadius: 2)
                         .strokeBorder(Color.accentColor, lineWidth: 3)
@@ -92,8 +77,6 @@ private struct SessionToolbar: View {
             Spacer()
 
             if let pointer {
-                // Live proof that view→remote conversion is running, and the
-                // readout Phase 5 will debug against.
                 Text(String(format: "%.0f, %.0f", pointer.remotePixel.x, pointer.remotePixel.y))
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(pointer.insideVideo ? Color.secondary : Color.orange)
@@ -142,10 +125,6 @@ private struct SessionToolbar: View {
     }
 }
 
-/// PLAN.md 2.4: the toggle that decides whether Cmd+Space opens the local or
-/// the remote Spotlight. Its state has to be unmistakable — the user must never
-/// be unsure where their typing is going — so it is a filled, tinted control
-/// when on, and the video gets a matching accent border.
 private struct KeyboardCaptureToggle: View {
 
     @EnvironmentObject private var model: AppModel
@@ -181,8 +160,6 @@ private struct KeyboardCaptureToggle: View {
     }
 }
 
-/// A black window with no explanation is indistinguishable from a crash. This
-/// states what is happening and what the likely cause is if it persists.
 private struct WaitingForVideoOverlay: View {
     var body: some View {
         VStack(spacing: 10) {
@@ -201,7 +178,6 @@ private struct WaitingForVideoOverlay: View {
     }
 }
 
-/// PLAN.md §2.1: over the last frame, never instead of it.
 private struct ReconnectingOverlay: View {
     let overPicture: Bool
 

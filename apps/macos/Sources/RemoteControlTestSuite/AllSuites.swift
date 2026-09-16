@@ -1,7 +1,5 @@
 import RCTestKit
 
-/// The single source of truth for the test suite. Both front ends —
-/// `swift run rc-tests` and the XCTest bridge in `Tests/` — run exactly this.
 public let allSuites: [TestSuite] = [
     cryptoSuite,
     crockfordSuite,

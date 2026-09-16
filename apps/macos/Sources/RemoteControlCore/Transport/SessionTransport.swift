@@ -43,19 +43,13 @@ public enum TransportError: Error, LocalizedError {
     }
 }
 
-/// The seam the Phase 3 WebRTC + signaling stack plugs into.
 @MainActor
 public protocol SessionTransport: AnyObject {
     var state: SessionState { get }
-    /// Connect as controller to a host.
     func connect(deviceID: String, accessCode: String) async throws
-    /// End the current session from either side. Must always be safe to call.
     func disconnect(reason: String)
 }
 
-/// STUB. Validates its inputs so the UI's own validation is exercised, then
-/// fails loudly with `notImplemented`. It never reports `connected`, so nothing
-/// in the UI can mistake this for a working session.
 @MainActor
 public final class PreviewTransport: SessionTransport, ObservableObject {
 

@@ -1,47 +1,16 @@
 import Foundation
 import SkipperCore
 
-/// The on-disk shape of `identity.json`.
-///
-/// Field names are part of a persisted format, so they are spelled out
-/// explicitly with CodingKeys rather than left to synthesis — renaming a Swift
-/// property must never silently orphan a user's identity.
 public struct IdentityRecord: Equatable {
 
-    /// Bump only for a format change that older builds cannot read. A record
-    /// carrying a higher version than this build understands is refused rather
-    /// than misinterpreted.
     public static let currentSchemaVersion = 1
 
     public var schemaVersion: Int
     public var deviceID: String
-    /// The access code, for a file written before Phase 2.5 moved it into the
-    /// Keychain (`SecretAccount.accessCode`).
-    ///
-    /// Optional on decode so such a file still loads, and omitted on encode so
-    /// the migration is a move and not a copy — the same shape as the Phase 2.2
-    /// private-key move above. `IdentityStore` is what performs the move; nil
-    /// here means it has already happened.
     public var accessCode: String?
-    /// Base64 of the 32-byte P-256 private scalar. Never logged, never displayed.
-    ///
-    /// Nil once the key has moved to the Keychain or the Secure Enclave, which is
-    /// where it lives for every non-dev identity. Optional on decode so a record
-    /// written before that move still loads, and omitted on encode so the move is
-    /// a move and not a copy.
     public var privateKeyBase64: String?
-    /// Which backend holds the private key: `secureEnclave`, `keychain` or
-    /// `file`. Absent on a record written before Phase 2.2, which means file.
     public var keyStorage: String?
     public var createdAt: Date
-    /// True once `rc-signal` has issued this device its permanent Device ID.
-    ///
-    /// The ID minted on first launch is a local placeholder (see
-    /// `DeviceID.generateLocal`); the server is the authority. Without this flag
-    /// the signaling client cannot tell "I have never registered" from "I have
-    /// registered and this is my real ID", and would either re-register on every
-    /// launch or fail `hello` forever. Optional on decode so an identity file
-    /// written by Phase 2 still loads.
     public var serverRegistered: Bool
 
     public init(
@@ -62,20 +31,10 @@ public struct IdentityRecord: Equatable {
         self.serverRegistered = serverRegistered
     }
 
-    /// A timestamp at whole-second resolution.
-    ///
-    /// `createdAt` is serialised as ISO-8601, which carries no fractional part,
-    /// so a `Date()` taken now would NOT compare equal to the one read back a
-    /// moment later. Truncating at the source makes the in-memory value and the
-    /// on-disk value the same thing, which is what lets the round-trip test be an
-    /// exact equality rather than a fuzzy one. Sub-second precision on "when was
-    /// this identity created" is meaningless anyway.
     public static func timestamp(_ date: Date = Date()) -> Date {
         Date(timeIntervalSince1970: date.timeIntervalSince1970.rounded(.down))
     }
 
-    /// Builds a record around a live key, so callers never have to handle the
-    /// raw private bytes themselves. `IdentityStore` and the tests both use this.
     public init(deviceID: String, accessCode: String? = nil, key: DeviceKey, createdAt: Date,
                 serverRegistered: Bool = false) {
         self.init(
@@ -111,9 +70,6 @@ extension IdentityRecord: Codable {
         try c.encode(serverRegistered, forKey: .serverRegistered)
     }
 
-    // Hand-written so that `serverRegistered` is *optional* on read. A Phase 2
-    // identity file has no such key; refusing to load it would destroy a
-    // working identity over an additive field.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
@@ -128,12 +84,6 @@ extension IdentityRecord: Codable {
 
 // MARK: - Errors
 
-/// Failures the UI has to distinguish, because the right response differs.
-///
-/// `corrupt` and `unsupportedSchema` deliberately do NOT lead to "just make a
-/// new identity": regenerating would silently change the user's Device ID and
-/// access code, breaking the saved entry on their other Mac with no explanation.
-/// The user is told exactly what is wrong and has to choose Reset Identity.
 public enum IdentityFileError: Error, LocalizedError, Equatable {
 
     case corrupt(path: String, reason: String)
@@ -160,7 +110,6 @@ public enum IdentityFileError: Error, LocalizedError, Equatable {
         }
     }
 
-    /// True when "Reset identity" is the sensible offer to put in front of the user.
     public var isResettable: Bool {
         switch self {
         case .corrupt, .unsupportedSchema, .invalidContents: return true
@@ -171,19 +120,12 @@ public enum IdentityFileError: Error, LocalizedError, Equatable {
 
 // MARK: - Store
 
-/// Reads and writes `~/Library/Application Support/RemoteControl/identity.json`.
-///
-/// Directory 0700, file 0600, enforced on every write and repaired on every read.
-/// Writes are atomic (temp file + fsync + rename), so an interrupted write leaves
-/// the previous identity completely intact rather than a truncated one.
 public struct IdentityFileStore {
 
     public static let fileName = "identity.json"
 
     public let directory: URL
 
-    /// Test seam. Production leaves this nil. A test sets it to throw and then
-    /// asserts that the file on disk is still the previous, valid identity.
     public var beforeRename: (() throws -> Void)?
 
     public init(directory: URL = IdentityFileStore.defaultDirectory, beforeRename: (() throws -> Void)? = nil) {
@@ -191,15 +133,7 @@ public struct IdentityFileStore {
         self.beforeRename = beforeRename
     }
 
-    /// `~/Library/Application Support/RemoteControl`.
-    ///
-    /// Not the sandbox container: the app is deliberately unsandboxed (whole-desktop
-    /// capture and system-wide event injection are incompatible with the sandbox),
-    /// so this resolves to the real home directory.
     public static var defaultDirectory: URL {
-        // TEST SEAM, and the only way two instances can run on one Mac with
-        // separate identities — which is exactly what scripts/test-transport.sh
-        // needs in order to be a real two-party test rather than a mock.
         if let override = ProcessInfo.processInfo.environment["RC_IDENTITY_DIR"],
            !override.isEmpty {
             return URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
@@ -207,12 +141,6 @@ public struct IdentityFileStore {
         return systemDefaultDirectory
     }
 
-    /// The one location a shipped app ever uses, ignoring every test seam.
-    ///
-    /// `IdentityStore` compares against this to decide whether it is running as
-    /// the single real instance on this Mac — which is the only case where a
-    /// Keychain or Secure Enclave key, of which there is exactly one slot, is
-    /// the right place for the private half.
     public static var systemDefaultDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
@@ -229,12 +157,9 @@ public struct IdentityFileStore {
 
     public struct Loaded {
         public let record: IdentityRecord
-        /// Non-nil when the file's permissions were too open and were tightened.
         public let permissionWarning: String?
     }
 
-    /// Returns nil on first launch (no file yet). Throws — and never regenerates —
-    /// when a file exists but cannot be trusted.
     public func load() throws -> Loaded? {
         let read: (data: Data, warning: String?)?
         do {
@@ -254,8 +179,6 @@ public struct IdentityFileStore {
         do {
             record = try decoder.decode(IdentityRecord.self, from: read.data)
         } catch {
-            // The message is about structure only. The file's contents are secret
-            // and must not end up in an error string or a log line.
             throw IdentityFileError.corrupt(path: fileURL.path, reason: Self.describeDecodingFailure(error))
         }
 
@@ -279,7 +202,6 @@ public struct IdentityFileStore {
             guard let keyBytes = Data(base64Encoded: privateKeyBase64), keyBytes.count == 32 else {
                 throw IdentityFileError.invalidContents(path: fileURL.path, reason: "the private key is not 32 base64-encoded bytes")
             }
-            // Prove the scalar is actually a usable P-256 key before we report success.
             guard (try? DeviceKey(rawPrivateKey: keyBytes)) != nil else {
                 throw IdentityFileError.invalidContents(path: fileURL.path, reason: "the private key is not a valid P-256 scalar")
             }
@@ -311,8 +233,6 @@ public struct IdentityFileStore {
         }
     }
 
-    /// Deletes the identity file. The ONLY path that discards an identity, and it
-    /// is reached only from an explicit user action.
     @discardableResult
     public func reset() throws -> Bool {
         do {
@@ -324,8 +244,6 @@ public struct IdentityFileStore {
 
     // MARK: Helpers
 
-    /// Turns a `DecodingError` into a short structural description. Deliberately
-    /// never includes the decoded value — that would leak key material.
     private static func describeDecodingFailure(_ error: Swift.Error) -> String {
         guard let decoding = error as? DecodingError else { return "not valid JSON" }
         switch decoding {

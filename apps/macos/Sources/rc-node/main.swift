@@ -3,17 +3,6 @@ import AppKit
 import CoreGraphics
 import RemoteControlCore
 
-// A headless driver around the REAL app core: the same `IdentityStore`,
-// `SignalingClient`, `SessionCoordinator`, `SessionStateMachine` and
-// `PeerSession` the .app uses. Nothing here is a mock.
-//
-// It exists so `scripts/test-transport.sh` can run two instances on one Mac
-// (with separate RC_IDENTITY_DIRs) against the live server and assert on events
-// instead of on screenshots. Commands arrive on stdin, one per line; events go
-// to stdout as one JSON object per line.
-//
-// Not shipped in the .app bundle.
-
 @MainActor
 final class Node {
 
@@ -87,8 +76,6 @@ final class Node {
         case .pake(let step, let outgoing):
             emit("pake", ["step": step, "outgoing": outgoing])
         case .pakeCompleted(let peerPubkey):
-            // The key, not the code: a pubkey is public material, and it is what
-            // every later `sdp` on this session has to be signed by.
             emit("pake_ok", ["peerPubkey": peerPubkey])
         case .pakeFailed(let reason, let authentication):
             emit("pake_failed", ["reason": reason, "auth": authentication])
@@ -110,17 +97,12 @@ final class Node {
         case .inputApplied(let type, let events):
             emit("input_applied", ["type": type, "events": events])
         case .clipboard(let incoming, let bytes):
-            // Byte count only. PROTOCOL.md §8: clipboard text is never logged.
             emit("clipboard", ["incoming": incoming, "bytes": bytes])
         case .gesture(let name):
             emit("gesture", ["name": name])
         }
     }
 
-    /// The one place this driver builds a pointer event. It uses the SAME
-    /// `RemoteDisplayGeometry` the UI does, against a nominal 1000x1000 remote
-    /// display, so normalised coordinates pass through unchanged and the test
-    /// can name the exact fraction of the remote screen it means.
     private func pointerEvent(x: Double, y: Double,
                               kind: PointerEventKind,
                               button: MouseButton = .left) -> RemotePointerEvent {
@@ -210,9 +192,6 @@ final class Node {
             coordinator.setQuality(mode)
             emit("quality_set", ["mode": mode.rawValue])
 
-        // The media assertion `scripts/test-media.sh` is built on: libwebrtc's
-        // own counters, not ours. `framesDecoded` rising over time cannot be
-        // produced by a still image, a stub, or a track that carries no RTP.
         case "video-stats":
             Task {
                 let stats = await coordinator.videoStatistics()
@@ -233,16 +212,11 @@ final class Node {
                 ])
             }
 
-        // What this build can actually encode, and in what order. Exists because
-        // Phase 4 assumed H.264 was being negotiated and it was not.
         case "codecs":
             var fields: [String: Any] = [:]
             for (key, value) in PeerSession.videoCodecReport() { fields[key] = value }
             emit("codecs", fields)
 
-        // ---- Phase 5 input drivers ------------------------------------
-        // Normalised coordinates, exactly as the protocol carries them, so an
-        // integration test drives the same path the UI does.
         case "move":
             guard parts.count >= 3, let x = Double(parts[1]), let y = Double(parts[2]) else { return }
             coordinator.input.handle(pointerEvent(x: x, y: y, kind: .move))
@@ -259,7 +233,6 @@ final class Node {
             coordinator.input.send?(.scroll(ScrollPayload(dx: dx, dy: dy, phase: phase)))
 
         case "key":
-            // key <down|up> <keycode> [mods]
             guard parts.count >= 3, let keycode = UInt16(parts[2]) else { return }
             let mods = KeyModifiers(wire: parts.count >= 4 ? (Int(parts[3]) ?? 0) : 0)
             coordinator.sendKey(down: parts[1] == "down", keycode: keycode, modifiers: mods)
@@ -275,9 +248,6 @@ final class Node {
             emit("input_reset_sent", [:])
 
         case "clipboard-set":
-            // clipboard-set <text...> — puts text on THIS node's pasteboard so
-            // the sync path is exercised end to end. Only the byte count is
-            // ever reported back.
             let text = parts.dropFirst().joined(separator: " ")
             setLocalClipboard(text)
             emit("clipboard_local_set", ["bytes": text.utf8.count])
@@ -306,8 +276,6 @@ final class Node {
         case "bye":
             coordinator.disconnect(reason: Wire.ByeReason.userEnded)
 
-        // The host's allow-list (PROTOCOL.md §4.5). Keys only: it is what
-        // Refresh Code revokes, and the test asserts that it does.
         case "trusted":
             let trusted = (try? identity.secrets.trustedControllers()) ?? [:]
             emit("trusted", ["count": trusted.count, "pubkeys": trusted.keys.sorted()])
@@ -349,9 +317,6 @@ final class Node {
     }
 }
 
-// ---------------------------------------------------------------------------
-
-/// The live node, only ever touched on the main actor.
 @MainActor var sharedNode: Node?
 
 @MainActor
@@ -370,15 +335,12 @@ func bootstrap() {
         exit(1)
     }
 
-    // stdin on a background thread; every command hops back to the main actor,
-    // which is the single concurrency domain the whole core lives in.
     Thread.detachNewThread {
         while let line = readLine(strippingNewline: true) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty else { continue }
             Task { @MainActor in sharedNode?.handle(trimmed) }
         }
-        // stdin closed: shut down cleanly rather than lingering.
         Task { @MainActor in
             sharedNode?.coordinator.stop()
             exit(0)

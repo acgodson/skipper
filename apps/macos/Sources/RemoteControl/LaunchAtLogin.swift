@@ -1,10 +1,6 @@
 import Foundation
 import ServiceManagement
 
-/// "Launch at Login" via `SMAppService.mainApp`.
-///
-/// This only works for a real, code-signed `.app` bundle. Run the raw SwiftPM
-/// binary and registration fails; we surface that instead of pretending.
 @MainActor
 final class LaunchAtLogin: ObservableObject {
 

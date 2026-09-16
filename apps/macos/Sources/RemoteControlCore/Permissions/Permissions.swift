@@ -18,7 +18,6 @@ public enum PermissionKind: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Named, specific consequence. Never a generic "permissions missing".
     public var consequenceWhenMissing: String {
         switch self {
         case .screenRecording:
@@ -35,7 +34,6 @@ public enum PermissionKind: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Deep link straight to the exact System Settings pane.
     public var settingsURL: URL? {
         switch self {
         case .screenRecording:
@@ -46,11 +44,6 @@ public enum PermissionKind: String, CaseIterable, Identifiable {
     }
 }
 
-/// Live view of the two macOS privacy permissions the app depends on.
-///
-/// Re-checked whenever the app becomes active, plus on a slow timer, so that
-/// revoking a permission in System Settings while the app is open is noticed
-/// rather than discovered at the worst moment mid-session.
 @MainActor
 public final class PermissionsModel: ObservableObject {
 
@@ -78,7 +71,6 @@ public final class PermissionsModel: ObservableObject {
 
     public var missing: [PermissionKind] { PermissionKind.allCases.filter { !isGranted($0) } }
 
-    /// Read-only status probes. Neither of these raises a system dialog.
     public func refresh() {
         granted = [
             .screenRecording: CGPreflightScreenCaptureAccess(),
@@ -105,7 +97,6 @@ public final class PermissionsModel: ObservableObject {
         self.timer = timer
     }
 
-    /// Asks macOS to show its own consent dialog. We never try to bypass it.
     public func request(_ kind: PermissionKind) {
         switch kind {
         case .screenRecording:

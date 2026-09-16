@@ -4,18 +4,7 @@ import RCTestKit
 import RemoteControlCore
 
 // TODO: verify on a Developer-ID-signed build. These cases run in a plain test
-// binary against an in-memory blob store, so what they cannot prove is the part
-// that depends on the signature and on the real Keychain: that the Secure
-// Enclave blob survives in a generic-password item under
-// com.apple.application-identifier + keychain-access-groups, that a relaunch and
-// a reboot reopen the same key with the same Device ID and no prompt, that the
-// footer reads "Key: Secure Enclave", and that such a key's signature passes
-// scripts/interop-sig.sh against the Go verifier.
 
-/// A throwaway identity directory that also reports whether the store thinks it
-/// is the one real instance on this Mac. Every case here uses an in-memory blob
-/// store, so the suite never touches the user's real Keychain — which, on an
-/// unsigned build, would put a password prompt in front of a headless run.
 @MainActor
 private func withIdentityDirectory(
     _ body: @MainActor (IdentityFileStore, InMemoryDeviceKeyStore) async throws -> Void
@@ -26,7 +15,6 @@ private func withIdentityDirectory(
     try await body(IdentityFileStore(directory: directory), InMemoryDeviceKeyStore())
 }
 
-/// Writes the pre-2.2 shape: a software key inside `identity.json`.
 private func writeFileBackedIdentity(_ fileStore: IdentityFileStore, key: DeviceKey) throws -> IdentityRecord {
     let record = IdentityRecord(
         deviceID: try DeviceID.generateLocal(),
@@ -41,11 +29,6 @@ private func writeFileBackedIdentity(_ fileStore: IdentityFileStore, key: Device
 public let deviceKeyStorageSuite = TestSuite("DeviceKeyStorage", [
 
     // MARK: - Wire compatibility
-    //
-    // The only thing that has to hold across every backend: the bytes a Keychain
-    // key puts on the wire are the same shape the Go server verifies. This is the
-    // in-process half; scripts/interop-sig.sh runs the same encodings through the
-    // production auth.VerifyDeviceSig.
 
     TestCase("a Keychain key emits DER SPKI and DER ECDSA, exactly as the Go verifier expects") {
         let store = InMemoryDeviceKeyStore()
@@ -61,8 +44,6 @@ public let deviceKeyStorageSuite = TestSuite("DeviceKeyStorage", [
         try expectEqual(signature.first, 0x30, "ASN.1 DER SEQUENCE, not raw r||s")
         try expectNotEqual(signature.count, 64, "64 bytes would be raw r||s, which Go rejects")
 
-        // Verified the way the server does it: parse the SPKI, parse the DER
-        // signature, check it over the raw nonce bytes.
         let publicKey = try P256.Signing.PublicKey(derRepresentation: key.publicKeyDER)
         let parsed = try P256.Signing.ECDSASignature(derRepresentation: signature)
         try expect(publicKey.isValidSignature(parsed, for: nonce))
@@ -92,11 +73,6 @@ public let deviceKeyStorageSuite = TestSuite("DeviceKeyStorage", [
     },
 
     // MARK: - Migration
-    //
-    // THE RULE: a Secure Enclave key cannot be imported, so an identity that
-    // already has a software key can never become a hardware one. It moves to the
-    // Keychain instead, and the Device ID does not change. Anything else would
-    // break the peer Mac's saved entry.
 
     TestCase("an existing file key moves to the Keychain and keeps its Device ID") {
         try await withIdentityDirectory { fileStore, blobStore in
@@ -113,11 +89,9 @@ public let deviceKeyStorageSuite = TestSuite("DeviceKeyStorage", [
             try expectEqual(store.publicKeyBase64, try original.publicKeyBase64(),
                             "the SAME key must move; a new key would change this device's identity")
 
-            // The private half really is in the Keychain now...
             let stored = try expectNotNil(try blobStore.load(.software))
             try expectEqual(try DeviceKey(rawPrivateKey: stored).publicKeyBase64(),
                             try original.publicKeyBase64())
-            // ...and really is gone from the file, so this was a move, not a copy.
             let record = try requireLoaded(fileStore).record
             try expectNil(record.privateKeyBase64, "the file must no longer hold the private key")
             try expectEqual(record.keyStorage, "keychain")
@@ -142,8 +116,6 @@ public let deviceKeyStorageSuite = TestSuite("DeviceKeyStorage", [
         }
     },
 
-    // The honest failure. A Keychain that refuses must not cost the user their
-    // identity: the key stays in the file and the UI stops claiming otherwise.
     TestCase("a Keychain that refuses leaves the key in the file rather than regenerating") {
         try await withIdentityDirectory { fileStore, blobStore in
             let original = DeviceKey()
@@ -170,8 +142,6 @@ public let deviceKeyStorageSuite = TestSuite("DeviceKeyStorage", [
         try await withIdentityDirectory { fileStore, blobStore in
             let store = try IdentityStore(fileStore: fileStore, blobStore: blobStore, devFileIdentity: false)
 
-            // Which of the two it is depends on the machine and the signature;
-            // that it is not the file is the guarantee.
             let expected: DeviceKeyStorage = SecureEnclaveDeviceKey.isSupported ? .secureEnclave : .keychain
             try expectEqual(store.keyStorage, expected)
             try expectEqual(try requireLoaded(fileStore).record.keyStorage, expected.recordValue)
@@ -191,7 +161,6 @@ public let deviceKeyStorageSuite = TestSuite("DeviceKeyStorage", [
 
     TestCase("a Keychain-backed identity whose key has vanished is refused, never re-minted") {
         try await withIdentityDirectory { fileStore, blobStore in
-            // Migrated, so this identity is definitely Keychain-backed.
             _ = try writeFileBackedIdentity(fileStore, key: DeviceKey())
             let first = try IdentityStore(fileStore: fileStore, blobStore: blobStore, devFileIdentity: false)
             try expectEqual(first.keyStorage, .keychain)
@@ -210,8 +179,6 @@ public let deviceKeyStorageSuite = TestSuite("DeviceKeyStorage", [
         }
     },
 
-    // The dev flag exists so rc-node and the multi-instance scripts can run
-    // several identities on one Mac; the Keychain holds exactly one device key.
     TestCase("an overridden identity directory keeps the key in the file") {
         try await withIdentityDirectory { fileStore, blobStore in
             try expectFalse(fileStore.isDefaultLocation)

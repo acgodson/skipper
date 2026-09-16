@@ -26,7 +26,6 @@ public let settingsSuite = TestSuite("AppSettings", [
         }
     },
 
-    // The round trip that matters: change it, discard the object, read it back.
     TestCase("every setting survives a reload") {
         try withDefaults { defaults, _ in
             let settings = AppSettings(defaults: defaults)
@@ -87,8 +86,6 @@ public let settingsSuite = TestSuite("AppSettings", [
     },
 ])
 
-/// Pins down the *stub* behaviour: the Phase 2 seams must fail honestly rather
-/// than pretend a session or a presence state exists.
 public let stubSuite = TestSuite("Phase 2 stubs", [
 
     TestCase("PreviewTransport validates input then refuses to pretend") {
@@ -148,16 +145,6 @@ public let stubSuite = TestSuite("Phase 2 stubs", [
 
 // MARK: - Observation forwarding
 
-/// Regression guard for a bug that shipped in Phase 3: `AppModel` held its nested
-/// models as `@Published` reference types. `@Published` fires when the *reference*
-/// is replaced, never when the referenced object's own `@Published` properties
-/// change — so `settings.role` updated correctly while the view never redrew, and
-/// the role picker appeared completely dead. The same break silently affected the
-/// access-code display, the permission rows and the presence dot.
-///
-/// This asserts the publisher contract the fix depends on. It fails against the
-/// original code, which is the point: a static screenshot of the UI cannot catch a
-/// missing re-render, which is exactly how this got through the first time.
 public let observationSuite = TestSuite("Observation", [
 
     TestCase("AppSettings emits objectWillChange when role changes") {
@@ -170,7 +157,6 @@ public let observationSuite = TestSuite("Observation", [
             try expectEqual(settings.role, .host)
             settings.role = .controller
             try expectEqual(settings.role, .controller)
-            // The publisher must fire, or no view observing this object redraws.
             try expect(fired >= 1)
         }
     },
@@ -184,15 +170,11 @@ public let observationSuite = TestSuite("Observation", [
 
             settings.role = .controller
             settings.role = .host
-            // AppModel relies on exactly this to rebuild the transport for the
-            // new role; if it stops emitting, role switching silently breaks.
             try expectEqual(seen, [.controller, .host])
         }
     },
 
     TestCase("a settings suite isolates two instances from each other") {
-        // Two app copies on one Mac must not share role/saved-peer state through
-        // UserDefaults.standard, or switching one flips the other.
         let suiteA = "com.godson.remotecontrol.tests.\(UUID().uuidString)"
         let suiteB = "com.godson.remotecontrol.tests.\(UUID().uuidString)"
         let a = try expectNotNil(UserDefaults(suiteName: suiteA))
@@ -213,16 +195,9 @@ public let observationSuite = TestSuite("Observation", [
 
 // MARK: - Local cursor bitmap
 
-/// The local pointer replaced the system cursor, so if this bitmap cannot be
-/// built the user is left with NO pointer at all. That happened once already.
-/// `canDrawLocalCursor` now keeps the system cursor when this fails — this test
-/// guards the happy path so we notice if the bitmap itself ever breaks.
 public let cursorSuite = TestSuite("LocalCursor", [
 
     TestCase("the pointer is a vector path, not a window-server bitmap") {
-        // NSCursor.arrow.image returns a ZERO-SIZED image in a process with no
-        // window-server connection. Depending on it meant the layer drew nothing
-        // and, with the system cursor hidden, the user had no pointer at all.
         let systemImage = NSCursor.arrow.image
         let bitmapIsUnreliable = systemImage.size.width == 0 || systemImage.size.height == 0
 
@@ -230,10 +205,8 @@ public let cursorSuite = TestSuite("LocalCursor", [
         path.addLines(between: [CGPoint(x: 0, y: 0), CGPoint(x: 0, y: 16.5), CGPoint(x: 11.6, y: 11.4)])
         path.closeSubpath()
 
-        // The path is always available, regardless of the bitmap.
         try expectFalse(path.isEmpty)
         try expect(path.boundingBox.height > 0)
-        // Tip at the origin, so the drawn point matches where clicks land.
         try expectEqual(path.boundingBox.minX, 0)
         try expectEqual(path.boundingBox.minY, 0)
         _ = bitmapIsUnreliable

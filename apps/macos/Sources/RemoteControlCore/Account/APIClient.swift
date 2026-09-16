@@ -1,9 +1,5 @@
 import Foundation
 
-/// The machine-readable half of the API.md §0.3 error envelope.
-///
-/// Open on purpose: §0.5 allows the server to add members, and a client that
-/// crashes on an unknown code is a client that cannot be fixed server-side.
 public enum APIErrorCode: Equatable {
     case badRequest
     case unauthenticated
@@ -16,8 +12,6 @@ public enum APIErrorCode: Equatable {
     case unsupportedVersion
     case serverFault
     case unavailable
-    /// The call never produced an envelope: DNS, TLS, timeout, or a body that is
-    /// not the documented shape. Distinct from every server-stated code.
     case transport
     case other(String)
 
@@ -57,14 +51,11 @@ public enum APIErrorCode: Equatable {
     }
 }
 
-/// The ONE error type this surface throws — the API.md §0.3 envelope, plus the
-/// transport failures that never reach a server at all.
 public struct APIError: Error, LocalizedError, Equatable {
 
     public let code: APIErrorCode
     public let message: String
     public let requestId: String?
-    /// Sub-reason. Defined for `entitlement` (§4.3) and `idempotency_conflict`.
     public let reason: String?
     public let retryAfterSec: Int?
     public let httpStatus: Int?
@@ -87,9 +78,6 @@ public struct APIError: Error, LocalizedError, Equatable {
 
     public var errorDescription: String? { message }
 
-    /// Decodes a non-2xx body. A body that is not the documented envelope is
-    /// reported as such rather than guessed at: the status code alone never
-    /// becomes a code the client then branches on.
     public static func decode(status: Int, body: Data, retryAfterHeader: Int? = nil) -> APIError {
         struct Envelope: Decodable {
             struct Payload: Decodable {
@@ -125,20 +113,11 @@ public struct APIError: Error, LocalizedError, Equatable {
     }
 }
 
-/// Which credential class (API.md §0.2) a call presents.
 public enum APICredential: Equatable {
     case none
     case deviceToken(String)
 }
 
-/// The REST client for `api.skipperdesk.app`, or for whatever implements the
-/// same contract — the app holds one config value, `RCConfig.apiBaseURL`
-/// (docs/SCOPE.md §4).
-///
-/// It owns exactly the mechanics of API.md §0: the client header, JSON
-/// encoding, the error envelope, idempotency keys on mutating calls, and the
-/// one retry policy the document allows. Everything above that lives in
-/// `AccountLinker`.
 public final class APIClient: @unchecked Sendable {
 
     public static let clientHeader = "X-SkipperDesk-Client"
@@ -172,13 +151,11 @@ public final class APIClient: @unchecked Sendable {
         return URLSession(configuration: configuration)
     }
 
-    /// `macos/<CFBundleShortVersionString>` (API.md §0.1). Advisory only.
     public static func defaultClientIdentifier() -> String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         return "macos/\(version ?? "0.0.0")"
     }
 
-    /// A fresh `Idempotency-Key` for one logical mutating operation (§0.6).
     public static func newIdempotencyKey() -> String { UUID().uuidString }
 
     // MARK: - §1 Auth handoff
@@ -289,9 +266,6 @@ public final class APIClient: @unchecked Sendable {
         try await perform(method, path, body: body, credential: credential, idempotencyKey: idempotencyKey)
     }
 
-    /// One call, with the only retries API.md §0.4 permits: at most three
-    /// attempts on `internal`, and a single honoured wait on `unavailable`.
-    /// Every other code is returned to the caller on the first answer.
     private func perform<Body: Encodable>(
         _ method: Method,
         _ path: String,

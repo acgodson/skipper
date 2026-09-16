@@ -2,14 +2,10 @@ import Foundation
 
 public enum SignalingState: Equatable {
     case idle
-    /// TCP + TLS + WebSocket upgrade in progress.
     case connecting
-    /// Socket is up; `challenge` → `register`/`hello` in progress.
     case authenticating
     case authenticated(deviceID: String)
-    /// Waiting out the reconnect backoff. The associated value is the delay.
     case waitingToRetry(TimeInterval)
-    /// Terminal. Either `stop()` was called or the server said `displaced`.
     case stopped(String)
 
     public var isAuthenticated: Bool {
@@ -36,14 +32,8 @@ public enum SignalingError: Swift.Error, LocalizedError {
 
 @MainActor
 public protocol SignalingClientDelegate: AnyObject {
-    /// `hello_ok` has arrived. `activeSessionId` being present is the server
-    /// telling us to `resume`, never `connect_req` (PROTOCOL.md §4.3).
     func signaling(_ client: SignalingClient, didAuthenticate hello: HelloOKPayload)
-    /// The control plane went away. **Do not tear down the peer connection here**
-    /// (PROTOCOL.md §4.3 step 1) — media over an established path is unaffected.
     func signaling(_ client: SignalingClient, didDisconnect error: Error?)
-    /// Unsolicited server pushes: `presence`, `session_start`, `peer_state`,
-    /// `sdp`, `ice`, `bye`, and unsolicited `error`s.
     func signaling(_ client: SignalingClient, didReceive envelope: Envelope)
     func signaling(_ client: SignalingClient, didChangeState state: SignalingState)
 }
@@ -52,12 +42,6 @@ public extension SignalingClientDelegate {
     func signaling(_ client: SignalingClient, didChangeState state: SignalingState) {}
 }
 
-/// The WebSocket client for `rc-signal`.
-///
-/// Owns: the socket, TLS pinning, the challenge/response handshake, the
-/// heartbeat, request/reply correlation, and the reconnect schedule. It owns
-/// **no** session policy — that is `SessionCoordinator`'s job, because the rules
-/// in PROTOCOL.md §4 are about the session outliving this object's socket.
 @MainActor
 public final class SignalingClient {
 
@@ -72,11 +56,7 @@ public final class SignalingClient {
     public weak var delegate: SignalingClientDelegate?
 
     public private(set) var lastHelloOK: HelloOKPayload?
-    /// ICE servers from the most recent `hello_ok`. TURN credentials are minted
-    /// per hello and are never hardcoded (PROTOCOL.md §2.5).
     public var iceServers: [ICEServerSpec] { lastHelloOK?.iceServers ?? [] }
-    /// Device IDs we have asked the server to push presence for. Re-issued on
-    /// every reconnect, because watches are per-connection (PROTOCOL.md §2.7).
     public private(set) var watchedDeviceIDs: Set<String> = []
 
     public let config: RCConfig
@@ -110,8 +90,6 @@ public final class SignalingClient {
 
     // MARK: - Lifecycle
 
-    /// Starts connecting and keeps the socket up for as long as the process
-    /// lives, retrying with jittered exponential backoff, indefinitely.
     public func start() {
         guard supervisor == nil else { return }
         supervisor = Task { [weak self] in await self?.supervise() }
@@ -130,7 +108,6 @@ public final class SignalingClient {
         while !Task.isCancelled {
             do {
                 try await runOneConnection()
-                // A clean return means the socket closed without an error.
                 throw SignalingError.socketClosed("the server closed the connection")
             } catch is CancellationError {
                 return
@@ -140,9 +117,6 @@ public final class SignalingClient {
                 failAllWaiters(with: error)
                 delegate?.signaling(self, didDisconnect: error)
 
-                // `displaced` means another instance authenticated as this
-                // device. PROTOCOL.md §7 is explicit: do not reconnect in a
-                // loop, the other instance won.
                 if (error as? WireError)?.serverCode == Wire.ErrorCode.displaced {
                     state = .stopped("another instance of RemoteControl took over this Device ID")
                     return
@@ -159,17 +133,6 @@ public final class SignalingClient {
         }
     }
 
-    /// One socket, from dial to death. Returns only when the socket is gone.
-    ///
-    /// NOTE ON STRUCTURE: the receive loop is deliberately NOT a child of a task
-    /// group. `URLSessionWebSocketTask.receive()` does not observe Swift
-    /// concurrency cancellation, so a task group would block forever draining it
-    /// after any other child failed. The two workers therefore report through a
-    /// single continuation that resolves on the first failure, and the socket is
-    /// cancelled from `defer` so `receive()` unblocks on its own.
-    ///
-    /// TLS validation is the system default (App Transport Security / the OS
-    /// trust store); the client holds no certificate pin (docs/SCOPE.md §4).
     private func runOneConnection() async throws {
         state = .connecting
 
@@ -178,7 +141,8 @@ public final class SignalingClient {
         configuration.waitsForConnectivity = false
         let session = URLSession(configuration: configuration)
         let task = session.webSocketTask(with: config.signalingURL)
-        task.maximumMessageSize = 256 * 1024   // PROTOCOL.md §0: max frame 256 KiB
+        // Frame cap must match the protocol's own limit or the two sides disagree on what fits in one message.
+        task.maximumMessageSize = 256 * 1024
         self.urlSession = session
         self.socket = task
         task.resume()
@@ -217,7 +181,6 @@ public final class SignalingClient {
         }
     }
 
-    /// Resolves `runOneConnection`'s wait exactly once.
     private func endConnection(_ error: Swift.Error) {
         guard let continuation = connectionEnd else { return }
         connectionEnd = nil
@@ -232,9 +195,6 @@ public final class SignalingClient {
         failAllWaiters(with: SignalingError.socketClosed("closed locally"))
     }
 
-    /// Drops the socket without stopping the supervisor, so the client
-    /// reconnects and (per §4.3) resumes. Used by the flutter tests to simulate
-    /// a control-plane outage, and by nothing in the shipping UI.
     public func simulateSocketLoss() {
         socket?.cancel(with: .abnormalClosure, reason: nil)
     }
@@ -253,8 +213,6 @@ public final class SignalingClient {
             let registered = try await register(nonce: challenge.nonce, on: task)
             try identity.adoptServerAssignedDeviceID(registered.deviceId)
             identity.markServerRegistered()
-            // After register_ok the connection is still CHALLENGED and the server
-            // issues a fresh nonce. Each nonce is single-use.
             challenge = try await expect(types: [Wire.MessageType.challenge],
                                          timeout: config.handshakeTimeout,
                                          what: "the post-registration challenge")
@@ -273,7 +231,6 @@ public final class SignalingClient {
         lastHelloOK = ok
         state = .authenticated(deviceID: ok.deviceId)
 
-        // Watches are per-connection and are not restored by the server.
         for deviceID in watchedDeviceIDs {
             try? await sendFireAndForget(type: Wire.MessageType.watch,
                                         payload: DeviceIDPayload(deviceId: deviceID))
@@ -282,8 +239,6 @@ public final class SignalingClient {
         delegate?.signaling(self, didAuthenticate: ok)
     }
 
-    /// PROTOCOL.md §2.2. No verifier: the server stores nothing about the access
-    /// code, so the code never leaves this Mac except through the §2.17 exchange.
     private func register(nonce: String, on task: URLSessionWebSocketTask) async throws -> RegisterOKPayload {
         let payload = RegisterPayload(
             pubkey: identity.publicKeyBase64,
@@ -295,9 +250,6 @@ public final class SignalingClient {
         return try reply.decodePayload(RegisterOKPayload.self)
     }
 
-    /// ECDSA-P256/SHA-256 over the **raw nonce bytes**, DER, base64
-    /// (PROTOCOL.md §3.1). Signing the base64 text instead is the classic way to
-    /// get an unexplainable `bad_signature`.
     private func signature(overNonce nonceBase64: String) throws -> String {
         guard let nonce = Data(base64Encoded: nonceBase64) else {
             throw SignalingError.handshakeFailed("the server's nonce was not base64")
@@ -328,9 +280,6 @@ public final class SignalingClient {
             case .string(let text):
                 route(Data(text.utf8))
             case .data(let data):
-                // PROTOCOL.md §0: binary frames are a protocol error. Decode it
-                // anyway rather than dropping the connection over pedantry, but
-                // never treat it as normal.
                 route(data)
             @unknown default:
                 break
@@ -344,12 +293,9 @@ public final class SignalingClient {
         do {
             envelope = try Envelope.decode(data)
         } catch {
-            // An undecodable frame is the server's bug, not a reason to drop a
-            // live session. Log-free by design: the frame may contain secrets.
             return
         }
 
-        // 1. A reply to something we asked for.
         if let index = matchingWaiterIndex(for: envelope) {
             let waiter = waiters.remove(at: index)
             if let protocolError = envelope.asProtocolError {
@@ -360,7 +306,6 @@ public final class SignalingClient {
             return
         }
 
-        // 2. `displaced` is fatal for this socket and must not look like a push.
         if let protocolError = envelope.asProtocolError,
            protocolError.serverCode == Wire.ErrorCode.displaced {
             delegate?.signaling(self, didReceive: envelope)
@@ -368,7 +313,6 @@ public final class SignalingClient {
             return
         }
 
-        // 3. Everything else is an unsolicited push for the coordinator.
         delegate?.signaling(self, didReceive: envelope)
     }
 
@@ -376,8 +320,6 @@ public final class SignalingClient {
         if let re = envelope.re, !re.isEmpty {
             return waiters.firstIndex { $0.re == re }
         }
-        // No correlation id: match on type. `challenge` is the only reply the
-        // server sends unsolicited, so this is unambiguous in practice.
         return waiters.firstIndex { $0.re == nil && $0.types.contains(envelope.type) }
     }
 
@@ -396,7 +338,6 @@ public final class SignalingClient {
 
     private func write(_ data: Data) async throws {
         guard let socket else { throw SignalingError.notConnected }
-        // One message per WebSocket TEXT frame (PROTOCOL.md §0).
         try await socket.send(.string(String(decoding: data, as: UTF8.self)))
     }
 
@@ -404,7 +345,6 @@ public final class SignalingClient {
         try await write(Envelope.encode(type: type, id: nextMessageID(), payload: payload))
     }
 
-    /// Sends a request and waits for one of `expect`, or the matching `error`.
     @discardableResult
     public func request<T: Encodable>(
         type: String, payload: T, expect: [String], timeout: TimeInterval? = nil
@@ -418,7 +358,6 @@ public final class SignalingClient {
         return try await reply
     }
 
-    /// Waits for an unsolicited frame of one of the given types.
     private func expect(types: Set<String>, timeout: TimeInterval, what: String) async throws -> Envelope {
         try await wait(re: nil, types: types, timeout: timeout, what: what)
     }
@@ -466,8 +405,6 @@ public final class SignalingClient {
                           expect: [Wire.MessageType.unwatchOK])
     }
 
-    /// PROTOCOL.md §2.9. The code is not sent: the server authorises by the
-    /// host's entitlement and the code is settled between the two peers.
     public func connectRequest(deviceID: String) async throws -> SessionGrantPayload {
         let reply = try await request(
             type: Wire.MessageType.connectReq,
@@ -492,8 +429,6 @@ public final class SignalingClient {
         return try reply.decodePayload(RenewOKPayload.self)
     }
 
-    /// PROTOCOL.md §2.12. `signature` is the sender's signed DTLS fingerprints;
-    /// the server relays the three fields unchanged and never checks them.
     public func sendSDP(sessionID: String, type: String, sdp: String, restart: Bool,
                         signature: SdpSignature?) async throws {
         try await sendFireAndForget(
@@ -517,16 +452,11 @@ public final class SignalingClient {
                                     payload: ByePayload(sessionId: sessionID, reason: reason))
     }
 
-    /// PROTOCOL.md §2.17. One opaque frame of the SPAKE2 exchange, relayed like
-    /// `sdp` and `ice`. The contents are the shared core's; nothing is read here.
     public func sendPake(sessionID: String, message: PakeMessage) async throws {
         try await sendFireAndForget(type: Wire.MessageType.pake,
                                     payload: PakePayload(sessionId: sessionID, message: message))
     }
 
-    /// PROTOCOL.md §2.15. The payload is `{}` — there is no stored verifier to
-    /// replace. It bumps the device's epoch, which kills every session and token
-    /// this device holds; the new code itself never leaves this Mac.
     public func refreshCode() async throws {
         try await request(type: Wire.MessageType.refreshCode, payload: EmptyPayload(),
                           expect: [Wire.MessageType.refreshCodeOK])
@@ -535,9 +465,6 @@ public final class SignalingClient {
 
 // MARK: - AccessCodeSink
 
-/// Refreshing the access code locally propagates as `refresh_code`, which is
-/// what kills every live session and token for this device. The code itself does
-/// not travel: what the server revokes is the epoch, not a secret it holds.
 extension SignalingClient: AccessCodeSink {
     public nonisolated func accessCodeDidChange(deviceID: String) async throws {
         try await refreshCode()

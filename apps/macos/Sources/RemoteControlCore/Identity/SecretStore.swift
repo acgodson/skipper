@@ -2,21 +2,10 @@ import Foundation
 import Security
 import SkipperCore
 
-/// The secrets this Mac holds that are not the device key, each in its own
-/// Keychain slot under the same service.
-///
-/// They are kept apart because they have different lifetimes and different
-/// owners: this Mac's own access code, the codes it has been told by other
-/// Macs, the controllers that have proved a code to it, and how often each of
-/// them has got it wrong.
 public enum SecretAccount: String, CaseIterable {
-    /// This Mac's access code, as a host. Plaintext, 12 Crockford symbols.
     case accessCode = "access-code"
-    /// `[hostDeviceId: accessCode]` — codes remembered for other Macs.
     case peerCodes = "peer-codes"
-    /// `[controllerPubkey: TrustedController]` — who has proved the code here.
     case trustedControllers = "trusted-controllers"
-    /// `[controllerPubkey: GuessCounter]` — PROTOCOL.md §2.17's guess policy.
     case guessCounters = "guess-counters"
 }
 
@@ -35,19 +24,12 @@ public enum SecretStoreError: Error, LocalizedError {
     }
 }
 
-/// Persists one secret blob per account. The Keychain in production, a file
-/// under the same dev conditions as the device key, memory in tests.
 public protocol SecretBlobStore {
     func load(_ account: SecretAccount) throws -> Data?
     func save(_ blob: Data, for account: SecretAccount) throws
     func remove(_ account: SecretAccount) throws
 }
 
-/// Generic-password items beside the device key and the account token: service
-/// `app.skipperdesk.desktop`, one account per `SecretAccount`,
-/// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` so an unattended host is
-/// reachable again after a reboot with nobody present, and so no code ever
-/// travels to another Mac in a backup or through iCloud.
 public struct SecretKeychain: SecretBlobStore {
 
     public static let service = DeviceKeyKeychain.service
@@ -103,11 +85,6 @@ public struct SecretKeychain: SecretBlobStore {
     }
 }
 
-/// The dev-only backend, reachable under exactly the conditions that put the
-/// device key in a file: `SKIPPER_DEV_FILE_IDENTITY=1` or an overridden identity
-/// directory, because the Keychain holds one slot per account and the
-/// multi-instance scripts run several identities on one Mac. Owner-only
-/// permissions, beside `identity.json`. Never a release path.
 public struct SecretFileStore: SecretBlobStore {
 
     private let directory: URL
@@ -134,12 +111,9 @@ public struct SecretFileStore: SecretBlobStore {
     }
 }
 
-/// Test double, and the only backend the suite touches by default: the real
-/// Keychain would prompt on an unsigned build and hang a headless run.
 public final class InMemorySecretStore: SecretBlobStore {
 
     private var blobs: [SecretAccount: Data] = [:]
-    /// Set to make every operation fail, standing in for a Keychain that refuses.
     public var isSealed = false
 
     public init() {}
@@ -160,11 +134,6 @@ public final class InMemorySecretStore: SecretBlobStore {
     }
 }
 
-/// One controller that has completed the §2.17 exchange against this host.
-///
-/// PROTOCOL.md §4.5: this list does **not** gate the exchange — a controller
-/// with the right code is allowed whether or not it is here. It exists so the
-/// host can show who has connected, and so Refresh Code has something to revoke.
 public struct TrustedController: Codable, Equatable {
     public var label: String
     public var firstSeen: Date
@@ -177,9 +146,6 @@ public struct TrustedController: Codable, Equatable {
     }
 }
 
-/// Reads and writes the four secrets through whichever blob store this build
-/// may use. Every value is JSON, so a format that gains a field later does not
-/// orphan the ones already stored.
 public struct SecretStore {
 
     private let blobs: SecretBlobStore
@@ -188,8 +154,6 @@ public struct SecretStore {
         self.blobs = blobs
     }
 
-    /// Keychain, or the identity-directory file under the dev conditions of
-    /// `IdentityStore.usesDevFileIdentity`.
     public static func forThisMac(fileStore: IdentityFileStore = IdentityFileStore()) -> SecretStore {
         if IdentityStore.usesDevFileIdentity(fileStore: fileStore) {
             return SecretStore(blobs: SecretFileStore(directory: fileStore.directory))
@@ -235,9 +199,6 @@ public struct SecretStore {
         try map(.trustedControllers)
     }
 
-    /// Records a completed exchange. `firstSeen` is kept from the existing entry,
-    /// so the list says how long this controller has been known, not when it last
-    /// connected.
     public func recordTrustedController(pubkey: String, label: String, now: Date = Date()) throws {
         guard !pubkey.isEmpty else { return }
         var trusted: [String: TrustedController] = try map(.trustedControllers)
@@ -262,14 +223,11 @@ public struct SecretStore {
 
     // MARK: Revocation
 
-    /// What Refresh Code clears alongside the code itself (PROTOCOL.md §4.5):
-    /// every controller this host trusted, and every failure it had counted.
     public func revokeControllers() throws {
         try blobs.remove(.trustedControllers)
         try blobs.remove(.guessCounters)
     }
 
-    /// Part of a deliberate identity reset, and reachable from nowhere else.
     public func discardEverything() {
         for account in SecretAccount.allCases { try? blobs.remove(account) }
     }

@@ -1,15 +1,5 @@
 import Foundation
 
-/// A dependency-free assertion + test-registry kit.
-///
-/// WHY THIS EXISTS: this machine has Command Line Tools only, and CLT ships no
-/// `XCTest.framework`, so `swift test` cannot link (`error: XCTest not available`).
-/// The test bodies therefore live in a plain library target and are driven by two
-/// front ends over the same single source of truth:
-///
-///   * `swift run rc-tests`  — works today, no Xcode required.
-///   * `swift test`          — `Tests/RemoteControlCoreTests` bridges these same
-///                             cases into XCTest for anyone with Xcode installed.
 public struct TestFailure: Error, CustomStringConvertible {
     public let message: String
     public let file: StaticString
@@ -48,8 +38,6 @@ public struct TestSuite {
 
 // MARK: - Assertions
 
-/// Unconditional failure. For the cases where the check is a `switch` or a
-/// `guard` rather than a boolean — pattern-matching an enum, say.
 public func fail(
     _ message: @autoclosure () -> String,
     file: StaticString = #file,
@@ -161,12 +149,6 @@ public func expectGreaterThan<T: Comparable>(
     }
 }
 
-/// Floating-point equality with an explicit tolerance.
-///
-/// Every geometry assertion in the capture suite names the exact number it
-/// expects; the tolerance is there for binary representation only (1e-9 is far
-/// tighter than any real error — a one-pixel mistake is 1e0), never to let a
-/// wrong answer through.
 public func expectClose(
     _ actual: Double,
     _ expected: Double,
@@ -216,7 +198,6 @@ public func expectClose(
 }
 #endif
 
-/// Asserts the operation throws. Fails if it returns normally.
 public func expectThrows(
     _ description: String = "an error",
     file: StaticString = #file,

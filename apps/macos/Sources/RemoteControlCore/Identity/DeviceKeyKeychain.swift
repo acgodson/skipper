@@ -1,12 +1,6 @@
 import Foundation
 import Security
 
-/// Which Keychain slot a device key blob occupies.
-///
-/// Two accounts under one service, because the two blobs are not interchangeable:
-/// the Secure Enclave one is an opaque key reference that only this Mac's chip
-/// can use, the software one is a raw P-256 scalar. Storing them apart means a
-/// fallback never has to guess what it just read.
 public enum DeviceKeyAccount: String {
     case secureEnclave = "device-key"
     case software = "device-key-software"
@@ -24,18 +18,12 @@ public enum DeviceKeyKeychainError: Error, LocalizedError {
     }
 }
 
-/// Persists a device key blob. The Keychain in production, memory in tests.
 public protocol DeviceKeyBlobStore {
     func load(_ account: DeviceKeyAccount) throws -> Data?
     func save(_ blob: Data, for account: DeviceKeyAccount) throws
     func remove(_ account: DeviceKeyAccount) throws
 }
 
-/// A generic-password item in the login Keychain.
-///
-/// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`: an unattended host has to
-/// come back after a reboot without anybody typing a password, and the item must
-/// never travel to another Mac in a backup or through iCloud.
 public struct DeviceKeyKeychain: DeviceKeyBlobStore {
 
     public static let service = "app.skipperdesk.desktop"
@@ -91,12 +79,9 @@ public struct DeviceKeyKeychain: DeviceKeyBlobStore {
     }
 }
 
-/// Test double. Keeps the suite off the real Keychain, which on an unsigned
-/// build would prompt the user and hang a headless run.
 public final class InMemoryDeviceKeyStore: DeviceKeyBlobStore {
 
     private var blobs: [DeviceKeyAccount: Data] = [:]
-    /// Set to make every operation fail, standing in for a Keychain that refuses.
     public var isSealed = false
 
     public init() {}

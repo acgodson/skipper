@@ -3,14 +3,6 @@ import RCTestKit
 import RemoteControlCore
 import SkipperCore
 
-/// Signed DTLS fingerprints (PROTOCOL.md §2.12), driven the way the coordinator
-/// drives them: the core builds the bytes, a real `DeviceSigningKey` signs them,
-/// the core verifies.
-///
-/// The rules are proven in `core/crates/rc-identity`; these cases exist to prove
-/// the FFI path carries them, and that a Keychain-backed key — which may be a
-/// Secure Enclave key in a signed build — produces a signature the core accepts.
-
 private let sdpOffer = """
 v=0\r
 o=- 8175905011317297321 2 IN IP4 127.0.0.1\r

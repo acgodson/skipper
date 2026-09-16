@@ -1,13 +1,6 @@
 import Foundation
 import CoreGraphics
 
-/// The handful of macOS virtual keycodes (`kVK_*` from Carbon's `Events.h`) this
-/// code names explicitly.
-///
-/// They are written out rather than imported because Carbon's `Events.h` is not
-/// reachable from a SwiftPM target without a bridging header, and because these
-/// nine constants are load-bearing: `spotlight` sending the wrong keycode is a
-/// silent no-op on the remote machine, not a build error.
 public enum VirtualKey {
     public static let tab: CGKeyCode = 48
     public static let space: CGKeyCode = 49
@@ -18,11 +11,6 @@ public enum VirtualKey {
     public static let upArrow: CGKeyCode = 126
     public static let downArrow: CGKeyCode = 125
 
-    // Modifier keys. A modifier is NOT delivered as a key-down: macOS posts
-    // `kCGEventFlagsChanged` for these, and an app that receives a plain keyDown
-    // with keycode 55 does not treat Command as held. Injecting the wrong event
-    // type here is exactly how a Cmd key gets "stuck" from the OS's point of
-    // view, so the injector branches on this set.
     public static let command: CGKeyCode = 55
     public static let rightCommand: CGKeyCode = 54
     public static let shift: CGKeyCode = 56
@@ -43,8 +31,6 @@ public enum VirtualKey {
         modifierKeycodes.contains(keycode)
     }
 
-    /// Which modifier bit a modifier keycode contributes. Non-modifier keycodes
-    /// contribute nothing.
     public static func modifier(for keycode: CGKeyCode) -> KeyModifiers {
         switch keycode {
         case command, rightCommand: return .command

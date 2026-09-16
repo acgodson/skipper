@@ -1,22 +1,13 @@
 import Foundation
 
-/// The wire shapes of protocol/API.md §1, §3.1 and §4.1, and nothing else.
-///
-/// Unknown members are ignored on decode (API.md §0); absent optional members
-/// stay absent rather than becoming a zero the UI could mistake for a value.
-
-/// API.md §1.3 — `POST /v1/auth/device/challenge`.
 public struct DeviceChallenge: Decodable, Equatable {
     public let nonce: String
     public let serverTime: Int64?
     public let expiresAt: Int64?
 
-    /// The raw bytes that are signed. API.md §1.1 rule 4: the signature covers
-    /// the decoded nonce, never its base64 text.
     public var nonceBytes: Data? { Data(base64Encoded: nonce) }
 }
 
-/// API.md §1.4 and §1.5 — the device token grant.
 public struct DeviceTokenGrant: Decodable, Equatable {
     public let deviceToken: String
     public let expiresAt: Int64
@@ -25,7 +16,6 @@ public struct DeviceTokenGrant: Decodable, Equatable {
     public let accountId: String
 }
 
-/// API.md §3.1 — the device record.
 public struct DeviceRecord: Decodable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
@@ -54,7 +44,6 @@ public struct DeviceRecord: Decodable, Equatable {
     }
 }
 
-/// API.md §4.1 `status`. Closed enum: an unrecognised value is `exhausted`.
 public enum EntitlementStatus: String, Equatable {
     case trial
     case active
@@ -66,7 +55,6 @@ public enum EntitlementStatus: String, Equatable {
     }
 }
 
-/// API.md §4.1. The client renders these values; it never computes them (§4.2).
 public struct Entitlement: Decodable, Equatable {
 
     public struct Concurrency: Decodable, Equatable {
@@ -98,8 +86,6 @@ public struct Entitlement: Decodable, Equatable {
     }
 }
 
-/// An entitlement together with the moment it was read, so the UI can say how
-/// fresh it is and the client can honour `refreshAfterSec` (API.md §4.2).
 public struct CachedEntitlement: Equatable {
     public let value: Entitlement
     public let fetchedAt: Date

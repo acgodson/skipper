@@ -13,9 +13,8 @@ public let backoffSuite = TestSuite("Reconnect backoff", [
         try expectEqual(backoff.nominalDelay(forAttempt: 2), 2.0)
         try expectEqual(backoff.nominalDelay(forAttempt: 3), 4.0)
         try expectEqual(backoff.nominalDelay(forAttempt: 4), 8.0)
-        try expectEqual(backoff.nominalDelay(forAttempt: 5), 15.0)   // 16 clamped
+        try expectEqual(backoff.nominalDelay(forAttempt: 5), 15.0)
         try expectEqual(backoff.nominalDelay(forAttempt: 40), 15.0)
-        // An absurd attempt count must not overflow into NaN or a negative delay.
         try expectEqual(backoff.nominalDelay(forAttempt: 100_000), 15.0)
     },
 
@@ -33,14 +32,12 @@ public let backoffSuite = TestSuite("Reconnect backoff", [
 
     TestCase("jitter actually moves the delay, in both directions") {
         let backoff = ReconnectBackoff(minimum: 0.5, maximum: 15, jitterFraction: 0.25)
-        // Attempt 3 is nominally 4s, comfortably away from both clamps.
         let low = backoff.delay(forAttempt: 3, random: { 0.0 })
         let mid = backoff.delay(forAttempt: 3, random: { 0.5 })
         let high = backoff.delay(forAttempt: 3, random: { 0.999 })
         try expectEqual(mid, 4.0)
         try expectLessThan(low, mid)
         try expectGreaterThan(high, mid)
-        // ±25% exactly — a stub returning the nominal delay fails all three.
         try expect(abs(low - 3.0) < 0.001, "expected 3.0 at the bottom of the jitter band, got \(low)")
         try expect(abs(high - 5.0) < 0.01, "expected ~5.0 at the top of the jitter band, got \(high)")
     },

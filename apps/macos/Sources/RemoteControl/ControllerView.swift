@@ -69,8 +69,6 @@ struct ControllerView: View {
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Access Code").font(.caption).foregroundStyle(.secondary)
-                    // SecureField: the peer's code is a secret and should not be
-                    // shoulder-readable while it is typed.
                     SecureField("K7FM-3Q8P-W2XY", text: $accessCodeField)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
@@ -97,8 +95,6 @@ struct ControllerView: View {
                         ProgressView().controlSize(.small)
                     }
                     Spacer()
-                    // "Reconnecting…" is deliberately a different, non-alarming
-                    // state from "Disconnected": the session is still alive.
                     Text(model.isReconnecting ? "Reconnecting\u{2026}" : model.sessionState.summary)
                         .font(.caption)
                         .foregroundStyle(model.isReconnecting ? .orange : .secondary)

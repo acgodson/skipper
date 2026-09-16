@@ -17,8 +17,6 @@ struct PermissionsSection: View {
     }
 }
 
-/// One row per permission, each naming the capability that is unavailable and
-/// what specifically breaks without it. Never a generic "permissions missing".
 struct PermissionRow: View {
 
     @EnvironmentObject private var model: AppModel

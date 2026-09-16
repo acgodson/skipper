@@ -35,18 +35,6 @@ private struct CoreState: Decodable {
     let serverAdvertisedSessionId: String?
 }
 
-/// PROTOCOL.md §4 as executable code — a thin Swift skin over the shared Rust
-/// core (`core/crates/rc-session`) reached through `skipper_core.h`.
-///
-/// There is exactly one implementation of these rules in the product, and it is
-/// not this file: everything here marshals arguments in and decodes the actions
-/// and the state snapshot back out. The shared vectors in
-/// `protocol/vectors/session-scenarios.json` are executed through this class, so
-/// they prove the FFI path and not only the Rust one.
-///
-/// Like the machine it wraps it performs no I/O and holds no timers: the owner
-/// calls `tick(now:)` and the core decides when the ICE-restart delay and the
-/// failure grace have elapsed.
 public final class SessionStateMachine {
 
     private let handle: OpaquePointer
@@ -62,22 +50,15 @@ public final class SessionStateMachine {
     public private(set) var role: SessionRole
     public private(set) var phase: SessionPhase = .idle
     public private(set) var sessionID: String?
-    /// The newest token. Rotated on every `resume_ok` / `renew_ok`; PROTOCOL.md
-    /// §4.4 says losing it means losing the resume path.
     public private(set) var sessionToken: String?
     public private(set) var peerDeviceID: String?
     public private(set) var signalingUp = false
     public private(set) var iceState: ICELinkState = .new
-    /// PROTOCOL.md §4.4: "Clients must not have two `resume`s in flight."
     public private(set) var resumeInFlight = false
     public private(set) var hasSession = false
-    /// The controller offers by default, both for the first negotiation
-    /// (PROTOCOL.md §2.9) and for ICE restarts (§4.3 step 4).
     public private(set) var isOfferer = false
     public private(set) var serverAdvertisedSessionID: String?
 
-    /// The access code the controller may silently reuse. Present only when the
-    /// user chose Remember; without it a dead session must prompt.
     public var rememberedAccessCode: String? {
         get { storedRememberedAccessCode }
         set { _ = call { skipper_session_set_remembered_access_code(handle, newValue) } }
@@ -110,13 +91,10 @@ public final class SessionStateMachine {
 
     // MARK: - Controller-initiated connect
 
-    /// The user pressed Connect. Only legal from `idle`/`closed`; a client must
-    /// never `connect_req` for a session it believes is alive (§4.4).
     public func connectRequested(deviceID: String, accessCode: String, remember: Bool) -> [SessionAction] {
         call { skipper_session_connect_requested(handle, deviceID, accessCode, remember) }
     }
 
-    /// `connect_ok` (controller) or `session_start` (host).
     @discardableResult
     public func sessionGranted(_ grant: SessionGrantLike, now: Date = Date()) -> [SessionAction] {
         call {
@@ -132,20 +110,14 @@ public final class SessionStateMachine {
 
     // MARK: - Signaling transitions (PROTOCOL.md §4.3)
 
-    /// Step 1: the control plane died. **Nothing is torn down.** Media over an
-    /// established WebRTC path keeps flowing; the UI only says "Reconnecting…"
-    /// if the media path is also down.
     public func signalingLost() -> [SessionAction] {
         call { skipper_session_signaling_lost(handle) }
     }
 
-    /// Step 3: the socket is back and authenticated.
     public func signalingAuthenticated(activeSessionID: String?) -> [SessionAction] {
         call { skipper_session_signaling_authenticated(handle, activeSessionID) }
     }
 
-    /// Step 4. Token rotation, watch re-issue, `input_reset`, and an ICE restart
-    /// if the media path is not already up.
     public func resumeSucceeded(_ ok: SessionTokenLike, now: Date = Date()) -> [SessionAction] {
         call {
             skipper_session_resume_succeeded(handle, ok.sessionId, ok.sessionToken,
@@ -153,14 +125,10 @@ public final class SessionStateMachine {
         }
     }
 
-    /// Steps 5 and 6, plus the rule this project adds on top of PROTOCOL.md: a
-    /// controller holding a remembered code re-`connect_req`s silently;
-    /// prompting is only correct when there is no such code.
     public func resumeFailed(code: String, retryAfterSec: Int) -> [SessionAction] {
         call { skipper_session_resume_failed(handle, code, Int32(clamping: retryAfterSec)) }
     }
 
-    /// `renew_ok` — token rotated, same rules as resume.
     public func renewSucceeded(_ ok: SessionTokenLike, now: Date = Date()) {
         _ = call {
             skipper_session_renew_succeeded(handle, ok.sessionId, ok.sessionToken,
@@ -178,19 +146,16 @@ public final class SessionStateMachine {
         call { skipper_session_ice_state_changed(handle, newState.rawValue, Self.milliseconds(now)) }
     }
 
-    /// Drives the time-based rules. Call at least once a second.
     public func tick(now: Date = Date()) -> [SessionAction] {
         call { skipper_session_tick(handle, Self.milliseconds(now)) }
     }
 
     // MARK: - Endings
 
-    /// The peer or the server said `bye`, or the local user ended it.
     public func closeLocally(reason: String) -> [SessionAction] {
         call { skipper_session_close_locally(handle, reason) }
     }
 
-    /// The local user pressed End Session / Disconnect.
     public func userEnded(reason: String = "user_ended") -> [SessionAction] {
         call { skipper_session_user_ended(handle, reason) }
     }

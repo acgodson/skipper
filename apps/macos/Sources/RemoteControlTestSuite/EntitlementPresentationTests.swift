@@ -2,8 +2,6 @@ import Foundation
 import RCTestKit
 import RemoteControlCore
 
-/// `Entitlement` only decodes (API.md §4.1's wire shape); building one for a
-/// test goes through the same JSON path the real client uses.
 private func entitlement(
     status: String, tier: String, balanceCents: Int64? = nil, trialEndsAt: Int64? = nil
 ) throws -> Entitlement {
@@ -115,8 +113,6 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
         try expectEqual(
             EntitlementPresentation.sentence(for: .entitlement(reason: "trial_expired", message: "m")),
             "That Mac's trial has ended.")
-        // API.md §4.2: a reason this build does not know renders the server's
-        // own sentence, not a guess at one of the five.
         try expectEqual(
             EntitlementPresentation.sentence(for: .entitlement(reason: "brand_new", message: "trial has ended")),
             "trial has ended")
