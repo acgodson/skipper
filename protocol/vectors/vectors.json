@@ -1,12 +1,12 @@
 {
-  "version": 1,
+  "version": 2,
   "cases": [
     {
       "name": "challenge",
       "surface": "signaling",
       "type": "challenge",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "challenge",
         "ts": 1755600000000,
         "payload": {
@@ -20,7 +20,7 @@
       "surface": "signaling",
       "type": "register",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "register",
         "id": "c-1",
         "ts": 1755600000000,
@@ -45,7 +45,7 @@
       "surface": "signaling",
       "type": "register",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "register",
         "id": "c-2",
         "ts": 1755600000000,
@@ -70,7 +70,7 @@
       "surface": "signaling",
       "type": "register_ok",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "register_ok",
         "re": "c-1",
         "ts": 1755600000000,
@@ -85,7 +85,7 @@
       "surface": "signaling",
       "type": "register_ok",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "register_ok",
         "re": "c-1",
         "ts": 1755600000000,
@@ -101,7 +101,7 @@
       "surface": "signaling",
       "type": "hello",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "hello",
         "id": "c-3",
         "ts": 1755600000000,
@@ -118,7 +118,7 @@
       "surface": "signaling",
       "type": "hello_ok",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "hello_ok",
         "re": "c-3",
         "ts": 1755600000000,
@@ -153,7 +153,7 @@
       "surface": "signaling",
       "type": "hello_ok",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "hello_ok",
         "re": "c-3",
         "ts": 1755600000000,
@@ -173,7 +173,7 @@
       "surface": "signaling",
       "type": "heartbeat",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "heartbeat",
         "id": "c-4",
         "ts": 1755600000000,
@@ -186,7 +186,7 @@
       "surface": "signaling",
       "type": "heartbeat_ok",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "heartbeat_ok",
         "re": "c-4",
         "ts": 1755600000000,
@@ -200,7 +200,7 @@
       "surface": "signaling",
       "type": "watch",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "watch",
         "id": "c-5",
         "ts": 1755600000000,
@@ -214,7 +214,7 @@
       "surface": "signaling",
       "type": "watch_ok",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "watch_ok",
         "re": "c-5",
         "ts": 1755600000000,
@@ -228,7 +228,7 @@
       "surface": "signaling",
       "type": "unwatch",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "unwatch",
         "id": "c-6",
         "ts": 1755600000000,
@@ -242,7 +242,7 @@
       "surface": "signaling",
       "type": "unwatch_ok",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "unwatch_ok",
         "re": "c-6",
         "ts": 1755600000000,
@@ -256,7 +256,7 @@
       "surface": "signaling",
       "type": "presence",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "presence",
         "ts": 1755600000000,
         "payload": {
@@ -271,7 +271,7 @@
       "surface": "signaling",
       "type": "presence",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "presence",
         "ts": 1755600000000,
         "payload": {
@@ -287,7 +287,7 @@
       "surface": "signaling",
       "type": "connect_req",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "connect_req",
         "id": "c-7",
         "ts": 1755600000000,
@@ -303,7 +303,7 @@
       "surface": "signaling",
       "type": "connect_req",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "connect_req",
         "id": "c-7",
         "ts": 1755600000000,
@@ -318,7 +318,7 @@
       "surface": "signaling",
       "type": "connect_ok",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "connect_ok",
         "re": "c-7",
         "ts": 1755600000000,
@@ -337,7 +337,7 @@
       "surface": "signaling",
       "type": "session_start",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "session_start",
         "ts": 1755600000000,
         "payload": {
@@ -356,7 +356,7 @@
       "surface": "signaling",
       "type": "resume",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "resume",
         "id": "c-8",
         "ts": 1755600000000,
@@ -371,7 +371,7 @@
       "surface": "signaling",
       "type": "resume_ok",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "resume_ok",
         "re": "c-8",
         "ts": 1755600000000,
@@ -391,7 +391,7 @@
       "surface": "signaling",
       "type": "renew",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "renew",
         "id": "c-9",
         "ts": 1755600000000,
@@ -406,7 +406,7 @@
       "surface": "signaling",
       "type": "renew_ok",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "renew_ok",
         "re": "c-9",
         "ts": 1755600000000,
@@ -423,7 +423,7 @@
       "surface": "signaling",
       "type": "peer_state",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "peer_state",
         "ts": 1755600000000,
         "payload": {
@@ -437,7 +437,7 @@
       "surface": "signaling",
       "type": "peer_state",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "peer_state",
         "ts": 1755600000000,
         "payload": {
@@ -452,7 +452,7 @@
       "surface": "signaling",
       "type": "sdp",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "sdp",
         "ts": 1755600000000,
         "payload": {
@@ -467,7 +467,7 @@
       "surface": "signaling",
       "type": "sdp",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "sdp",
         "ts": 1755600000000,
         "payload": {
@@ -484,7 +484,7 @@
       "surface": "signaling",
       "type": "ice",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "ice",
         "ts": 1755600000000,
         "payload": {
@@ -499,7 +499,7 @@
       "surface": "signaling",
       "type": "ice",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "ice",
         "ts": 1755600000000,
         "payload": {
@@ -514,7 +514,7 @@
       "surface": "signaling",
       "type": "bye",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "bye",
         "ts": 1755600000000,
         "payload": {
@@ -528,7 +528,7 @@
       "surface": "signaling",
       "type": "pake",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "pake",
         "ts": 1755600000000,
         "payload": {
@@ -544,7 +544,7 @@
       "surface": "signaling",
       "type": "pake",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "pake",
         "ts": 1755600000000,
         "payload": {
@@ -559,7 +559,7 @@
       "surface": "signaling",
       "type": "refresh_code",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "refresh_code",
         "id": "c-10",
         "ts": 1755600000000,
@@ -579,7 +579,7 @@
       "surface": "signaling",
       "type": "refresh_code_ok",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "refresh_code_ok",
         "re": "c-10",
         "ts": 1755600000000,
@@ -594,7 +594,7 @@
       "surface": "signaling",
       "type": "error",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "error",
         "re": "c-7",
         "ts": 1755600000000,
@@ -609,7 +609,7 @@
       "surface": "signaling",
       "type": "error",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "error",
         "re": "c-7",
         "ts": 1755600000000,
@@ -626,7 +626,7 @@
       "surface": "signaling",
       "type": "error",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "error",
         "re": "c-7",
         "ts": 1755600000000,
@@ -641,7 +641,7 @@
       "surface": "signaling",
       "type": "error",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "error",
         "re": "c-7",
         "ts": 1755600000000,
@@ -658,7 +658,7 @@
       "surface": "ctrl",
       "type": "mouse_down",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "mouse_down",
         "ts": 1755600000000,
         "payload": {
@@ -673,7 +673,7 @@
       "surface": "ctrl",
       "type": "mouse_up",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "mouse_up",
         "ts": 1755600000000,
         "payload": {
@@ -688,7 +688,7 @@
       "surface": "ctrl",
       "type": "mouse_drag",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "mouse_drag",
         "ts": 1755600000000,
         "payload": {
@@ -704,7 +704,7 @@
       "surface": "ctrl",
       "type": "click",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "click",
         "ts": 1755600000000,
         "payload": {
@@ -720,7 +720,7 @@
       "surface": "ctrl",
       "type": "key_down",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "key_down",
         "ts": 1755600000000,
         "payload": {
@@ -735,7 +735,7 @@
       "surface": "ctrl",
       "type": "key_down",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "key_down",
         "ts": 1755600000000,
         "payload": {
@@ -751,7 +751,7 @@
       "surface": "ctrl",
       "type": "key_down",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "key_down",
         "ts": 1755600000000,
         "payload": {
@@ -767,7 +767,7 @@
       "surface": "ctrl",
       "type": "key_down",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "key_down",
         "ts": 1755600000000,
         "payload": {
@@ -782,7 +782,7 @@
       "surface": "ctrl",
       "type": "key_up",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "key_up",
         "ts": 1755600000000,
         "payload": {
@@ -796,7 +796,7 @@
       "surface": "ctrl",
       "type": "scroll",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "scroll",
         "ts": 1755600000000,
         "payload": {
@@ -812,7 +812,7 @@
       "surface": "ctrl",
       "type": "scroll",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "scroll",
         "ts": 1755600000000,
         "payload": {
@@ -828,7 +828,7 @@
       "surface": "ctrl",
       "type": "scroll",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "scroll",
         "ts": 1755600000000,
         "payload": {
@@ -843,7 +843,7 @@
       "surface": "ctrl",
       "type": "clipboard_text",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "clipboard_text",
         "ts": 1755600000000,
         "payload": {
@@ -859,7 +859,7 @@
       "surface": "ctrl",
       "type": "gesture",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "gesture",
         "ts": 1755600000000,
         "payload": {
@@ -872,7 +872,7 @@
       "surface": "ctrl",
       "type": "gesture",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "gesture",
         "ts": 1755600000000,
         "payload": {
@@ -885,7 +885,7 @@
       "surface": "ctrl",
       "type": "gesture",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "gesture",
         "ts": 1755600000000,
         "payload": {
@@ -898,7 +898,7 @@
       "surface": "ctrl",
       "type": "gesture",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "gesture",
         "ts": 1755600000000,
         "payload": {
@@ -911,7 +911,7 @@
       "surface": "ctrl",
       "type": "gesture",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "gesture",
         "ts": 1755600000000,
         "payload": {
@@ -924,7 +924,7 @@
       "surface": "ctrl",
       "type": "gesture",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "gesture",
         "ts": 1755600000000,
         "payload": {
@@ -937,7 +937,7 @@
       "surface": "ctrl",
       "type": "gesture",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "gesture",
         "ts": 1755600000000,
         "payload": {
@@ -950,7 +950,7 @@
       "surface": "ctrl",
       "type": "gesture",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "gesture",
         "ts": 1755600000000,
         "payload": {
@@ -963,7 +963,7 @@
       "surface": "ctrl",
       "type": "gesture",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "gesture",
         "ts": 1755600000000,
         "payload": {
@@ -976,7 +976,7 @@
       "surface": "ctrl",
       "type": "input_reset",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "input_reset",
         "ts": 1755600000000,
         "payload": {}
@@ -988,7 +988,7 @@
       "surface": "ctrl",
       "type": "display_info",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "display_info",
         "ts": 1755600000000,
         "payload": {
@@ -1003,7 +1003,7 @@
       "surface": "ctrl",
       "type": "display_info",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "display_info",
         "ts": 1755600000000,
         "payload": {
@@ -1019,7 +1019,7 @@
       "surface": "ctrl",
       "type": "display_info",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "display_info",
         "ts": 1755600000000,
         "payload": {
@@ -1036,7 +1036,7 @@
       "surface": "ctrl",
       "type": "display_info",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "display_info",
         "ts": 1755600000000,
         "payload": {
@@ -1052,7 +1052,7 @@
       "surface": "ctrl",
       "type": "quality",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "quality",
         "ts": 1755600000000,
         "payload": {
@@ -1065,7 +1065,7 @@
       "surface": "ctrl",
       "type": "quality",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "quality",
         "ts": 1755600000000,
         "payload": {
@@ -1078,7 +1078,7 @@
       "surface": "ctrl",
       "type": "quality",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "quality",
         "ts": 1755600000000,
         "payload": {
@@ -1091,7 +1091,7 @@
       "surface": "ctrl",
       "type": "ping",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "ping",
         "ts": 1755600000000,
         "payload": {
@@ -1104,7 +1104,7 @@
       "surface": "ctrl",
       "type": "pong",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "pong",
         "ts": 1755600000000,
         "payload": {
@@ -1118,7 +1118,7 @@
       "surface": "ctrl",
       "type": "session_close",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "session_close",
         "ts": 1755600000000,
         "payload": {
@@ -1131,7 +1131,7 @@
       "surface": "hi",
       "type": "mouse_move",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "mouse_move",
         "ts": 1755600000000,
         "payload": {
@@ -1147,7 +1147,7 @@
       "surface": "hi",
       "type": "mouse_move",
       "frame": {
-        "v": 1,
+        "v": 2,
         "type": "mouse_move",
         "ts": 1755600000000,
         "payload": {

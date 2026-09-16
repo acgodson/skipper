@@ -4,7 +4,7 @@
 //! document wins and this file is a bug.
 
 /// The only protocol version this build speaks. PROTOCOL.md §0.1.
-pub const VERSION: i32 = 1;
+pub const VERSION: i32 = 2;
 
 /// Frames larger than this are a protocol error (WebSocket close 1009).
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;

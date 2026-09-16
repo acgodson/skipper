@@ -307,7 +307,7 @@ public let mediaProtocolSuite = TestSuite("MediaProtocol", [
         let data = try Envelope.encode(type: CtrlType.displayInfo, payload: sent)
         let envelope = try Envelope.decode(data)
         try expectEqual(envelope.type, "display_info")
-        try expectEqual(envelope.v, 1)
+        try expectEqual(envelope.v, 2)
         let decoded = try envelope.decodePayload(DisplayInfoPayload.self)
         try expectEqual(decoded, sent)
         try expectEqual(decoded.w, 3024)
@@ -325,7 +325,7 @@ public let mediaProtocolSuite = TestSuite("MediaProtocol", [
 
     TestCase("display_info survives unknown fields from a newer peer") {
         let json = Data("""
-        {"v":1,"type":"display_info","ts":1755600000000,
+        {"v":2,"type":"display_info","ts":1755600000000,
          "payload":{"w":2560,"h":1600,"scale":2,"hdr":true,"refreshHz":120}}
         """.utf8)
         let decoded = try Envelope.decode(json).decodePayload(DisplayInfoPayload.self)
@@ -345,7 +345,7 @@ public let mediaProtocolSuite = TestSuite("MediaProtocol", [
 
     TestCase("an unrecognised quality mode from the wire is treated as auto") {
         let json = Data("""
-        {"v":1,"type":"quality","payload":{"mode":"cinema"}}
+        {"v":2,"type":"quality","payload":{"mode":"cinema"}}
         """.utf8)
         let decoded = try Envelope.decode(json).decodePayload(QualityPayload.self)
         try expectEqual(decoded.wireMode, .auto)

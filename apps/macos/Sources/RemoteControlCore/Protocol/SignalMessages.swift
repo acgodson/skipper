@@ -6,7 +6,7 @@ import Foundation
 /// below is copied from there deliberately rather than inferred.
 public enum Wire {
 
-    public static let version = 1
+    public static let version = 2
 
     // PROTOCOL.md §2.16
     public enum MessageType {

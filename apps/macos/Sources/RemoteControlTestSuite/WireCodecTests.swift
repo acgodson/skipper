@@ -8,7 +8,7 @@ import RemoteControlCore
 private func roundTrip<T: Codable & Equatable>(_ type: String, _ payload: T) throws -> T {
     let data = try Envelope.encode(type: type, id: "c-42", re: "r-7", ts: 1_755_600_000_000, payload: payload)
     let envelope = try Envelope.decode(data)
-    try expectEqual(envelope.v, 1)
+    try expectEqual(envelope.v, 2)
     try expectEqual(envelope.type, type)
     try expectEqual(envelope.id, "c-42")
     try expectEqual(envelope.re, "r-7")
@@ -22,7 +22,7 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
         let data = try Envelope.encode(type: "connect_req", id: "c-17",
                                        payload: ConnectReqPayload(deviceId: "481930275", accessCode: "K7FM3Q8PW2XY"))
         let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        try expectEqual(object["v"] as? Int, 1)
+        try expectEqual(object["v"] as? Int, 2)
         try expectEqual(object["type"] as? String, "connect_req")
         try expectEqual(object["id"] as? String, "c-17")
         try expectNil(object["re"], "re must be absent, not null, on a request")
@@ -31,32 +31,32 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
         try expectEqual(payload["accessCode"] as? String, "K7FM3Q8PW2XY")
     },
 
-    TestCase("a version other than 1 is refused") {
-        let bad = Data(#"{"v":2,"type":"hello","payload":{}}"#.utf8)
+    TestCase("a version other than 2 is refused") {
+        let bad = Data(#"{"v":1,"type":"hello","payload":{}}"#.utf8)
         do {
             _ = try Envelope.decode(bad)
-            throw fail("decoding v=2 must throw")
+            throw fail("decoding v=1 must throw")
         } catch let error as WireError {
-            try expectEqual(error, .unsupportedVersion(2))
+            try expectEqual(error, .unsupportedVersion(1))
         }
     },
 
     TestCase("a frame with no type, and a non-object frame, are refused") {
-        do { _ = try Envelope.decode(Data(#"{"v":1,"payload":{}}"#.utf8)); throw fail("missing type must throw") }
+        do { _ = try Envelope.decode(Data(#"{"v":2,"payload":{}}"#.utf8)); throw fail("missing type must throw") }
         catch let error as WireError { try expectEqual(error, .missingType) }
         do { _ = try Envelope.decode(Data("[1,2,3]".utf8)); throw fail("a JSON array must throw") }
         catch let error as WireError { try expectEqual(error, .notJSONObject) }
     },
 
     TestCase("an absent or null payload decodes as {}, matching the Go side") {
-        let absent = try Envelope.decode(Data(#"{"v":1,"type":"heartbeat"}"#.utf8))
+        let absent = try Envelope.decode(Data(#"{"v":2,"type":"heartbeat"}"#.utf8))
         _ = try absent.decodePayload(EmptyPayload.self)
-        let null = try Envelope.decode(Data(#"{"v":1,"type":"heartbeat","payload":null}"#.utf8))
+        let null = try Envelope.decode(Data(#"{"v":2,"type":"heartbeat","payload":null}"#.utf8))
         _ = try null.decodePayload(EmptyPayload.self)
     },
 
     TestCase("unknown payload members are ignored, as receivers must") {
-        let frame = Data(#"{"v":1,"type":"presence","payload":{"deviceId":"481930275","online":true,"since":5,"future":42}}"#.utf8)
+        let frame = Data(#"{"v":2,"type":"presence","payload":{"deviceId":"481930275","online":true,"since":5,"future":42}}"#.utf8)
         let presence = try Envelope.decode(frame).decodePayload(PresencePayload.self)
         try expectEqual(presence, PresencePayload(deviceId: "481930275", online: true, since: 5))
     },
