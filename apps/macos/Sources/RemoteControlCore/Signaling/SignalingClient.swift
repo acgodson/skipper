@@ -23,7 +23,6 @@ public enum SignalingError: Swift.Error, LocalizedError {
     case timedOut(String)
     case handshakeFailed(String)
     case socketClosed(String)
-    case certificatePinRejected(String)
 
     public var errorDescription: String? {
         switch self {
@@ -31,7 +30,6 @@ public enum SignalingError: Swift.Error, LocalizedError {
         case .timedOut(let what): return "Timed out waiting for \(what)."
         case .handshakeFailed(let why): return "Signaling handshake failed: \(why)"
         case .socketClosed(let why): return "The signaling connection closed: \(why)"
-        case .certificatePinRejected(let why): return why
         }
     }
 }
@@ -77,7 +75,6 @@ public final class SignalingClient {
     /// ICE servers from the most recent `hello_ok`. TURN credentials are minted
     /// per hello and are never hardcoded (PROTOCOL.md §2.5).
     public var iceServers: [ICEServerSpec] { lastHelloOK?.iceServers ?? [] }
-    public private(set) var lastPinOutcome: CertificatePinner.Outcome = .notPinned
     /// Device IDs we have asked the server to push presence for. Re-issued on
     /// every reconnect, because watches are per-connection (PROTOCOL.md §2.7).
     public private(set) var watchedDeviceIDs: Set<String> = []
@@ -150,12 +147,6 @@ public final class SignalingClient {
                     state = .stopped("another instance of RemoteControl took over this Device ID")
                     return
                 }
-                if (error as? SignalingError)?.isPinRejection == true {
-                    // Retrying a pin failure hammers a server we have already
-                    // decided we cannot trust, but the address may be a
-                    // temporary misconfiguration, so we keep trying slowly.
-                    lastPinOutcome = .rejectedNoCertificate
-                }
 
                 let delay = backoff.next()
                 state = .waitingToRetry(delay)
@@ -173,38 +164,21 @@ public final class SignalingClient {
     /// NOTE ON STRUCTURE: the receive loop is deliberately NOT a child of a task
     /// group. `URLSessionWebSocketTask.receive()` does not observe Swift
     /// concurrency cancellation, so a task group would block forever draining it
-    /// after any other child failed — which is exactly what happened the first
-    /// time this was written, and it turned a rejected certificate pin into a
-    /// permanent hang instead of a reconnect. The two workers therefore report
-    /// through a single continuation that resolves on the first failure, and the
-    /// socket is cancelled from `defer` so `receive()` unblocks on its own.
+    /// after any other child failed. The two workers therefore report through a
+    /// single continuation that resolves on the first failure, and the socket is
+    /// cancelled from `defer` so `receive()` unblocks on its own.
+    ///
+    /// TLS validation is the system default (App Transport Security / the OS
+    /// trust store); the client holds no certificate pin (docs/SCOPE.md §4).
     private func runOneConnection() async throws {
         state = .connecting
 
-        let pinner = CertificatePinner(expectedPinBase64: config.certificatePinBase64)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = config.handshakeTimeout
         configuration.waitsForConnectivity = false
-        let session = URLSession(configuration: configuration, delegate: pinner, delegateQueue: nil)
+        let session = URLSession(configuration: configuration)
         let task = session.webSocketTask(with: config.signalingURL)
         task.maximumMessageSize = 256 * 1024   // PROTOCOL.md §0: max frame 256 KiB
-        // Fail a bad pin in milliseconds rather than waiting out the handshake
-        // timeout. This runs on the URLSession delegate queue, so it captures the
-        // task and never touches main-actor state.
-        pinner.onDecision = { [weak self, weak task] outcome in
-            RCLog.debug("tls pin decision: \(outcome)")
-            guard !outcome.isAcceptable else { return }
-            task?.cancel(with: .tlsHandshakeFailure, reason: nil)
-            // Cancelling the task does NOT unblock a pending
-            // URLSessionWebSocketTask.receive(), so the connection is ended
-            // explicitly. Without this a bad pin costs a full handshake timeout
-            // before the first retry.
-            let outcomeText = outcome.explanation
-            let client = self          // immutable, so the inner Task can capture it
-            Task { @MainActor in
-                client?.endConnection(SignalingError.certificatePinRejected(outcomeText))
-            }
-        }
         self.urlSession = session
         self.socket = task
         task.resume()
@@ -226,7 +200,6 @@ public final class SignalingClient {
         }
 
         defer {
-            lastPinOutcome = pinner.lastOutcome
             worker.cancel()
             receiver.cancel()
             if self.socket === task {
@@ -239,17 +212,8 @@ public final class SignalingClient {
             failAllWaiters(with: SignalingError.socketClosed("socket torn down"))
         }
 
-        do {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Swift.Error>) in
-                connectionEnd = continuation
-            }
-        } catch {
-            // A pin rejection surfaces from URLSession as a generic cancellation
-            // or timeout; the pinner knows the real reason, so say that instead.
-            if !pinner.lastOutcome.isAcceptable {
-                throw SignalingError.certificatePinRejected(pinner.lastOutcome.explanation)
-            }
-            throw error
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Swift.Error>) in
+            connectionEnd = continuation
         }
     }
 
@@ -560,12 +524,5 @@ public final class SignalingClient {
 extension SignalingClient: AccessCodeSink {
     public nonisolated func accessCodeDidChange(deviceID: String, newCode: String) async throws {
         try await refreshCode(to: newCode)
-    }
-}
-
-private extension SignalingError {
-    var isPinRejection: Bool {
-        if case .certificatePinRejected = self { return true }
-        return false
     }
 }

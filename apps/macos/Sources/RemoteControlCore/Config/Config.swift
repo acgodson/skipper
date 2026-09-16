@@ -1,22 +1,25 @@
 import Foundation
 
-/// Everything about *where* and *how* the app talks to `rc-signal`, in one place.
+/// Everything about *where* and *how* the app talks to its backend, in one
+/// place.
 ///
-/// Every field has an environment-variable override so that the integration
-/// scripts can point two processes at a different server, a different identity
-/// directory, or a deliberately wrong certificate pin — the last of which is how
-/// `scripts/test-transport.sh` proves the pin is load-bearing rather than
-/// decorative.
+/// The app is backend-agnostic (docs/SCOPE.md §4): it knows exactly ONE
+/// config value, the API domain. Anything implementing the REST + signaling
+/// contract is a valid backend — local dev server, tunnel, or the deployed
+/// AWS account — with no app change beyond `apiBaseURL`.
 public struct RCConfig: Equatable {
 
     // MARK: Server
 
-    /// `wss://<host>:8443/ws`. Override with `RC_SERVER_URL`.
+    /// The API domain, e.g. `https://api.skipperdesk.app`. Override with
+    /// `SKIPPER_API_BASE_URL`. `http://`/`ws://` is accepted only when the
+    /// host is `localhost` or `127.0.0.1` (local dev); anything else fails at
+    /// config load rather than silently sending credentials over plaintext.
+    public var apiBaseURL: URL
+    /// `wss://<host>/ws` (or `ws://<host>/ws` for local dev), derived from
+    /// `apiBaseURL`. There is no separate override: two values that can
+    /// disagree is exactly the bug this config collapses away.
     public var signalingURL: URL
-    /// Base64 SHA-256 of the server's **DER** certificate. Override with
-    /// `RC_CERT_PIN`. Set `RC_CERT_PIN=off` to disable pinning entirely, which
-    /// is only ever correct for a plain-`ws://` local server.
-    public var certificatePinBase64: String?
     /// Human label sent with `register`. Override with `RC_DEVICE_LABEL`.
     public var deviceLabel: String
 
@@ -46,8 +49,7 @@ public struct RCConfig: Equatable {
     public var forceTURNRelay: Bool
 
     public init(
-        signalingURL: URL,
-        certificatePinBase64: String?,
+        apiBaseURL: URL,
         deviceLabel: String = "Mac",
         handshakeTimeout: TimeInterval = 20,
         requestTimeout: TimeInterval = 15,
@@ -59,8 +61,8 @@ public struct RCConfig: Equatable {
         iceFailureGrace: TimeInterval = 45,
         forceTURNRelay: Bool = false
     ) {
-        self.signalingURL = signalingURL
-        self.certificatePinBase64 = certificatePinBase64
+        self.apiBaseURL = apiBaseURL
+        self.signalingURL = Self.deriveSignalingURL(fromAPIBaseURL: apiBaseURL)
         self.deviceLabel = deviceLabel
         self.handshakeTimeout = handshakeTimeout
         self.requestTimeout = requestTimeout
@@ -75,31 +77,43 @@ public struct RCConfig: Equatable {
 
     // MARK: Deployed defaults
 
-    /// The live deployment described in `infra/README.md`.
-    ///
-    /// The IP is not an Elastic IP yet, so if the instance is ever stopped both
-    /// this address and the pin below change together — the pin's SAN is bound
-    /// to the IP. That is a documented outstanding risk, not an oversight.
-    public static let defaultServerURLString = "wss://54.246.73.81:8443/ws"
-    public static let defaultCertificatePin = "E30xoxEp9t658+TJEVdaGb8Ooi7HGGMWp1kxVpeSpgk="
+    /// The public backend described in docs/SCOPE.md §4.
+    public static let defaultAPIBaseURLString = "https://api.skipperdesk.app"
+
+    private static let localDevHosts: Set<String> = ["localhost", "127.0.0.1"]
+
+    /// `wss://<host>[:<port>]/ws`, or `ws://` when `apiBaseURL` is plain HTTP.
+    private static func deriveSignalingURL(fromAPIBaseURL apiBaseURL: URL) -> URL {
+        var parts = URLComponents()
+        parts.scheme = (apiBaseURL.scheme == "http") ? "ws" : "wss"
+        parts.host = apiBaseURL.host
+        parts.port = apiBaseURL.port
+        parts.path = "/ws"
+        guard let url = parts.url else {
+            fatalError("could not derive a signaling URL from \(apiBaseURL.absoluteString)")
+        }
+        return url
+    }
 
     /// Reads the environment once and produces the configuration the app runs on.
     public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) -> RCConfig {
-        let urlString = env["RC_SERVER_URL"]?.trimmingCharacters(in: .whitespaces).nilIfEmpty
-            ?? defaultServerURLString
-        let url = URL(string: urlString) ?? URL(string: defaultServerURLString)!
-
-        var pin: String? = defaultCertificatePin
-        if let override = env["RC_CERT_PIN"]?.trimmingCharacters(in: .whitespaces) {
-            pin = (override.lowercased() == "off" || override.isEmpty) ? nil : override
+        let urlString = env["SKIPPER_API_BASE_URL"]?.trimmingCharacters(in: .whitespaces).nilIfEmpty
+            ?? defaultAPIBaseURLString
+        guard let url = URL(string: urlString), let scheme = url.scheme else {
+            fatalError("SKIPPER_API_BASE_URL is not a valid URL: '\(urlString)'")
         }
-        // A plain ws:// endpoint has no certificate to pin. Keeping a pin set
-        // here would be a lie in every log line that mentions it.
-        if url.scheme == "ws" { pin = nil }
+
+        let insecureSchemes: Set<String> = ["http", "ws"]
+        if insecureSchemes.contains(scheme), !localDevHosts.contains(url.host ?? "") {
+            fatalError("""
+                SKIPPER_API_BASE_URL uses \(scheme):// against '\(url.host ?? "?")'. \
+                Only https:// (which becomes wss://) is allowed outside localhost/127.0.0.1 \
+                local development.
+                """)
+        }
 
         var config = RCConfig(
-            signalingURL: url,
-            certificatePinBase64: pin,
+            apiBaseURL: url,
             deviceLabel: env["RC_DEVICE_LABEL"]?.nilIfEmpty ?? Host.current().localizedName ?? "Mac")
 
         if let v = env["RC_HANDSHAKE_TIMEOUT"].flatMap(Double.init) { config.handshakeTimeout = v }
@@ -118,10 +132,9 @@ public struct RCConfig: Equatable {
     /// change cannot make two components disagree about where the server is.
     public static let current = RCConfig.fromEnvironment()
 
-    /// `https://<host>:<port>/healthz`, for diagnostics and the test scripts.
+    /// `https://<host>[:<port>]/healthz`, for diagnostics and the test scripts.
     public var healthURL: URL? {
-        guard var parts = URLComponents(url: signalingURL, resolvingAgainstBaseURL: false) else { return nil }
-        parts.scheme = (signalingURL.scheme == "ws") ? "http" : "https"
+        guard var parts = URLComponents(url: apiBaseURL, resolvingAgainstBaseURL: false) else { return nil }
         parts.path = "/healthz"
         return parts.url
     }

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Phase 5 integration test: input, gestures and clipboard across a REAL WebRTC
-# session between two real app-core instances, over the live signaling server.
+# session between two real app-core instances, over a backend reachable at
+# SKIPPER_API_BASE_URL (the local dev server by default).
 #
 # This is the wire half of Phase 5. It proves that a pointer event created on
 # the controller travels the `hi`/`ctrl` channels, is decoded by the host, and
@@ -26,8 +27,7 @@ APP_DIR="$ROOT/apps/macos"
 WORK="$(mktemp -d -t rc-input-e2e)"
 BIN="$APP_DIR/.build/debug/rc-node"
 
-SERVER_URL="${RC_SERVER_URL:-wss://54.246.73.81:8443/ws}"
-CERT_PIN="${RC_CERT_PIN:-E30xoxEp9t658+TJEVdaGb8Ooi7HGGMWp1kxVpeSpgk=}"
+API_BASE_URL="${SKIPPER_API_BASE_URL:-http://127.0.0.1:18443}"
 
 steps=0; failures=0; PIDS=(); NEXT_FD=10
 pass() { steps=$((steps+1)); printf 'PASS  %s\n' "$1"; }
@@ -90,9 +90,9 @@ PY
 start_node() {  # start_node <name> <role> <dir>
   local name="$1" role="$2" dir="$3"
   mkdir -p "$dir"; mkfifo "$WORK/$name.in"
-  env RC_ROLE="$role" RC_IDENTITY_DIR="$dir" RC_SERVER_URL="$SERVER_URL" \
-      RC_CERT_PIN="$CERT_PIN" RC_DEVICE_LABEL="rc-input-$name" \
-      RC_PASTEBOARD_NAME="com.godson.remotecontrol.test.$name" \
+  env RC_ROLE="$role" RC_IDENTITY_DIR="$dir" SKIPPER_API_BASE_URL="$API_BASE_URL" \
+      RC_DEVICE_LABEL="rc-input-$name" \
+      RC_PASTEBOARD_NAME="app.skipperdesk.desktop.test.$name" \
       "$BIN" < "$WORK/$name.in" > "$WORK/$name.log" 2>&1 &
   PIDS+=("$!")
   eval "exec ${NEXT_FD}> \"$WORK/$name.in\""

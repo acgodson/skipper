@@ -33,7 +33,9 @@ current goal.
 - `app_switcher` gesture is a full Cmd+Tab tap, not a held switcher (use capture mode).
 - Main display only · text-only clipboard (≤ 192 KiB) · arm64 only.
 - No Developer ID: first launch needs `xattr -cr` / "Open Anyway".
-- Server IP + cert pin are compiled in; no Elastic IP (see infra/legacy/README.md for recovery).
+- App is backend-agnostic: it knows one config value, `apiBaseURL` (default
+  `https://api.skipperdesk.app`, override with `SKIPPER_API_BASE_URL`). No IP, no
+  certificate pin — TLS uses default system validation.
 - Leftover Phase-2 stubs: `PreviewTransport` (`Transport/SessionTransport.swift`) and
   `PreviewPresenceSource`, only reached in tests/debug.
 
@@ -64,8 +66,8 @@ cargo test --workspace                    # from the repo root
 # App
 cd apps/macos && swift run rc-tests              # ~262 unit/scenario tests (swift test needs Xcode)
 ./scripts/make-signing-cert.sh            # once: stable identity so TCC grants survive rebuilds
-./scripts/build.sh                        # -> dist/RemoteControl.app
-./scripts/package-dmg.sh                  # -> dist/RemoteControl-<version>.dmg, self-verifying
+./scripts/build.sh                        # -> dist/SkipperDesk.app
+./scripts/package-dmg.sh                  # -> dist/SkipperDesk-<version>.dmg, self-verifying
 ```
 
 Integration against the **live** server (two `rc-node` instances, real WebRTC):
@@ -74,13 +76,16 @@ Integration against the **live** server (two `rc-node` instances, real WebRTC):
 (needs the TCC grants): `verify-capture.sh`, `verify-input.sh`. Guards: `check-isolation.sh`
 (no proxy/browser hooks), `interop-sig.sh` (Swift signature ↔ Go verifier).
 
-Useful env: `RC_DEBUG=1` (diagnostics in UI/logs), `RC_ICE_POLICY=relay`,
+Useful env: `SKIPPER_API_BASE_URL` (backend to talk to; defaults to
+`https://api.skipperdesk.app`, or `http://127.0.0.1:18443` for the integration
+scripts — `http://`/`ws://` is only accepted for `localhost`/`127.0.0.1`),
+`RC_DEBUG=1` (diagnostics in UI/logs), `RC_ICE_POLICY=relay`,
 `RC_IDENTITY_DIR` / `RC_SETTINGS_SUITE` / `RC_PASTEBOARD_NAME` (run two instances on one Mac).
 
 ## Installing on another Mac
 
 1. Copy the `.dmg` by AirDrop, USB or `scp` (a browser download adds quarantine).
-2. Drag **RemoteControl.app** to Applications, then once: `xattr -cr /Applications/RemoteControl.app`
+2. Drag **SkipperDesk.app** to Applications, then once: `xattr -cr /Applications/SkipperDesk.app`
    (`-r` matters). Without Terminal: try to open it, then System Settings → Privacy &
    Security → "Open Anyway" (only appears after a blocked attempt, for about an hour).
 3. Grant **Screen & System Audio Recording** (else a black screen) and **Accessibility**
