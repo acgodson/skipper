@@ -81,6 +81,8 @@ struct HostView: View {
                 }
             }
 
+            AccountSection()
+
             SectionCard(title: "Access") {
                 Toggle("Unattended Access", isOn: Binding(
                     get: { model.settings.unattendedAccess },
@@ -144,6 +146,80 @@ struct HostView: View {
                     .foregroundStyle(.secondary)
             }
             #endif
+        }
+    }
+}
+
+/// This Mac's link to a SkipperDesk account (protocol/API.md §1).
+///
+/// Host only: a controller connects with a Device ID and an access code and
+/// never signs in (docs/SCOPE.md §3.1). Four states, one screen each, and no
+/// number that moves on its own — what the server says about the entitlement is
+/// rendered, never computed here (API.md §4.2).
+struct AccountSection: View {
+
+    @EnvironmentObject private var model: AppModel
+    @State private var confirmingUnlink = false
+
+    var body: some View {
+        SectionCard(title: "Account") {
+            switch model.account?.state ?? .unlinked {
+
+            case .unlinked:
+                Button("Link this Mac") { model.linkAccount() }
+                Text("Hosting needs an account. This opens your browser to sign in; SkipperDesk never sees your password.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+            case .linking:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Finish signing in in your browser").font(.callout)
+                    Spacer()
+                    Button("Cancel") { model.cancelAccountLink() }
+                }
+
+            case .linked(let accountLabel, let device):
+                LabeledContent {
+                    Text(accountLabel ?? "Signed in").textSelection(.enabled)
+                } label: {
+                    Text("Account")
+                }
+                LabeledContent {
+                    Text(device.label.isEmpty ? DeviceID.formatted(device.deviceId) : device.label)
+                        .textSelection(.enabled)
+                } label: {
+                    Text("This Mac")
+                }
+                if let entitlement = model.account?.entitlement?.value {
+                    LabeledContent {
+                        Text(entitlement.status.rawValue.capitalized)
+                    } label: {
+                        Text("Plan")
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button("Unlink\u{2026}", role: .destructive) { confirmingUnlink = true }
+                }
+                .confirmationDialog("Unlink this Mac?", isPresented: $confirmingUnlink) {
+                    Button("Unlink", role: .destructive) { model.unlinkAccount() }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This Mac stops being able to host sessions until it is linked again. Its Device ID and access code do not change.")
+                }
+
+            case .error(let message):
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("Try Again") { model.retryAccount() }
+                    Button("Link this Mac") { model.linkAccount() }
+                }
+            }
         }
     }
 }
