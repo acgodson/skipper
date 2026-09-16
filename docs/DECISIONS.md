@@ -9,8 +9,8 @@ The distilled record of the build. Full phase-by-phase notes: [archive/PLAN.md](
 | **Single native Swift/SwiftUI app** instead of Tauri + React + Rust | libwebrtc (`stasel/WebRTC`) gives VideoToolbox H.264, Google BWE, ICE, DTLS and data channels for free. A webview can't capture unattended (`getDisplayMedia` prompts every time). Two languages (Swift, Go) instead of four. Builds with `swift build` and no Xcode |
 | **Go** signaling server instead of Node | One static binary, idle-cheap next to a production service |
 | ~~**File-based secrets** (`~/Library/Application Support/RemoteControl/identity.json`, 0600) instead of Keychain~~ | **REVERSED 2026-09-16** — see below. Held while there was no Developer ID account: Keychain ACLs bind to the code signature, so every ad-hoc rebuild re-prompted, and the Secure Enclave returned `-34018` |
-| **No Apple Developer account** | Local stable signing cert (`make-signing-cert.sh`); `build.sh` keeps the identity in one variable so Developer ID is a config change later |
-| **Self-signed cert pinned by SHA-256** instead of a domain + public CA | No DNS for the box; pinning is stronger for a private two-device system |
+| ~~**No Apple Developer account**~~ | **REVERSED** — a Developer ID account now exists (see Phase 2.2 below); it is what unblocked the Keychain/Secure Enclave move |
+| ~~**Self-signed cert pinned by SHA-256** instead of a domain + public CA~~ | **REVERSED** — see the 2026-09-16/17 Protocol v2 block below |
 | **No Elastic IP** (user decision, 2026-08-19) | Instance is long-running; if the IP ever changes, the recovery is scripted (~2 min) plus rebuilding both Macs |
 | **Controller draws the cursor locally**, host hides it | A streamed cursor always lags by a full capture→encode→network→decode round trip. Same approach as Parsec/Moonlight |
 | **Gestures via public key equivalents**, not synthesised multi-touch | Multi-touch synthesis needs private CGS SPI that breaks on OS updates |
@@ -57,7 +57,52 @@ identity; Secure Enclave unavailable in this build" and the app falls back to th
 **The UI states which of the three is in use** — "Key: Secure Enclave" / "Key: Keychain" /
 "Key: file (dev)" — and must never claim the strongest one when it fell back.
 
+### 2026-09-16/17 — Protocol v2
+
+Phase 1–2 replaced three V1 shortcuts, all taken while the project was a private two-Mac tool
+with no domain and no Developer ID account. Neither condition still holds.
+
+- **Self-signed cert pinned by SHA-256 → public-CA TLS on a domain.** The client is
+  backend-agnostic: it knows one config value, the API domain, and validates TLS the normal way.
+  No IP, no cert pin, `NSAllowsArbitraryLoads` removed. This is independent of which backend
+  answers that domain — local dev server, tunnel, or the eventual AWS account.
+- **Server-side Argon2id code check → SPAKE2 between the two peers.** The `code` verifier object
+  is removed from the protocol entirely (PROTOCOL.md v2 change #1); the server relays opaque
+  SPAKE2 messages (`pake`, §2.17) and never learns the access code, correct or not. Access-code
+  rate limiting moves to the host, which is the only side left that can tell success from
+  failure (v2 change #9).
+- **Why SPAKE2 over OPAQUE:** the access code is symmetric — both the host and the controller
+  already know it, unlike a password-and-verifier scheme where only one side holds the secret.
+  SPAKE2 fits that shape directly and is available as an audited RustCrypto crate (`spake2` 0.4).
+- **Both device public keys are bound into the PAKE transcript.** A Phase 2.4 finding: without
+  this, a relay could mix messages from two different sessions. `connect_ok` carries
+  `hostPubkey`, and both `pake` steps carry the sender's pubkey, so each side's SPAKE2 transcript
+  is keyed to the specific peer it is talking to.
+- **SDP fingerprints are signed by the device key** (`fp`, `pubkey`, `sig` on `sdp`, v2 change
+  #8), so a compromised server cannot substitute its own key and MITM the media, even though it
+  still relays the SDP itself.
+- **Trusted-controller semantics:** the controller remembers a host's code (so it isn't re-typed
+  every connection); the host keeps an allow-list of controller public keys it has seen a
+  successful code from. Refresh Code clears both sides at once — the host's allow-list and,
+  implicitly, the controller's remembered code stops working the moment the host rejects it.
+- **Keychain for all secrets**, not just the device key: the access code moves out of the
+  identity file once SPAKE2 lands, per the Phase 2.2 migration note above.
+
 ## Lessons (read before changing things)
+
+**This round (Phase 1–2)**
+- Parallel agents on the same repo need separate worktrees — two agents editing the same
+  language's protocol files in one working tree stomp each other's edits.
+- A protocol version bump in one language must be mirrored in all three surfaces at once:
+  `protocol/protocol.go`, the Rust `rc-proto` crate, and the Swift mirror — plus regenerating
+  `protocol/vectors/`. Bumping one and forgetting the others produces a passing local build that
+  fails cross-language vector checks.
+- `URLComponents` does not percent-escape `+` or `=` in query items; a base64 value (e.g. a
+  `pubkey` or `sig`) placed straight into a query string corrupts silently unless it's escaped
+  first or sent in the body instead.
+- CryptoKit's Secure Enclave key-generation API (`SecureEnclave.P256.Signing.PrivateKey`) creates
+  a key without the Keychain access-group entitlement; it only gains one if the app has the
+  matching `keychain-access-groups` entitlement at creation time, not retroactively.
 
 **Verification**
 - A milestone counts only when observed on the real thing; every acceptance check must be one a

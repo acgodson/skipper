@@ -84,11 +84,11 @@ skipperdesk.app (web)        api.skipperdesk.app            Desktop app (open so
 pin. Anything implementing the contract (signaling WS + REST) is a valid backend:
 local dev server → temporary tunnel → fresh AWS account, with no app change.
 
-**Shared Rust core** (decision leaning, to confirm at Phase 2 start): the security-critical
-logic — wire protocol, PAKE, key schedule, session state machine — written once and used by
-both platforms through a thin C interface. `core/crates` is the seed. Alternative: two native
-implementations held equal by the shared test vectors (`protocol/vectors/`). Either way, every
-platform must pass the same vectors before shipping.
+**Shared Rust core** — decided: the security-critical logic — wire protocol, PAKE, key schedule,
+session state machine — is written once, in `core/crates` (`rc-proto`, `rc-session`,
+`rc-identity`, `rc-ffi`), and used by the Mac app through the `rc-ffi` C interface
+(`SkipperCore`/`CSkipperCore` in `apps/macos`). Every platform still passes the same shared test
+vectors (`protocol/vectors/`) before shipping.
 
 **Existing AWS box is frozen.** No changes until the new account exists; then migrate and retire.
 
@@ -97,7 +97,7 @@ platform must pass the same vectors before shipping.
 | Layer | Mechanism | Notes |
 |---|---|---|
 | Device identity | ECDSA **P-256** key, hardware-held: **Secure Enclave** (Mac), **TPM** (Windows; DPAPI-wrapped software key as honest fallback) | Same bytes on the wire from either. Requires Apple Developer account |
-| Access code | **PAKE** (audited implementation, e.g. OPAQUE/SPAKE2 — to select) | Server relays opaque messages, learns nothing. Host rate-limits guesses itself |
+| Access code | **PAKE** — decided: **SPAKE2** (RustCrypto `spake2` 0.4) | Server relays opaque messages, learns nothing. Host rate-limits guesses itself |
 | Trusted controllers | Host remembers a controller's public key after a successful code; later connects are key-only | **Refresh Code** revokes the list too — one button revokes everyone |
 | Session transport | WebRTC DTLS-SRTP (AES-GCM) | Already E2E vs outsiders; SDP fingerprints now **signed by the device key** so a compromised server cannot MITM |
 | Signaling/API | TLS from a public CA on skipperdesk.app | Replaces self-signed pin; `NSAllowsArbitraryLoads` removed |
@@ -175,8 +175,8 @@ The credit ledger (§7) is designed now so any payment rail just credits it.
 | # | Phase | Deliverable / exit check |
 |---|---|---|
 | 0 | **Foundations** | git repo; Apple Developer account; skipperdesk.app; licence chosen; API contract (REST + existing WS) written beside PROTOCOL.md |
-| 1 | **Backend-agnostic client** | App runs against a *local* backend by config; IP/pin removed; browser sign-in handoff; device linked to account; entitlement gate at connect |
-| 2 | **Security core** | Secure Enclave keys; PAKE access code; signed SDP fingerprints; trusted controllers; Refresh revokes all. Cross-language vectors green. Decide shared Rust core vs native |
+| 1 | **Backend-agnostic client** | App runs against a *local* backend by config; IP/pin removed; browser sign-in handoff; device linked to account; entitlement gate at connect — **implemented 2026-09-17, pending two-Mac verification** |
+| 2 | **Security core** | Secure Enclave keys; PAKE access code; signed SDP fingerprints; trusted controllers; Refresh revokes all. Cross-language vectors green. Decide shared Rust core vs native — **implemented 2026-09-17, pending two-Mac verification** |
 | 3 | **SkipperDesk UI** | Design system documented; new host/controller/session screens; state-only UI; notarized, signed, auto-updating build |
 | 4 | **Client security pass** | Third-party or structured review of the open-source surface; supply-chain gates; security page; then go public |
 | 5 | **Backend on fresh AWS** | Cognito, API, signaling, relays, presence store, metering ledger; migrate off the shared box; load and cost measured |
@@ -191,8 +191,6 @@ a real Windows PC). Never on mocks.
 ## 12. Open decisions
 
 1. Licence: AGPL vs Apache-2.0/MIT.
-2. Shared Rust core vs two native implementations (decide at Phase 2 start).
-3. Which PAKE and which audited implementation.
-4. Signaling runtime: containers vs Lambda WebSocket (cost at idle vs latency).
-5. Relay placement and provider for egress cost.
-6. Trial length and metering rates.
+2. Signaling runtime: containers vs Lambda WebSocket (cost at idle vs latency).
+3. Relay placement and provider for egress cost.
+4. Trial length and metering rates.
