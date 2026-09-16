@@ -1,13 +1,15 @@
 // Command rustcompat checks material emitted by the Rust identity crate
-// (win/crates/rc-identity) with the SAME functions the production signaling
-// server uses: auth.VerifyDeviceSig for the registration signature and
-// auth.VerifyCode for the Argon2id access-code verifier.
+// (win/crates/rc-identity) with the SAME function the production signaling
+// server uses to authenticate a device: auth.VerifyDeviceSig.
 //
 // The sibling `interopverify` does this for the Swift client; this one exists
 // so the Windows host's crypto is held to the identical standard. Both assert
 // the negative direction too — a checker hardwired to "yes" must fail here.
 //
-// Input (stdin): {"pubkey","nonce","sig","plaintextCode","code":{...}}
+// Under protocol v2 there is no access-code verifier to check: the code is
+// proved peer to peer and never reaches the server (PROTOCOL.md §2.17).
+//
+// Input (stdin): {"pubkey","nonce","sig"}
 package main
 
 import (
@@ -16,17 +18,13 @@ import (
 	"fmt"
 	"os"
 
-	protocol "rcprotocol"
-
 	"rc-signal/internal/auth"
 )
 
 type emitted struct {
-	Pubkey        string                `json:"pubkey"`
-	Nonce         string                `json:"nonce"`
-	Sig           string                `json:"sig"`
-	PlaintextCode string                `json:"plaintextCode"`
-	Code          protocol.CodeVerifier `json:"code"`
+	Pubkey string `json:"pubkey"`
+	Nonce  string `json:"nonce"`
+	Sig    string `json:"sig"`
 }
 
 func main() {
@@ -56,19 +54,6 @@ func main() {
 		fail("a TAMPERED signature was accepted — the verifier is not actually checking")
 	}
 	fmt.Println("PASS  Go rejected the tampered signature")
-
-	if err := in.Code.Validate(); err != nil {
-		fail("the Rust verifier is structurally invalid: %v", err)
-	}
-	if !auth.VerifyCode(in.Code, in.PlaintextCode) {
-		fail("auth.VerifyCode rejected the Rust Argon2id verifier for its own code")
-	}
-	fmt.Println("PASS  Go verified the Rust Argon2id verifier against the plaintext code")
-
-	if auth.VerifyCode(in.Code, in.PlaintextCode+"X") {
-		fail("auth.VerifyCode accepted the WRONG plaintext — it is not actually checking")
-	}
-	fmt.Println("PASS  Go rejected a wrong access code against the same verifier")
 
 	fmt.Println("PASS  rustcompat OK")
 }

@@ -1,6 +1,5 @@
-// Package hub holds all of rc-signal's live state: which devices are online,
-// which sessions exist, and the access-code failure counters. It is transport
-// agnostic on purpose — the WebSocket layer hands it opaque frames and a
+// Package hub holds all of rc-signal's live state: which devices are online
+// and which sessions exist. It is transport agnostic on purpose — the WebSocket layer hands it opaque frames and a
 // send function, which is what makes it directly testable with a fake clock.
 //
 // Concurrency: one mutex guards everything. This is a two-device system; the
@@ -8,12 +7,14 @@
 package hub
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
 
 	"rc-signal/internal/auth"
 	"rc-signal/internal/clockx"
+	"rc-signal/internal/entitlement"
 	"rc-signal/internal/store"
 	"rcprotocol"
 )
@@ -27,23 +28,22 @@ const (
 	NonceTTL          = protocol.NonceTTLSec * time.Second
 	AuthTimeout       = protocol.AuthTimeoutSec * time.Second
 	TurnCredTTL       = protocol.TurnCredTTLSec * time.Second
-
-	// Access-code rate limiting, PROTOCOL.md §3.3.
-	FailWindow    = 15 * time.Minute
-	FailThreshold = 5
-	LockoutBase   = time.Minute
-	LockoutMax    = 60 * time.Minute
 )
+
+// TODO: PROTOCOL.md §3.3 keeps a per-host limiter on connect_req attempts as a
+// whole in v2. The code-guess limiter it replaced is gone; the attempt limiter
+// is not implemented yet, and error{rate_limited} is therefore never sent.
 
 // Options configures a Hub.
 type Options struct {
-	Store      *store.Store
-	Clock      clockx.Clock
-	Signer     *auth.Signer
-	Logger     *slog.Logger
-	TurnSecret string
-	TurnURLs   []string
-	StunURLs   []string
+	Store       *store.Store
+	Entitlement entitlement.Entitlement
+	Clock       clockx.Clock
+	Signer      *auth.Signer
+	Logger      *slog.Logger
+	TurnSecret  string
+	TurnURLs    []string
+	StunURLs    []string
 }
 
 // Hub is the live server state.
@@ -60,7 +60,6 @@ type Hub struct {
 	watchers map[string]map[uint64]*Client // watched deviceId -> watchers
 	sessions map[string]*Session
 	devSess  map[string]string // deviceId -> sessionId (at most one)
-	fails    map[string]*failState
 }
 
 type presenceState struct {
@@ -111,7 +110,6 @@ func New(o Options) *Hub {
 		watchers: map[string]map[uint64]*Client{},
 		sessions: map[string]*Session{},
 		devSess:  map[string]string{},
-		fails:    map[string]*failState{},
 	}
 }
 
@@ -287,75 +285,43 @@ func (h *Hub) Shutdown() {
 }
 
 // ---------------------------------------------------------------------------
-// Rate limiting (PROTOCOL.md §3.3)
+// Accounting reports
 // ---------------------------------------------------------------------------
 
-type failState struct {
-	fails       []time.Time
-	lockedUntil time.Time
+// SessionReportTimeout bounds one whole fire-and-forget report, retries
+// included.
+const SessionReportTimeout = 30 * time.Second
+
+// reportSessionStart tells the accounting surface (API.md §6) that a session
+// opened. It never blocks the caller and never holds the hub lock: the report
+// runs on its own goroutine and the provider owns the bounded retry.
+func (h *Hub) reportSessionStart(r protocol.SessionStartReport) {
+	ent := h.opt.Entitlement
+	if ent == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), SessionReportTimeout)
+		defer cancel()
+		if err := ent.SessionStarted(ctx, r); err != nil {
+			h.log.Error("session start report failed", "sessionId", r.SessionID, "err", err)
+		}
+	}()
 }
 
-func (f *failState) prune(now time.Time) {
-	keep := f.fails[:0]
-	for _, t := range f.fails {
-		if now.Sub(t) < FailWindow {
-			keep = append(keep, t)
+// reportSessionStop is the closing half of reportSessionStart.
+func (h *Hub) reportSessionStop(r protocol.SessionStopReport) {
+	ent := h.opt.Entitlement
+	if ent == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), SessionReportTimeout)
+		defer cancel()
+		if err := ent.SessionStopped(ctx, r); err != nil {
+			h.log.Error("session stop report failed", "sessionId", r.SessionID, "err", err)
 		}
-	}
-	f.fails = keep
-}
-
-// lockoutLocked returns the seconds remaining, or 0 if not locked out.
-func (h *Hub) lockoutLocked(deviceID string, now time.Time) int {
-	f := h.fails[deviceID]
-	if f == nil {
-		return 0
-	}
-	f.prune(now)
-	if now.Before(f.lockedUntil) {
-		d := f.lockedUntil.Sub(now)
-		secs := int((d + time.Second - 1) / time.Second)
-		if secs < 1 {
-			secs = 1
-		}
-		return secs
-	}
-	return 0
-}
-
-func (h *Hub) recordFailLocked(deviceID string, now time.Time) {
-	f := h.fails[deviceID]
-	if f == nil {
-		f = &failState{}
-		h.fails[deviceID] = f
-	}
-	f.prune(now)
-	f.fails = append(f.fails, now)
-	if n := len(f.fails); n >= FailThreshold {
-		shift := uint(n - FailThreshold)
-		if shift > 16 {
-			shift = 16
-		}
-		d := LockoutBase << shift
-		if d > LockoutMax || d <= 0 {
-			d = LockoutMax
-		}
-		f.lockedUntil = now.Add(d)
-	}
-}
-
-func (h *Hub) clearFailsLocked(deviceID string) { delete(h.fails, deviceID) }
-
-// FailCount returns the number of in-window failures for a device (test hook).
-func (h *Hub) FailCount(deviceID string) int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	f := h.fails[deviceID]
-	if f == nil {
-		return 0
-	}
-	f.prune(h.clock.Now())
-	return len(f.fails)
+	}()
 }
 
 // ---------------------------------------------------------------------------
@@ -377,4 +343,11 @@ func (h *Hub) sendLocked(c *Client, typ, re string, payload any) {
 func (h *Hub) sendErrLocked(c *Client, re, code, msg string, retryAfterSec int) {
 	h.sendLocked(c, protocol.TypeError, re, protocol.Error{
 		Code: code, Message: msg, RetryAfterSec: retryAfterSec})
+}
+
+// sendEntitlementErrLocked is the only error that carries a reason
+// (PROTOCOL.md §7); the reason set is API.md §4.3.
+func (h *Hub) sendEntitlementErrLocked(c *Client, re, reason, msg string) {
+	h.sendLocked(c, protocol.TypeError, re, protocol.Error{
+		Code: protocol.ErrEntitlement, Message: msg, Reason: reason})
 }

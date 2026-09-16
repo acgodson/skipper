@@ -1,9 +1,10 @@
 // Package store is the SQLite device registry.
 //
 // It stores, per device: the 9-digit device id, the P-256 public key (base64
-// SPKI), a human label, and the Argon2id verifier for the access code.
-// The plaintext access code is never stored, never accepted here, and never
-// logged. Sessions are deliberately NOT persisted: they are in-memory state.
+// SPKI), a human label and the code epoch. Under protocol v2 it holds nothing
+// whatsoever about any access code — no plaintext, no salt, no hash, no
+// parameters (PROTOCOL.md §2.3). Sessions are deliberately NOT persisted:
+// they are in-memory state.
 package store
 
 import (
@@ -15,7 +16,6 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite" // CGO-free driver
-	"rcprotocol"
 )
 
 // ErrNotFound is returned when no device matches.
@@ -26,8 +26,7 @@ type Device struct {
 	DeviceID  string
 	Pubkey    string // base64 DER SPKI
 	Label     string
-	Code      protocol.CodeVerifier
-	CodeEpoch int64 // bumped on every access-code refresh; kills old tokens
+	CodeEpoch int64 // bumped on every refresh_code; kills every old token
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -42,13 +41,6 @@ CREATE TABLE IF NOT EXISTS devices (
   device_id    TEXT PRIMARY KEY,
   pubkey       TEXT NOT NULL UNIQUE,
   label        TEXT NOT NULL DEFAULT '',
-  code_alg     TEXT NOT NULL,
-  code_salt    TEXT NOT NULL,
-  code_hash    TEXT NOT NULL,
-  code_time    INTEGER NOT NULL,
-  code_mem_kib INTEGER NOT NULL,
-  code_par     INTEGER NOT NULL,
-  code_len     INTEGER NOT NULL,
   code_epoch   INTEGER NOT NULL DEFAULT 1,
   created_at   INTEGER NOT NULL,
   updated_at   INTEGER NOT NULL
@@ -78,20 +70,79 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// migrate brings a v1 database — one carrying the Argon2id verifier columns of
+// the removed PROTOCOL.md §2.3 — up to the v2 schema by rebuilding the table
+// without them. Device ids, keys, labels and epochs survive; the verifier is
+// dropped, which is the point. It is a no-op on a database that is already v2.
+func migrate(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(devices)`)
+	if err != nil {
+		return err
+	}
+	hasVerifier := false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var dflt any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "code_hash" {
+			hasVerifier = true
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasVerifier {
+		return nil
+	}
+	stmts := []string{
+		`CREATE TABLE devices_v2 (
+  device_id    TEXT PRIMARY KEY,
+  pubkey       TEXT NOT NULL UNIQUE,
+  label        TEXT NOT NULL DEFAULT '',
+  code_epoch   INTEGER NOT NULL DEFAULT 1,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+)`,
+		`INSERT INTO devices_v2 (device_id, pubkey, label, code_epoch, created_at, updated_at)
+ SELECT device_id, pubkey, label, code_epoch, created_at, updated_at FROM devices`,
+		`DROP TABLE devices`,
+		`ALTER TABLE devices_v2 RENAME TO devices`,
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("v1->v2 migration (%s): %w", stmt, err)
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
 
-const selectCols = `device_id, pubkey, label, code_alg, code_salt, code_hash,
- code_time, code_mem_kib, code_par, code_len, code_epoch, created_at, updated_at`
+const selectCols = `device_id, pubkey, label, code_epoch, created_at, updated_at`
 
 func scanDevice(row interface{ Scan(...any) error }) (*Device, error) {
 	var d Device
 	var created, updated int64
-	err := row.Scan(&d.DeviceID, &d.Pubkey, &d.Label, &d.Code.Alg, &d.Code.Salt,
-		&d.Code.Hash, &d.Code.Time, &d.Code.MemKiB, &d.Code.Par, &d.Code.Len,
-		&d.CodeEpoch, &created, &updated)
+	err := row.Scan(&d.DeviceID, &d.Pubkey, &d.Label, &d.CodeEpoch, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -114,15 +165,11 @@ func (s *Store) GetByPubkey(pubkey string) (*Device, error) {
 }
 
 // Register creates a device with a freshly generated 9-digit id. If the public
-// key is already registered it returns the existing device and existing=true,
-// leaving the stored access-code verifier untouched.
-func (s *Store) Register(pubkey, label string, code protocol.CodeVerifier, now time.Time) (dev *Device, existing bool, err error) {
+// key is already registered it returns the existing device and existing=true.
+func (s *Store) Register(pubkey, label string, now time.Time) (dev *Device, existing bool, err error) {
 	if d, err := s.GetByPubkey(pubkey); err == nil {
 		return d, true, nil
 	} else if !errors.Is(err, ErrNotFound) {
-		return nil, false, err
-	}
-	if err := code.Validate(); err != nil {
 		return nil, false, err
 	}
 	ms := now.UnixMilli()
@@ -132,10 +179,8 @@ func (s *Store) Register(pubkey, label string, code protocol.CodeVerifier, now t
 			return nil, false, err
 		}
 		_, err = s.db.Exec(`INSERT INTO devices
- (device_id, pubkey, label, code_alg, code_salt, code_hash, code_time, code_mem_kib, code_par, code_len, code_epoch, created_at, updated_at)
- VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
-			id, pubkey, label, code.Alg, code.Salt, code.Hash,
-			code.Time, code.MemKiB, code.Par, code.Len, ms, ms)
+ (device_id, pubkey, label, code_epoch, created_at, updated_at)
+ VALUES (?,?,?,1,?,?)`, id, pubkey, label, ms, ms)
 		if err == nil {
 			d, err := s.GetDevice(id)
 			return d, false, err
@@ -149,16 +194,11 @@ func (s *Store) Register(pubkey, label string, code protocol.CodeVerifier, now t
 	return nil, false, errors.New("could not allocate a unique device id")
 }
 
-// UpdateCode replaces the access-code verifier and bumps the code epoch,
-// which is what makes every previously issued session token invalid.
-func (s *Store) UpdateCode(deviceID string, code protocol.CodeVerifier, now time.Time) error {
-	if err := code.Validate(); err != nil {
-		return err
-	}
-	res, err := s.db.Exec(`UPDATE devices SET code_alg=?, code_salt=?, code_hash=?,
- code_time=?, code_mem_kib=?, code_par=?, code_len=?, code_epoch=code_epoch+1, updated_at=?
- WHERE device_id=?`,
-		code.Alg, code.Salt, code.Hash, code.Time, code.MemKiB, code.Par, code.Len,
+// BumpEpoch advances the code epoch, which is what makes every previously
+// issued session token invalid. PROTOCOL.md §2.15.
+func (s *Store) BumpEpoch(deviceID string, now time.Time) error {
+	res, err := s.db.Exec(
+		`UPDATE devices SET code_epoch=code_epoch+1, updated_at=? WHERE device_id=?`,
 		now.UnixMilli(), deviceID)
 	if err != nil {
 		return err

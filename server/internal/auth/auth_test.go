@@ -13,8 +13,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"rcprotocol"
 )
 
 func newKey(t *testing.T) (*ecdsa.PrivateKey, string) {
@@ -93,50 +91,6 @@ func TestVerifyDeviceSig(t *testing.T) {
 	spki384, _ := x509.MarshalPKIXPublicKey(&k384.PublicKey)
 	if _, err := ParsePubkey(base64.StdEncoding.EncodeToString(spki384)); err == nil {
 		t.Fatal("a P-384 key was accepted")
-	}
-}
-
-func TestVerifyCode(t *testing.T) {
-	v, err := MakeVerifier("SW7K2M9Q")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if v.Alg != protocol.AlgArgon2id || v.Time != 3 || v.MemKiB != 65536 || v.Len != 32 {
-		t.Fatalf("unexpected verifier parameters: %+v", v)
-	}
-	if !VerifyCode(v, "SW7K2M9Q") {
-		t.Fatal("the correct code was rejected")
-	}
-	for _, wrong := range []string{"SW7K2M9R", "sw7k2m9q", "", "SW7K2M9", "SW7K2M9QQ"} {
-		if VerifyCode(v, wrong) {
-			t.Fatalf("wrong code %q was accepted", wrong)
-		}
-	}
-	// Two verifiers for the same code differ (random salt) but both verify.
-	v2, _ := MakeVerifier("SW7K2M9Q")
-	if v2.Salt == v.Salt || v2.Hash == v.Hash {
-		t.Fatal("verifiers for the same code must not be identical (salt reuse)")
-	}
-	if !VerifyCode(v2, "SW7K2M9Q") {
-		t.Fatal("the second verifier rejected the correct code")
-	}
-	// Structurally broken verifiers must fail closed.
-	for _, mangle := range []func(protocol.CodeVerifier) protocol.CodeVerifier{
-		func(c protocol.CodeVerifier) protocol.CodeVerifier { c.Alg = "bcrypt"; return c },
-		func(c protocol.CodeVerifier) protocol.CodeVerifier { c.Salt = "!!!"; return c },
-		func(c protocol.CodeVerifier) protocol.CodeVerifier { c.Hash = "!!!"; return c },
-		func(c protocol.CodeVerifier) protocol.CodeVerifier { c.MemKiB = 16; return c },
-		func(c protocol.CodeVerifier) protocol.CodeVerifier { c.Len = 8; return c },
-		func(c protocol.CodeVerifier) protocol.CodeVerifier {
-			c.Time = 3
-			c.MemKiB = 65536
-			c.Len = 64
-			return c
-		},
-	} {
-		if VerifyCode(mangle(v), "SW7K2M9Q") {
-			t.Fatal("a broken verifier accepted a code")
-		}
 	}
 }
 
