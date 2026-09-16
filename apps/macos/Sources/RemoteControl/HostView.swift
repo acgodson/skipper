@@ -193,10 +193,15 @@ struct AccountSection: View {
                     Text("This Mac")
                 }
                 if let entitlement = model.account?.entitlement?.value {
-                    LabeledContent {
-                        Text(entitlement.status.rawValue.capitalized)
-                    } label: {
-                        Text("Plan")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(EntitlementPresentation.statusLine(for: entitlement))
+                            .font(.callout)
+                        if entitlement.status == .exhausted {
+                            Button("Top Up\u{2026}") {
+                                NSWorkspace.shared.open(
+                                    EntitlementPresentation.topUpURL(webBaseURL: AccountLinker.defaultWebBaseURL()))
+                            }
+                        }
                     }
                 }
                 HStack {
@@ -220,6 +225,12 @@ struct AccountSection: View {
                     Button("Link this Mac") { model.linkAccount() }
                 }
             }
+        }
+        .onAppear {
+            // A stale cache refreshes quietly (API.md §4.2's refreshAfterSec);
+            // never a spinner for it, only for the initial `restore()` load.
+            guard model.account?.entitlement?.isStale == true else { return }
+            Task { await model.account?.refreshEntitlement() }
         }
     }
 }

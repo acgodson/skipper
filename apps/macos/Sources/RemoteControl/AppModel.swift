@@ -248,9 +248,9 @@ final class AppModel: ObservableObject {
         coordinator.onEvent = { [weak self] event in self?.apply(event) }
         coordinator.onAccessCodeRequired = { [weak self] reason in
             // The ONLY path that puts the code prompt back on screen.
-            self?.connectError = ConnectFailure(
+            self?.connectError = EntitlementPresentation.sentence(for: ConnectFailure(
                 WireError.protocolError(code: reason, message: "the session ended", retryAfterSec: 0)
-            ).localizedDescription
+            ))
             self?.sessionState = .idle
         }
         coordinator.setQuality(settings.qualityMode.wireMode)
@@ -310,7 +310,7 @@ final class AppModel: ObservableObject {
         case .roundTrip(let seconds):
             lastRoundTripMs = Int((seconds * 1000).rounded())
         case .connectFailed(let failure):
-            connectError = failure.localizedDescription
+            connectError = EntitlementPresentation.sentence(for: failure)
             isConnecting = false
         case .phase:
             sessionState = coordinator.state
@@ -478,7 +478,7 @@ final class AppModel: ObservableObject {
         }
         Task {
             guard let coordinator else {
-                connectError = ConnectFailure.notConnectedToServer.localizedDescription
+                connectError = EntitlementPresentation.sentence(for: .notConnectedToServer)
                 isConnecting = false
                 return
             }
@@ -486,7 +486,7 @@ final class AppModel: ObservableObject {
                 try await coordinator.connect(deviceID: deviceID, accessCode: accessCode, remember: remember)
                 sessionState = coordinator.state
             } catch {
-                connectError = (error as? ConnectFailure)?.localizedDescription
+                connectError = (error as? ConnectFailure).map(EntitlementPresentation.sentence(for:))
                     ?? error.localizedDescription
                 sessionState = .idle
                 isConnecting = false
