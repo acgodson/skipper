@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!--
+    requireAdministrator: the fix for UIPI (WINDOWS-HOST.md §3). Without it a
+    non-elevated SendInput is silently ignored by any elevated window, and screen
+    capture cannot see the secure desktop. Elevating clears the first problem
+    outright and is the cheapest path to the second. It costs one UAC prompt at
+    launch. The full lock-screen story would need a session-0 service; this is
+    the deliberate v1 tradeoff.
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <!-- Declare per-monitor DPI awareness so captured coordinates are real pixels. -->
+  <asmv3:application xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
+    <asmv3:windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">permonitorv2</dpiAwareness>
+    </asmv3:windowsSettings>
+  </asmv3:application>
+</assembly>

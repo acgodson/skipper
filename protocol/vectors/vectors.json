@@ -1,0 +1,1099 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "challenge",
+      "surface": "signaling",
+      "type": "challenge",
+      "frame": {
+        "v": 1,
+        "type": "challenge",
+        "ts": 1755600000000,
+        "payload": {
+          "nonce": "bm9uY2Vub25jZW5vbmNlbm9uY2Vub25jZW5vbg==",
+          "serverTime": 1755600000000
+        }
+      }
+    },
+    {
+      "name": "register_full",
+      "surface": "signaling",
+      "type": "register",
+      "frame": {
+        "v": 1,
+        "type": "register",
+        "id": "c-1",
+        "ts": 1755600000000,
+        "payload": {
+          "pubkey": "cHVia2V5",
+          "sig": "c2ln",
+          "label": "Studio PC",
+          "code": {
+            "alg": "argon2id",
+            "salt": "c2FsdHNhbHRzYWx0c2FsdA==",
+            "hash": "aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g=",
+            "time": 3,
+            "memKiB": 65536,
+            "par": 1,
+            "len": 32
+          }
+        }
+      }
+    },
+    {
+      "name": "register_no_label",
+      "surface": "signaling",
+      "type": "register",
+      "frame": {
+        "v": 1,
+        "type": "register",
+        "id": "c-2",
+        "ts": 1755600000000,
+        "payload": {
+          "pubkey": "cHVia2V5",
+          "sig": "c2ln",
+          "code": {
+            "alg": "argon2id",
+            "salt": "c2FsdHNhbHRzYWx0c2FsdA==",
+            "hash": "aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g=",
+            "time": 3,
+            "memKiB": 65536,
+            "par": 1,
+            "len": 32
+          }
+        }
+      },
+      "note": "label is omitempty: it must be absent, not an empty string"
+    },
+    {
+      "name": "register_ok_existing",
+      "surface": "signaling",
+      "type": "register_ok",
+      "frame": {
+        "v": 1,
+        "type": "register_ok",
+        "re": "c-1",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "481930275",
+          "existing": true
+        }
+      }
+    },
+    {
+      "name": "register_ok_leading_zero",
+      "surface": "signaling",
+      "type": "register_ok",
+      "frame": {
+        "v": 1,
+        "type": "register_ok",
+        "re": "c-1",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "000000042",
+          "existing": false
+        }
+      },
+      "note": "deviceId keeps leading zeros; it is a string, never a number"
+    },
+    {
+      "name": "hello_host",
+      "surface": "signaling",
+      "type": "hello",
+      "frame": {
+        "v": 1,
+        "type": "hello",
+        "id": "c-3",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "481930275",
+          "pubkey": "cHVia2V5",
+          "sig": "c2ln",
+          "role": "host"
+        }
+      }
+    },
+    {
+      "name": "hello_ok_with_active_session",
+      "surface": "signaling",
+      "type": "hello_ok",
+      "frame": {
+        "v": 1,
+        "type": "hello_ok",
+        "re": "c-3",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "481930275",
+          "serverTime": 1755600000000,
+          "iceServers": [
+            {
+              "urls": [
+                "stun:54.246.73.81:3478"
+              ]
+            },
+            {
+              "urls": [
+                "turn:54.246.73.81:3478?transport=udp"
+              ],
+              "username": "1755600000:rc",
+              "credential": "Y3JlZA==",
+              "expiresAt": 1755643200000
+            }
+          ],
+          "heartbeatSec": 15,
+          "offlineAfterSec": 40,
+          "sessionTokenTtlSec": 600,
+          "activeSessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7"
+        }
+      },
+      "note": "activeSessionId present: the server has a session this client holds no token for"
+    },
+    {
+      "name": "hello_ok_no_active_session",
+      "surface": "signaling",
+      "type": "hello_ok",
+      "frame": {
+        "v": 1,
+        "type": "hello_ok",
+        "re": "c-3",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "481930275",
+          "serverTime": 1755600000000,
+          "iceServers": null,
+          "heartbeatSec": 15,
+          "offlineAfterSec": 40,
+          "sessionTokenTtlSec": 600
+        }
+      },
+      "note": "activeSessionId omitempty; iceServers may be empty"
+    },
+    {
+      "name": "heartbeat",
+      "surface": "signaling",
+      "type": "heartbeat",
+      "frame": {
+        "v": 1,
+        "type": "heartbeat",
+        "id": "c-4",
+        "ts": 1755600000000,
+        "payload": {}
+      },
+      "note": "no fields: payload must be {} and never null"
+    },
+    {
+      "name": "heartbeat_ok",
+      "surface": "signaling",
+      "type": "heartbeat_ok",
+      "frame": {
+        "v": 1,
+        "type": "heartbeat_ok",
+        "re": "c-4",
+        "ts": 1755600000000,
+        "payload": {
+          "serverTime": 1755600000000
+        }
+      }
+    },
+    {
+      "name": "watch",
+      "surface": "signaling",
+      "type": "watch",
+      "frame": {
+        "v": 1,
+        "type": "watch",
+        "id": "c-5",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "739000587"
+        }
+      }
+    },
+    {
+      "name": "watch_ok",
+      "surface": "signaling",
+      "type": "watch_ok",
+      "frame": {
+        "v": 1,
+        "type": "watch_ok",
+        "re": "c-5",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "739000587"
+        }
+      }
+    },
+    {
+      "name": "unwatch",
+      "surface": "signaling",
+      "type": "unwatch",
+      "frame": {
+        "v": 1,
+        "type": "unwatch",
+        "id": "c-6",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "739000587"
+        }
+      }
+    },
+    {
+      "name": "unwatch_ok",
+      "surface": "signaling",
+      "type": "unwatch_ok",
+      "frame": {
+        "v": 1,
+        "type": "unwatch_ok",
+        "re": "c-6",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "739000587"
+        }
+      }
+    },
+    {
+      "name": "presence_online",
+      "surface": "signaling",
+      "type": "presence",
+      "frame": {
+        "v": 1,
+        "type": "presence",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "739000587",
+          "online": true,
+          "since": 1755599910000
+        }
+      }
+    },
+    {
+      "name": "presence_never_seen",
+      "surface": "signaling",
+      "type": "presence",
+      "frame": {
+        "v": 1,
+        "type": "presence",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "739000587",
+          "online": false,
+          "since": 0
+        }
+      },
+      "note": "since is 0 when never seen, and 0 is NOT omitempty on this type"
+    },
+    {
+      "name": "connect_req",
+      "surface": "signaling",
+      "type": "connect_req",
+      "frame": {
+        "v": 1,
+        "type": "connect_req",
+        "id": "c-7",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "739000587",
+          "accessCode": "K7M2QX9P"
+        }
+      },
+      "note": "carries the plaintext access code; never log this frame"
+    },
+    {
+      "name": "connect_ok",
+      "surface": "signaling",
+      "type": "connect_ok",
+      "frame": {
+        "v": 1,
+        "type": "connect_ok",
+        "re": "c-7",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "sessionToken": "dG9rZW4=",
+          "expiresAt": 1755600600000,
+          "ttlSec": 600,
+          "hostDeviceId": "739000587",
+          "controllerDeviceId": "481930275"
+        }
+      }
+    },
+    {
+      "name": "session_start",
+      "surface": "signaling",
+      "type": "session_start",
+      "frame": {
+        "v": 1,
+        "type": "session_start",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "sessionToken": "dG9rZW4y",
+          "expiresAt": 1755600600000,
+          "ttlSec": 600,
+          "hostDeviceId": "739000587",
+          "controllerDeviceId": "481930275"
+        }
+      },
+      "note": "same shape as connect_ok"
+    },
+    {
+      "name": "resume",
+      "surface": "signaling",
+      "type": "resume",
+      "frame": {
+        "v": 1,
+        "type": "resume",
+        "id": "c-8",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "sessionToken": "dG9rZW4="
+        }
+      }
+    },
+    {
+      "name": "resume_ok",
+      "surface": "signaling",
+      "type": "resume_ok",
+      "frame": {
+        "v": 1,
+        "type": "resume_ok",
+        "re": "c-8",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "sessionToken": "bmV3dG9rZW4=",
+          "expiresAt": 1755600600000,
+          "ttlSec": 600,
+          "peerAttached": true,
+          "role": "controller"
+        }
+      },
+      "note": "token is rotated; the old one is dead"
+    },
+    {
+      "name": "renew",
+      "surface": "signaling",
+      "type": "renew",
+      "frame": {
+        "v": 1,
+        "type": "renew",
+        "id": "c-9",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "sessionToken": "bmV3dG9rZW4="
+        }
+      }
+    },
+    {
+      "name": "renew_ok",
+      "surface": "signaling",
+      "type": "renew_ok",
+      "frame": {
+        "v": 1,
+        "type": "renew_ok",
+        "re": "c-9",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "sessionToken": "bmV3ZXI=",
+          "expiresAt": 1755600600000,
+          "ttlSec": 600
+        }
+      }
+    },
+    {
+      "name": "peer_state_attached",
+      "surface": "signaling",
+      "type": "peer_state",
+      "frame": {
+        "v": 1,
+        "type": "peer_state",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "attached": true
+        }
+      }
+    },
+    {
+      "name": "peer_state_detached",
+      "surface": "signaling",
+      "type": "peer_state",
+      "frame": {
+        "v": 1,
+        "type": "peer_state",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "attached": false
+        }
+      },
+      "note": "attached:false must be present, not omitted"
+    },
+    {
+      "name": "sdp_offer",
+      "surface": "signaling",
+      "type": "sdp",
+      "frame": {
+        "v": 1,
+        "type": "sdp",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "sdpType": "offer",
+          "sdp": "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
+        }
+      }
+    },
+    {
+      "name": "sdp_restart",
+      "surface": "signaling",
+      "type": "sdp",
+      "frame": {
+        "v": 1,
+        "type": "sdp",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "sdpType": "offer",
+          "sdp": "v=0\r\n",
+          "restart": true
+        }
+      },
+      "note": "restart is omitempty when false"
+    },
+    {
+      "name": "ice_candidate",
+      "surface": "signaling",
+      "type": "ice",
+      "frame": {
+        "v": 1,
+        "type": "ice",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "candidate": "candidate:1 1 udp 2130706431 192.0.2.1 54321 typ host",
+          "sdpMid": "0"
+        }
+      }
+    },
+    {
+      "name": "ice_end_of_candidates",
+      "surface": "signaling",
+      "type": "ice",
+      "frame": {
+        "v": 1,
+        "type": "ice",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "candidate": ""
+        }
+      },
+      "note": "empty candidate means end-of-candidates"
+    },
+    {
+      "name": "bye",
+      "surface": "signaling",
+      "type": "bye",
+      "frame": {
+        "v": 1,
+        "type": "bye",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "reason": "user_ended"
+        }
+      }
+    },
+    {
+      "name": "refresh_code",
+      "surface": "signaling",
+      "type": "refresh_code",
+      "frame": {
+        "v": 1,
+        "type": "refresh_code",
+        "id": "c-10",
+        "ts": 1755600000000,
+        "payload": {
+          "alg": "argon2id",
+          "salt": "c2FsdHNhbHRzYWx0c2FsdA==",
+          "hash": "aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g=",
+          "time": 3,
+          "memKiB": 65536,
+          "par": 1,
+          "len": 32
+        }
+      }
+    },
+    {
+      "name": "refresh_code_ok",
+      "surface": "signaling",
+      "type": "refresh_code_ok",
+      "frame": {
+        "v": 1,
+        "type": "refresh_code_ok",
+        "re": "c-10",
+        "ts": 1755600000000,
+        "payload": {
+          "deviceId": "739000587",
+          "updatedAt": 1755600000000
+        }
+      }
+    },
+    {
+      "name": "error_bad_code",
+      "surface": "signaling",
+      "type": "error",
+      "frame": {
+        "v": 1,
+        "type": "error",
+        "re": "c-7",
+        "ts": 1755600000000,
+        "payload": {
+          "code": "bad_code",
+          "message": "access code rejected"
+        }
+      }
+    },
+    {
+      "name": "error_rate_limited",
+      "surface": "signaling",
+      "type": "error",
+      "frame": {
+        "v": 1,
+        "type": "error",
+        "re": "c-7",
+        "ts": 1755600000000,
+        "payload": {
+          "code": "rate_limited",
+          "message": "too many attempts",
+          "retryAfterSec": 30
+        }
+      },
+      "note": "retryAfterSec present only here"
+    },
+    {
+      "name": "error_busy",
+      "surface": "signaling",
+      "type": "error",
+      "frame": {
+        "v": 1,
+        "type": "error",
+        "re": "c-7",
+        "ts": 1755600000000,
+        "payload": {
+          "code": "busy",
+          "message": "device already has a remote session"
+        }
+      }
+    },
+    {
+      "name": "mouse_down_left",
+      "surface": "ctrl",
+      "type": "mouse_down",
+      "frame": {
+        "v": 1,
+        "type": "mouse_down",
+        "ts": 1755600000000,
+        "payload": {
+          "button": 0,
+          "x": 0.5,
+          "y": 0.5
+        }
+      }
+    },
+    {
+      "name": "mouse_up_right",
+      "surface": "ctrl",
+      "type": "mouse_up",
+      "frame": {
+        "v": 1,
+        "type": "mouse_up",
+        "ts": 1755600000000,
+        "payload": {
+          "button": 1,
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "name": "mouse_drag_middle",
+      "surface": "ctrl",
+      "type": "mouse_drag",
+      "frame": {
+        "v": 1,
+        "type": "mouse_drag",
+        "ts": 1755600000000,
+        "payload": {
+          "button": 2,
+          "x": 1,
+          "y": 1
+        }
+      },
+      "note": "reliable on purpose: a dropped drag point visibly breaks window dragging"
+    },
+    {
+      "name": "click_double",
+      "surface": "ctrl",
+      "type": "click",
+      "frame": {
+        "v": 1,
+        "type": "click",
+        "ts": 1755600000000,
+        "payload": {
+          "button": 0,
+          "x": 0.25,
+          "y": 0.75,
+          "count": 2
+        }
+      }
+    },
+    {
+      "name": "key_down_cmd_c",
+      "surface": "ctrl",
+      "type": "key_down",
+      "frame": {
+        "v": 1,
+        "type": "key_down",
+        "ts": 1755600000000,
+        "payload": {
+          "keycode": 8,
+          "mods": 8
+        }
+      },
+      "note": "kVK_ANSI_C with Command; the chars field is absent for a shortcut"
+    },
+    {
+      "name": "key_down_with_chars",
+      "surface": "ctrl",
+      "type": "key_down",
+      "frame": {
+        "v": 1,
+        "type": "key_down",
+        "ts": 1755600000000,
+        "payload": {
+          "keycode": 0,
+          "mods": 0,
+          "chars": "a"
+        }
+      },
+      "note": "chars present: a host may inject the text and ignore the macOS keycode"
+    },
+    {
+      "name": "key_down_unicode_chars",
+      "surface": "ctrl",
+      "type": "key_down",
+      "frame": {
+        "v": 1,
+        "type": "key_down",
+        "ts": 1755600000000,
+        "payload": {
+          "keycode": 0,
+          "mods": 1,
+          "chars": "é中😀"
+        }
+      },
+      "note": "chars is arbitrary UTF-8, not ASCII"
+    },
+    {
+      "name": "key_down_all_mods",
+      "surface": "ctrl",
+      "type": "key_down",
+      "frame": {
+        "v": 1,
+        "type": "key_down",
+        "ts": 1755600000000,
+        "payload": {
+          "keycode": 49,
+          "mods": 63
+        }
+      },
+      "note": "every defined modifier bit set"
+    },
+    {
+      "name": "key_up",
+      "surface": "ctrl",
+      "type": "key_up",
+      "frame": {
+        "v": 1,
+        "type": "key_up",
+        "ts": 1755600000000,
+        "payload": {
+          "keycode": 8,
+          "mods": 0
+        }
+      }
+    },
+    {
+      "name": "scroll_natural_down",
+      "surface": "ctrl",
+      "type": "scroll",
+      "frame": {
+        "v": 1,
+        "type": "scroll",
+        "ts": 1755600000000,
+        "payload": {
+          "dx": 0,
+          "dy": 12.5,
+          "phase": "changed"
+        }
+      },
+      "note": "positive dy = content moves up (macOS natural); Windows wheel is inverted"
+    },
+    {
+      "name": "scroll_negative_fractional",
+      "surface": "ctrl",
+      "type": "scroll",
+      "frame": {
+        "v": 1,
+        "type": "scroll",
+        "ts": 1755600000000,
+        "payload": {
+          "dx": -0.5,
+          "dy": -0.25,
+          "phase": "momentum"
+        }
+      },
+      "note": "sub-pixel deltas must not be truncated to zero by a notch-based host"
+    },
+    {
+      "name": "scroll_begin",
+      "surface": "ctrl",
+      "type": "scroll",
+      "frame": {
+        "v": 1,
+        "type": "scroll",
+        "ts": 1755600000000,
+        "payload": {
+          "dx": 0,
+          "dy": 0,
+          "phase": "begin"
+        }
+      }
+    },
+    {
+      "name": "clipboard_text",
+      "surface": "ctrl",
+      "type": "clipboard_text",
+      "frame": {
+        "v": 1,
+        "type": "clipboard_text",
+        "ts": 1755600000000,
+        "payload": {
+          "text": "hello 世界",
+          "originId": "481930275",
+          "hash": "MHhoYXNo"
+        }
+      },
+      "note": "contents are never logged"
+    },
+    {
+      "name": "gesture_mission_control",
+      "surface": "ctrl",
+      "type": "gesture",
+      "frame": {
+        "v": 1,
+        "type": "gesture",
+        "ts": 1755600000000,
+        "payload": {
+          "name": "mission_control"
+        }
+      }
+    },
+    {
+      "name": "gesture_app_expose",
+      "surface": "ctrl",
+      "type": "gesture",
+      "frame": {
+        "v": 1,
+        "type": "gesture",
+        "ts": 1755600000000,
+        "payload": {
+          "name": "app_expose"
+        }
+      }
+    },
+    {
+      "name": "gesture_show_desktop",
+      "surface": "ctrl",
+      "type": "gesture",
+      "frame": {
+        "v": 1,
+        "type": "gesture",
+        "ts": 1755600000000,
+        "payload": {
+          "name": "show_desktop"
+        }
+      }
+    },
+    {
+      "name": "gesture_launchpad",
+      "surface": "ctrl",
+      "type": "gesture",
+      "frame": {
+        "v": 1,
+        "type": "gesture",
+        "ts": 1755600000000,
+        "payload": {
+          "name": "launchpad"
+        }
+      }
+    },
+    {
+      "name": "gesture_spotlight",
+      "surface": "ctrl",
+      "type": "gesture",
+      "frame": {
+        "v": 1,
+        "type": "gesture",
+        "ts": 1755600000000,
+        "payload": {
+          "name": "spotlight"
+        }
+      }
+    },
+    {
+      "name": "gesture_app_switcher",
+      "surface": "ctrl",
+      "type": "gesture",
+      "frame": {
+        "v": 1,
+        "type": "gesture",
+        "ts": 1755600000000,
+        "payload": {
+          "name": "app_switcher"
+        }
+      }
+    },
+    {
+      "name": "gesture_screenshot_region",
+      "surface": "ctrl",
+      "type": "gesture",
+      "frame": {
+        "v": 1,
+        "type": "gesture",
+        "ts": 1755600000000,
+        "payload": {
+          "name": "screenshot_region"
+        }
+      }
+    },
+    {
+      "name": "gesture_force_quit",
+      "surface": "ctrl",
+      "type": "gesture",
+      "frame": {
+        "v": 1,
+        "type": "gesture",
+        "ts": 1755600000000,
+        "payload": {
+          "name": "force_quit"
+        }
+      }
+    },
+    {
+      "name": "gesture_lock_screen",
+      "surface": "ctrl",
+      "type": "gesture",
+      "frame": {
+        "v": 1,
+        "type": "gesture",
+        "ts": 1755600000000,
+        "payload": {
+          "name": "lock_screen"
+        }
+      }
+    },
+    {
+      "name": "input_reset",
+      "surface": "ctrl",
+      "type": "input_reset",
+      "frame": {
+        "v": 1,
+        "type": "input_reset",
+        "ts": 1755600000000,
+        "payload": {}
+      },
+      "note": "no fields; must be idempotent on the receiver"
+    },
+    {
+      "name": "display_info_retina",
+      "surface": "ctrl",
+      "type": "display_info",
+      "frame": {
+        "v": 1,
+        "type": "display_info",
+        "ts": 1755600000000,
+        "payload": {
+          "w": 1920,
+          "h": 1200,
+          "scale": 2
+        }
+      }
+    },
+    {
+      "name": "display_info_scale_one",
+      "surface": "ctrl",
+      "type": "display_info",
+      "frame": {
+        "v": 1,
+        "type": "display_info",
+        "ts": 1755600000000,
+        "payload": {
+          "w": 2560,
+          "h": 1440,
+          "scale": 1
+        }
+      },
+      "note": "a non-Retina host; scale 1 is present, not omitted"
+    },
+    {
+      "name": "display_info_windows",
+      "surface": "ctrl",
+      "type": "display_info",
+      "frame": {
+        "v": 1,
+        "type": "display_info",
+        "ts": 1755600000000,
+        "payload": {
+          "w": 2560,
+          "h": 1440,
+          "scale": 1,
+          "os": "windows"
+        }
+      },
+      "note": "os field present; a controller that predates it must ignore it, not fail"
+    },
+    {
+      "name": "display_info_os_absent_means_macos",
+      "surface": "ctrl",
+      "type": "display_info",
+      "frame": {
+        "v": 1,
+        "type": "display_info",
+        "ts": 1755600000000,
+        "payload": {
+          "w": 1920,
+          "h": 1200,
+          "scale": 2
+        }
+      },
+      "note": "os is omitempty; absent is the macOS default"
+    },
+    {
+      "name": "quality_auto",
+      "surface": "ctrl",
+      "type": "quality",
+      "frame": {
+        "v": 1,
+        "type": "quality",
+        "ts": 1755600000000,
+        "payload": {
+          "mode": "auto"
+        }
+      }
+    },
+    {
+      "name": "quality_sharp",
+      "surface": "ctrl",
+      "type": "quality",
+      "frame": {
+        "v": 1,
+        "type": "quality",
+        "ts": 1755600000000,
+        "payload": {
+          "mode": "sharp"
+        }
+      }
+    },
+    {
+      "name": "quality_smooth",
+      "surface": "ctrl",
+      "type": "quality",
+      "frame": {
+        "v": 1,
+        "type": "quality",
+        "ts": 1755600000000,
+        "payload": {
+          "mode": "smooth"
+        }
+      }
+    },
+    {
+      "name": "ping",
+      "surface": "ctrl",
+      "type": "ping",
+      "frame": {
+        "v": 1,
+        "type": "ping",
+        "ts": 1755600000000,
+        "payload": {
+          "t": 1755600000000
+        }
+      }
+    },
+    {
+      "name": "pong",
+      "surface": "ctrl",
+      "type": "pong",
+      "frame": {
+        "v": 1,
+        "type": "pong",
+        "ts": 1755600000000,
+        "payload": {
+          "t": 1755600000000
+        }
+      },
+      "note": "echoes ping.t verbatim"
+    },
+    {
+      "name": "session_close",
+      "surface": "ctrl",
+      "type": "session_close",
+      "frame": {
+        "v": 1,
+        "type": "session_close",
+        "ts": 1755600000000,
+        "payload": {
+          "reason": "host_ended"
+        }
+      }
+    },
+    {
+      "name": "mouse_move",
+      "surface": "hi",
+      "type": "mouse_move",
+      "frame": {
+        "v": 1,
+        "type": "mouse_move",
+        "ts": 1755600000000,
+        "payload": {
+          "x": 0.123456789,
+          "y": 0.987654321,
+          "seq": 1
+        }
+      },
+      "note": "receiver must drop any packet whose seq is \u003c= the highest already seen"
+    },
+    {
+      "name": "mouse_move_large_seq",
+      "surface": "hi",
+      "type": "mouse_move",
+      "frame": {
+        "v": 1,
+        "type": "mouse_move",
+        "ts": 1755600000000,
+        "payload": {
+          "x": 0.5,
+          "y": 0.5,
+          "seq": 9007199254740993
+        }
+      },
+      "note": "seq is int64 and must not be narrowed to 32 bits"
+    }
+  ]
+}

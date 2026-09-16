@@ -1,0 +1,15 @@
+[package]
+name = "rc-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The answerer-side WebRTC peer session: data channels, H.264 sample track, ICE plumbing."
+
+[dependencies]
+rc-proto = { path = "../../../../core/crates/rc-proto" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+webrtc.workspace = true
+bytes.workspace = true

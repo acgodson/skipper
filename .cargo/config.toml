@@ -1,0 +1,12 @@
+# Cross-compiling the Windows host from macOS.
+#
+# The target is x86_64-pc-windows-gnu (mingw-w64, `brew install mingw-w64`)
+# rather than -msvc: msvc needs Windows CRT headers that only ship with the
+# Windows SDK, which breaks `ring`'s C build under cross-compilation, while the
+# gnu toolchain carries its own headers and LINKS — the actual shippable .exe
+# comes out of this Mac. The `windows` crate supports the gnu ABI through its
+# own prebuilt import libraries, so the whole Win32 surface (DXGI, Media
+# Foundation, SendInput) is available.
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"

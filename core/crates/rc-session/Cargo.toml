@@ -1,0 +1,13 @@
+[package]
+name = "rc-session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "PROTOCOL.md §4 as executable code. A port of the Swift SessionStateMachine, held equal to it by the shared scenario vectors."
+
+[dependencies]
+rc-proto = { path = "../rc-proto" }
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true

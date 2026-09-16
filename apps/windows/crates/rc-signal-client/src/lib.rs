@@ -1,0 +1,414 @@
+//! The signaling connection: one WebSocket lifecycle, from TCP connect through
+//! challenge authentication to typed request/reply and pushed events.
+//!
+//! Reconnection policy deliberately lives OUTSIDE this crate — the session
+//! state machine (`rc-session`) decides what a reconnect means, and the host
+//! binary owns the backoff loop. This crate's job ends at "an authenticated
+//! socket that can send correlated requests and deliver pushes".
+//!
+//! Mirrors `SignalingClient.swift` in behaviour; the wire itself is pinned by
+//! `rc-proto`'s Go-generated vectors, and this crate is pinned by
+//! `tests/live_server.rs`, which drives a REAL `rc-signal` binary through
+//! register → hello → watch → connect → sdp/ice relay → bye.
+
+#![forbid(unsafe_code)]
+
+pub mod pinning;
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures_util::{SinkExt, StreamExt};
+use rc_proto::consts::msg;
+use rc_proto::envelope::Envelope;
+use rc_proto::signaling as sig;
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::Connector;
+
+#[derive(Debug, thiserror::Error)]
+pub enum SignalError {
+    #[error("websocket: {0}")]
+    WebSocket(String),
+    #[error("protocol: {0}")]
+    Protocol(String),
+    #[error("server error {code}: {message}")]
+    Server { code: String, message: String, retry_after_sec: i32 },
+    #[error("timed out waiting for {0}")]
+    Timeout(&'static str),
+    #[error("connection closed")]
+    Closed,
+    #[error("tls: {0}")]
+    Tls(String),
+}
+
+impl SignalError {
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            Self::Server { code, .. } => Some(code),
+            _ => None,
+        }
+    }
+
+    pub fn retry_after_sec(&self) -> i32 {
+        match self {
+            Self::Server { retry_after_sec, .. } => *retry_after_sec,
+            _ => 0,
+        }
+    }
+}
+
+/// Unsolicited messages the server pushes. Everything else arrives as a reply.
+#[derive(Debug)]
+pub enum Push {
+    Challenge(sig::Challenge),
+    Presence(sig::Presence),
+    SessionStart(sig::SessionStart),
+    PeerState(sig::PeerState),
+    Sdp(sig::Sdp),
+    Ice(sig::Ice),
+    Bye(sig::Bye),
+    /// An `error` with no `re` — e.g. `displaced` when another socket
+    /// authenticates as this device.
+    ServerError(sig::ErrorPayload),
+    /// The socket died. Terminal for this connection object.
+    Disconnected(String),
+}
+
+pub struct Config {
+    /// `wss://host:8443/ws` or `ws://127.0.0.1:8443/ws` (local testing only).
+    pub url: String,
+    /// Required for `wss`. `None` is only legal for `ws://`.
+    pub cert_pin_base64: Option<String>,
+    pub request_timeout: Duration,
+    pub handshake_timeout: Duration,
+}
+
+impl Config {
+    pub fn new(url: &str, pin: Option<&str>) -> Self {
+        Self {
+            url: url.to_string(),
+            cert_pin_base64: pin.map(str::to_string),
+            request_timeout: Duration::from_secs(15),
+            handshake_timeout: Duration::from_secs(20),
+        }
+    }
+}
+
+type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Envelope>>>>;
+
+/// One authenticated-or-authenticating socket.
+pub struct SignalConnection {
+    outgoing: mpsc::Sender<Message>,
+    pending: Pending,
+    next_id: AtomicU64,
+    request_timeout: Duration,
+    /// The most recent unconsumed challenge nonce (raw bytes).
+    challenge: Arc<Mutex<Option<Vec<u8>>>>,
+}
+
+pub struct PushReceiver(pub mpsc::Receiver<Push>);
+
+impl SignalConnection {
+    /// Open the socket. The first `challenge` is awaited here so callers can
+    /// immediately authenticate; later challenges also refresh the stored nonce.
+    pub async fn connect(config: &Config) -> Result<(Self, PushReceiver), SignalError> {
+        let is_tls = config.url.starts_with("wss:");
+        let connector = if is_tls {
+            let pin = config
+                .cert_pin_base64
+                .as_deref()
+                .ok_or_else(|| SignalError::Tls("wss requires a certificate pin".into()))?;
+            Some(Connector::Rustls(Arc::new(
+                pinning::pinned_tls_config(pin).map_err(SignalError::Tls)?,
+            )))
+        } else {
+            None
+        };
+
+        let request = config
+            .url
+            .as_str()
+            .into_client_request()
+            .map_err(|e| SignalError::WebSocket(e.to_string()))?;
+        let (ws, _) = tokio::time::timeout(
+            config.handshake_timeout,
+            tokio_tungstenite::connect_async_tls_with_config(request, None, true, connector),
+        )
+        .await
+        .map_err(|_| SignalError::Timeout("websocket handshake"))?
+        .map_err(|e| SignalError::WebSocket(e.to_string()))?;
+
+        let (mut sink, mut stream) = ws.split();
+        let (out_tx, mut out_rx) = mpsc::channel::<Message>(64);
+        let (push_tx, push_rx) = mpsc::channel::<Push>(64);
+        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let challenge = Arc::new(Mutex::new(None::<Vec<u8>>));
+
+        // Writer task.
+        tokio::spawn(async move {
+            while let Some(frame) = out_rx.recv().await {
+                if sink.send(frame).await.is_err() {
+                    break;
+                }
+            }
+            let _ = sink.close().await;
+        });
+
+        // Reader task: correlate replies, forward pushes, capture challenges.
+        {
+            let pending = pending.clone();
+            let challenge = challenge.clone();
+            let push_tx = push_tx.clone();
+            tokio::spawn(async move {
+                let reason = loop {
+                    let frame = match stream.next().await {
+                        Some(Ok(f)) => f,
+                        Some(Err(e)) => break e.to_string(),
+                        None => break "eof".to_string(),
+                    };
+                    let text = match frame {
+                        Message::Text(t) => t,
+                        Message::Ping(_) | Message::Pong(_) => continue,
+                        Message::Close(c) => {
+                            break c.map(|c| c.to_string()).unwrap_or_else(|| "close".into())
+                        }
+                        // §0: binary frames are a protocol error; the server
+                        // never sends them, so treat one as a dead socket.
+                        _ => break "unexpected non-text frame".to_string(),
+                    };
+                    let env = match Envelope::decode(text.as_bytes()) {
+                        Ok(env) => env,
+                        Err(e) => break format!("bad frame: {e}"),
+                    };
+
+                    // A correlated reply?
+                    if !env.re.is_empty() {
+                        if let Some(tx) = pending.lock().await.remove(&env.re) {
+                            let _ = tx.send(env);
+                            continue;
+                        }
+                    }
+
+                    let forward = |p: Push| {
+                        let push_tx = push_tx.clone();
+                        async move {
+                            let _ = push_tx.send(p).await;
+                        }
+                    };
+                    match env.msg_type.as_str() {
+                        msg::CHALLENGE => {
+                            if let Ok(c) = env.payload_as::<sig::Challenge>() {
+                                use base64::Engine;
+                                if let Ok(nonce) =
+                                    base64::engine::general_purpose::STANDARD.decode(&c.nonce)
+                                {
+                                    *challenge.lock().await = Some(nonce);
+                                }
+                                forward(Push::Challenge(c)).await;
+                            }
+                        }
+                        msg::PRESENCE => {
+                            if let Ok(p) = env.payload_as() {
+                                forward(Push::Presence(p)).await;
+                            }
+                        }
+                        msg::SESSION_START => {
+                            if let Ok(p) = env.payload_as() {
+                                forward(Push::SessionStart(p)).await;
+                            }
+                        }
+                        msg::PEER_STATE => {
+                            if let Ok(p) = env.payload_as() {
+                                forward(Push::PeerState(p)).await;
+                            }
+                        }
+                        msg::SDP => {
+                            if let Ok(p) = env.payload_as() {
+                                forward(Push::Sdp(p)).await;
+                            }
+                        }
+                        msg::ICE => {
+                            if let Ok(p) = env.payload_as() {
+                                forward(Push::Ice(p)).await;
+                            }
+                        }
+                        msg::BYE => {
+                            if let Ok(p) = env.payload_as() {
+                                forward(Push::Bye(p)).await;
+                            }
+                        }
+                        msg::ERROR => {
+                            if let Ok(p) = env.payload_as() {
+                                forward(Push::ServerError(p)).await;
+                            }
+                        }
+                        // §0: unknown pushes are ignored.
+                        _ => {}
+                    }
+                };
+                // Fail every in-flight request so callers see Closed, not a hang.
+                pending.lock().await.clear();
+                let _ = push_tx.send(Push::Disconnected(reason)).await;
+            });
+        }
+
+        // The server pushes `challenge` immediately on connect (§2.1). Wait for
+        // it here so `authenticate` has a nonce to sign.
+        let conn = Self {
+            outgoing: out_tx,
+            pending,
+            next_id: AtomicU64::new(1),
+            request_timeout: config.request_timeout,
+            challenge,
+        };
+        let deadline = tokio::time::Instant::now() + config.handshake_timeout;
+        loop {
+            if conn.challenge.lock().await.is_some() {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(SignalError::Timeout("initial challenge"));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok((conn, PushReceiver(push_rx)))
+    }
+
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
+    /// Take the current challenge nonce (single-use, §2.1).
+    pub async fn take_challenge_nonce(&self) -> Option<Vec<u8>> {
+        self.challenge.lock().await.take()
+    }
+
+    /// Fire-and-forget send (`sdp`, `ice`, `bye` need no reply).
+    pub async fn send<T: serde::Serialize>(
+        &self,
+        msg_type: &str,
+        payload: &T,
+    ) -> Result<(), SignalError> {
+        let env = Envelope::new(msg_type, "", "", Self::now_ms(), Some(payload))
+            .map_err(|e| SignalError::Protocol(e.to_string()))?;
+        let bytes = env.encode().map_err(|e| SignalError::Protocol(e.to_string()))?;
+        self.outgoing
+            .send(Message::Text(String::from_utf8(bytes).expect("json is utf8")))
+            .await
+            .map_err(|_| SignalError::Closed)
+    }
+
+    /// Correlated request: assigns an id, waits for the matching reply, maps a
+    /// same-id `error` into `SignalError::Server`.
+    pub async fn request<T: serde::Serialize, R: serde::de::DeserializeOwned>(
+        &self,
+        msg_type: &str,
+        payload: &T,
+        expect_reply_type: &str,
+    ) -> Result<R, SignalError> {
+        let id = format!("r-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let env = Envelope::new(msg_type, &id, "", Self::now_ms(), Some(payload))
+            .map_err(|e| SignalError::Protocol(e.to_string()))?;
+        let bytes = env.encode().map_err(|e| SignalError::Protocol(e.to_string()))?;
+
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().await.insert(id.clone(), tx);
+        if self
+            .outgoing
+            .send(Message::Text(String::from_utf8(bytes).expect("json is utf8")))
+            .await
+            .is_err()
+        {
+            self.pending.lock().await.remove(&id);
+            return Err(SignalError::Closed);
+        }
+
+        let reply = match tokio::time::timeout(self.request_timeout, rx).await {
+            Ok(Ok(env)) => env,
+            Ok(Err(_)) => return Err(SignalError::Closed),
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                return Err(SignalError::Timeout("reply"));
+            }
+        };
+
+        if reply.msg_type == msg::ERROR {
+            let e: sig::ErrorPayload = reply
+                .payload_as()
+                .map_err(|e| SignalError::Protocol(e.to_string()))?;
+            return Err(SignalError::Server {
+                code: e.code,
+                message: e.message,
+                retry_after_sec: e.retry_after_sec,
+            });
+        }
+        if reply.msg_type != expect_reply_type {
+            return Err(SignalError::Protocol(format!(
+                "expected {expect_reply_type}, got {}",
+                reply.msg_type
+            )));
+        }
+        reply
+            .payload_as()
+            .map_err(|e| SignalError::Protocol(e.to_string()))
+    }
+
+    // ---------------- authentication flows (§2.2, §2.4) ----------------
+
+    /// First run: mint a device id. Consumes the pending challenge; the server
+    /// pushes a fresh one after `register_ok` for the follow-up `hello`.
+    pub async fn register(
+        &self,
+        key: &rc_identity::DeviceKey,
+        label: &str,
+        code: &sig::CodeVerifier,
+    ) -> Result<sig::RegisterOk, SignalError> {
+        let nonce = self
+            .take_challenge_nonce()
+            .await
+            .ok_or(SignalError::Timeout("challenge before register"))?;
+        let payload = sig::Register {
+            pubkey: key.public_key_spki_base64(),
+            sig: key.sign_nonce_base64(&nonce),
+            label: label.to_string(),
+            code: code.clone(),
+        };
+        self.request(msg::REGISTER, &payload, msg::REGISTER_OK).await
+    }
+
+    /// Authenticate an existing device. On success the socket is this device's
+    /// presence connection until it dies.
+    pub async fn hello(
+        &self,
+        device_id: &str,
+        key: &rc_identity::DeviceKey,
+        role: &str,
+    ) -> Result<sig::HelloOk, SignalError> {
+        // The register flow consumes the connect-time challenge and the server
+        // pushes another; wait briefly for one to be present.
+        let deadline = tokio::time::Instant::now() + self.request_timeout;
+        let nonce = loop {
+            if let Some(nonce) = self.take_challenge_nonce().await {
+                break nonce;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(SignalError::Timeout("challenge before hello"));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        let payload = sig::Hello {
+            device_id: device_id.to_string(),
+            pubkey: key.public_key_spki_base64(),
+            sig: key.sign_nonce_base64(&nonce),
+            role: role.to_string(),
+        };
+        self.request(msg::HELLO, &payload, msg::HELLO_OK).await
+    }
+}

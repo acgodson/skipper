@@ -1,0 +1,17 @@
+[package]
+name = "rc-identity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Device identity: P-256 keypair, access codes, Argon2id verifiers, the identity file."
+
+[dependencies]
+rc-proto = { path = "../rc-proto" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+p256.workspace = true
+argon2.workspace = true
+rand_core.workspace = true
+sha2.workspace = true
+base64.workspace = true

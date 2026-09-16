@@ -1,0 +1,38 @@
+import RCTestKit
+
+/// The single source of truth for the test suite. Both front ends —
+/// `swift run rc-tests` and the XCTest bridge in `Tests/` — run exactly this.
+public let allSuites: [TestSuite] = [
+    cryptoSuite,
+    crockfordSuite,
+    accessCodeSuite,
+    secureFileSuite,
+    identityFileSuite,
+    deviceKeySuite,
+    identitySuite,
+    settingsSuite,
+    observationSuite,
+    cursorSuite,
+    staleSessionSuite,
+    backoffSuite,
+    pinningSuite,
+    configSuite,
+    wireCodecSuite,
+    stateMachineSuite,
+    scenarioSuite,
+    stubSuite,
+    videoGeometrySuite,
+    qualitySuite,
+    mediaProtocolSuite,
+    videoStatsSuite,
+    keyMappingSuite,
+    pointerInjectionSuite,
+    sequenceGateSuite,
+    inputResetSuite,
+    inputDispatchSuite,
+    gestureSuite,
+    clipboardSuite,
+    controllerInputSuite,
+    cgEventConstructionSuite,
+    appKitModifierSuite,
+]

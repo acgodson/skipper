@@ -1,0 +1,11 @@
+[package]
+name = "rc-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "RemoteControl wire contract. Mirrors protocol/PROTOCOL.md exactly."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

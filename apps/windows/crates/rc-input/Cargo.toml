@@ -1,0 +1,9 @@
+[package]
+name = "rc-input"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "macOS input semantics -> Windows input semantics. No OS calls; pure translation."
+
+[dependencies]
+rc-proto = { path = "../../../../core/crates/rc-proto" }

@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["core/crates/rc-proto", "core/crates/rc-session", "core/crates/rc-identity", "apps/windows/crates/rc-input", "apps/windows/crates/rc-signal-client", "apps/windows/crates/rc-transport", "apps/windows/crates/rc-host"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+argon2 = "0.5"
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+base64 = "0.22"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"
+webrtc = "0.11"
+openh264 = { version = "0.6", default-features = false, features = ["source"] }
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

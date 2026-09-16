@@ -1,0 +1,18 @@
+# TODO: paths in this file are legacy — the build context is assembled by infra/legacy/scripts/deploy.sh and is not the repo layout.
+# Multi-stage: builds on the instance using the golang image, so no Go toolchain is
+# ever installed on the shared host. Final image is a small alpine + static binary.
+FROM golang:1.23-alpine AS build
+# The context has server/ and protocol/ as siblings; server/go.mod carries
+# `replace rcprotocol => ../protocol`, so both must be present and the build
+# must run from inside server/.
+WORKDIR /src
+COPY . .
+WORKDIR /src/server
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /rc-signal ./cmd/rc-signal
+
+FROM alpine:3.20
+RUN adduser -D -u 10001 rc && apk add --no-cache ca-certificates
+COPY --from=build /rc-signal /rc-signal
+USER rc
+EXPOSE 8443
+ENTRYPOINT ["/rc-signal"]

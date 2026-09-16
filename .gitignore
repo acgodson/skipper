@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+
+# Go
+/server/bin/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Rust
+target/
+
+# Swift / Xcode
+.build/
+apps/macos/.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+.swiftpm/
+
+# Build output
+build/
+dist/
+*.app
+*.dmg
+
+# Local state
+*.db
+*.db-wal
+*.db-shm
+*.db*
+*.sqlite
+
+# Secrets / certs — never commit
+certs/
+*.pem
+*.key
+*.crt
+*.p12
+.env
+.env.*

@@ -1,0 +1,4 @@
+gptc-api-1|ghcr.io/uburu-inc/gptc-api:edf584fcda2c|running
+gptc-cloudflared-1|cloudflare/cloudflared:latest|running
+PORT8001=1
+GPTCDIR=docker-compose.yml,

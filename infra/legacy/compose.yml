@@ -1,0 +1,57 @@
+# Docker Compose project "rc" — lives ONLY in /opt/rc-signal on the shared instance.
+# Never run this file from any other directory, and never use it with -p other than "rc".
+name: rc
+
+services:
+  signal:
+    image: rc-signal:local
+    container_name: rc-signal
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./data:/data
+      - ./certs:/certs:ro
+    environment:
+      RC_LISTEN: ":8443"
+      RC_TLS_CERT: /certs/server.crt
+      RC_TLS_KEY: /certs/server.key
+      RC_DB: /data/rc.db
+      RC_TURN_SECRET: ${RC_TURN_SECRET:?set RC_TURN_SECRET in .env}
+      RC_TURN_URLS: ${RC_TURN_URLS:?set RC_TURN_URLS in .env}
+      RC_LOG_LEVEL: info
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.30"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    healthcheck:
+      # busybox wget; --no-check-certificate because the cert is self-signed and
+      # pinned by the app rather than trusted by a CA.
+      test: ["CMD", "wget", "-q", "-O", "-", "--no-check-certificate", "https://127.0.0.1:8443/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  coturn:
+    image: coturn/coturn:4.6-alpine
+    container_name: rc-coturn
+    restart: unless-stopped
+    # Host networking: TURN needs a 40-port relay range, and publishing that range through
+    # docker-proxy is pathologically slow. Host mode binds ONLY our ports (3478, 49160-49200).
+    network_mode: host
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.50"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
