@@ -41,3 +41,5 @@ certs/
 *.p12
 .env
 .env.*
+
+!.env.example
