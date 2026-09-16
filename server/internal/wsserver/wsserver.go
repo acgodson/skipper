@@ -17,7 +17,6 @@ import (
 	"rcprotocol"
 )
 
-// Config for the transport.
 type Config struct {
 	Addr         string
 	TLSCert      string
@@ -26,7 +25,6 @@ type Config struct {
 	Logger       *slog.Logger
 }
 
-// Server wires an http.Server to a Hub.
 type Server struct {
 	cfg  Config
 	hub  *hub.Hub
@@ -45,7 +43,6 @@ const (
 	sendQueue    = 64
 )
 
-// New builds a Server.
 func New(cfg Config, h *hub.Hub) *Server {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -55,7 +52,7 @@ func New(cfg Config, h *hub.Hub) *Server {
 		HandshakeTimeout: 10 * time.Second,
 		ReadBufferSize:   4096,
 		WriteBufferSize:  4096,
-		// Native clients, pinned certificate: browser origin policy does not apply.
+
 		CheckOrigin: func(*http.Request) bool { return true },
 	}
 	mux := http.NewServeMux()
@@ -73,7 +70,6 @@ func New(cfg Config, h *hub.Hub) *Server {
 	return s
 }
 
-// conn is one live WebSocket.
 type conn struct {
 	ws     *websocket.Conn
 	client *hub.Client
@@ -103,8 +99,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		select {
 		case c.out <- b:
 		default:
-			// A client that cannot keep up with 64 queued control messages is
-			// broken; drop it rather than growing memory.
+
 			c.shutdown()
 		}
 	}
@@ -192,7 +187,6 @@ func (s *Server) writeLoop(c *conn) {
 	}
 }
 
-// ListenAndServe starts serving and blocks until the server stops.
 func (s *Server) ListenAndServe() error {
 	ln, err := net.Listen("tcp", s.cfg.Addr)
 	if err != nil {
@@ -201,7 +195,6 @@ func (s *Server) ListenAndServe() error {
 	return s.Serve(ln)
 }
 
-// Serve serves on an existing listener (used by tests and by ListenAndServe).
 func (s *Server) Serve(ln net.Listener) error {
 	if s.cfg.InsecureHTTP {
 		s.log.Warn("serving PLAINTEXT http — local testing only", "addr", ln.Addr().String())
@@ -219,7 +212,6 @@ func (s *Server) Serve(ln net.Listener) error {
 	return err
 }
 
-// Shutdown drains connections and stops the HTTP server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.hub.Shutdown()
 	s.mu.Lock()
@@ -230,7 +222,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.http.Shutdown(ctx)
 }
 
-// RunSweeper calls hub.Sweep on a ticker until ctx is done.
 func RunSweeper(ctx context.Context, h *hub.Hub) {
 	t := time.NewTicker(hub.SweepInterval)
 	defer t.Stop()

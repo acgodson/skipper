@@ -1,9 +1,5 @@
 // Package hub holds all of rc-signal's live state: which devices are online
-// and which sessions exist. It is transport agnostic on purpose — the WebSocket layer hands it opaque frames and a
-// send function, which is what makes it directly testable with a fake clock.
-//
-// Concurrency: one mutex guards everything. This is a two-device system; the
-// contention does not exist.
+// and which sessions exist.
 package hub
 
 import (
@@ -19,7 +15,6 @@ import (
 	"rcprotocol"
 )
 
-// Timing constants, mirrored in PROTOCOL.md.
 const (
 	HeartbeatInterval = protocol.HeartbeatSec * time.Second
 	OfflineAfter      = protocol.OfflineAfterSec * time.Second
@@ -34,7 +29,6 @@ const (
 // whole in v2. The code-guess limiter it replaced is gone; the attempt limiter
 // is not implemented yet, and error{rate_limited} is therefore never sent.
 
-// Options configures a Hub.
 type Options struct {
 	Store       *store.Store
 	Entitlement entitlement.Entitlement
@@ -46,7 +40,6 @@ type Options struct {
 	StunURLs    []string
 }
 
-// Hub is the live server state.
 type Hub struct {
 	mu     sync.Mutex
 	opt    Options
@@ -55,27 +48,25 @@ type Hub struct {
 	nextID uint64
 
 	clients  map[uint64]*Client
-	byDevice map[string]*Client            // authenticated connection per device
-	presence map[string]*presenceState     // deviceId -> presence, never pruned
-	watchers map[string]map[uint64]*Client // watched deviceId -> watchers
+	byDevice map[string]*Client
+	presence map[string]*presenceState
+	watchers map[string]map[uint64]*Client
 	sessions map[string]*Session
-	devSess  map[string]string // deviceId -> sessionId (at most one)
+	devSess  map[string]string
 }
 
 type presenceState struct {
 	online   bool
-	since    time.Time // when this online/offline state began
+	since    time.Time
 	lastSeen time.Time
 }
 
-// Client is one WebSocket connection as the hub sees it.
 type Client struct {
 	ID uint64
 
-	send  func([]byte)               // non-blocking enqueue
-	close func(code int, msg string) // ask the transport to close
+	send  func([]byte)
+	close func(code int, msg string)
 
-	// All fields below are guarded by Hub.mu.
 	deviceID  string
 	role      string
 	authed    bool
@@ -89,10 +80,8 @@ type Client struct {
 	closed    bool
 }
 
-// DeviceID returns the authenticated device id, or "" before hello.
 func (c *Client) DeviceID() string { return c.deviceID }
 
-// New builds a Hub.
 func New(o Options) *Hub {
 	if o.Clock == nil {
 		o.Clock = clockx.Real{}
@@ -113,11 +102,8 @@ func New(o Options) *Hub {
 	}
 }
 
-// Now exposes the hub's clock, for the transport layer's timeouts.
 func (h *Hub) Now() time.Time { return h.clock.Now() }
 
-// AddClient registers a new connection and immediately issues its challenge.
-// send must not block; close asks the transport to terminate the socket.
 func (h *Hub) AddClient(send func([]byte), closeFn func(code int, msg string)) *Client {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -145,9 +131,6 @@ func (h *Hub) issueChallengeLocked(c *Client) {
 		Nonce: b64, ServerTime: now.UnixMilli()})
 }
 
-// RemoveClient tears a connection down: presence goes offline immediately,
-// watches are dropped, and any attached session is detached (but NOT closed —
-// that is the whole point of the resume path).
 func (h *Hub) RemoveClient(c *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -177,10 +160,6 @@ func (h *Hub) removeClientLocked(c *Client) {
 		h.detachLocked(c)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Presence
-// ---------------------------------------------------------------------------
 
 func (h *Hub) touchLocked(c *Client) {
 	now := h.clock.Now()
@@ -234,7 +213,6 @@ func (h *Hub) pushPresenceLocked(deviceID string) {
 	}
 }
 
-// IsOnline reports the current presence of a device. Exported for tests.
 func (h *Hub) IsOnline(deviceID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -242,13 +220,6 @@ func (h *Hub) IsOnline(deviceID string) bool {
 	return p != nil && p.online
 }
 
-// ---------------------------------------------------------------------------
-// Sweep
-// ---------------------------------------------------------------------------
-
-// Sweep applies every time-based transition: presence timeouts, pending-session
-// timeouts and session-token expiry. The server calls it on a ticker; tests
-// call it directly after advancing the fake clock.
 func (h *Hub) Sweep() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -275,7 +246,6 @@ func (h *Hub) Sweep() {
 	}
 }
 
-// Shutdown closes every session with reason "shutdown" and notifies peers.
 func (h *Hub) Shutdown() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -284,17 +254,8 @@ func (h *Hub) Shutdown() {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Accounting reports
-// ---------------------------------------------------------------------------
-
-// SessionReportTimeout bounds one whole fire-and-forget report, retries
-// included.
 const SessionReportTimeout = 30 * time.Second
 
-// reportSessionStart tells the accounting surface (API.md §6) that a session
-// opened. It never blocks the caller and never holds the hub lock: the report
-// runs on its own goroutine and the provider owns the bounded retry.
 func (h *Hub) reportSessionStart(r protocol.SessionStartReport) {
 	ent := h.opt.Entitlement
 	if ent == nil {
@@ -309,7 +270,6 @@ func (h *Hub) reportSessionStart(r protocol.SessionStartReport) {
 	}()
 }
 
-// reportSessionStop is the closing half of reportSessionStart.
 func (h *Hub) reportSessionStop(r protocol.SessionStopReport) {
 	ent := h.opt.Entitlement
 	if ent == nil {
@@ -323,10 +283,6 @@ func (h *Hub) reportSessionStop(r protocol.SessionStopReport) {
 		}
 	}()
 }
-
-// ---------------------------------------------------------------------------
-// Sending
-// ---------------------------------------------------------------------------
 
 func (h *Hub) sendLocked(c *Client, typ, re string, payload any) {
 	if c == nil || c.closed {
@@ -345,8 +301,6 @@ func (h *Hub) sendErrLocked(c *Client, re, code, msg string, retryAfterSec int) 
 		Code: code, Message: msg, RetryAfterSec: retryAfterSec})
 }
 
-// sendEntitlementErrLocked is the only error that carries a reason
-// (PROTOCOL.md §7); the reason set is API.md §4.3.
 func (h *Hub) sendEntitlementErrLocked(c *Client, re, reason, msg string) {
 	h.sendLocked(c, protocol.TypeError, re, protocol.Error{
 		Code: protocol.ErrEntitlement, Message: msg, Reason: reason})

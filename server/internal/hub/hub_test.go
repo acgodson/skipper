@@ -24,12 +24,6 @@ import (
 	"rcprotocol"
 )
 
-// ---------------------------------------------------------------------------
-// harness
-// ---------------------------------------------------------------------------
-
-// fakeEntitlement is the hub's entitlement provider under test: allow by
-// default, deny or fail on demand, and record the accounting reports.
 type fakeEntitlement struct {
 	mu     sync.Mutex
 	deny   map[string]string
@@ -80,7 +74,6 @@ func (f *fakeEntitlement) failWith(err error) {
 	f.err = err
 }
 
-// awaitReports waits for the fire-and-forget report goroutines to land.
 func (f *fakeEntitlement) awaitReports(t *testing.T, starts, stops int) ([]protocol.SessionStartReport, []protocol.SessionStopReport) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -130,7 +123,6 @@ func newHarness(t *testing.T) *harness {
 	return &harness{t: t, hub: h, clock: clk, store: st, ent: ent}
 }
 
-// peer is a fake client connection driven directly against the hub.
 type peer struct {
 	t        *testing.T
 	h        *Hub
@@ -167,8 +159,6 @@ func (hn *harness) newPeer() *peer {
 	return p
 }
 
-// reconnect simulates the WebSocket dropping and a fresh socket being opened
-// for the same device: new hub Client, same keypair, same recorded messages.
 func (hn *harness) reconnect(p *peer) {
 	hn.t.Helper()
 	hn.hub.RemoveClient(p.c)
@@ -209,8 +199,6 @@ func (p *peer) send(typ string, payload any) {
 	p.h.Handle(p.c, b)
 }
 
-// sig signs the current challenge nonce; tweak != nil mutates the nonce first
-// so the test can forge a signature over the wrong bytes.
 func (p *peer) sig(mangle bool) string {
 	p.t.Helper()
 	p.mu.Lock()
@@ -230,7 +218,6 @@ func (p *peer) sig(mangle bool) string {
 	return base64.StdEncoding.EncodeToString(sig)
 }
 
-// sigOver signs an explicit base64 nonce, so tests can replay a stale one.
 func (p *peer) sigOver(nonceB64 string) string {
 	p.t.Helper()
 	nb, err := base64.StdEncoding.DecodeString(nonceB64)
@@ -245,7 +232,6 @@ func (p *peer) sigOver(nonceB64 string) string {
 	return base64.StdEncoding.EncodeToString(sig)
 }
 
-// last returns the most recent message of the given type, or fails.
 func (p *peer) last(typ string) protocol.Envelope {
 	p.t.Helper()
 	p.mu.Lock()
@@ -314,7 +300,6 @@ func unmarshal[T any](t *testing.T, e protocol.Envelope) T {
 	return v
 }
 
-// register + hello, the common setup.
 func (p *peer) register(label string) string {
 	p.t.Helper()
 	p.send(protocol.TypeRegister, protocol.Register{
@@ -330,10 +315,6 @@ func (p *peer) hello(role string) protocol.HelloOK {
 		DeviceID: p.deviceID, Pubkey: p.pubB64, Sig: p.sig(false), Role: role})
 	return unmarshal[protocol.HelloOK](p.t, p.last(protocol.TypeHelloOK))
 }
-
-// ---------------------------------------------------------------------------
-// registration + device authentication
-// ---------------------------------------------------------------------------
 
 func TestRegisterMintsNineDigitIDAndIsIdempotent(t *testing.T) {
 	hn := newHarness(t)
@@ -354,7 +335,6 @@ func TestRegisterMintsNineDigitIDAndIsIdempotent(t *testing.T) {
 		t.Fatal("first registration reported existing=true")
 	}
 
-	// Same key again: same id, existing=true, and no second row.
 	p.send(protocol.TypeRegister, protocol.Register{
 		Pubkey: p.pubB64, Sig: p.sig(false)})
 	second := unmarshal[protocol.RegisterOK](t, p.last(protocol.TypeRegisterOK))
@@ -365,7 +345,6 @@ func TestRegisterMintsNineDigitIDAndIsIdempotent(t *testing.T) {
 		t.Fatal("re-registration reported existing=false")
 	}
 
-	// A different key gets a different id.
 	q := hn.newPeer()
 	id2 := q.register("Laptop")
 	if id2 == id {
@@ -392,7 +371,7 @@ func TestHelloValidSignatureAuthenticates(t *testing.T) {
 	if !hn.hub.IsOnline(id) {
 		t.Fatal("device should be online after hello")
 	}
-	// ICE servers: STUN first, then TURN with a deterministic REST credential.
+
 	if len(ok.ICEServers) != 2 {
 		t.Fatalf("iceServers len = %d, want 2", len(ok.ICEServers))
 	}
@@ -417,7 +396,6 @@ func TestHelloForgedSignatureRejected(t *testing.T) {
 	p := hn.newPeer()
 	id := p.register("host")
 
-	// A signature over the wrong bytes.
 	p.reset()
 	p.send(protocol.TypeHello, protocol.Hello{
 		DeviceID: id, Pubkey: p.pubB64, Sig: p.sig(true), Role: protocol.RoleHost})
@@ -431,7 +409,6 @@ func TestHelloForgedSignatureRejected(t *testing.T) {
 		t.Fatal("device must not be online after a failed hello")
 	}
 
-	// Another device's key, with a signature that is valid for that key.
 	other := hn.newPeer()
 	p.reset()
 	p.send(protocol.TypeHello, protocol.Hello{
@@ -443,8 +420,6 @@ func TestHelloForgedSignatureRejected(t *testing.T) {
 		t.Fatalf("error code = %q, want %q", got, protocol.ErrBadSignature)
 	}
 
-	// A nonce is single-use: a genuine signature over an already-consumed nonce
-	// must still be rejected.
 	q := hn.newPeer()
 	q.deviceID, q.priv, q.pubB64 = id, p.priv, p.pubB64
 	q.mu.Lock()
@@ -452,7 +427,7 @@ func TestHelloForgedSignatureRejected(t *testing.T) {
 	q.mu.Unlock()
 	goodSig := q.sigOver(firstNonce)
 	q.send(protocol.TypeHello, protocol.Hello{
-		DeviceID: id, Pubkey: q.pubB64, Sig: "AAAA", Role: protocol.RoleHost}) // burns the nonce
+		DeviceID: id, Pubkey: q.pubB64, Sig: "AAAA", Role: protocol.RoleHost})
 	q.reset()
 	q.send(protocol.TypeHello, protocol.Hello{
 		DeviceID: id, Pubkey: q.pubB64, Sig: goodSig, Role: protocol.RoleHost})
@@ -463,7 +438,6 @@ func TestHelloForgedSignatureRejected(t *testing.T) {
 		t.Fatalf("replayed nonce error = %q, want %q", got, protocol.ErrBadSignature)
 	}
 
-	// And the fresh nonce from the re-challenge works.
 	q.reset()
 	q.send(protocol.TypeHello, protocol.Hello{
 		DeviceID: id, Pubkey: q.pubB64, Sig: q.sig(false), Role: protocol.RoleHost})
@@ -489,11 +463,6 @@ func TestUnauthenticatedMessagesRejected(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// access code
-// ---------------------------------------------------------------------------
-
-// pair registers a host and a controller and brings both online.
 func (hn *harness) pair(t *testing.T) (host, ctrl *peer) {
 	t.Helper()
 	host = hn.newPeer()
@@ -537,8 +506,7 @@ func TestConnectIsAuthorisedByEntitlement(t *testing.T) {
 	if start.SessionToken == ok.SessionToken {
 		t.Fatal("host and controller must not share a session token")
 	}
-	// Each side is told which device key must sign the other's SDP, and the
-	// host is told which controller key to key its guess policy on.
+
 	if ok.HostPubkey != host.pubB64 {
 		t.Fatalf("connect_ok hostPubkey = %q, want the host's registered key", ok.HostPubkey)
 	}
@@ -631,10 +599,6 @@ func TestConnectOfflineAndUnknownDevice(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// strict 1:1
-// ---------------------------------------------------------------------------
-
 func TestSecondControllerGetsBusy(t *testing.T) {
 	hn := newHarness(t)
 	host, ctrl := hn.pair(t)
@@ -657,7 +621,6 @@ func TestSecondControllerGetsBusy(t *testing.T) {
 		t.Fatalf("original session state = %q, want open", got)
 	}
 
-	// The slot is still held while the session is merely half_open.
 	hn.hub.RemoveClient(ctrl.c)
 	if got := hn.hub.SessionState(first.SessionID); got != protocol.SessionHalfOpen {
 		t.Fatalf("session state after controller drop = %q, want half_open", got)
@@ -668,7 +631,6 @@ func TestSecondControllerGetsBusy(t *testing.T) {
 		t.Fatalf("half_open session: error code = %q, want busy", got)
 	}
 
-	// Once the first session is closed the slot frees.
 	host.send(protocol.TypeBye, protocol.Bye{SessionID: first.SessionID, Reason: protocol.ByeHostEnded})
 	if got := hn.hub.SessionState(first.SessionID); got != "" {
 		t.Fatalf("session should be gone after bye, state = %q", got)
@@ -690,10 +652,6 @@ func TestSelfConnectRejected(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// presence
-// ---------------------------------------------------------------------------
-
 func TestPresenceGoesOfflineAfterTimeout(t *testing.T) {
 	hn := newHarness(t)
 	host, ctrl := hn.pair(t)
@@ -714,7 +672,6 @@ func TestPresenceGoesOfflineAfterTimeout(t *testing.T) {
 		t.Fatalf("presence pushes = %d, want 1", n)
 	}
 
-	// 39s of silence: still online, no new push.
 	hn.clock.Advance(39 * time.Second)
 	hn.hub.Sweep()
 	if !hn.hub.IsOnline(host.deviceID) {
@@ -724,7 +681,6 @@ func TestPresenceGoesOfflineAfterTimeout(t *testing.T) {
 		t.Fatalf("presence pushes after 39s = %d, want 1", n)
 	}
 
-	// Cross 40s: offline, exactly one new push.
 	hn.clock.Advance(2 * time.Second)
 	offlineAt := hn.clock.Now()
 	hn.hub.Sweep()
@@ -745,7 +701,6 @@ func TestPresenceGoesOfflineAfterTimeout(t *testing.T) {
 		t.Fatalf("presence.since = %d, want %d", off.Since, offlineAt.UnixMilli())
 	}
 
-	// A heartbeat brings it back, with one more push.
 	host.send(protocol.TypeHeartbeat, protocol.Heartbeat{})
 	if !hn.hub.IsOnline(host.deviceID) {
 		t.Fatal("a heartbeat should bring the device back online")
@@ -757,7 +712,7 @@ func TestPresenceGoesOfflineAfterTimeout(t *testing.T) {
 	if !back.Online {
 		t.Fatal("presence should be online again")
 	}
-	// Repeated heartbeats do not spam watchers.
+
 	host.send(protocol.TypeHeartbeat, protocol.Heartbeat{})
 	if n := ctrl.count(protocol.TypePresence); n != 3 {
 		t.Fatalf("presence pushes after a second heartbeat = %d, want 3", n)
@@ -791,11 +746,6 @@ func TestUnwatchStopsPushes(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// resume
-// ---------------------------------------------------------------------------
-
-// openSession brings up a host+controller session and returns both tokens.
 func (hn *harness) openSession(t *testing.T) (host, ctrl *peer, sessionID, hostTok, ctrlTok string) {
 	t.Helper()
 	host, ctrl = hn.pair(t)
@@ -809,7 +759,6 @@ func TestResumeWithValidTokenSurvivesSocketDrop(t *testing.T) {
 	hn := newHarness(t)
 	host, ctrl, sid, _, ctrlTok := hn.openSession(t)
 
-	// The controller's socket dies. The session must NOT.
 	host.reset()
 	hn.hub.RemoveClient(ctrl.c)
 	if got := hn.hub.SessionState(sid); got != protocol.SessionHalfOpen {
@@ -820,8 +769,6 @@ func TestResumeWithValidTokenSurvivesSocketDrop(t *testing.T) {
 		t.Fatalf("host peer_state = %+v, want detached for %s", ps, sid)
 	}
 
-	// Two minutes of network flutter, then a fresh socket, re-auth and resume —
-	// with no access code anywhere in the path.
 	hn.clock.Advance(2 * time.Minute)
 	hn.reconnect(ctrl)
 	helloOK := ctrl.hello(protocol.RoleController)
@@ -855,7 +802,6 @@ func TestResumeWithValidTokenSurvivesSocketDrop(t *testing.T) {
 		t.Fatal("host should have been told the peer re-attached")
 	}
 
-	// The old token is dead now that it has been rotated away.
 	hn.reconnect(ctrl)
 	ctrl.hello(protocol.RoleController)
 	ctrl.reset()
@@ -866,7 +812,7 @@ func TestResumeWithValidTokenSurvivesSocketDrop(t *testing.T) {
 	if got := ctrl.lastErr().Code; got != protocol.ErrBadToken {
 		t.Fatalf("stale token error = %q, want %q", got, protocol.ErrBadToken)
 	}
-	// ...but the rotated one still works.
+
 	ctrl.reset()
 	ctrl.send(protocol.TypeResume, protocol.Resume{SessionID: sid, SessionToken: r.SessionToken})
 	if !ctrl.has(protocol.TypeResumeOK) {
@@ -880,7 +826,6 @@ func TestResumeWithForgedOrExpiredTokenFails(t *testing.T) {
 	hn.reconnect(ctrl)
 	ctrl.hello(protocol.RoleController)
 
-	// Forged: flip a byte of the MAC.
 	forged := []byte(ctrlTok)
 	forged[len(forged)-1] ^= 0x01
 	ctrl.reset()
@@ -892,14 +837,12 @@ func TestResumeWithForgedOrExpiredTokenFails(t *testing.T) {
 		t.Fatalf("forged token error = %q, want %q", got, protocol.ErrBadToken)
 	}
 
-	// Garbage.
 	ctrl.reset()
 	ctrl.send(protocol.TypeResume, protocol.Resume{SessionID: sid, SessionToken: "not-a-token"})
 	if got := ctrl.lastErr().Code; got != protocol.ErrBadToken {
 		t.Fatalf("garbage token error = %q, want %q", got, protocol.ErrBadToken)
 	}
 
-	// A token minted by a different server secret must not verify.
 	other := auth.NewSigner([]byte("a completely different hmac secret!!"))
 	alien := other.Mint(auth.TokenClaims{SessionID: sid, DeviceID: ctrl.deviceID,
 		Expiry: hn.clock.Now().Add(time.Hour), Epoch: 1, Nonce: "whatever"})
@@ -909,7 +852,6 @@ func TestResumeWithForgedOrExpiredTokenFails(t *testing.T) {
 		t.Fatalf("alien token error = %q, want %q", got, protocol.ErrBadToken)
 	}
 
-	// Expired: past the 10-minute TTL the session is swept away entirely.
 	hn.clock.Advance(SessionTokenTTL + time.Second)
 	hn.hub.Sweep()
 	if got := hn.hub.SessionState(sid); got != "" {
@@ -929,7 +871,7 @@ func TestResumeRejectsAnotherDevicesToken(t *testing.T) {
 	hn.reconnect(ctrl)
 	ctrl.hello(protocol.RoleController)
 	ctrl.reset()
-	// The controller presents the HOST's token.
+
 	ctrl.send(protocol.TypeResume, protocol.Resume{SessionID: sid, SessionToken: hostTok})
 	if ctrl.has(protocol.TypeResumeOK) {
 		t.Fatal("a token bound to the other device was accepted")
@@ -964,7 +906,7 @@ func TestOrphanedSessionSurvivesUntilTokenExpiry(t *testing.T) {
 	if got := hn.hub.SessionState(sid); got != protocol.SessionHalfOpen {
 		t.Fatalf("state after one side resumed = %q, want half_open", got)
 	}
-	// The host's token is now the only thing keeping the other side resumable.
+
 	hn.reconnect(host)
 	host.hello(protocol.RoleHost)
 	host.reset()
@@ -992,7 +934,7 @@ func TestRenewExtendsTheResumeWindow(t *testing.T) {
 		t.Fatalf("renew_ok.expiresAt = %d, want %d", r.ExpiresAt,
 			hn.clock.Now().Add(SessionTokenTTL).UnixMilli())
 	}
-	// 8 more minutes: the ORIGINAL token would have expired; the renewed one has not.
+
 	hn.clock.Advance(8 * time.Minute)
 	hn.reconnect(ctrl)
 	hn.hub.Sweep()
@@ -1006,10 +948,6 @@ func TestRenewExtendsTheResumeWindow(t *testing.T) {
 		t.Fatalf("resume with the renewed token failed: %s", ctrl.typesLocked())
 	}
 }
-
-// ---------------------------------------------------------------------------
-// relay
-// ---------------------------------------------------------------------------
 
 func TestSDPAndICERelayVerbatim(t *testing.T) {
 	hn := newHarness(t)
@@ -1041,14 +979,12 @@ func TestSDPAndICERelayVerbatim(t *testing.T) {
 		t.Fatalf("relayed ICE = %+v, want candidate %q", ice, cand)
 	}
 
-	// Wrong session id is refused.
 	ctrl.reset()
 	ctrl.send(protocol.TypeSDP, protocol.SDP{SessionID: "00000000000000000000000000000000", SDPType: "offer", SDP: body})
 	if got := ctrl.lastErr().Code; got != protocol.ErrNoSession {
 		t.Fatalf("relay to an unknown session: error = %q, want %q", got, protocol.ErrNoSession)
 	}
 
-	// With the peer detached, relay is refused rather than queued.
 	hn.reconnect(host)
 	ctrl.reset()
 	ctrl.send(protocol.TypeSDP, protocol.SDP{SessionID: sid, SDPType: "offer", SDP: body})
@@ -1076,7 +1012,6 @@ func TestPakeIsRelayedLikeSDP(t *testing.T) {
 		t.Fatalf("relayed payload = %q, want %q", got, back)
 	}
 
-	// Oversized payloads are refused, not relayed.
 	host.reset()
 	ctrl.reset()
 	ctrl.send(protocol.TypePake, protocol.Pake{
@@ -1088,7 +1023,6 @@ func TestPakeIsRelayedLikeSDP(t *testing.T) {
 		t.Fatalf("oversized pake: error = %q, want %q", got, protocol.ErrBadRequest)
 	}
 
-	// An unknown session, and a detached peer, behave exactly as for sdp.
 	ctrl.reset()
 	ctrl.send(protocol.TypePake, protocol.Pake{
 		SessionID: "00000000000000000000000000000000", Step: 1, Payload: body})
@@ -1124,10 +1058,6 @@ func TestByeClosesSessionForBothSides(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// access-code refresh
-// ---------------------------------------------------------------------------
-
 func TestRefreshBumpsTheEpochAndKillsSessions(t *testing.T) {
 	hn := newHarness(t)
 	host, ctrl, sid, _, ctrlTok := hn.openSession(t)
@@ -1157,7 +1087,6 @@ func TestRefreshBumpsTheEpochAndKillsSessions(t *testing.T) {
 		t.Fatalf("code epoch = %d, want %d", after.CodeEpoch, before.CodeEpoch+1)
 	}
 
-	// The live session was killed, both sides told why.
 	if got := hn.hub.SessionState(sid); got != "" {
 		t.Fatalf("session state after refresh = %q, want gone", got)
 	}
@@ -1166,7 +1095,6 @@ func TestRefreshBumpsTheEpochAndKillsSessions(t *testing.T) {
 		t.Fatalf("controller bye = %+v, want code_refreshed for %s", b, sid)
 	}
 
-	// The token from before the refresh no longer resumes.
 	hn.reconnect(ctrl)
 	ctrl.hello(protocol.RoleController)
 	ctrl.reset()
@@ -1175,17 +1103,12 @@ func TestRefreshBumpsTheEpochAndKillsSessions(t *testing.T) {
 		t.Fatalf("resume after refresh: error = %q, want %q", got, protocol.ErrNoSession)
 	}
 
-	// A new session still opens: the refresh revokes, it does not lock out.
 	ctrl.reset()
 	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
 	if !ctrl.has(protocol.TypeConnectOK) {
 		t.Fatalf("connect after refresh failed: %s", ctrl.typesLocked())
 	}
 }
-
-// ---------------------------------------------------------------------------
-// misc
-// ---------------------------------------------------------------------------
 
 func TestUnsupportedVersionClosesConnection(t *testing.T) {
 	hn := newHarness(t)

@@ -1,16 +1,5 @@
 // Command gen emits the cross-implementation wire vectors.
-//
-// The Go types in protocol.go are the reference encoding: they are what the
-// deployed rc-signal actually speaks. This program serialises one frame per
-// message type, plus the edge cases that omitempty and unknown-value handling
-// are easy to get wrong on, into vectors.json.
-//
-// Every other implementation of the protocol is expected to decode each frame,
-// re-encode it, and get a semantically identical document back. That is what
-// makes "the Rust client matches the Go server" a falsifiable claim rather than
-// two test suites that each pass against their own assumptions.
-//
-// Regenerate with:  go run ./vectors -out vectors/vectors.json
+// Regenerate with: go run ./vectors -out vectors/vectors.json
 package main
 
 import (
@@ -51,9 +40,6 @@ func main() {
 
 	const ts = int64(1755600000000)
 
-	// Signed-SDP material (PROTOCOL.md §2.12). The keys are real DER SPKI P-256
-	// encodings so a decoder that parses them is exercised; the signature is
-	// opaque to the wire contract and is checked by rc-identity's own tests.
 	const hostPubkey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuBGGi2DgfaFZytt5/esidQP3Qd3pzdIUC2MN8/OzOl+mubtCml0DONiJGrtUrhqnO7XcFGUDx/gNpT3TdtsLuA=="
 	const controllerPubkey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEb/A7lJJBzh2t1DUZ5pYOCoW0GmmgXDKBA6orzhWUyhY8T3U6Vb8B3FP2wLDH7ueLQMb/fSWpbiKCuYnO9xwUSg=="
 	const signedFP = "sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A"
@@ -65,7 +51,6 @@ func main() {
 		Time: 3, MemKiB: 65536, Par: 1, Len: 32,
 	}
 
-	// -- signaling -----------------------------------------------------------
 	add("challenge", "signaling", p.TypeChallenge, "", "", "", ts,
 		p.Challenge{Nonce: "bm9uY2Vub25jZW5vbmNlbm9uY2Vub25jZW5vbg==", ServerTime: ts})
 
@@ -242,7 +227,6 @@ func main() {
 		p.Error{Code: p.ErrEntitlement, Message: "trial has ended",
 			Reason: p.EntitlementTrialExpired})
 
-	// -- ctrl ----------------------------------------------------------------
 	add("mouse_down_left", "ctrl", p.CtrlMouseDown, "", "", "", ts,
 		p.MouseEvent{Button: p.ButtonLeft, X: 0.5, Y: 0.5})
 	add("mouse_up_right", "ctrl", p.CtrlMouseUp, "", "", "", ts,
@@ -312,7 +296,6 @@ func main() {
 	add("session_close", "ctrl", p.CtrlSessionClose, "", "", "", ts,
 		p.SessionClose{Reason: p.ByeHostEnded})
 
-	// -- hi ------------------------------------------------------------------
 	add("mouse_move", "hi", p.HiMouseMove,
 		"receiver must drop any packet whose seq is <= the highest already seen", "", "", ts,
 		p.MouseMove{X: 0.123456789, Y: 0.987654321, Seq: 1})

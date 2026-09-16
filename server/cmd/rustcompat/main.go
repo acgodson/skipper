@@ -1,15 +1,5 @@
 // Command rustcompat checks material emitted by the Rust identity crate
-// (win/crates/rc-identity) with the SAME function the production signaling
-// server uses to authenticate a device: auth.VerifyDeviceSig.
-//
-// The sibling `interopverify` does this for the Swift client; this one exists
-// so the Windows host's crypto is held to the identical standard. Both assert
-// the negative direction too — a checker hardwired to "yes" must fail here.
-//
-// Under protocol v2 there is no access-code verifier to check: the code is
-// proved peer to peer and never reaches the server (PROTOCOL.md §2.17).
-//
-// Input (stdin): {"pubkey","nonce","sig"}
+// with the SAME function the production signaling server uses to authenticate a device.
 package main
 
 import (

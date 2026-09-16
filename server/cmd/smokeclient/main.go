@@ -1,7 +1,5 @@
 // Command smokeclient drives two real WebSocket clients through the whole
-// rc-signal flow and prints PASS/FAIL per step. It exits non-zero if any step
-// fails. It is used by scripts/smoke-signal.sh; there is no other runtime
-// dependency.
+// rc-signal flow and prints PASS/FAIL per step.
 package main
 
 import (
@@ -44,8 +42,6 @@ func fatal(format string, args ...any) {
 	os.Exit(1)
 }
 
-// ---------------------------------------------------------------------------
-
 type client struct {
 	name     string
 	url      string
@@ -78,8 +74,6 @@ func newClient(name, url string) *client {
 func (c *client) dial() {
 	dialer := *websocket.DefaultDialer
 	if insecureTLS {
-		// Self-signed cert, pinned by fingerprint in the real app. The smoke client
-		// checks the pin separately; skipping CA verification here is deliberate.
 		dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 	ws, _, err := dialer.Dial(c.url, nil)
@@ -131,7 +125,6 @@ func (e env) nonce() string {
 	return ch.Nonce
 }
 
-// wait returns the next message whose type is in want, buffering the rest.
 func (c *client) wait(want ...string) (env, bool) {
 	match := func(t string) bool {
 		for _, w := range want {
@@ -175,7 +168,6 @@ func (c *client) mustGet(want string) env {
 	return e
 }
 
-// drain returns any already-buffered message of the given type.
 func (c *client) buffered(typ string) (env, bool) {
 	for i, p := range c.pending {
 		if p.Type == typ {
@@ -207,10 +199,6 @@ func decode[T any](e env) T {
 	return v
 }
 
-// legacyCode is a v1 access code, sent once to prove a v2 server refuses the
-// field. deniedLabel is the device label the static entitlement provider
-// refuses in development, which is how the deny path is exercised without
-// knowing a device id in advance.
 const (
 	legacyCode  = "SW7K2M9Q"
 	deniedLabel = entitlement.DevDenyLabel
@@ -221,7 +209,7 @@ func (c *client) register(label string) string {
 		Pubkey: c.pub, Sig: c.sig(), Label: label})
 	ok := decode[protocol.RegisterOK](c.mustGet(protocol.TypeRegisterOK))
 	c.deviceID = ok.DeviceID
-	c.mustGet(protocol.TypeChallenge) // fresh nonce for hello
+	c.mustGet(protocol.TypeChallenge)
 	return ok.DeviceID
 }
 
@@ -253,7 +241,6 @@ func main() {
 	host.dial()
 	ctrl.dial()
 
-	// ---- 1. registration -------------------------------------------------
 	hostID := host.register("Smoke Host")
 	ctrlID := ctrl.register("Smoke Controller")
 	check("register host device", protocol.ValidDeviceID(hostID),
@@ -262,7 +249,6 @@ func main() {
 		protocol.ValidDeviceID(ctrlID) && ctrlID != hostID,
 		fmt.Sprintf("controller id %q vs host id %q", ctrlID, hostID))
 
-	// ---- 2. authenticated hello -----------------------------------------
 	hok := host.hello(protocol.RoleHost)
 	cok := ctrl.hello(protocol.RoleController)
 	check("host hello_ok", hok.DeviceID == hostID && hok.HeartbeatSec == 15 && hok.OfflineAfterSec == 40,
@@ -276,19 +262,16 @@ func main() {
 	check("hello_ok carries ephemeral TURN credentials", turnOK,
 		fmt.Sprintf("iceServers = %+v", cok.ICEServers))
 
-	// ---- 3. heartbeat ----------------------------------------------------
 	host.send(protocol.TypeHeartbeat, protocol.Heartbeat{})
 	hb := decode[protocol.HeartbeatOK](host.mustGet(protocol.TypeHeartbeatOK))
 	check("heartbeat acknowledged", hb.ServerTime > 0, fmt.Sprintf("serverTime = %d", hb.ServerTime))
 
-	// ---- 4. presence watch ----------------------------------------------
 	ctrl.send(protocol.TypeWatch, protocol.Watch{DeviceID: hostID})
 	wok := decode[protocol.WatchOK](ctrl.mustGet(protocol.TypeWatchOK))
 	pres := decode[protocol.Presence](ctrl.mustGet(protocol.TypePresence))
 	check("watch reports the host online", wok.DeviceID == hostID && pres.Online && pres.DeviceID == hostID,
 		fmt.Sprintf("watch_ok=%+v presence=%+v", wok, pres))
 
-	// ---- 5. a v1 access code is refused ----------------------------------
 	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID, AccessCode: legacyCode})
 	e, _ := ctrl.wait(protocol.TypeConnectOK, protocol.TypeError)
 	errp := decode[protocol.Error](e)
@@ -296,7 +279,6 @@ func main() {
 		e.Type == protocol.TypeError && errp.Code == protocol.ErrBadRequest,
 		fmt.Sprintf("got %s %+v", e.Type, errp))
 
-	// ---- 6. entitlement opens the session --------------------------------
 	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID})
 	e, ok := ctrl.wait(protocol.TypeConnectOK, protocol.TypeError)
 	if !ok || e.Type != protocol.TypeConnectOK {
@@ -319,7 +301,6 @@ func main() {
 		start.ControllerPubkey == ctrl.pub,
 		fmt.Sprintf("session_start controllerPubkey=%q", start.ControllerPubkey))
 
-	// ---- 7. strict 1:1 ---------------------------------------------------
 	third := newClient("ctrl2", url)
 	third.dial()
 	third.register("Smoke Controller 2")
@@ -332,7 +313,6 @@ func main() {
 		fmt.Sprintf("got %s %+v", e.Type, busy))
 	third.hangUp()
 
-	// ---- 8. SDP / ICE / PAKE relay ---------------------------------------
 	const offerSDP = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
 	ctrl.send(protocol.TypeSDP, protocol.SDP{SessionID: ctrl.session, SDPType: "offer", SDP: offerSDP})
 	got := decode[protocol.SDP](host.mustGet(protocol.TypeSDP))
@@ -375,7 +355,6 @@ func main() {
 		e.Type == protocol.TypeError && big.Code == protocol.ErrBadRequest,
 		fmt.Sprintf("got %s %+v", e.Type, big))
 
-	// ---- 9. kill the controller socket and resume ------------------------
 	ctrl.hangUp()
 	ps, ok := host.wait(protocol.TypePeerState)
 	psv := decode[protocol.PeerState](ps)
@@ -402,7 +381,6 @@ func main() {
 	check("resume rotates the session token", rok.SessionToken != ctrl.token, "token unchanged")
 	resumed.session, resumed.token = rok.SessionID, rok.SessionToken
 
-	// A stale token must now be refused.
 	stale := newClient("ctrl-stale", url)
 	stale.priv, stale.pub, stale.deviceID = ctrl.priv, ctrl.pub, ctrl.deviceID
 	stale.dial()
@@ -414,7 +392,6 @@ func main() {
 		e.Type == protocol.TypeError && se.Code == protocol.ErrBadToken,
 		fmt.Sprintf("got %s %+v", e.Type, se))
 	stale.hangUp()
-	// stale's hello displaced `resumed`; bring the real controller back.
 	resumed.hangUp()
 	live := newClient("ctrl-live", url)
 	live.priv, live.pub, live.deviceID = ctrl.priv, ctrl.pub, ctrl.deviceID
@@ -428,13 +405,11 @@ func main() {
 	live.session = ctrl.session
 	live.token = decode[protocol.ResumeOK](e).SessionToken
 
-	// ---- 10. relay still works after the resume --------------------------
 	host.send(protocol.TypeSDP, protocol.SDP{SessionID: host.session, SDPType: "offer", SDP: offerSDP, Restart: true})
 	rst := decode[protocol.SDP](live.mustGet(protocol.TypeSDP))
 	check("ICE-restart offer relays after resume",
 		rst.SDP == offerSDP && rst.Restart, fmt.Sprintf("got %+v", rst))
 
-	// ---- 11. refresh_code ------------------------------------------------
 	host.send(protocol.TypeRefreshCode, map[string]any{})
 	rc := decode[protocol.RefreshCodeOK](host.mustGet(protocol.TypeRefreshCodeOK))
 	check("refresh_code acknowledged with an empty payload", rc.DeviceID == hostID, fmt.Sprintf("%+v", rc))
@@ -473,7 +448,6 @@ func main() {
 		ok && decode[protocol.Bye](hb2).SessionID == live.session,
 		fmt.Sprintf("host bye = %+v", decode[protocol.Bye](hb2)))
 
-	// ---- 12. a denied entitlement refuses the connection ------------------
 	denied := newClient("denied-host", url)
 	denied.dial()
 	deniedID := denied.register(deniedLabel)
@@ -486,10 +460,9 @@ func main() {
 		fmt.Sprintf("got %s %+v", e.Type, de))
 	denied.hangUp()
 
-	// ---- 13. presence flips offline when a socket dies -------------------
 	live.send(protocol.TypeWatch, protocol.Watch{DeviceID: hostID})
 	live.mustGet(protocol.TypeWatchOK)
-	live.mustGet(protocol.TypePresence) // current state: online
+	live.mustGet(protocol.TypePresence)
 	host.hangUp()
 	off, ok := live.wait(protocol.TypePresence)
 	ov := decode[protocol.Presence](off)

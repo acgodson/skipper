@@ -15,9 +15,6 @@ import (
 	protocol "rcprotocol"
 )
 
-// Timing of the internal calls. Check is on the connect path and gets one
-// attempt; the accounting reports are retried a bounded number of times
-// because losing one silently loses money.
 const (
 	CheckTimeout   = 3 * time.Second
 	ReportTimeout  = 3 * time.Second
@@ -25,16 +22,12 @@ const (
 	ReportBackoff  = 250 * time.Millisecond
 )
 
-// HTTP talks to the API's internal surface (API.md §6) over a private network
-// path, authenticated with a shared bearer secret.
 type HTTP struct {
 	base   string
 	token  string
 	client *http.Client
 }
 
-// NewHTTP builds the provider. baseURL is the internal API root
-// (RC_API_INTERNAL_URL); token is the shared secret (RC_INTERNAL_TOKEN).
 func NewHTTP(baseURL, token string) (*HTTP, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
@@ -54,9 +47,6 @@ func NewHTTP(baseURL, token string) (*HTTP, error) {
 	}, nil
 }
 
-// Check maps GET /internal/entitlement/{deviceId} onto a Decision. A transport
-// failure or an unreadable answer is an error, not a denial: the hub answers
-// error{internal} rather than inventing a reason the user cannot act on.
 func (h *HTTP) Check(ctx context.Context, hostDeviceID string) (Decision, error) {
 	if !protocol.ValidDeviceID(hostDeviceID) {
 		return Decision{}, errors.New("hostDeviceID must be 9 digits")
@@ -99,9 +89,6 @@ func (h *HTTP) Check(ctx context.Context, hostDeviceID string) (Decision, error)
 	}
 }
 
-// decideFrom applies API.md §4.1: an unrecognised status is treated as
-// exhausted, and an exhausted account with a balance field is out of money
-// rather than out of trial.
 func decideFrom(ent protocol.Entitlement) Decision {
 	switch ent.Status {
 	case protocol.StatusTrial, protocol.StatusActive:
@@ -116,12 +103,10 @@ func decideFrom(ent protocol.Entitlement) Decision {
 	}
 }
 
-// SessionStarted reports an opened session to the accounting surface.
 func (h *HTTP) SessionStarted(ctx context.Context, r protocol.SessionStartReport) error {
 	return h.post(ctx, protocol.PathInternalSessionStart, r)
 }
 
-// SessionStopped reports a closed session to the accounting surface.
 func (h *HTTP) SessionStopped(ctx context.Context, r protocol.SessionStopReport) error {
 	return h.post(ctx, protocol.PathInternalSessionStop, r)
 }
@@ -153,7 +138,6 @@ func (h *HTTP) post(ctx context.Context, path string, payload any) error {
 	return last
 }
 
-// postOnce returns whether the failure is worth another attempt.
 func (h *HTTP) postOnce(ctx context.Context, path string, body []byte) (bool, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, ReportTimeout)
 	defer cancel()

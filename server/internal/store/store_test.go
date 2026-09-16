@@ -35,7 +35,6 @@ func TestRegisterAndLookup(t *testing.T) {
 		t.Fatalf("timestamps = %v/%v, want %v", d.CreatedAt, d.UpdatedAt, now)
 	}
 
-	// Idempotent per key.
 	again, existing, err := s.Register("PUBKEY-A", "renamed", now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +42,7 @@ func TestRegisterAndLookup(t *testing.T) {
 	if !existing || again.DeviceID != d.DeviceID {
 		t.Fatalf("re-register returned %q existing=%v, want %q true", again.DeviceID, existing, d.DeviceID)
 	}
-	// Distinct keys get distinct ids.
+
 	seen := map[string]bool{d.DeviceID: true}
 	for i := 0; i < 20; i++ {
 		x, _, err := s.Register("PUBKEY-"+string(rune('a'+i)), "", now)
@@ -100,8 +99,6 @@ func TestBumpEpoch(t *testing.T) {
 	}
 }
 
-// TestMigrationDropsV1VerifierColumns proves the v2 schema can open a database
-// written by a v1 server: the device survives, the verifier does not.
 func TestMigrationDropsV1VerifierColumns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v1.db")
 	db, err := sql.Open("sqlite", path)
