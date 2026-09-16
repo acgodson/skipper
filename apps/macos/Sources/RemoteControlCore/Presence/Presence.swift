@@ -3,14 +3,12 @@ import Foundation
 public enum PresenceState: String, Equatable {
     case online
     case offline
-    /// We have no signaling connection, so we genuinely do not know. Shown as
-    /// "Unknown" rather than guessing "Offline", which would be a lie.
     case unknown
 
     public var indicator: String {
         switch self {
-        case .online: return "\u{25CF}"   // filled
-        case .offline: return "\u{25CB}"  // hollow
+        case .online: return "\u{25CF}"
+        case .offline: return "\u{25CB}"
         case .unknown: return "\u{25CB}"
         }
     }
@@ -24,10 +22,6 @@ public enum PresenceState: String, Equatable {
     }
 }
 
-/// Presence of a watched peer device.
-///
-/// PHASE 3 supplies the real implementation over the signaling WebSocket:
-/// `watch {deviceId}` on connect and a pushed `presence` event thereafter.
 @MainActor
 public protocol PeerPresenceSource: AnyObject {
     var state: PresenceState { get }
@@ -36,9 +30,6 @@ public protocol PeerPresenceSource: AnyObject {
     func stopWatching()
 }
 
-/// STUB. Reports `.unknown` forever, because Phase 2 has no signaling client.
-/// It never claims a peer is online — that would fake a feature that does not
-/// exist yet.
 @MainActor
 public final class PreviewPresenceSource: PeerPresenceSource, ObservableObject {
 
@@ -62,8 +53,6 @@ public final class PreviewPresenceSource: PeerPresenceSource, ObservableObject {
     }
 }
 
-/// This machine's own reachability, as reported to the signaling server.
-/// PHASE 3, real: driven by the signaling client's authentication state.
 @MainActor
 public final class SelfPresence: ObservableObject {
     @Published public private(set) var state: PresenceState = .unknown
@@ -82,14 +71,6 @@ public final class SelfPresence: ObservableObject {
     }
 }
 
-/// PHASE 3, real. Driven by `watch` / `presence` on the signaling socket
-/// (PROTOCOL.md §2.7, §2.8). `SessionCoordinator` owns one and pushes into it;
-/// the view binds to it exactly as it bound to the Phase 2 stub.
-///
-/// It reports `.unknown`, never `.offline`, whenever we have no authenticated
-/// signaling socket — with no control plane we do not know anything about the
-/// peer, and claiming "Offline" would be a statement about them rather than
-/// about us.
 @MainActor
 public final class SignalingPresenceSource: PeerPresenceSource, ObservableObject {
 
@@ -98,7 +79,6 @@ public final class SignalingPresenceSource: PeerPresenceSource, ObservableObject
     @Published public private(set) var since: Date?
     @Published public private(set) var serverReachable = false
 
-    /// Set by the owner so `watch`/`stopWatching` reach the socket.
     public var onWatch: ((String) -> Void)?
     public var onStopWatching: (() -> Void)?
 
@@ -130,7 +110,6 @@ public final class SignalingPresenceSource: PeerPresenceSource, ObservableObject
         onStopWatching?()
     }
 
-    /// Called by the coordinator on every `presence` push for the watched device.
     public func apply(online: Bool, since millis: Int64) {
         state = online ? .online : .offline
         self.since = millis > 0 ? Date(timeIntervalSince1970: Double(millis) / 1000.0) : nil

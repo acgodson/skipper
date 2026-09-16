@@ -4,18 +4,10 @@ import AppKit
 import RCTestKit
 import RemoteControlCore
 
-// Phase 5. Every assertion here names an exact value, and every one of them
-// fails against a stub: an injector that returns [] cannot satisfy the drag
-// test, a reset that does nothing cannot satisfy the idempotency test, and a
-// clipboard guard that always says yes cannot satisfy the echo test.
-
 private func envelope<T: Encodable>(_ type: String, _ payload: T) throws -> Envelope {
     try Envelope.decode(Envelope.encode(type: type, payload: payload))
 }
 
-/// A 1000x1000 display at the origin: a normalised coordinate then reads
-/// directly as a permille of the screen, so every expected pixel below is
-/// obvious by inspection rather than the result of a second calculation.
 private let unitTarget = InputDisplayTarget(bounds: CGRect(x: 0, y: 0, width: 1000, height: 1000))
 
 private func mouseEvent(_ event: InjectedEvent?) throws -> InjectedEvent.MouseEvent {
@@ -48,16 +40,11 @@ public let keyMappingSuite = TestSuite("input/keys", [
     },
 
     TestCase("EVERY combination of the six modifiers round-trips through CGEventFlags") {
-        // 64 combinations, not a sample. A mapping that is right for Command
-        // alone and wrong for Command+Shift is exactly the bug that makes
-        // Cmd+Shift+4 type a "4" on the remote machine.
         for raw in 0...63 {
             let modifiers = KeyModifiers(rawValue: raw)
             let flags = modifiers.cgFlags
             try expectEqual(KeyModifiers(cgFlags: flags), modifiers,
                             "combination \(raw) did not survive the round trip")
-            // And the flags themselves are the union of the individual ones,
-            // never some blended value.
             var expected: CGEventFlags = []
             for bit in [KeyModifiers.shift, .control, .option, .command, .capsLock, .function]
             where modifiers.contains(bit) {
@@ -84,9 +71,6 @@ public let keyMappingSuite = TestSuite("input/keys", [
     },
 
     TestCase("a key_down for a modifier becomes flagsChanged, not a key event") {
-        // Posting a plain keyDown with keycode 55 does NOT make macOS think
-        // Command is held — this is the difference between Cmd+C copying and
-        // nothing happening.
         let injector = InputInjector(target: unitTarget)
         let events = injector.keyDown(KeyPayload(keycode: Int(VirtualKey.command), mods: [.command]))
         guard case .flagsChanged(let keycode, let flags)? = events.first else {
@@ -100,7 +84,7 @@ public let keyMappingSuite = TestSuite("input/keys", [
     TestCase("Cmd+C carries the Command flag on the letter itself") {
         let injector = InputInjector(target: unitTarget)
         _ = injector.keyDown(KeyPayload(keycode: Int(VirtualKey.command), mods: [.command]))
-        let events = injector.keyDown(KeyPayload(keycode: 8, mods: [.command]))   // kVK_ANSI_C
+        let events = injector.keyDown(KeyPayload(keycode: 8, mods: [.command]))
         guard case .key(let keycode, let down, let flags)? = events.first else {
             throw fail("expected a key event, got \(events)")
         }
@@ -111,9 +95,6 @@ public let keyMappingSuite = TestSuite("input/keys", [
     },
 
     TestCase("releasing a modifier clears its flag even if the peer still reports it") {
-        // A peer that sends the PRE-change modifier state on key-up is the
-        // classic source of a stuck Command key. The released bit is subtracted
-        // explicitly rather than trusted.
         let injector = InputInjector(target: unitTarget)
         _ = injector.keyDown(KeyPayload(keycode: Int(VirtualKey.command), mods: [.command]))
         let events = injector.keyUp(KeyPayload(keycode: Int(VirtualKey.command), mods: [.command]))
@@ -140,7 +121,6 @@ public let pointerInjectionSuite = TestSuite("input/pointer", [
         try expectClose(unitTarget.point(normalizedX: 0, y: 0), CGPoint(x: 0, y: 0))
         try expectClose(unitTarget.point(normalizedX: 1, y: 1), CGPoint(x: 1000, y: 1000))
         try expectClose(unitTarget.point(normalizedX: 0.25, y: 0.75), CGPoint(x: 250, y: 750))
-        // PROTOCOL.md §0: receivers MUST clamp.
         try expectClose(unitTarget.point(normalizedX: -0.5, y: 1.5), CGPoint(x: 0, y: 1000))
     },
 
@@ -160,9 +140,6 @@ public let pointerInjectionSuite = TestSuite("input/pointer", [
     },
 
     TestCase("PLAN.md §2.6: a drag posts DRAGGED events, never repeated moves") {
-        // This is the acceptance criterion for dragging a window by its title
-        // bar. AppKit tracks a title-bar drag on leftMouseDragged; a stream of
-        // mouseMoved events moves the cursor and leaves the window behind.
         let injector = InputInjector(target: unitTarget)
         _ = injector.mouseDown(MouseButtonPayload(button: .left, x: 0.1, y: 0.1))
         for step in 1...5 {
@@ -237,12 +214,9 @@ public let pointerInjectionSuite = TestSuite("input/pointer", [
         try expectEqual(try scroll(.begin).cgScrollPhase, 1)
         try expectEqual(try scroll(.changed).cgScrollPhase, 2)
         try expectEqual(try scroll(.end).cgScrollPhase, 4)
-        // Momentum is NOT a scroll phase: macOS carries it in its own field and
-        // setting both makes AppKit discard the event.
         try expectEqual(try scroll(.momentum).cgScrollPhase, 0)
         try expectEqual(try scroll(.momentum).cgMomentumPhase, 2)
         try expectEqual(try scroll(.changed).cgMomentumPhase, 0)
-        // Deltas pass through untouched: they are already host pixels (§5).
         try expectClose(try scroll(.changed).dx, 3)
         try expectClose(try scroll(.changed).dy, -7)
     },
@@ -292,9 +266,6 @@ public let sequenceGateSuite = TestSuite("input/seq", [
     },
 
     TestCase("input_reset reopens the gate, so a resumed peer is not frozen") {
-        // A resumed session restarts its sequence at 1. Without the reset the
-        // gate would reject every packet afterwards and the pointer would stop
-        // moving with no error anywhere.
         let injector = InputInjector(target: unitTarget)
         _ = injector.mouseMove(MouseMovePayload(x: 0.5, y: 0.5, seq: 900))
         _ = injector.reset()
@@ -324,17 +295,13 @@ public let inputResetSuite = TestSuite("input/reset", [
         try expectEqual(injector.heldKeycodes.count, 0)
         try expectEqual(injector.heldModifierKeycodes.count, 0)
 
-        // Two button-ups, one key-up, two flagsChanged.
         try expectEqual(events.count, 5)
         try expectEqual(try mouseEvent(events[0]).cgType, .leftMouseUp)
         try expectEqual(try mouseEvent(events[1]).cgType, .rightMouseUp)
-        // Released at the last known position, not at the origin.
         try expectClose(try mouseEvent(events[0]).point, CGPoint(x: 500, y: 250), tolerance: 1e-6)
         guard case .key(let keycode, let down, _) = events[2] else { throw fail("expected a key-up, got \(events[2])") }
         try expectEqual(keycode, 12)
         try expectFalse(down)
-        // The last event must leave NO modifier set: a stuck Command key is the
-        // worst failure this product has.
         guard case .flagsChanged(_, let finalFlags) = events[4] else { throw fail("expected flagsChanged last") }
         try expectEqual(finalFlags, KeyModifiers([]))
     },
@@ -363,8 +330,6 @@ public let inputResetSuite = TestSuite("input/reset", [
     },
 
     TestCase("a drag interrupted by a reset does not leave the button down") {
-        // The exact flutter scenario: the link dies mid-drag, the state machine
-        // sends input_reset, and the host must let go of the window.
         let injector = InputInjector(target: unitTarget)
         _ = injector.mouseDown(MouseButtonPayload(button: .left, x: 0.2, y: 0.2))
         _ = injector.mouseDrag(MouseButtonPayload(button: .left, x: 0.4, y: 0.2))
@@ -453,13 +418,10 @@ public let gestureSuite = TestSuite("input/gestures", [
         try expectEqual(GestureCatalog.action(for: .screenshotRegion), .combo(KeyCombo(VirtualKey.four, [.command, .shift])))
         try expectEqual(GestureCatalog.action(for: .forceQuit), .combo(KeyCombo(VirtualKey.escape, [.command, .option])))
         try expectEqual(GestureCatalog.action(for: .lockScreen), .combo(KeyCombo(VirtualKey.q, [.control, .command])))
-        // Launchpad has no key equivalent on a current macOS at all.
         try expectEqual(GestureCatalog.action(for: .launchpad), .launchApplication(path: GestureCatalog.launchpadPath))
     },
 
     TestCase("a gesture never leaves a modifier held") {
-        // A palette button that leaves Command down would make the remote Mac
-        // unusable in a way nothing on screen explains.
         for gesture in GestureName.allCases {
             var held: KeyModifiers = []
             var sawKey = false
@@ -505,16 +467,12 @@ public let gestureSuite = TestSuite("input/gestures", [
 public let clipboardSuite = TestSuite("input/clipboard", [
 
     TestCase("the hash is base64 SHA-256 of the UTF-8 text") {
-        // Pinned to the known SHA-256 of "abc", so a change of algorithm is a
-        // test failure rather than a silent protocol incompatibility.
         try expectEqual(ClipboardSyncEngine.hash("abc"),
                         "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=")
         try expectNotEqual(ClipboardSyncEngine.hash("abc"), ClipboardSyncEngine.hash("abd"))
     },
 
     TestCase("the echo guard drops the reflected message but accepts a new one") {
-        // The loop this prevents: A copies -> B applies -> B's poll sees a
-        // change -> B sends it back -> A applies -> forever.
         let a = ClipboardSyncEngine(originId: "111111111")
         let b = ClipboardSyncEngine(originId: "222222222")
 
@@ -523,13 +481,10 @@ public let clipboardSuite = TestSuite("input/clipboard", [
         try expectEqual(outgoing.hash, ClipboardSyncEngine.hash("hello"))
 
         try expectEqual(b.receive(outgoing), "hello", "the peer must accept it")
-        // B's own pasteboard poll now sees exactly that text. It must NOT go back.
         try expectNil(b.localChange(text: "hello"), "the reflected copy must be dropped")
         try expectGreaterThanOrEqual(b.droppedEchoes, 1)
-        // And if the very same payload arrives twice, it is dropped too.
         try expectNil(b.receive(outgoing), "a duplicate delivery must be dropped")
 
-        // A genuinely new copy on B still crosses.
         let second = try expectNotNil(b.localChange(text: "goodbye"))
         try expectEqual(a.receive(second), "goodbye", "a real, different copy must still get through")
         try expectNil(a.localChange(text: "goodbye"), "and must not bounce straight back")
@@ -539,7 +494,6 @@ public let clipboardSuite = TestSuite("input/clipboard", [
         let engine = ClipboardSyncEngine(originId: "111111111")
         try expectNotNil(engine.localChange(text: "x"))
         try expectNil(engine.localChange(text: "x"))
-        // …but re-copying it after something else did change is a real event.
         try expectNotNil(engine.localChange(text: "y"))
         try expectNotNil(engine.localChange(text: "x"))
     },
@@ -552,8 +506,6 @@ public let clipboardSuite = TestSuite("input/clipboard", [
     },
 
     TestCase("a hash that does not describe its text is refused") {
-        // A lying hash defeats the guard entirely: the next echo would carry a
-        // different hash and the loop would start.
         let engine = ClipboardSyncEngine(originId: "111111111")
         let bad = ClipboardTextPayload(text: "real", originId: "222222222",
                                        hash: ClipboardSyncEngine.hash("different"))
@@ -568,14 +520,12 @@ public let clipboardSuite = TestSuite("input/clipboard", [
         try expectNil(engine.receive(ClipboardTextPayload(text: big, originId: "222222222",
                                                           hash: ClipboardSyncEngine.hash(big))))
         try expectNil(engine.localChange(text: ""))
-        // Exactly at the limit is fine.
         let atLimit = String(repeating: "A", count: ClipboardSyncEngine.maxTextBytes)
         try expectNotNil(engine.localChange(text: atLimit))
     },
 
     TestCase("the limit is measured in UTF-8 bytes, not characters") {
         let engine = ClipboardSyncEngine(originId: "111111111")
-        // Each emoji is 4 bytes; a character count would let this through.
         let emoji = String(repeating: "\u{1F600}", count: ClipboardSyncEngine.maxTextBytes / 4 + 1)
         try expectGreaterThan(emoji.utf8.count, ClipboardSyncEngine.maxTextBytes)
         try expectLessThan(emoji.count, ClipboardSyncEngine.maxTextBytes)
@@ -674,8 +624,6 @@ public let controllerInputSuite = TestSuite("input/controller", [
     },
 
     TestCase("the keyboard tap's escape hatch is a combination nothing else uses") {
-        // While capture is on, essentially every shortcut goes to the other
-        // Mac. This one must not, or a user can trap themselves.
         try expectEqual(KeyboardCaptureTap.escapeHatchModifiers, KeyModifiers([.control, .option, .command]))
         try expectEqual(KeyboardCaptureTap.escapeHatchKeycode, 40)
         for gesture in GestureName.allCases {
@@ -703,15 +651,6 @@ private func pointer(_ x: Double, _ y: Double, _ kind: PointerEventKind,
 
 // MARK: - Real CGEvent construction
 
-/// These build genuine `CGEvent` objects through the same code path the app
-/// posts with, and read the fields back out of CoreGraphics.
-///
-/// They do NOT post: posting needs the Accessibility grant, which no unit test
-/// can have. That last mile — "the window server actually acted on it" — is
-/// `scripts/verify-input.sh`, which runs inside the .app bundle. What these
-/// pin is everything short of it: the event type, the modifier flags, the click
-/// state and the pixel-unit scroll fields are what CoreGraphics itself reports,
-/// not what our own value type claims.
 public let cgEventConstructionSuite = TestSuite("input/cgevent", [
 
     TestCase("a left drag really builds a kCGEventLeftMouseDragged") {
@@ -747,8 +686,6 @@ public let cgEventConstructionSuite = TestSuite("input/cgevent", [
             let modifiers = KeyModifiers(rawValue: raw)
             let event = try expectNotNil(sink.makeEvent(.key(keycode: VirtualKey.space,
                                                              down: true, flags: modifiers)))
-            // CoreGraphics may set additional non-modifier bits (e.g. the
-            // numeric-keypad marker), so compare the modifier bits we own.
             try expectEqual(KeyModifiers(cgFlags: event.flags), modifiers, "combination \(raw)")
         }
     },
@@ -760,10 +697,6 @@ public let cgEventConstructionSuite = TestSuite("input/cgevent", [
         try expectEqual(began.getIntegerValueField(.scrollWheelEventIsContinuous), 1,
                         "isContinuous=1 is what 'pixel units' means to CoreGraphics")
         try expectEqual(began.getIntegerValueField(.scrollWheelEventScrollPhase), 1)
-        // The PIXEL delta is what we asked for, verbatim. `DeltaAxis1` is the
-        // LINE count CoreGraphics derives from it (30px ≈ 3 lines) — the fact
-        // that the two differ is itself proof the event was created in pixel
-        // units: a line-unit event would carry -30 in both.
         try expectEqual(began.getIntegerValueField(.scrollWheelEventPointDeltaAxis1), -30)
         try expectEqual(began.getIntegerValueField(.scrollWheelEventDeltaAxis1), -3)
 
@@ -806,9 +739,6 @@ public let cgEventConstructionSuite = TestSuite("input/cgevent", [
     },
 
     TestCase("posting without the Accessibility grant is refused, not silently attempted") {
-        // On a machine with no grant this is the state the app must report; on
-        // one with the grant, events post. Either way `post` must have decided
-        // deliberately, which is what `lastAccessibilityState` records.
         let sink = CGEventSink()
         try expectNil(sink.lastAccessibilityState, "nothing probed yet")
         var reported: Bool?
@@ -832,9 +762,6 @@ public let cgEventConstructionSuite = TestSuite("input/cgevent", [
 
 public let appKitModifierSuite = TestSuite("input/appkit-modifiers", [
     TestCase("AppKit modifier flags map to the same bits CoreGraphics does") {
-        // The pointer path reads NSEvent flags (cheap) and the event tap reads
-        // CGEventFlags. They must agree, or a Cmd-click sent from the mouse
-        // path and one sent from the key path would differ.
         let pairs: [(NSEvent.ModifierFlags, KeyModifiers)] = [
             (.shift, .shift), (.control, .control), (.option, .option),
             (.command, .command), (.capsLock, .capsLock), (.function, .function),
@@ -844,8 +771,6 @@ public let appKitModifierSuite = TestSuite("input/appkit-modifiers", [
         }
         try expectEqual(KeyModifiers(appKitFlags: [.command, .shift]), KeyModifiers([.command, .shift]))
         try expectEqual(KeyModifiers(appKitFlags: []), KeyModifiers([]))
-        // NSEvent sets bits we do not model (numeric keypad, help); they must
-        // not leak into the wire value.
         try expectEqual(KeyModifiers(appKitFlags: [.numericPad, .command]), KeyModifiers.command)
     },
 ])

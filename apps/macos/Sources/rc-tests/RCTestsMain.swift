@@ -25,16 +25,6 @@ struct RCTests {
         exit(result.failed == 0 ? 0 : 1)
     }
 
-    /// Emits a real public key and a real signature over a caller-supplied nonce,
-    /// as JSON on stdout, for `scripts/interop-sig.sh` to feed to the Go verifier.
-    ///
-    /// This is the only way to prove the two languages agree. The Swift-side unit
-    /// tests can confirm the bytes *look* like DER SPKI and DER ECDSA, but only
-    /// Go's own `auth.VerifyDeviceSig` can confirm Go accepts them.
-    ///
-    /// Everything printed here is public material: a public key, a nonce and a
-    /// signature. The private key stays in the throwaway identity file and is
-    /// never written to stdout.
     @MainActor
     static func emitInterop(nonceBase64: String?) {
         guard let nonceBase64, let nonce = Data(base64Encoded: nonceBase64) else {
@@ -42,8 +32,6 @@ struct RCTests {
                 "usage: rc-tests --emit-interop <base64-nonce>\n".utf8))
             exit(2)
         }
-        // A scratch identity in a temp directory, so this never reads, writes or
-        // disturbs the user's real ~/Library/Application Support/RemoteControl.
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("rc-interop-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }

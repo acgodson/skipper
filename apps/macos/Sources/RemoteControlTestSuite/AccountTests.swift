@@ -3,10 +3,6 @@ import RCTestKit
 import RemoteControlCore
 
 // TODO: the Keychain half is proven only through the blob-store protocol here.
-// The real `DeviceTokenKeychain` item — service app.skipperdesk.desktop,
-// account device-token, AfterFirstUnlockThisDeviceOnly — is verified on a
-// signed build, because an unsigned test binary touching the login Keychain
-// puts a password prompt in front of a headless run.
 
 private func envelope(_ json: String) -> Data { Data(json.utf8) }
 

@@ -1,21 +1,9 @@
 import Foundation
 
-/// Turns server-owned state into the exact sentences the UI shows: the host's
-/// `GET /v1/entitlement` answer (API.md §4.1) and a failed `connect_req`
-/// (PROTOCOL.md §2.9/§7, API.md §4.3). No policy lives here — every branch
-/// renders a value the server already sent; nothing is computed from a
-/// threshold, a rate or a clock (API.md §4.2).
-///
-/// Shared by `HostView` (the Account section's status line) and `AppModel`
-/// (the Connect flow's failure text), so the two views never duplicate the
-/// same reason-to-sentence mapping.
 public enum EntitlementPresentation {
 
     // MARK: - API.md §4.1 host status line
 
-    /// The one status line the Account section shows once a host is linked.
-    /// `unlinked` is not rendered here: that status is already the account's
-    /// `.unlinked` state, with its own "Link this Mac" screen.
     public static func statusLine(for entitlement: Entitlement, now: Date = Date()) -> String {
         switch entitlement.status {
         case .trial:
@@ -34,14 +22,10 @@ public enum EntitlementPresentation {
         }
     }
 
-    /// Where the `exhausted` status line's button goes: `<web base>/credits`.
     public static func topUpURL(webBaseURL: URL) -> URL {
         webBaseURL.appendingPathComponent("credits")
     }
 
-    /// Integer cents (API.md §0 "Money": always cents, never a float in logic)
-    /// rendered as `$X.XX`. This is the one place that float ever appears, and
-    /// only as display text.
     public static func moneyString(cents: Int64) -> String {
         let negative = cents < 0
         let magnitude = negative ? -cents : cents
@@ -61,14 +45,8 @@ public enum EntitlementPresentation {
 
     public static let busySentence = "That Mac already has a controller connected."
 
-    /// PROTOCOL.md §2.14 `auth_failed`: the other Mac refused the access code.
-    /// The only failure in v2 that is about the code, and the only one the user
-    /// can fix by typing.
     public static let wrongCodeSentence = "Wrong access code. Check it on the other Mac."
 
-    /// `reason` is one of API.md §4.3's closed set. An unknown reason renders
-    /// `fallback` — the server's own `message` — rather than guessing at one
-    /// of the five (API.md §4.2: render what the server said).
     public static func entitlementSentence(reason: String?, fallback: String) -> String {
         switch reason {
         case "unlinked": return "That Mac isn't linked to a SkipperDesk account yet."
@@ -80,17 +58,11 @@ public enum EntitlementPresentation {
         }
     }
 
-    /// `retryAfterSec` (PROTOCOL.md §7 `rate_limited`) rendered in whole
-    /// minutes, rounded up so the wait is never understated.
     public static func rateLimitedSentence(retryAfterSec: Int) -> String {
         let minutes = max(1, Int((Double(retryAfterSec) / 60).rounded(.up)))
         return "Too many attempts. Try again in \(minutes) min."
     }
 
-    /// The single mapping entry point: a PROTOCOL.md §7 `code` (plus `reason`
-    /// and `retryAfterSec` when the code carries them) in, one sentence out.
-    /// `fallback` is the existing wording for every code this mapping does not
-    /// change (`offline`, `bad_code`, `unknown_device`, `self_connect`, …).
     public static func connectFailureSentence(
         code: String,
         reason: String?,
@@ -106,8 +78,6 @@ public enum EntitlementPresentation {
         }
     }
 
-    /// Adapts `ConnectFailure` (Signaling/SessionCoordinator.swift) to the
-    /// mapping above. The one call `AppModel` needs to make.
     public static func sentence(for failure: ConnectFailure) -> String {
         switch failure {
         case .busy:
@@ -119,8 +89,6 @@ public enum EntitlementPresentation {
                 code: Wire.ByeReason.authFailed, reason: nil, retryAfterSec: nil,
                 fallback: wrongCodeSentence)
         case .entitlement(let reason, let message):
-            // API.md §4.2: an unrecognised reason renders the server's own
-            // `message` verbatim rather than a guess at one of the five.
             return connectFailureSentence(
                 code: Wire.ErrorCode.entitlement, reason: reason, retryAfterSec: nil,
                 fallback: message)

@@ -1,15 +1,11 @@
 import Foundation
 import Security
 
-/// The device token of API.md §1.4, with the little the client is allowed to
-/// know about it: which device and account it names, and when it expires.
-/// The token itself is opaque and is never logged or displayed.
 public struct DeviceToken: Codable, Equatable {
 
     public let token: String
     public let deviceId: String
     public let accountId: String
-    /// Unix milliseconds, as everything absolute on this surface is.
     public let expiresAt: Int64
 
     public init(token: String, deviceId: String, accountId: String, expiresAt: Int64) {
@@ -30,7 +26,6 @@ public struct DeviceToken: Codable, Equatable {
 
     public var expiry: Date { Date(timeIntervalSince1970: Double(expiresAt) / 1000) }
 
-    /// API.md §1.5: refresh once the remaining TTL drops below seven days.
     public var needsRefresh: Bool { expiry.timeIntervalSinceNow < 7 * 24 * 60 * 60 }
 }
 
@@ -49,20 +44,12 @@ public enum DeviceTokenStoreError: Error, LocalizedError {
     }
 }
 
-/// Persists the token blob. The Keychain in production, a file only under the
-/// same dev conditions `IdentityStore` allows for the device key, memory in
-/// tests.
 public protocol DeviceTokenBlobStore {
     func load() throws -> Data?
     func save(_ blob: Data) throws
     func remove() throws
 }
 
-/// A generic-password item beside the device key: service
-/// `app.skipperdesk.desktop`, account `device-token`,
-/// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` so an unattended host is
-/// linked again after a reboot with nobody present, and so the token never
-/// travels to another Mac in a backup or through iCloud.
 public struct DeviceTokenKeychain: DeviceTokenBlobStore {
 
     public static let service = DeviceKeyKeychain.service
@@ -119,11 +106,6 @@ public struct DeviceTokenKeychain: DeviceTokenBlobStore {
     }
 }
 
-/// The dev-only backend, reachable under exactly the conditions that put the
-/// device key in a file: `SKIPPER_DEV_FILE_IDENTITY=1` or an overridden
-/// identity directory, because the Keychain holds one slot and the
-/// multi-instance scripts run several identities on one Mac. Owner-only
-/// permissions, beside `identity.json`. Never a release path.
 public struct DeviceTokenFile: DeviceTokenBlobStore {
 
     public static let fileName = "device-token.json"
@@ -150,8 +132,6 @@ public struct DeviceTokenFile: DeviceTokenBlobStore {
     }
 }
 
-/// Test double, and the only blob store the suite ever touches by default: the
-/// real Keychain would prompt on an unsigned build and hang a headless run.
 public final class InMemoryDeviceTokenStore: DeviceTokenBlobStore {
 
     private var blob: Data?
@@ -175,7 +155,6 @@ public final class InMemoryDeviceTokenStore: DeviceTokenBlobStore {
     }
 }
 
-/// Reads and writes the token through whichever blob store this build may use.
 public struct DeviceTokenStore {
 
     private let blobs: DeviceTokenBlobStore
@@ -184,8 +163,6 @@ public struct DeviceTokenStore {
         self.blobs = blobs
     }
 
-    /// Keychain, or the identity-directory file under the dev conditions of
-    /// `IdentityStore.usesDevFileIdentity`.
     public static func forThisMac(fileStore: IdentityFileStore = IdentityFileStore()) -> DeviceTokenStore {
         if IdentityStore.usesDevFileIdentity(fileStore: fileStore) {
             return DeviceTokenStore(blobs: DeviceTokenFile(directory: fileStore.fileURL.deletingLastPathComponent()))

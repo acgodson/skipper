@@ -2,9 +2,6 @@ import Foundation
 import RCTestKit
 import RemoteControlCore
 
-/// Re-encodes a payload inside an envelope and reads it back, asserting the
-/// envelope metadata survives too. A codec that dropped `re` or mangled `v`
-/// would pass a bare `Codable` round-trip and fail this.
 private func roundTrip<T: Codable & Equatable>(_ type: String, _ payload: T) throws -> T {
     let data = try Envelope.encode(type: type, id: "c-42", re: "r-7", ts: 1_755_600_000_000, payload: payload)
     let envelope = try Envelope.decode(data)
@@ -59,8 +56,6 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
         let presence = try Envelope.decode(frame).decodePayload(PresencePayload.self)
         try expectEqual(presence, PresencePayload(deviceId: "481930275", online: true, since: 5))
     },
-
-    // ---- every signaling payload -----------------------------------------
 
     TestCase("challenge round-trips") {
         let value = ChallengePayload(nonce: "bm9uY2U=", serverTime: 1_755_600_000_000)
@@ -210,7 +205,6 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
             if code == "rate_limited" { try expectEqual(wire.retryAfterSec, 240) }
             else { try expectNil(wire.retryAfterSec) }
         }
-        // A non-error frame must never look like one.
         let ok = try Envelope.decode(try Envelope.encode(type: "hello_ok", payload: EmptyPayload()))
         try expectNil(ok.asProtocolError)
     },
@@ -220,8 +214,6 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
             ConnectFailure(WireError.protocolError(code: code, message: "m",
                                                    retryAfterSec: retryAfter, reason: reason))
         }
-        // `auth_failed` is a bye reason, not a server error code: in v2 the
-        // server has no opinion about access codes.
         try expectEqual(failure("auth_failed"), .authFailed)
         try expectEqual(failure("entitlement", reason: "trial_expired"),
                         .entitlement(reason: "trial_expired", message: "m"))
@@ -230,16 +222,12 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
         try expectEqual(failure("rate_limited", retryAfter: 240), .rateLimited(retryAfterSec: 240))
         try expectEqual(failure("unknown_device"), .unknownDevice)
         try expectEqual(failure("self_connect"), .selfConnect)
-        // The retry-after must reach the user, not be swallowed.
         let message = try expectNotNil(failure("rate_limited", retryAfter: 240).errorDescription)
         try expect(message.contains("4 minutes"), "got: \(message)")
-        // Four distinct codes must not collapse into one message.
         let messages = Set([failure("auth_failed"), failure("offline"), failure("busy"),
                             failure("unknown_device")].map { $0.errorDescription ?? "" })
         try expectEqual(messages.count, 4)
     },
-
-    // ---- ctrl / hi payloads ------------------------------------------------
 
     TestCase("ping/pong, display_info, session_close and mouse_move round-trip") {
         let ping = PingPayload(t: 1_755_600_000_123)

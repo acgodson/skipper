@@ -3,14 +3,6 @@ import RCTestKit
 import RemoteControlCore
 import SkipperCore
 
-/// The SPAKE2 exchange of PROTOCOL.md §2.17, driven the way the app will drive
-/// it: two `PakeExchange` handles in one process, passing each other exactly
-/// what a `pake` frame would carry.
-///
-/// The rules themselves are proven in `core/crates/rc-identity` — these cases
-/// exist to prove the FFI path carries them, including the failure that matters
-/// most: the host refusing a wrong code.
-
 private let deviceID = "482719351"
 private let sessionID = "sess-ffi-1"
 private let controllerKey = DeviceKey()

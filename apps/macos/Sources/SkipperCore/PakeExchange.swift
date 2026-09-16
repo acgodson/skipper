@@ -1,8 +1,7 @@
 import CSkipperCore
 import Foundation
 
-/// One `pake` frame's body (PROTOCOL.md §2.17): the 1-based step and the
-/// opaque payload, base64 exactly as it travels.
+/// `step` is 1-based; `payload` is opaque and base64, exactly as it travels on the wire.
 public struct PakeMessage: Equatable, Sendable {
     public let step: Int
     public let payload: String
@@ -13,25 +12,11 @@ public struct PakeMessage: Equatable, Sendable {
     }
 }
 
-/// One side of the SPAKE2 access-code exchange, over the shared core.
-///
-/// The controller opens with `step(nil)`; after that each side hands in the
-/// frame that arrived from the peer and sends back whatever it returns. A wrong
-/// code throws — at the controller on step 2, and at the **host** on step 3,
-/// which is the one that matters: the host learns the attempt was wrong before
-/// it has done anything with the session.
-///
-/// Nothing here decides *policy*. Counting failures and locking a controller
-/// out is `skipper_pake_guess_policy_*`, whose counters the platform stores.
 public final class PakeExchange {
 
     private let handle: OpaquePointer
     public let role: SessionRole
     public private(set) var isComplete = false
-    /// The peer's device `pubkey`, base64 DER SPKI, once its first frame has
-    /// arrived — the host learns it at step 1, the controller at step 2. It is
-    /// bound into the SPAKE2 transcript, which is what makes it the key the
-    /// peer's `sdp` signatures must carry (PROTOCOL.md §2.12).
     public private(set) var peerPublicKey: String?
 
     private struct StepResult: Decodable {
@@ -48,9 +33,6 @@ public final class PakeExchange {
         let sessionKey: String
     }
 
-    /// `ownPublicKey` is this device's own `pubkey`, base64 DER SPKI. It
-    /// travels in this side's first frame, so the peer finishes the exchange
-    /// knowing which key must sign the `sdp` it will accept.
     public init(
         role: SessionRole,
         accessCode: String,
@@ -95,8 +77,6 @@ public final class PakeExchange {
 
     deinit { skipper_pake_free(handle) }
 
-    /// `nil` in starts the controller's step 1; `nil` out means the exchange is
-    /// over and this side sends nothing further.
     @discardableResult
     public func step(_ incoming: PakeMessage?) throws -> PakeMessage? {
         let result: StepResult = try CoreBoundary.call {
@@ -108,7 +88,6 @@ public final class PakeExchange {
         return PakeMessage(step: outgoing.step, payload: outgoing.payload)
     }
 
-    /// The 32-byte key the two sides agreed on, once `isComplete`.
     public var sessionKey: Data? {
         guard isComplete else { return nil }
         guard let result: KeyResult = try? CoreBoundary.call({ skipper_pake_session_key(handle) })

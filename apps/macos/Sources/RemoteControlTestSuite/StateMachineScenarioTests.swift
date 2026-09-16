@@ -2,19 +2,6 @@ import Foundation
 import RCTestKit
 import RemoteControlCore
 
-/// Executes the shared conformance scenarios in
-/// `protocol/vectors/session-scenarios.json`.
-///
-/// There is only one session state machine now — `core/crates/rc-session` —
-/// and this suite drives it the way the app does: through `SkipperCore`, over
-/// the C ABI in `core/crates/rc-ffi/include/skipper_core.h`. So a green run
-/// proves two things at once: the rules of PROTOCOL.md §4, and that the whole
-/// marshalling path the coordinator depends on carries them faithfully.
-///
-/// `core/crates/rc-session/tests/scenarios.rs` runs the same file directly
-/// against the Rust machine. The two together separate a rule bug from an FFI
-/// bug: if that suite is green and this one is red, the boundary is at fault.
-
 private struct Scenarios: Decodable {
     let version: Int
     let scenarios: [Scenario]
@@ -35,7 +22,6 @@ private struct Step: Decodable {
     let expectResumeInFlight: Bool?
 }
 
-/// Minimal JSON value, enough to carry the event/action objects.
 private enum JSONValue: Decodable {
     case string(String)
     case number(Double)
@@ -60,13 +46,12 @@ private func scenariosURL() -> URL {
     if let override = ProcessInfo.processInfo.environment["RC_SCENARIOS_PATH"] {
         return URL(fileURLWithPath: override)
     }
-    // …/apps/macos/Sources/RemoteControlTestSuite/ThisFile.swift → repo root → protocol/vectors.
     return URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()   // RemoteControlTestSuite
-        .deletingLastPathComponent()   // Sources
-        .deletingLastPathComponent()   // macos
-        .deletingLastPathComponent()   // apps
-        .deletingLastPathComponent()   // repo root
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
         .appendingPathComponent("protocol/vectors/session-scenarios.json")
 }
 

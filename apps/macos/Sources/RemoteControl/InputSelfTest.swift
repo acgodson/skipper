@@ -3,26 +3,6 @@ import CoreGraphics
 import ApplicationServices
 import RemoteControlCore
 
-/// OS-level proof that injection is real, run inside the .app bundle.
-///
-/// **Why it lives in the app and not in a script.** macOS attributes a TCC grant
-/// to the *responsible process*. A CLI launched from a terminal inherits the
-/// terminal's (absent) Accessibility grant, so an injection test run that way
-/// posts events the window server silently discards — it would "fail" for a
-/// reason that has nothing to do with the code. Launching the bundle through
-/// LaunchServices (`open`) makes the app responsible for itself, so its own
-/// grant applies. `scripts/verify-input.sh` does exactly that and reads the
-/// results out of `RC_LOG_FILE`.
-///
-/// **Why the checks are falsifiable.** Every one of them observes a consequence
-/// the OS produced, not a value this code computed:
-///   * the real cursor position, read back from the window server;
-///   * a real `NSWindow`'s frame, after being dragged by its title bar — which
-///     is the exact behaviour PLAN.md §2.6 calls out and the exact thing that
-///     breaks if a drag is posted as a move;
-///   * a listen-only `CGEventTap`, which sees what the session actually got.
-/// If injection were a no-op, or posted the wrong event types, none of them
-/// could pass.
 @MainActor
 final class InputSelfTest {
 
@@ -39,17 +19,11 @@ final class InputSelfTest {
     private var passes = 0
     private var failures = 0
 
-    /// Screen height, for the one conversion this file needs: AppKit's
-    /// bottom-left origin vs CoreGraphics's top-left one.
     private var screenFrame: CGRect { NSScreen.main?.frame ?? .zero }
 
     func run() {
         report("begin")
         guard AXIsProcessTrusted() else {
-            // Ask macOS to show its own consent dialog. That is what puts
-            // RemoteControl.app into the Accessibility list in System Settings,
-            // so the instruction the script prints is one the user can act on
-            // rather than "find the app yourself". We never try to bypass it.
             let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
             _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
             report("accessibility FAIL — RemoteControl.app does not have Accessibility permission (the system consent dialog has been raised)")
@@ -77,8 +51,6 @@ final class InputSelfTest {
 
     // MARK: - Checks
 
-    /// Injects a move to a known normalised coordinate and asks the window
-    /// server where the cursor actually is.
     private func checkCursorAccuracy() async {
         injector.target = .mainDisplay
         var worst = 0.0
@@ -94,14 +66,10 @@ final class InputSelfTest {
             report(String(format: "cursor target (%.2f,%.2f) expected %.0f,%.0f actual %.0f,%.0f delta %.1fpx",
                           nx, ny, expected.x, expected.y, actual.x, actual.y, delta))
         }
-        // 2pt covers the backing-scale rounding on a Retina display and nothing
-        // more. A no-op injector leaves the cursor where it was and lands far
-        // outside this.
         check(worst <= 2.0, "cursor_accuracy",
               String(format: "the injected cursor arrived within %.1fpt of every target", worst))
     }
 
-    /// PROTOCOL.md §6, at the OS level: a stale `seq` must not move the cursor.
     private func checkStaleSequenceIsDropped() async {
         injector.target = .mainDisplay
         sink.post(injector.mouseMove(MouseMovePayload(x: 0.30, y: 0.30, seq: 5_000)))
@@ -115,16 +83,10 @@ final class InputSelfTest {
               String(format: "a stale packet moved the cursor %.1fpt (must be 0)", moved))
     }
 
-    /// THE headline check (PLAN.md §2.6). A real window, dragged by its title
-    /// bar with injected events, must end up somewhere else.
-    ///
-    /// Posting `mouseMoved` instead of `leftMouseDragged` moves the cursor and
-    /// leaves the window exactly where it was — which is why this check cannot
-    /// be satisfied by an injector that merely "sends mouse events".
     private func checkWindowDragMovesTheWindow() async {
         guard let window else { check(false, "window_drag", "no test window"); return }
         let before = window.frame
-        let titleBar = CGPoint(x: before.midX, y: before.maxY - 12)      // AppKit space
+        let titleBar = CGPoint(x: before.midX, y: before.maxY - 12)
         let start = toCoreGraphics(titleBar)
         let dx = 180.0, dy = 120.0
 
@@ -143,8 +105,6 @@ final class InputSelfTest {
 
         let after = window.frame
         let movedX = after.origin.x - before.origin.x
-        // AppKit's y grows upward, CoreGraphics's downward: dragging "down" on
-        // screen decreases the AppKit origin.
         let movedY = before.origin.y - after.origin.y
         report(String(format: "window frame %.0f,%.0f -> %.0f,%.0f (moved %.0f,%.0f; asked for %.0f,%.0f)",
                       before.origin.x, before.origin.y, after.origin.x, after.origin.y, movedX, movedY, dx, dy))
@@ -153,7 +113,6 @@ final class InputSelfTest {
         let movesPosted = (observed[.mouseMoved] ?? 0) - moveEventsBefore
         check(draggedPosted >= 10, "drag_posts_dragged_events",
               "the session saw \(draggedPosted) leftMouseDragged events (and \(movesPosted) plain moves) during the drag")
-        // 20pt of slack: the window server can quantise the final position.
         check(abs(movedX - dx) <= 20 && abs(movedY - dy) <= 20, "window_actually_moved",
               String(format: "the window moved %.0f,%.0f — dragging by the title bar really moves it", movedX, movedY))
     }
@@ -174,11 +133,8 @@ final class InputSelfTest {
               "every scroll event carried isContinuous=1, i.e. pixel units, not notched lines")
     }
 
-    /// Cmd must actually be set on the key event the session receives, or
-    /// Cmd+C on the remote machine types a "c".
     private func checkModifierFlagsReachTheSession() async {
         observedKeyFlags.removeAll()
-        // F15: harmless, unbound on a stock macOS, and still a real key event.
         let f15 = 113
         sink.post(injector.keyDown(KeyPayload(keycode: Int(VirtualKey.command), mods: [.command])))
         await settle(0.06)
@@ -194,8 +150,6 @@ final class InputSelfTest {
         check(injector.isIdle, "keys_released", "nothing is left held after the key sequence")
     }
 
-    /// `input_reset` must release a genuinely-held button at the OS level, and
-    /// doing it twice must post nothing the second time.
     private func checkInputResetReleasesHeldButton() async {
         guard let window else { check(false, "input_reset", "no test window"); return }
         let point = toCoreGraphics(CGPoint(x: window.frame.midX, y: window.frame.midY))
@@ -226,13 +180,10 @@ final class InputSelfTest {
                                   y: Double((cgPoint.y - bounds.minY) / bounds.height))
     }
 
-    /// AppKit point (bottom-left origin) -> CoreGraphics point (top-left).
     private func toCoreGraphics(_ point: CGPoint) -> CGPoint {
         CGPoint(x: point.x, y: screenFrame.height - point.y)
     }
 
-    /// The window server's own idea of where the cursor is. Not our own
-    /// bookkeeping — that is the whole point.
     private func currentCursor() -> CGPoint {
         CGEvent(source: nil)?.location ?? .zero
     }
@@ -254,8 +205,6 @@ final class InputSelfTest {
         self.window = window
     }
 
-    /// Listen-only tap: it observes, never modifies. This is what proves the
-    /// session really received the events, rather than that we called `post`.
     private func installObservationTap() {
         let mask = (1 << CGEventType.mouseMoved.rawValue)
             | (1 << CGEventType.leftMouseDown.rawValue)

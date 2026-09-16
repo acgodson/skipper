@@ -18,21 +18,18 @@ public let accessCodeSuite = TestSuite("AccessCode", [
         }
     },
 
-    // A hardcoded or constant-returning implementation fails here.
     TestCase("generation is not repeatable") {
         var seen = Set<String>()
         for _ in 0..<500 { seen.insert(try AccessCode.generate()) }
         try expectEqual(seen.count, 500, "every generated code must be distinct")
     },
 
-    // A generator stuck on a few symbols fails here.
     TestCase("generation exercises nearly the whole alphabet") {
         var symbols = Set<Character>()
         for _ in 0..<400 { symbols.formUnion(try AccessCode.generate()) }
         try expectGreaterThanOrEqual(symbols.count, 30, "saw only \(symbols.count) distinct symbols")
     },
 
-    // A biased or low-entropy source skews this badly.
     TestCase("first symbol is broadly distributed") {
         var counts: [Character: Int] = [:]
         for _ in 0..<3200 { counts[try AccessCode.generate().first!, default: 0] += 1 }

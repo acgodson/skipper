@@ -19,7 +19,6 @@ private func unhex(_ s: String) -> [UInt8] {
 
 public let cryptoSuite = TestSuite("Crypto (BLAKE2b + Argon2id)", [
 
-    // RFC 7693 Appendix A: the only published BLAKE2b-512 test vector.
     TestCase("blake2b-512 matches the RFC 7693 vector for \"abc\"") {
         let digest = Blake2b.hash([UInt8]("abc".utf8), digestLength: 64)
         try expectEqual(hex(digest),
@@ -34,9 +33,6 @@ public let cryptoSuite = TestSuite("Crypto (BLAKE2b + Argon2id)", [
             + "d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce")
     },
 
-    // A truncated digest must not simply be a prefix of the 512-bit one: the
-    // output length is mixed into the parameter block. This catches an
-    // implementation that ignores `digestLength` during initialisation.
     TestCase("blake2b digest length is domain-separating, not a truncation") {
         let short = Blake2b.hash([UInt8]("abc".utf8), digestLength: 32)
         let long = Blake2b.hash([UInt8]("abc".utf8), digestLength: 64)
@@ -44,8 +40,6 @@ public let cryptoSuite = TestSuite("Crypto (BLAKE2b + Argon2id)", [
         try expectNotEqual(hex(short), hex(Array(long.prefix(32))))
     },
 
-    // Streaming and one-shot must agree, and the block boundary at 128 bytes is
-    // where a naive implementation breaks.
     TestCase("blake2b streaming across the 128-byte block boundary agrees with one-shot") {
         let message = (0..<300).map { UInt8($0 % 251) }
         var streamed = Blake2b(digestLength: 64)
@@ -56,8 +50,6 @@ public let cryptoSuite = TestSuite("Crypto (BLAKE2b + Argon2id)", [
         try expectEqual(hex(streamed.finalize()), hex(Blake2b.hash(message, digestLength: 64)))
     },
 
-    // RFC 9106 §5.3 — the normative Argon2id vector, with a secret and
-    // associated data. Nothing but a correct implementation produces this.
     TestCase("argon2id matches the RFC 9106 test vector") {
         let tag = try Argon2id.hash(
             password: [UInt8](repeating: 0x01, count: 32),
@@ -70,9 +62,6 @@ public let cryptoSuite = TestSuite("Crypto (BLAKE2b + Argon2id)", [
             "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659")
     },
 
-    // The parameter set the protocol actually uses (time 3, 64 MiB, 1 lane).
-    // Cross-checked against Go by scripts/test-transport.sh: the live server
-    // recomputes this hash from the plaintext code on every connect_req.
     TestCase("argon2id is deterministic and parameter-sensitive at the protocol's settings") {
         let salt = Data(repeating: 0x5a, count: 16)
         let a = try Argon2id.hash(password: "SW7K2M9Q", salt: salt,

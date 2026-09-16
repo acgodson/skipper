@@ -1,8 +1,6 @@
 import CSkipperCore
 import Foundation
 
-/// A call into the shared core came back `{"ok": false}`, or could not be read
-/// at all. Every message is the core's own wording.
 public struct SkipperCoreError: Error, CustomStringConvertible, LocalizedError {
     public let message: String
 
@@ -19,8 +17,6 @@ private struct CoreEnvelope: Decodable {
     let error: String?
 }
 
-/// The one place that turns a `char *` JSON result from `skipper_core.h` into a
-/// Swift value or a thrown error, and frees it either way.
 enum CoreBoundary {
     static func call<Result: Decodable>(_ body: () -> UnsafeMutablePointer<CChar>?) throws -> Result {
         guard let raw = body() else {

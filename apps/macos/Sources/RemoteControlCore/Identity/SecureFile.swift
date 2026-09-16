@@ -1,21 +1,5 @@
 import Foundation
 
-/// Low-level owner-only file primitives shared by every on-disk secret.
-///
-/// WHY THIS EXISTS: the app used to keep the device key and access code in the
-/// macOS Keychain. Because this build is ad-hoc signed, its code signature — and
-/// therefore its Keychain ACL identity — changes on every rebuild, so macOS
-/// prompted the user for permission again and again. There is no Apple Developer
-/// account, so neither the Secure Enclave nor a stable signing identity is
-/// available. AnyDesk and RustDesk store their device identity in a plain
-/// owner-only file for exactly the same reason, and that is what we do here.
-///
-/// What this actually buys us, stated honestly:
-///   * `0600` on the file and `0700` on the directory — no other user account on
-///     this Mac can read it, and no unprivileged process running as another user can.
-///   * FileVault protects it at rest when the disk is locked.
-///   * It does NOT protect against a process already running as this user, and it
-///     is NOT hardware-backed. The UI must not claim otherwise.
 public enum SecureFile {
 
     public static let fileMode: Int16 = 0o600
@@ -45,11 +29,6 @@ public enum SecureFile {
 
     // MARK: - Directory
 
-    /// Creates `url` if absent and forces its mode to 0700 either way.
-    ///
-    /// The mode is re-applied on every call rather than only at creation: a
-    /// directory that was created before this code existed, restored from a
-    /// backup, or copied with a permissive umask must still end up at 0700.
     @discardableResult
     public static func ensureDirectory(_ url: URL) throws -> Bool {
         let fm = FileManager.default
@@ -80,7 +59,6 @@ public enum SecureFile {
 
     // MARK: - Mode inspection
 
-    /// The permission bits of `url`, masked to 0777.
     public static func currentMode(of url: URL) throws -> Int16 {
         do {
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -91,12 +69,6 @@ public enum SecureFile {
         }
     }
 
-    /// Tightens `url` to 0600 if it is currently more permissive.
-    ///
-    /// Returns a human-readable warning when it had to act, and nil when the
-    /// file was already correct. Callers surface the warning; they do not fail,
-    /// because refusing to start over a fixable permission bit would leave the
-    /// user with a dead app and no way forward.
     @discardableResult
     public static func tightenIfNeeded(_ url: URL) throws -> String? {
         let mode = try currentMode(of: url)
@@ -117,18 +89,6 @@ public enum SecureFile {
 
     // MARK: - Atomic write
 
-    /// Writes `data` so that a crash can never be observed as a truncated or
-    /// empty file.
-    ///
-    /// The sequence is: create a fresh temp file **in the same directory** (so
-    /// the rename cannot cross a filesystem boundary), write it, `fsync` it so
-    /// the bytes are on the platter before anything points at them, then
-    /// `rename(2)` over the destination. `rename` within one filesystem is
-    /// atomic: a reader sees either the entire old file or the entire new one.
-    ///
-    /// `beforeRename` is a test seam. Production passes nil. A test throws from
-    /// it to prove that a failure after the temp file exists still leaves the
-    /// previous identity fully intact.
     public static func writeAtomically(
         _ data: Data,
         to url: URL,
@@ -138,8 +98,6 @@ public enum SecureFile {
         try ensureDirectory(directory)
 
         let temp = directory.appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
-        // Clean the temp up on every exit path, success or failure. A leftover
-        // temp file containing key material would be its own security problem.
         defer { try? FileManager.default.removeItem(at: temp) }
 
         let fd = temp.withUnsafeFileSystemRepresentation { path -> Int32 in
@@ -167,15 +125,11 @@ public enum SecureFile {
             }
         }
 
-        // Durability barrier. Without this the rename can land before the data
-        // does, which is precisely the truncated-file case we are ruling out.
         guard fsync(fd) == 0 else {
             throw Error.writeFailed(path: temp.path, underlying: "fsync: \(String(cString: strerror(errno)))")
         }
         closeOnce()
 
-        // O_EXCL created the file at 0600 already, but the process umask does not
-        // apply to open(2) modes uniformly across filesystems, so make it explicit.
         try FileManager.default.setAttributes(
             [.posixPermissions: NSNumber(value: fileMode)],
             ofItemAtPath: temp.path
@@ -196,10 +150,6 @@ public enum SecureFile {
 
     // MARK: - Read
 
-    /// Reads `url`, first tightening its permissions if they are too open.
-    ///
-    /// Returns nil when the file does not exist — that is "first launch", not an
-    /// error. `warning` is non-nil only when the permissions had to be repaired.
     public static func read(_ url: URL) throws -> (data: Data, warning: String?)? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         let warning = try tightenIfNeeded(url)
@@ -210,7 +160,6 @@ public enum SecureFile {
         }
     }
 
-    /// Removes `url` if present. Returns whether something was actually there.
     @discardableResult
     public static func remove(_ url: URL) throws -> Bool {
         guard FileManager.default.fileExists(atPath: url.path) else { return false }

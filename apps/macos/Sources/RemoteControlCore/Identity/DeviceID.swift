@@ -1,19 +1,11 @@
 import Foundation
 
-/// The public, permanent identifier for a machine: nine digits, shown as
-/// `482 719 351`.
 public enum DeviceID {
 
     public static let digitCount = 9
 
-    /// Phase 2 mints this locally so the app is self-contained.
-    ///
-    /// SEAM FOR PHASE 3: the signaling server is the authority on Device IDs and
-    /// will assign one at first `hello`. `IdentityStore.adoptServerAssignedDeviceID(_:)`
-    /// is the entry point that replaces this locally generated value.
     public static func generateLocal() throws -> String {
         var digits = ""
-        // First digit 1-9 so the ID always renders as nine characters.
         digits.append(String(try SecureRandom.uniform(9) + 1))
         for _ in 1..<digitCount {
             digits.append(String(try SecureRandom.uniform(10)))

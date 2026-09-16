@@ -38,8 +38,6 @@ public enum AppRole: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-/// Non-secret preferences. Secrets live in the owner-only identity file
-/// (see `IdentityFileStore`), never here.
 @MainActor
 public final class AppSettings: ObservableObject {
 
@@ -63,13 +61,6 @@ public final class AppSettings: ObservableObject {
     @Published public var savedPeerDeviceID: String { didSet { defaults.set(savedPeerDeviceID, forKey: Key.savedPeerDeviceID) } }
     @Published public var rememberPeerCode: Bool { didSet { defaults.set(rememberPeerCode, forKey: Key.rememberPeerCode) } }
 
-    /// `RC_SETTINGS_SUITE`, when set, isolates preferences into a distinct
-    /// UserDefaults suite instead of the shared bundle-ID domain. Same purpose
-    /// as `RC_IDENTITY_DIR` for the identity file: it lets two copies of this
-    /// app run on one Mac (for local testing) without silently sharing role,
-    /// saved-peer and quality settings through `UserDefaults.standard`. Real
-    /// installs on separate Macs never need this — separate machines already
-    /// have separate preference domains.
     public init(defaults: UserDefaults? = nil) {
         let resolved: UserDefaults
         if let defaults {
@@ -81,8 +72,6 @@ public final class AppSettings: ObservableObject {
             resolved = .standard
         }
         self.defaults = resolved
-        // Defaults chosen per AGENT.md: unattended and clipboard sync on, quality
-        // Balanced. Unattended access remains an explicit, visible local setting.
         resolved.register(defaults: [
             Key.role: AppRole.host.rawValue,
             Key.unattendedAccess: true,

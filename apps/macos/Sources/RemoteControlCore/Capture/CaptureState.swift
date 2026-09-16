@@ -1,7 +1,5 @@
 import Foundation
 
-/// What the host's capture pipeline is doing, in terms the UI can show without
-/// interpreting an error object.
 public enum CaptureState: Equatable {
     case idle
     case starting
@@ -13,8 +11,6 @@ public enum CaptureState: Equatable {
         return false
     }
 
-    /// True when the *only* thing wrong is the Screen Recording grant. The UI
-    /// shows the deep link for this and nothing else.
     public var needsScreenRecordingPermission: Bool {
         if case .failed(let failure) = self { return failure.isPermissionProblem }
         return false
@@ -31,14 +27,6 @@ public enum CaptureState: Equatable {
     }
 }
 
-/// Which frame producer the host uses.
-///
-/// `synthetic` exists for `scripts/test-media.sh` only: a headless CLI process
-/// cannot hold a Screen Recording grant (TCC attributes it to the terminal), so
-/// the media integration test drives a generated pattern through the identical
-/// encode/transport/decode path. It is opt-in through `RC_CAPTURE_SOURCE` and is
-/// never selected automatically — a host that cannot capture must say so, not
-/// quietly show the controller a test card.
 public enum CaptureSourceKind: String, Equatable {
     case screen
     case synthetic

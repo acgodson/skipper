@@ -3,14 +3,6 @@ import RCTestKit
 import RemoteControlCore
 import SkipperCore
 
-/// The secrets that are NOT the device key: this Mac's access code, the codes it
-/// remembers for other Macs, the controllers that have proved a code to it, and
-/// the guess counters PROTOCOL.md §2.17 keeps per controller key.
-///
-/// The Keychain itself is not exercised here — on an unsigned build it prompts
-/// and hangs a headless run. What is exercised is the part that can be wrong:
-/// what gets stored, keyed how, and what Refresh Code takes away.
-
 private let controllerKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEcontroller"
 private let otherKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEother"
 
@@ -58,9 +50,6 @@ public let secretStoreSuite = TestSuite("SecretStore (PROTOCOL.md §4.5)", [
         try expectEqual(try store.trustedControllers().count, 1)
     },
 
-    // The persistence round trip the host depends on: a counter written after a
-    // failure must come back to the shared core as the same counter, or a
-    // restart would hand every attacker a fresh five guesses.
     TestCase("a guess counter survives being stored and read back") {
         let store = SecretStore(blobs: InMemorySecretStore())
         let now = Date(timeIntervalSince1970: 1_700_000_000)
@@ -86,7 +75,6 @@ public let secretStoreSuite = TestSuite("SecretStore (PROTOCOL.md §4.5)", [
         try expect(try GuessPolicy.check(reloaded, now: now.addingTimeInterval(61)).isAllowed,
                    "and the lockout ends on its own")
 
-        // Another controller is not affected by this one's failures.
         try expectNil(try store.guessCounter(forController: otherKey))
 
         let cleared = try GuessPolicy.recordSuccess(reloaded).counter
@@ -95,7 +83,6 @@ public let secretStoreSuite = TestSuite("SecretStore (PROTOCOL.md §4.5)", [
                         "a completed exchange clears the count")
     },
 
-    // PROTOCOL.md §4.5: Refresh Code is the whole revocation story.
     TestCase("revoking clears the trusted list and the counters, not the codes") {
         let store = SecretStore(blobs: InMemorySecretStore())
         let code = try AccessCode.generate()

@@ -3,9 +3,6 @@ import RCTestKit
 import RemoteControlCore
 import SkipperCore
 
-/// Each case gets its own throwaway directory, so the real identity file is
-/// never touched. There is nothing global to clean up any more — that was the
-/// whole point of moving off the Keychain.
 @MainActor
 private func withIdentity(_ body: @MainActor (IdentityFileStore) async throws -> Void) async throws {
     let directory = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -14,7 +11,6 @@ private func withIdentity(_ body: @MainActor (IdentityFileStore) async throws ->
     try await body(IdentityFileStore(directory: directory))
 }
 
-/// A sink that always fails, standing in for "the signaling server is unreachable".
 private final class FailingSink: AccessCodeSink {
     struct Boom: Error, LocalizedError { var errorDescription: String? { "no server" } }
     var callCount = 0
@@ -39,7 +35,6 @@ public let identitySuite = TestSuite("IdentityStore", [
             try expectEqual(Data(base64Encoded: store.publicKeyBase64)?.count, 91, "base64 DER SPKI")
             try expectNil(store.permissionWarning)
 
-            // It really is on disk, at 0600, in a 0700 directory.
             try expect(FileManager.default.fileExists(atPath: fileStore.fileURL.path))
             try expectEqual(try SecureFile.currentMode(of: fileStore.fileURL), 0o600)
             try expectEqual(try SecureFile.currentMode(of: fileStore.directory), 0o700)
@@ -47,8 +42,6 @@ public let identitySuite = TestSuite("IdentityStore", [
         }
     },
 
-    // The restart case: a second store over the same file must read the existing
-    // values back, not generate new ones.
     TestCase("identity survives a restart, byte-identically") {
         try await withIdentity { fileStore in
             let first = try IdentityStore(fileStore: fileStore)
@@ -63,8 +56,6 @@ public let identitySuite = TestSuite("IdentityStore", [
             try expectEqual(second.publicKeyHex, first.publicKeyHex)
             try expectEqual(second.createdAt, first.createdAt)
 
-            // And the *private* half survived too: a signature made by the
-            // reloaded store verifies under the original's public key.
             let message = Data("nonce".utf8)
             try expect(first.verify(try second.sign(message), for: message),
                        "the reloaded key must be the same private key, not just the same public metadata")
@@ -84,7 +75,6 @@ public let identitySuite = TestSuite("IdentityStore", [
         }
     },
 
-    // THE WRITE-THROUGH CASE the brief calls out explicitly.
     TestCase("refreshAccessCode writes through to disk and the new code survives a reload") {
         try await withIdentity { fileStore in
             let store = try IdentityStore(fileStore: fileStore)
@@ -96,19 +86,15 @@ public let identitySuite = TestSuite("IdentityStore", [
             try expectEqual(store.accessCode, refreshed)
             try expectNotNil(AccessCode.canonicalize(refreshed))
 
-            // Stored right now — not just in memory — and after a full reload.
             let reloaded = try IdentityStore(fileStore: fileStore)
             try expectEqual(reloaded.accessCode, refreshed)
             try expectNotEqual(reloaded.accessCode, original)
-            // A refresh must not disturb anything else.
             try expectEqual(reloaded.deviceID, store.deviceID)
             try expectEqual(reloaded.publicKeyBase64, store.publicKeyBase64)
             try expectEqual(reloaded.createdAt, store.createdAt)
         }
     },
 
-    // The sink is told THAT the code changed, never what it changed to: a v2
-    // `refresh_code` carries `{}` and the code never leaves this Mac.
     TestCase("refresh notifies the sink without handing it the code") {
         try await withIdentity { fileStore in
             let sink = PreviewAccessCodeSink()
@@ -139,7 +125,6 @@ public let identitySuite = TestSuite("IdentityStore", [
         }
     },
 
-    // Local storage is authoritative; propagation is best-effort.
     TestCase("refresh keeps the new code even when the sink fails") {
         try await withIdentity { fileStore in
             let sink = FailingSink()
@@ -186,8 +171,6 @@ public let identitySuite = TestSuite("IdentityStore", [
         }
     },
 
-    // The user's complaint, expressed as a test: a damaged file must not silently
-    // hand the user a brand-new Device ID.
     TestCase("a corrupt file makes construction fail rather than mint a new identity") {
         try await withIdentity { fileStore in
             let store = try IdentityStore(fileStore: fileStore)
@@ -201,7 +184,6 @@ public let identitySuite = TestSuite("IdentityStore", [
             let error = try expectNotNil(caught, "a corrupt file must not be papered over")
             try expect((error as? IdentityFileError)?.isResettable == true)
 
-            // Nothing was rewritten, so restoring the file restores the identity.
             try originalBytes.write(to: fileStore.fileURL)
             try expectEqual(try IdentityStore(fileStore: fileStore).deviceID, originalID,
                             "the original identity must still be recoverable")
@@ -220,8 +202,6 @@ public let identitySuite = TestSuite("IdentityStore", [
             let after = try IdentityStore(fileStore: fileStore)
             try expectNotEqual(after.publicKeyBase64, oldKey, "reset must mint a new keypair")
             try expectNotEqual(after.accessCode, before.accessCode)
-            // Device IDs are 9 random digits, so a collision is ~1-in-900-million;
-            // assert the key instead and just note the ID changed shape-correctly.
             try expectNotNil(DeviceID.canonicalize(after.deviceID))
             _ = oldID
         }
@@ -242,10 +222,6 @@ public let identitySuite = TestSuite("IdentityStore", [
         }
     },
 
-    // PHASE 2.5 MIGRATION. An identity written by an older build has the access
-    // code in `identity.json`. Opening it must move the code into the secret
-    // store, drop the file copy, and leave the Device ID and the key alone —
-    // exactly what the Phase 2.2 private-key move had to do.
     TestCase("an access code in the identity file is moved into the Keychain") {
         try await withIdentity { fileStore in
             let key = DeviceKey()
@@ -271,7 +247,6 @@ public let identitySuite = TestSuite("IdentityStore", [
             try expectNil(record.accessCode, "the file copy is dropped: a move, not a copy")
             try expectEqual(record.deviceID, "482719351")
 
-            // And a second launch reads the code back out of the store.
             let reopened = try IdentityStore(fileStore: fileStore, secrets: secrets,
                                              devFileIdentity: true)
             try expectEqual(reopened.accessCode, legacyCode)

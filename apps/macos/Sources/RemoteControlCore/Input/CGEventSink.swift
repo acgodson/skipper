@@ -5,7 +5,6 @@ import ApplicationServices
 import AppKit
 #endif
 
-/// Where `InjectedEvent`s go.
 public protocol InputEventSink: AnyObject {
     func post(_ events: [InjectedEvent])
 }
@@ -14,9 +13,6 @@ public extension InputEventSink {
     func post(_ event: InjectedEvent) { post([event]) }
 }
 
-/// Records instead of posting. Used by the unit suite and by `rc-node`, so an
-/// integration run can assert on the exact event stream a real session produced
-/// without needing an Accessibility grant.
 public final class RecordingEventSink: InputEventSink {
     public private(set) var events: [InjectedEvent] = []
     public init() {}
@@ -24,26 +20,13 @@ public final class RecordingEventSink: InputEventSink {
     public func clear() { events.removeAll() }
 }
 
-/// The real thing: OS-level `CGEvent` injection.
-///
-/// This is the whole product constraint in one file (AGENT.md "Browser and
-/// Network Isolation"): input is posted to the window server as if it came from
-/// the hardware. There is no browser automation, no injected script, no
-/// accessibility-API app driving, and nothing that knows or cares what
-/// application is in front.
 public final class CGEventSink: InputEventSink {
 
-    /// Fired the first time a post is attempted without the Accessibility
-    /// grant, and again after it flips back. Never silent: an ungranted host
-    /// looks exactly like a frozen one from the controller's side.
     public var onAccessibilityChange: ((Bool) -> Void)?
 
     public private(set) var postedEvents = 0
     public private(set) var lastAccessibilityState: Bool?
 
-    /// A nil source means the combined session state, which is what makes
-    /// injected modifier flags compose with any the user is physically holding
-    /// on the host machine.
     private let source: CGEventSource?
     private let tap: CGEventTapLocation
 
@@ -52,9 +35,6 @@ public final class CGEventSink: InputEventSink {
         self.tap = tap
     }
 
-    /// `AXIsProcessTrusted()` — a read-only probe that never raises a dialog.
-    /// Without it `CGEvent.post` succeeds and the event is discarded, so
-    /// checking is the only way to tell "nothing happened" from "not allowed".
     public var hasAccessibilityPermission: Bool { AXIsProcessTrusted() }
 
     public func post(_ events: [InjectedEvent]) {
@@ -71,13 +51,6 @@ public final class CGEventSink: InputEventSink {
         for event in events { postOne(event) }
     }
 
-    /// Builds the `CGEvent` for one `InjectedEvent`, WITHOUT posting it.
-    ///
-    /// Separate from `postOne` on purpose: posting needs the Accessibility
-    /// grant, but building does not, so the unit suite can assert that a drag
-    /// really produces a `kCGEventLeftMouseDragged` with the right click state,
-    /// and that a scroll really carries pixel units, on a machine where nothing
-    /// is granted. `.launchApplication` has no CGEvent and returns nil.
     public func makeEvent(_ event: InjectedEvent) -> CGEvent? {
         switch event {
         case .mouse(let mouse):
@@ -89,8 +62,6 @@ public final class CGEventSink: InputEventSink {
             if mouse.clickCount > 0 {
                 cgEvent.setIntegerValueField(.mouseEventClickState, value: Int64(mouse.clickCount))
             }
-            // Middle-click carries its button number in a field of its own; the
-            // `otherMouse*` types say nothing about WHICH other button it was.
             if mouse.button == .middle {
                 cgEvent.setIntegerValueField(.mouseEventButtonNumber,
                                              value: Int64(mouse.button.cgButton.rawValue))
@@ -98,8 +69,6 @@ public final class CGEventSink: InputEventSink {
             return cgEvent
 
         case .scroll(let scroll):
-            // PIXEL units, not lines. This is what makes remote scrolling feel
-            // like a trackpad instead of a notched wheel (PLAN.md §2.6).
             guard let cgEvent = CGEvent(scrollWheelEvent2Source: source,
                                         units: .pixel,
                                         wheelCount: 2,
@@ -124,9 +93,6 @@ public final class CGEventSink: InputEventSink {
             return cgEvent
 
         case .flagsChanged(let keycode, let flags):
-            // There is no `CGEvent(flagsChangedEventSource:)`. Build a keyboard
-            // event and retype it: the window server reads the keycode field and
-            // the flags, which is all a modifier transition carries.
             guard let cgEvent = CGEvent(keyboardEventSource: source,
                                         virtualKey: keycode,
                                         keyDown: true) else { return nil }

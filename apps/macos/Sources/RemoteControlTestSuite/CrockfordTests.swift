@@ -14,16 +14,12 @@ public let crockfordSuite = TestSuite("CrockfordBase32", [
         }
     },
 
-    // Hand-computed vectors. A wrong bit order or pad direction fails these.
     TestCase("known encoding vectors") {
         try expectEqual(CrockfordBase32.encode([0x00]), "00")
-        // 0b11111000 -> 11111 | 000+00pad -> Z, 0
         try expectEqual(CrockfordBase32.encode([0xF8]), "Z0")
-        // 0b00000111 -> 00000 | 111+00pad = 0b11100 = 28 -> "0", "W"
         try expectEqual(CrockfordBase32.encode([0x07]), "0W")
         try expectEqual(CrockfordBase32.encode([0xFF, 0xFF, 0xFF, 0xFF, 0xFF]), "ZZZZZZZZ")
         try expectEqual(CrockfordBase32.encode([0x00, 0x00, 0x00, 0x00, 0x00]), "00000000")
-        // 0x48 0x65 = 0100100001100101 -> 01001 00001 10010 1+0000pad -> 9,1,18,16
         try expectEqual(CrockfordBase32.encode([0x48, 0x65]), "91JG")
     },
 

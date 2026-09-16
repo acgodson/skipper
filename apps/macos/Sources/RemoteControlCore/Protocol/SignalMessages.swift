@@ -1,14 +1,10 @@
 import Foundation
 @_exported import SkipperCore
 
-/// The Swift side of the wire contract. `protocol/PROTOCOL.md` is normative and
-/// `protocol/protocol.go` is its Go mirror; every name, JSON key and constant
-/// below is copied from there deliberately rather than inferred.
 public enum Wire {
 
     public static let version = 2
 
-    // PROTOCOL.md §2.16
     public enum MessageType {
         public static let challenge = "challenge"
         public static let register = "register"
@@ -39,7 +35,6 @@ public enum Wire {
         public static let error = "error"
     }
 
-    // PROTOCOL.md §7
     public enum ErrorCode {
         public static let badRequest = "bad_request"
         public static let unsupportedVersion = "unsupported_version"
@@ -47,7 +42,6 @@ public enum Wire {
         public static let unauthenticated = "unauthenticated"
         public static let badSignature = "bad_signature"
         public static let unknownDevice = "unknown_device"
-        /// *v1 only.* A v2 server never sends it: it does not know the code.
         public static let badCode = "bad_code"
         public static let offline = "offline"
         public static let busy = "busy"
@@ -58,12 +52,10 @@ public enum Wire {
         public static let peerOffline = "peer_offline"
         public static let displaced = "displaced"
         public static let forbidden = "forbidden"
-        /// *v2.* Carries a `reason` from API.md §4.3 in `ErrorPayload.reason`.
         public static let entitlement = "entitlement"
         public static let internalError = "internal"
     }
 
-    // PROTOCOL.md §2.14
     public enum ByeReason {
         public static let userEnded = "user_ended"
         public static let hostEnded = "host_ended"
@@ -73,17 +65,10 @@ public enum Wire {
         public static let replaced = "replaced"
         public static let shutdown = "shutdown"
         public static let error = "error"
-        /// The peer's signed SDP fingerprints did not verify against the device
-        /// key this side expects (PROTOCOL.md §2.12).
         public static let peerAuthFailed = "peer_auth_failed"
-        /// The host refused the access code, or refused to try one because this
-        /// controller is serving a lockout (PROTOCOL.md §2.14, §2.17). About the
-        /// code, where `peerAuthFailed` is about the device key.
         public static let authFailed = "auth_failed"
     }
 
-    /// Owned by the shared core, so the state machine and the wire agree by
-    /// construction rather than by convention.
     public typealias Role = SessionRole
 }
 
@@ -106,14 +91,11 @@ public enum WireError: Swift.Error, LocalizedError, Equatable {
         }
     }
 
-    /// The `code` of a server `error` frame, when this is one.
     public var serverCode: String? {
         if case .protocolError(let code, _, _, _) = self { return code }
         return nil
     }
 
-    /// The server's human sentence, without the code prefix `errorDescription`
-    /// adds. API.md §4.2 says an unrecognised `entitlement` reason renders this.
     public var serverMessage: String? {
         if case .protocolError(_, let message, _, _) = self { return message }
         return nil
@@ -124,15 +106,12 @@ public enum WireError: Swift.Error, LocalizedError, Equatable {
         return nil
     }
 
-    /// PROTOCOL.md §7: set only on `entitlement`.
     public var reason: String? {
         if case .protocolError(_, _, _, let reason) = self { return reason }
         return nil
     }
 }
 
-/// One frame. The payload is kept as raw JSON bytes so that routing never has to
-/// know every payload type — exactly like `json.RawMessage` on the Go side.
 public struct Envelope: Equatable {
 
     public var v: Int
@@ -151,7 +130,6 @@ public struct Envelope: Equatable {
         self.payload = payload
     }
 
-    /// Builds a frame around an encodable payload.
     public static func encode<T: Encodable>(
         type: String, id: String? = nil, re: String? = nil,
         ts: Int64? = Int64(Date().timeIntervalSince1970 * 1000),
@@ -181,7 +159,6 @@ public struct Envelope: Equatable {
         guard v == Wire.version else { throw WireError.unsupportedVersion(v) }
         guard let type = object["type"] as? String, !type.isEmpty else { throw WireError.missingType }
 
-        // An absent or null payload is treated as {}, matching protocol.Unmarshal.
         let rawPayload: Data
         if let p = object["payload"], !(p is NSNull) {
             rawPayload = (try? JSONSerialization.data(withJSONObject: p)) ?? Data("{}".utf8)
@@ -204,7 +181,6 @@ public struct Envelope: Equatable {
         }
     }
 
-    /// Turns an `error` frame into a Swift error. Returns nil for anything else.
     public var asProtocolError: WireError? {
         guard type == Wire.MessageType.error else { return nil }
         let body = (try? decodePayload(ErrorPayload.self))
@@ -226,10 +202,6 @@ public struct ChallengePayload: Codable, Equatable {
     public init(nonce: String, serverTime: Int64) { self.nonce = nonce; self.serverTime = serverTime }
 }
 
-/// PROTOCOL.md §2.3, *v1 only*. A v2 client sends this nowhere: the server
-/// stores nothing about any access code, which is proved peer to peer by the
-/// §2.17 exchange instead. Kept because §2.3 is kept — it is what a v2 server
-/// rejects with `bad_request`, and what the Argon2id implementation is held to.
 public struct CodeVerifier: Codable, Equatable {
     public var alg: String
     public var salt: String
@@ -245,8 +217,6 @@ public struct CodeVerifier: Codable, Equatable {
         self.time = time; self.memKiB = memKiB; self.par = par; self.len = len
     }
 
-    /// Builds a verifier with the parameters PROTOCOL.md recommends and the Go
-    /// server's `auth.MakeVerifier` uses: time 3, 64 MiB, 1 lane, 32-byte output.
     public static func make(for plaintextCode: String) throws -> CodeVerifier {
         let salt = try SecureRandom.data(16)
         let digest = try Argon2id.hash(
@@ -264,8 +234,6 @@ public struct CodeVerifier: Codable, Equatable {
             len: Argon2id.recommendedLength)
     }
 
-    /// Local recomputation. The app never needs this — the server verifies — but
-    /// it is what lets the test suite prove the KDF is wired up correctly.
     public func verify(_ plaintextCode: String) -> Bool {
         guard alg == "argon2id",
               let saltBytes = Data(base64Encoded: salt),
@@ -281,8 +249,6 @@ public struct CodeVerifier: Codable, Equatable {
     }
 }
 
-/// PROTOCOL.md §2.2. In v2 there is no `code`: a server that receives one
-/// answers `bad_request`.
 public struct RegisterPayload: Codable, Equatable {
     public var pubkey: String
     public var sig: String
@@ -354,15 +320,11 @@ public struct PresencePayload: Codable, Equatable {
     }
 }
 
-/// PROTOCOL.md §2.9. Only the host's Device ID: authorisation is the host's
-/// entitlement, and the access code is proved peer to peer by §2.17. A v2 server
-/// rejects an `accessCode` field with `bad_request`, so there is no such field.
 public struct ConnectReqPayload: Codable, Equatable {
     public var deviceId: String
     public init(deviceId: String) { self.deviceId = deviceId }
 }
 
-/// `connect_ok` and `session_start` share a shape (PROTOCOL.md §2.9).
 public struct SessionGrantPayload: Codable, Equatable, CustomStringConvertible {
     public var sessionId: String
     public var sessionToken: String
@@ -370,13 +332,7 @@ public struct SessionGrantPayload: Codable, Equatable, CustomStringConvertible {
     public var ttlSec: Int
     public var hostDeviceId: String
     public var controllerDeviceId: String
-    /// The host's registered `pubkey`, base64 DER SPKI: the key the controller
-    /// requires on the host's signed `sdp` (PROTOCOL.md §2.12). Absent from a
-    /// server that does not speak this part of v2 yet.
     public var hostPubkey: String?
-    /// `session_start` only: the controller's registered `pubkey`. The host keys
-    /// its guess counter and its trusted-controller list on it, and requires the
-    /// key in `pake` step 1 to match (PROTOCOL.md §2.9, §2.17).
     public var controllerPubkey: String?
     public init(sessionId: String, sessionToken: String, expiresAt: Int64, ttlSec: Int,
                 hostDeviceId: String, controllerDeviceId: String,
@@ -436,8 +392,6 @@ public struct PeerStatePayload: Codable, Equatable {
     public init(sessionId: String, attached: Bool) { self.sessionId = sessionId; self.attached = attached }
 }
 
-/// PROTOCOL.md §2.12. `fp`, `pubkey` and `sig` are the signed DTLS
-/// fingerprints; the server relays them unchanged and never checks `sig`.
 public struct SDPPayload: Codable, Equatable {
     public var sessionId: String
     public var sdpType: String
@@ -452,8 +406,6 @@ public struct SDPPayload: Codable, Equatable {
         self.fp = fp; self.pubkey = pubkey; self.sig = sig
     }
 
-    /// The three signature fields, when all three are present. A frame missing
-    /// any of them cannot be verified and must not be applied.
     public var signature: SdpSignature? {
         guard let fp, let pubkey, let sig, !fp.isEmpty, !pubkey.isEmpty, !sig.isEmpty else {
             return nil
@@ -473,9 +425,6 @@ public struct ICEPayload: Codable, Equatable {
     }
 }
 
-/// PROTOCOL.md §2.17. One opaque message of the SPAKE2 exchange. The server
-/// routes it and reads nothing of `payload`; neither does anything in this app
-/// outside `PakeExchange`.
 public struct PakePayload: Codable, Equatable {
     public var sessionId: String
     public var step: Int
@@ -507,7 +456,6 @@ public struct ErrorPayload: Codable, Equatable {
     public var code: String
     public var message: String
     public var retryAfterSec: Int?
-    /// PROTOCOL.md §7: present only on `entitlement`, from API.md §4.3's set.
     public var reason: String?
     public init(code: String, message: String, retryAfterSec: Int? = nil, reason: String? = nil) {
         self.code = code; self.message = message
@@ -533,7 +481,6 @@ public enum CtrlType {
     public static let ping = "ping"
     public static let pong = "pong"
     public static let sessionClose = "session_close"
-    /// The only type permitted on `hi`.
     public static let mouseMove = "mouse_move"
 }
 

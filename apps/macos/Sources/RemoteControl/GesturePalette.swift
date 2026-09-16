@@ -1,23 +1,11 @@
 import SwiftUI
 import RemoteControlCore
 
-/// The floating action palette (PLAN.md §2.4, mechanism 2).
-///
-/// **Why it exists at all.** Capture mode forwards keystrokes, but some macOS
-/// actions have no key equivalent a tap could forward — Launchpad has no
-/// default shortcut, and Mission Control is a trackpad gesture most people
-/// never learned the key for. These are semantic commands: the controller sends
-/// `gesture {name}` and the host performs the action natively.
-///
-/// **What it is not.** It does not synthesise multi-touch. PLAN.md §2.4 records
-/// that decision: a genuine three-finger swipe needs private CoreGraphics SPI,
-/// and every button here invokes the same OS action through a public API.
 struct GesturePalette: View {
 
     @EnvironmentObject private var model: AppModel
     @Binding var isExpanded: Bool
 
-    /// Ordered for the hand, not alphabetically: the four everyday ones first.
     private static let order: [GestureName] = [
         .missionControl, .appExpose, .showDesktop, .launchpad,
         .spotlight, .appSwitcher, .screenshotRegion, .forceQuit, .lockScreen,
@@ -80,8 +68,6 @@ private struct GestureButton: View {
 }
 
 extension GesturePalette {
-    /// The honest description: what the host will actually do. Nothing here
-    /// claims to be a trackpad gesture.
     static func help(for gesture: GestureName) -> String {
         switch GestureCatalog.action(for: gesture) {
         case .combo(let combo):

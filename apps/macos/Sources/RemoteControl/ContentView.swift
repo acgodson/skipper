@@ -8,8 +8,6 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             if model.showsRemoteScreen {
-                // A live controller session takes the whole window. The connect
-                // form is not "behind" it — it is not the right screen any more.
                 RemoteSessionView()
             } else if let error = model.identityError {
                 IdentityFailureView(
@@ -40,9 +38,6 @@ struct ContentView: View {
                         }
                     }
                     .padding(16)
-                    // Cap and centre the forms. The window is landscape so the
-                    // remote desktop is not squeezed into a strip, but a text
-                    // field stretched to 1000pt is unreadable and looks broken.
                     .frame(maxWidth: 620)
                     .frame(maxWidth: .infinity)
                 }
@@ -51,10 +46,6 @@ struct ContentView: View {
     }
 }
 
-/// Shown when the identity file cannot be read. We do not carry on with a
-/// half-initialised identity, and we deliberately do NOT quietly mint a new one:
-/// that would change this Mac's Device ID and access code behind the user's
-/// back, and the peer Mac's saved entry would simply stop working.
 struct IdentityFailureView: View {
     let message: String
     let canReset: Bool

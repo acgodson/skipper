@@ -2,19 +2,10 @@ import Foundation
 import SkipperCore
 import WebRTC
 
-/// Errors the Connect flow shows the user, mapped from PROTOCOL.md §7 codes so
-/// the UI can be specific rather than saying "connection failed".
 public enum ConnectFailure: Swift.Error, LocalizedError, Equatable {
-    /// The other Mac refused the access code, or refused to try one because
-    /// this controller is serving a lockout. It arrives as `bye{auth_failed}`
-    /// (PROTOCOL.md §2.14), not as a server `error`: in v2 the server has no
-    /// opinion about codes.
     case authFailed
     case offline
     case busy
-    /// *v2.* The host's account may not open a session. `reason` is API.md
-    /// §4.3's closed set; `message` is the server's own sentence, which is what
-    /// an unrecognised reason renders.
     case entitlement(reason: String?, message: String)
     case rateLimited(retryAfterSec: Int)
     case unknownDevice
@@ -81,22 +72,13 @@ public enum ConnectFailure: Swift.Error, LocalizedError, Equatable {
     }
 }
 
-/// Everything worth observing from outside, in one stream. The SwiftUI views
-/// bind to the `@Published` properties; `rc-node` (the headless driver used by
-/// scripts/test-transport.sh) subscribes to this so an integration test can
-/// assert on real events rather than on scraped log text.
 public enum CoordinatorEvent {
     case signalingState(SignalingState)
-    /// The control plane dropped. Carries the reason so an operator (and the
-    /// integration test) can tell a pin rejection from a network blip.
     case signalingDisconnected(reason: String)
     case authenticated(HelloOKPayload)
     case presence(deviceID: String, online: Bool)
     case sessionGranted(sessionID: String, role: Wire.Role)
-    /// A session was re-attached WITHOUT the access code (PROTOCOL.md §4.3).
     case resumed(sessionID: String, peerAttached: Bool)
-    /// The server had lost the session and we silently reconnected with a
-    /// remembered code instead of prompting.
     case silentReconnect(reason: String)
     case phase(SessionPhase)
     case ice(ICELinkState)
@@ -106,46 +88,19 @@ public enum CoordinatorEvent {
     case bye(reason: String)
     case accessCodeRequired(reason: String)
     case iceRestartStarted
-    /// A remote offer/answer was applied. `restart` mirrors PROTOCOL.md §2.12's
-    /// advisory flag, which is how the far side proves an ICE restart completed.
     case remoteDescription(type: String, restart: Bool)
-    /// A remote offer/answer was REFUSED because its signed fingerprints did
-    /// not verify. The session is over; this is never retried.
     case peerAuthFailed(reason: String)
-    /// One frame of the §2.17 access-code exchange crossed the wire. The step
-    /// number only — the payload is opaque here as it is to the server.
     case pake(step: Int, outgoing: Bool)
-    /// The exchange completed: both Macs proved the same access code, and this
-    /// is the device key the peer's `sdp` must now carry.
     case pakeCompleted(peerPubkey: String)
-    /// The exchange did not complete. `authentication` separates "the code is
-    /// wrong, or this controller is locked out" from "it broke for another
-    /// reason" — the same split as `bye{auth_failed}` against `bye{failed}`.
     case pakeFailed(reason: String, authentication: Bool)
-    /// HOST: the capture pipeline changed state, including "the Screen
-    /// Recording grant is missing", which must never be a silent black screen.
     case captureState(CaptureState)
-    /// CONTROLLER: a remote video track was attached. Frames are a separate
-    /// question — see `videoStatistics()`.
     case remoteVideo(present: Bool)
-    /// HOST: the Accessibility grant changed. Without it every injected event
-    /// is discarded by the window server, so this must never be silent.
     case accessibility(granted: Bool)
-    /// HOST: an input message was applied, and how many OS events it became.
-    /// Zero is meaningful — it is what a dropped stale packet looks like.
     case inputApplied(type: String, events: Int)
-    /// Clipboard text crossed in one direction. Byte count only, never text.
     case clipboard(incoming: Bool, bytes: Int)
-    /// A gesture was executed on the host.
     case gesture(name: String)
 }
 
-/// Binds `SignalingClient`, `PeerSession` and `SessionStateMachine` together.
-///
-/// This is the object the UI talks to. It performs the actions the state machine
-/// returns and nothing else — every *decision* about resume, ICE restart, input
-/// reset and when a session is finally dead lives in the machine, where it can
-/// be tested without a network.
 @MainActor
 public final class SessionCoordinator: ObservableObject, SessionTransport {
 
@@ -159,33 +114,19 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     @Published public private(set) var iceState: ICELinkState = .new
     @Published public private(set) var dataChannelsOpen = false
     @Published public private(set) var remoteDisplay: DisplayInfoPayload?
-    /// HOST: what the capture pipeline is doing, including the "Screen Recording
-    /// is not granted" case that must never be a silent black screen.
     @Published public private(set) var captureState: CaptureState = .idle {
         didSet {
             guard captureState != oldValue else { return }
             emit(.captureState(captureState))
         }
     }
-    /// HOST: the size of what we are actually capturing, i.e. what goes out as
-    /// `display_info`.
     @Published public private(set) var localDisplay: DisplayInfoPayload?
-    /// CONTROLLER: a decoded remote video track exists. The view still shows a
-    /// waiting state until the first frame changes its size.
     @Published public private(set) var hasRemoteVideo = false
-    /// CONTROLLER: the quality strategy in force, mirrored to the host.
     @Published public private(set) var qualityMode: QualityWireMode = .auto
-    /// Set when the session died for a reason that requires the access code
-    /// again. The UI shows the Connect form; nothing else may do so.
     @Published public private(set) var needsAccessCode = false
-    /// HOST: false when this Mac cannot inject input because the Accessibility
-    /// grant is missing. Surfaced by name in the UI (PermissionKind.accessibility).
     @Published public private(set) var canInjectInput = true
-    /// HOST: how many OS events have actually been posted this session. A stub
-    /// cannot make this climb.
     @Published public private(set) var injectedEventCount = 0
 
-    /// The transport seam the Phase 2 UI already talks to.
     public var state: SessionState {
         switch phase {
         case .idle: return .idle
@@ -206,63 +147,37 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
     // MARK: Phase 5 — input, gestures, clipboard
 
-    /// HOST: translates `ctrl`/`hi` messages into OS events. Present on both
-    /// roles but only fed on the host, so the controller can never inject into
-    /// itself.
     public let injector = InputInjector()
-    /// Where injected events go. Replaceable so a test can record instead of
-    /// posting; the app always uses the real `CGEventSink`.
     public var eventSink: InputEventSink
-    /// CONTROLLER: the UI's one route onto the wire.
     public let input = RemoteInputSender()
-    /// Respects the "Clipboard Sync" setting; assignment takes effect at once.
     public var clipboardSyncEnabled = true {
         didSet { clipboard?.isEnabled = clipboardSyncEnabled }
     }
     private var clipboard: ClipboardMonitor?
-    /// Internal rather than private so the §2.17 exchange, which lives in its
-    /// own file, can drive the same machine and identity this file does.
     let machine: SessionStateMachine
     let identity: IdentityStore
     private let config: RCConfig
     private var ticker: Task<Void, Never>?
     private var watchedPeer: String?
     public let role: Wire.Role
-    /// HOST only. Owned here because its lifetime is exactly the session's.
     private var frameProducer: (any VideoFrameProducer)?
     private let captureSourceKind: CaptureSourceKind
     private var captureRetry: Task<Void, Never>?
-    /// Serialises negotiation so two offers can never be in flight.
     private var negotiating = false
-    /// The peer's device key, as this side learned it: the controller learns the
-    /// host's from `connect_ok`, the host learns the controller's from the
-    /// §2.17 exchange. Every incoming `sdp` must be signed by it.
     public private(set) var expectedPeerPublicKey: String?
 
     // MARK: The access-code exchange (PROTOCOL.md §2.17) — see SessionPake.swift
 
-    /// This side of the SPAKE2 exchange, for the life of one session.
     var pakeExchange: PakeExchange?
-    /// True once the exchange has completed. Until then no offer may leave and
-    /// no remote description may be applied: an unauthenticated peer must not
-    /// reach the media path at all.
     var pakeComplete = false
-    /// Set while a session exists that has not finished its exchange.
     var pakeRequired = false
-    /// The `startPeerConnection` the state machine asked for while the exchange
-    /// was still running, held until it completes.
     var deferredPeerStart: Bool?
-    /// HOST: `session_start.controllerPubkey` — what the guess counter and the
-    /// trusted list are keyed on, and what step 1's own key must equal.
     var pakeControllerPubkey: String?
     var pakeTimeout: Task<Void, Never>?
 
-    /// The live replacement for `PreviewPresenceSource`. Bind the UI to this.
     public let presence = SignalingPresenceSource()
 
-    /// Called when a session ends in a way that needs the user. The UI binds it.
     public var onAccessCodeRequired: ((String) -> Void)?
-    /// Observation stream; see `CoordinatorEvent`.
     public var onEvent: ((CoordinatorEvent) -> Void)?
 
     func emit(_ event: CoordinatorEvent) { onEvent?(event) }
@@ -289,7 +204,6 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
                 self.emit(.accessibility(granted: granted))
             }
         }
-        // Both roles sync the clipboard; only the controller sends input.
         let clipboard = ClipboardMonitor(engine: ClipboardSyncEngine(originId: identity.deviceID))
         clipboard.onOutgoing = { [weak self] payload in
             guard let self, self.clipboardSyncEnabled else { return }
@@ -346,13 +260,10 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
     // MARK: - SessionTransport
 
-    /// Controller: the user pressed Connect.
     public func connect(deviceID: String, accessCode: String) async throws {
         try await connect(deviceID: deviceID, accessCode: accessCode, remember: false)
     }
 
-    /// Pins the key every incoming `sdp` must be signed by. The host calls this
-    /// with the controller key the §2.17 exchange bound into its transcript.
     public func expectPeerPublicKey(_ pubkey: String?) {
         expectedPeerPublicKey = (pubkey?.isEmpty == false) ? pubkey : nil
     }
@@ -368,22 +279,14 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         syncPhase()
     }
 
-    /// Measures the real round-trip over the `ctrl` channel (PROTOCOL.md §5).
     public func sendPing() throws { try peer?.sendPing() }
 
-    /// Sends `display_info`. The host calls this on session start and on any
-    /// display change; Phase 4 supplies the real numbers.
     public func sendDisplayInfo(width: Int, height: Int, scale: Double) throws {
         try peer?.sendDisplayInfo(DisplayInfoPayload(w: width, h: height, scale: scale))
     }
 
-    /// Drops the signaling socket without ending the session, so the client
-    /// reconnects and resumes. This is a *control-plane* outage by construction:
-    /// it exists to prove the peer connection survives one.
     public func dropSignalingSocket() { signaling.simulateSocketLoss() }
 
-    /// Forces an ICE restart. Used by the integration test; in normal operation
-    /// the state machine decides when this happens.
     public func forceICERestart() {
         emit(.iceRestartStarted)
         Task { await renegotiate(restart: true) }
@@ -404,9 +307,6 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         switch action {
         case .sendConnectReq(let deviceID, let accessCode):
             do {
-                // The code does not travel with the request: §2.9 authorises by
-                // entitlement, and the code is settled by the §2.17 exchange the
-                // session below exists to carry.
                 let grant = try await signaling.connectRequest(deviceID: deviceID)
                 expectPeerPublicKey(grant.hostPubkey)
                 emit(.sessionGranted(sessionID: grant.sessionId, role: .controller))
@@ -418,10 +318,6 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
                 lastError = failure.localizedDescription
                 emit(.connectFailed(failure))
                 await perform(machine.connectFailed(code: failure.code))
-                // `busy` against what might be our own orphaned session is
-                // recovered with `resume`, never by retrying connect_req
-                // (PROTOCOL.md §4.4). We have no session here, so it is genuinely
-                // someone else's — surfaced, not retried.
             }
 
         case .sendResume(let sessionID, let token):
@@ -431,16 +327,12 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
                 await perform(machine.resumeSucceeded(ok))
             } catch let error as WireError {
                 let code = error.serverCode ?? "network"
-                // The server restarted: every session died and `no_session` is
-                // the honest answer. A controller that remembers the code
-                // reconnects silently; only a controller with no code prompts.
                 if (code == Wire.ErrorCode.noSession || code == Wire.ErrorCode.badToken),
                    machine.rememberedAccessCode != nil {
                     emit(.silentReconnect(reason: code))
                 }
                 await perform(machine.resumeFailed(code: code, retryAfterSec: error.retryAfterSec ?? 0))
             } catch {
-                // Socket died mid-resume: not terminal, try again on reconnect.
                 await perform(machine.resumeFailed(code: "network", retryAfterSec: 0))
             }
 
@@ -458,22 +350,13 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             } catch let error as WireError {
                 await perform(machine.renewFailed(code: error.serverCode ?? "network"))
             } catch {
-                // Transient; the next tick renews again.
             }
 
         case .sendInputReset:
             peer?.sendInputReset()
-            // And apply one locally. PROTOCOL.md §4.4 says a reset goes out on
-            // every resume and every disconnect; if the LINK is what broke, the
-            // peer's reset may never arrive, and a Command key held when the
-            // network died would stay held on this Mac forever. Idempotent, so
-            // doing both sides costs nothing.
             applyLocalInputReset()
 
         case .startPeerConnection(let offerer):
-            // Nothing touches the media path until the access code is proved:
-            // the offer waits for the §2.17 exchange to finish (or for the
-            // session to end because it did not).
             guard !pakeRequired || pakeComplete else {
                 deferredPeerStart = offerer
                 return
@@ -521,18 +404,12 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
     // MARK: - Peer connection
 
-    /// The peer connection the §2.17 exchange was holding back, now that the two
-    /// Macs have proved the same access code.
     func startPeerAfterPake(offerer: Bool) { startPeer(offerer: offerer) }
 
-    /// The exchange completed but bound a device key that is not the one the
-    /// server named. That is the relay, not the code: §2.12's ending, not §2.17's.
     func refusePeerFromPake(reason: String) async { await refusePeer(reason: reason) }
 
     private func startPeer(offerer: Bool) {
         peer?.close()
-        // The media direction follows the ROLE, not who offers: the controller
-        // offers and receives, which is the pair that is easy to invert.
         let session = PeerSession(iceServers: signaling.iceServers, isOfferer: offerer,
                                   mediaRole: role == .host ? .sendScreen : .receiveScreen,
                                   forceTURNRelay: config.forceTURNRelay)
@@ -541,8 +418,6 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         do {
             try session.start()
         } catch {
-            // Failing here means there is no peer connection at all, and the
-            // session simply never progresses. Silence was costing an afternoon.
             RCLog.error("startPeer failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
             return
@@ -554,8 +429,6 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         }
     }
 
-    /// Creates and relays an offer. Guarded so an ICE restart triggered by both
-    /// the 3-second timer and a `resume_ok` cannot produce two offers.
     private func renegotiate(restart: Bool) async {
         guard let peer, let sessionID = machine.sessionID, !negotiating else { return }
         negotiating = true
@@ -572,10 +445,6 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
     // MARK: - Signed SDP (PROTOCOL.md §2.12)
 
-    /// Every `sdp` this Mac sends goes through here, including an ICE-restart
-    /// re-offer, so nothing can leave unsigned: the fingerprints are extracted
-    /// by the shared core and signed with the device key, which may be in the
-    /// Secure Enclave.
     private func sendSignedSDP(sessionID: String, type: String, sdp: String,
                                restart: Bool) async throws {
         let signable = try SdpAuth.signable(sessionID: sessionID, sdpType: type, sdp: sdp)
@@ -587,8 +456,6 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
                                     restart: restart, signature: signature)
     }
 
-    /// The other Mac could not be proven to be the other Mac. That is not a
-    /// network problem and is never retried: `bye`, tear down, say so.
     private func refusePeer(reason: String) async {
         RCLog.error("peer authentication failed: \(reason)")
         lastError = SessionCoordinator.peerAuthFailureMessage
@@ -608,8 +475,6 @@ extension SessionCoordinator: SignalingClientDelegate {
         emit(.signalingState(state))
         presence.setServerReachable(state.isAuthenticated)
         if case .authenticated = state {} else if watchedPeer != nil, !state.isAuthenticated {
-            // With no control plane we genuinely do not know; saying "Offline"
-            // would be a lie about the peer rather than about ourselves.
             peerPresence = .unknown
         }
     }
@@ -621,7 +486,6 @@ extension SessionCoordinator: SignalingClientDelegate {
 
     public func signaling(_ client: SignalingClient, didDisconnect error: Swift.Error?) {
         emit(.signalingDisconnected(reason: error?.localizedDescription ?? "closed"))
-        // PROTOCOL.md §4.3 step 1: the peer connection is NOT touched here.
         Task { await perform(machine.signalingLost()) }
     }
 
@@ -651,8 +515,6 @@ extension SessionCoordinator: SignalingClientDelegate {
             await handlePake(frame)
 
         case Wire.MessageType.peerState:
-            // Informational: the other side attached or detached. The ICE state
-            // is what decides whether media is up.
             break
 
         case Wire.MessageType.sdp:
@@ -681,9 +543,6 @@ extension SessionCoordinator: SignalingClientDelegate {
 
     private func handleRemoteSDP(_ sdp: SDPPayload) async {
         guard sdp.sessionId == machine.sessionID else { return }
-        // Before §2.17 completes neither side knows who the other is, and the
-        // host has not yet pinned the key this signature would be checked
-        // against. A description that arrives that early is dropped, not applied.
         guard !pakeRequired || pakeComplete else {
             RCLog.error("dropped an sdp that arrived before the access code was proved")
             return
@@ -699,8 +558,6 @@ extension SessionCoordinator: SignalingClientDelegate {
             await refusePeer(reason: error.localizedDescription)
             return
         }
-        // The host has no peer connection until the first offer arrives if the
-        // session_start push and the offer race; start it lazily.
         if peer == nil { startPeer(offerer: machine.isOfferer) }
         guard let peer else { return }
         do {
@@ -733,8 +590,6 @@ extension SessionCoordinator: PeerSessionDelegate {
     public func peerSession(_ session: PeerSession, didGatherCandidate candidate: String, sdpMid: String?, sdpMLineIndex: Int?) {
         guard let sessionID = machine.sessionID else { return }
         Task {
-            // A candidate that cannot be relayed because the peer is detached is
-            // dropped by the server on purpose; it is re-gathered after resume.
             try? await signaling.sendICE(sessionID: sessionID, candidate: candidate,
                                          sdpMid: sdpMid, sdpMLineIndex: sdpMLineIndex)
         }
@@ -750,19 +605,13 @@ extension SessionCoordinator: PeerSessionDelegate {
         dataChannelsOpen = session.isReady
         emit(.dataChannel(label: label, allOpen: session.isReady))
         guard label == PeerSession.ctrlLabel else { return }
-        // The control channel being open is what makes input and clipboard
-        // meaningful; before that there is nowhere to send them.
         clipboard?.isEnabled = clipboardSyncEnabled
         clipboard?.start()
         input.isEnabled = (role == .controller)
         switch role {
         case .host:
-            // PROTOCOL.md §5: display_info on session start. If capture has not
-            // reported a size yet, `captureDidResize` sends it the moment it does.
             if let localDisplay { try? session.sendDisplayInfo(localDisplay) }
         case .controller:
-            // The host defaults to `auto`; state the controller's actual choice
-            // rather than relying on both sides having the same default.
             try? session.sendQuality(qualityMode)
         }
     }
@@ -787,9 +636,6 @@ extension SessionCoordinator: PeerSessionDelegate {
         }
     }
 
-    /// A `mouse_move` off the unreliable channel. `PeerSession` has already
-    /// dropped anything stale by `seq`; the injector's own gate is a second
-    /// line of defence that also survives a reconnect (PROTOCOL.md §6).
     public func peerSession(_ session: PeerSession, didReceiveMouseMove move: MouseMovePayload) {
         guard role == .host else { return }
         let events = injector.mouseMove(move)
@@ -806,17 +652,10 @@ extension SessionCoordinator: PeerSessionDelegate {
     }
 }
 
-
 // MARK: - Input, gestures and clipboard (Phase 5)
 
 public extension SessionCoordinator {
 
-    /// HOST: applies one input message as real OS events.
-    ///
-    /// Guarded by role: a controller that received a `mouse_down` would inject
-    /// into ITSELF. The channel is 1:1 and the host never sends input, but the
-    /// guard is what makes that a property of the code rather than of the peer's
-    /// good behaviour.
     internal func applyInput(_ envelope: Envelope) {
         guard role == .host else { return }
         guard let events = injector.handle(ctrl: envelope) else { return }
@@ -832,20 +671,14 @@ public extension SessionCoordinator {
             emit(.inputApplied(type: type, events: 0))
             return
         }
-        // The display can be reconfigured mid-session; re-reading the bounds is
-        // cheap and stops the pointer landing on the old geometry.
         injector.target = .mainDisplay
         eventSink.post(events)
         injectedEventCount += events.count
         emit(.inputApplied(type: type, events: events.count))
     }
 
-    /// Releases everything held on THIS Mac. Idempotent (see `InputInjector.reset`).
     internal func applyLocalInputReset() {
         let events = injector.reset()
-        // Local only: the wire-level input_reset is the state machine's
-        // `.sendInputReset` action, which has just fired. Sending a second one
-        // from here would be redundant traffic on every reconnect.
         input.forgetHeldState()
         guard !events.isEmpty else { return }
         eventSink.post(events)
@@ -853,8 +686,6 @@ public extension SessionCoordinator {
         emit(.inputApplied(type: CtrlType.inputReset, events: events.count))
     }
 
-    /// Both roles. The echo guard lives in `ClipboardSyncEngine`; this only
-    /// routes and reports byte counts.
     internal func applyClipboard(_ envelope: Envelope) {
         guard envelope.type == CtrlType.clipboardText, clipboardSyncEnabled else { return }
         guard let payload = try? envelope.decodePayload(ClipboardTextPayload.self) else { return }
@@ -862,20 +693,17 @@ public extension SessionCoordinator {
         emit(.clipboard(incoming: true, bytes: payload.text.utf8.count))
     }
 
-    /// CONTROLLER: the floating palette's one call.
     func sendGesture(_ name: GestureName) {
         guard role == .controller else { return }
         input.gesture(name)
         emit(.gesture(name: name.rawValue))
     }
 
-    /// CONTROLLER: from the capture-keyboard tap, or a test.
     func sendKey(down: Bool, keycode: CGKeyCode, modifiers: KeyModifiers) {
         guard role == .controller else { return }
         input.key(down: down, keycode: keycode, modifiers: modifiers)
     }
 
-    /// CONTROLLER: pointer activity from the remote screen view.
     func sendPointer(_ event: RemotePointerEvent) {
         guard role == .controller else { return }
         input.handle(event)
@@ -886,23 +714,17 @@ public extension SessionCoordinator {
 
 public extension SessionCoordinator {
 
-    /// The one call the controller UI makes when the quality picker changes.
-    /// Also remembered so a later reconnect re-states it.
     func setQuality(_ mode: QualityWireMode) {
         qualityMode = mode
         guard role == .controller else { return }
         try? peer?.sendQuality(mode)
     }
 
-    /// libwebrtc's own counters. `framesDecoded` climbing is the only proof of
-    /// live video that a still frame or a stub cannot produce.
     func videoStatistics() async -> VideoStatistics {
         guard let peer else { return VideoStatistics() }
         return await peer.videoStatistics()
     }
 
-    /// The controller's Metal view attaches to this. Kept internal to the media
-    /// layer: no libwebrtc type reaches the SwiftUI code.
     internal var remoteTrack: RTCVideoTrack? { peer?.remoteVideoTrack }
 }
 
@@ -910,7 +732,6 @@ public extension SessionCoordinator {
 
 extension SessionCoordinator {
 
-    /// Starts (or restarts) capture for the live session. Idempotent.
     func startCapture() {
         guard role == .host, frameProducer == nil else { return }
         RCLog.info("starting capture, source=\(captureSourceKind.rawValue), screenRecordingGranted=\(ScreenCaptureSource.hasScreenRecordingPermission)")
@@ -955,9 +776,6 @@ extension SessionCoordinator {
         Task { await producer.stop() }
     }
 
-    /// PROTOCOL.md §5: `display_info` on session start AND on any display change.
-    /// This is the single funnel for both, so a resolution change mid-session
-    /// cannot leave the controller letterboxing to a stale size.
     func captureDidResize(width: Int, height: Int, scale: Double) {
         let info = DisplayInfoPayload(w: width, h: height, scale: scale)
         guard info != localDisplay else { return }
@@ -977,10 +795,6 @@ extension SessionCoordinator {
         frameProducer = nil
         Task { await producer?.stop() }
 
-        // TCC binds the Screen Recording grant to the code signature, and this
-        // app is ad-hoc signed, so a rebuild can revoke it and the user has to
-        // re-grant mid-session. Poll quietly rather than making them reconnect:
-        // the moment the grant comes back, video starts.
         guard failure.isPermissionProblem, captureSourceKind == .screen else { return }
         captureRetry?.cancel()
         captureRetry = Task { [weak self] in
@@ -995,7 +809,6 @@ extension SessionCoordinator {
         }
     }
 
-    /// Applies a quality strategy to the encoder and to the capture stream.
     func applyQuality(_ mode: QualityWireMode) {
         qualityMode = mode
         guard role == .host else { return }
