@@ -132,7 +132,8 @@ public let deviceKeySuite = TestSuite("DeviceKey", [
             key: original,
             createdAt: Date()
         )
-        let raw = try expectNotNil(Data(base64Encoded: record.privateKeyBase64))
+        let stored = try expectNotNil(record.privateKeyBase64)
+        let raw = try expectNotNil(Data(base64Encoded: stored))
         try expectEqual(raw.count, 32, "a P-256 scalar is 32 bytes")
 
         let restored = try DeviceKey(rawPrivateKey: raw)

@@ -8,7 +8,7 @@ The distilled record of the build. Full phase-by-phase notes: [archive/PLAN.md](
 |---|---|
 | **Single native Swift/SwiftUI app** instead of Tauri + React + Rust | libwebrtc (`stasel/WebRTC`) gives VideoToolbox H.264, Google BWE, ICE, DTLS and data channels for free. A webview can't capture unattended (`getDisplayMedia` prompts every time). Two languages (Swift, Go) instead of four. Builds with `swift build` and no Xcode |
 | **Go** signaling server instead of Node | One static binary, idle-cheap next to a production service |
-| **File-based secrets** (`~/Library/Application Support/RemoteControl/identity.json`, 0600) instead of Keychain | Keychain ACLs bind to the code signature, so every ad-hoc rebuild re-prompted; Secure Enclave needs a paid Developer account anyway (`-34018`). Same posture as AnyDesk/RustDesk. A corrupt file is surfaced, never silently regenerated |
+| ~~**File-based secrets** (`~/Library/Application Support/RemoteControl/identity.json`, 0600) instead of Keychain~~ | **REVERSED 2026-09-16** — see below. Held while there was no Developer ID account: Keychain ACLs bind to the code signature, so every ad-hoc rebuild re-prompted, and the Secure Enclave returned `-34018` |
 | **No Apple Developer account** | Local stable signing cert (`make-signing-cert.sh`); `build.sh` keeps the identity in one variable so Developer ID is a config change later |
 | **Self-signed cert pinned by SHA-256** instead of a domain + public CA | No DNS for the box; pinning is stronger for a private two-device system |
 | **No Elastic IP** (user decision, 2026-08-19) | Instance is long-running; if the IP ever changes, the recovery is scripted (~2 min) plus rebuilding both Macs |
@@ -19,6 +19,43 @@ The distilled record of the build. Full phase-by-phase notes: [archive/PLAN.md](
 | **`AVSampleBufferDisplayLayer`** for rendering | `RTCMTLNSVideoView` isn't in the `stasel/WebRTC` binary at all |
 | **coturn quotas by allocation count**, not bandwidth | `bps-capacity` caused error 486 on every allocation; `max-bps` would have throttled the stream |
 | **Diagnostics hidden** unless `RC_DEBUG=1` | The user sees state ("sharing", "reconnecting"), not fluctuating numbers |
+
+## Reversals
+
+### 2026-09-16 — the device private key leaves the identity file (Phase 2.2)
+
+A Developer ID account now exists, so the reason for file-based secrets is gone. `SCOPE.md` §5
+has always said the device identity is a hardware-held P-256 key; this makes it true.
+
+**Selection order at startup:** Secure Enclave → Keychain → file. The file is reachable only
+under `SKIPPER_DEV_FILE_IDENTITY=1` or an overridden identity directory (`RC_IDENTITY_DIR`), which
+is what lets `rc-node` and the multi-instance scripts run several identities on one Mac — the
+Keychain and the Secure Enclave each hold exactly one device key. Never a release path.
+
+**Migration rule.** A Secure Enclave key cannot be imported, so an existing identity can never
+become hardware-backed without changing its Device ID, and the Device ID is permanent. So: an
+existing `identity.json` with a software key keeps that key and keeps its Device ID, but the key
+*moves* into the Keychain (`KeychainDeviceKey`) and is removed from the file. Only brand-new
+identities get Secure Enclave keys. If the Keychain refuses, the key stays in the file, the UI
+says so, and nothing is regenerated. The existing rule stands unchanged: an identity is never
+silently regenerated, whatever fails.
+
+**What stays in the file:** Device ID, access code, `createdAt`, `serverRegistered`. The access
+code moves out when SPAKE2 lands.
+
+**Storage:** a generic-password Keychain item, service `app.skipperdesk.desktop`, accounts
+`device-key` (the Secure Enclave blob) and `device-key-software` (the P-256 scalar), both
+`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` so an unattended host comes back after a reboot
+and the key never travels to another Mac. The Secure Enclave key uses `.privateKeyUsage` with no
+user-presence factor, for the same reason.
+
+**Build:** `scripts/build.sh` adds `com.apple.application-identifier` and `keychain-access-groups`
+(`<TEAMID>.app.skipperdesk.desktop`) when a Team ID is available from `SKIPPER_TEAM_ID` or from the
+selected `Developer ID Application: … (TEAMID)` identity. Without one it prints "No Developer ID
+identity; Secure Enclave unavailable in this build" and the app falls back to the Keychain.
+
+**The UI states which of the three is in use** — "Key: Secure Enclave" / "Key: Keychain" /
+"Key: file (dev)" — and must never claim the strongest one when it fell back.
 
 ## Lessons (read before changing things)
 

@@ -12,12 +12,13 @@ public enum DeviceKeyError: Error, LocalizedError {
     }
 }
 
-/// The device's P-256 identity keypair.
+/// The device's P-256 identity keypair, in software.
 ///
-/// CryptoKit, not Security.framework: there are no Keychain calls anywhere in
-/// this type, which is what stops macOS asking the user for permission on every
-/// rebuild of an ad-hoc signed binary. The private half is persisted by
-/// `IdentityFileStore` into an owner-only file.
+/// The raw primitive, not a storage policy: it holds a scalar and can hand out
+/// its bytes, which is what lets `KeychainDeviceKey` move an existing key into
+/// the Keychain and what lets the dev `FileDeviceKey` keep one in a file. A
+/// Secure Enclave key is never one of these, because its scalar does not exist
+/// outside the chip.
 ///
 /// The private half is never returned by any *public* API, never printed, never
 /// logged and never rendered. The only public operations are "give me the public
@@ -107,37 +108,5 @@ public final class DeviceKey {
     public func verify(_ signature: Data, for message: Data) -> Bool {
         guard let parsed = try? P256.Signing.ECDSASignature(derRepresentation: signature) else { return false }
         return privateKey.publicKey.isValidSignature(parsed, for: message)
-    }
-}
-
-/// Where the device private key physically lives.
-///
-/// There is exactly one case now. It stays an enum rather than becoming a bare
-/// string so that adding hardware backing later (which needs a paid Apple
-/// Developer account and a provisioning profile we do not have) is an additive
-/// change rather than a refactor of every call site.
-public enum DeviceKeyStorage: Equatable, CustomStringConvertible {
-
-    /// A software key in an owner-only (0600) file inside the app's Application
-    /// Support directory.
-    case file(URL)
-
-    /// Deliberately modest wording. This is file permissions plus FileVault at
-    /// rest — it is not hardware-backed and the UI must not suggest it is.
-    public var description: String {
-        switch self {
-        case .file: return "Software key in an owner-only file (0600)"
-        }
-    }
-
-    public var path: String {
-        switch self {
-        case .file(let url): return url.path
-        }
-    }
-
-    /// Path with `$HOME` abbreviated, for display in a narrow label.
-    public var displayPath: String {
-        (path as NSString).abbreviatingWithTildeInPath
     }
 }

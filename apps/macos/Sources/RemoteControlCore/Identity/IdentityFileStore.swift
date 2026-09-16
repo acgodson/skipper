@@ -16,7 +16,15 @@ public struct IdentityRecord: Equatable {
     public var deviceID: String
     public var accessCode: String
     /// Base64 of the 32-byte P-256 private scalar. Never logged, never displayed.
-    public var privateKeyBase64: String
+    ///
+    /// Nil once the key has moved to the Keychain or the Secure Enclave, which is
+    /// where it lives for every non-dev identity. Optional on decode so a record
+    /// written before that move still loads, and omitted on encode so the move is
+    /// a move and not a copy.
+    public var privateKeyBase64: String?
+    /// Which backend holds the private key: `secureEnclave`, `keychain` or
+    /// `file`. Absent on a record written before Phase 2.2, which means file.
+    public var keyStorage: String?
     public var createdAt: Date
     /// True once `rc-signal` has issued this device its permanent Device ID.
     ///
@@ -32,14 +40,16 @@ public struct IdentityRecord: Equatable {
         schemaVersion: Int = IdentityRecord.currentSchemaVersion,
         deviceID: String,
         accessCode: String,
-        privateKeyBase64: String,
+        privateKeyBase64: String?,
         createdAt: Date,
-        serverRegistered: Bool = false
+        serverRegistered: Bool = false,
+        keyStorage: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.deviceID = deviceID
         self.accessCode = accessCode
         self.privateKeyBase64 = privateKeyBase64
+        self.keyStorage = keyStorage
         self.createdAt = createdAt
         self.serverRegistered = serverRegistered
     }
@@ -65,7 +75,8 @@ public struct IdentityRecord: Equatable {
             accessCode: accessCode,
             privateKeyBase64: key.rawPrivateKey.base64EncodedString(),
             createdAt: createdAt,
-            serverRegistered: serverRegistered
+            serverRegistered: serverRegistered,
+            keyStorage: "file"
         )
     }
 }
@@ -76,8 +87,20 @@ extension IdentityRecord: Codable {
         case deviceID = "deviceId"
         case accessCode = "accessCode"
         case privateKeyBase64 = "privateKey"
+        case keyStorage = "keyStorage"
         case createdAt = "createdAt"
         case serverRegistered = "serverRegistered"
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(schemaVersion, forKey: .schemaVersion)
+        try c.encode(deviceID, forKey: .deviceID)
+        try c.encode(accessCode, forKey: .accessCode)
+        try c.encodeIfPresent(privateKeyBase64, forKey: .privateKeyBase64)
+        try c.encodeIfPresent(keyStorage, forKey: .keyStorage)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(serverRegistered, forKey: .serverRegistered)
     }
 
     // Hand-written so that `serverRegistered` is *optional* on read. A Phase 2
@@ -88,7 +111,8 @@ extension IdentityRecord: Codable {
         schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
         deviceID = try c.decode(String.self, forKey: .deviceID)
         accessCode = try c.decode(String.self, forKey: .accessCode)
-        privateKeyBase64 = try c.decode(String.self, forKey: .privateKeyBase64)
+        privateKeyBase64 = try c.decodeIfPresent(String.self, forKey: .privateKeyBase64)
+        keyStorage = try c.decodeIfPresent(String.self, forKey: .keyStorage)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         serverRegistered = try c.decodeIfPresent(Bool.self, forKey: .serverRegistered) ?? false
     }
@@ -173,9 +197,23 @@ public struct IdentityFileStore {
            !override.isEmpty {
             return URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
         }
+        return systemDefaultDirectory
+    }
+
+    /// The one location a shipped app ever uses, ignoring every test seam.
+    ///
+    /// `IdentityStore` compares against this to decide whether it is running as
+    /// the single real instance on this Mac — which is the only case where a
+    /// Keychain or Secure Enclave key, of which there is exactly one slot, is
+    /// the right place for the private half.
+    public static var systemDefaultDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         return base.appendingPathComponent("RemoteControl", isDirectory: true)
+    }
+
+    public var isDefaultLocation: Bool {
+        directory.standardizedFileURL == Self.systemDefaultDirectory.standardizedFileURL
     }
 
     public var fileURL: URL { directory.appendingPathComponent(Self.fileName) }
@@ -231,12 +269,18 @@ public struct IdentityFileStore {
         guard AccessCode.canonicalize(record.accessCode) != nil else {
             throw IdentityFileError.invalidContents(path: fileURL.path, reason: "the access code is not a valid 12-symbol code")
         }
-        guard let keyBytes = Data(base64Encoded: record.privateKeyBase64), keyBytes.count == 32 else {
-            throw IdentityFileError.invalidContents(path: fileURL.path, reason: "the private key is not 32 base64-encoded bytes")
-        }
-        // Prove the scalar is actually a usable P-256 key before we report success.
-        guard (try? DeviceKey(rawPrivateKey: keyBytes)) != nil else {
-            throw IdentityFileError.invalidContents(path: fileURL.path, reason: "the private key is not a valid P-256 scalar")
+        if let privateKeyBase64 = record.privateKeyBase64 {
+            guard let keyBytes = Data(base64Encoded: privateKeyBase64), keyBytes.count == 32 else {
+                throw IdentityFileError.invalidContents(path: fileURL.path, reason: "the private key is not 32 base64-encoded bytes")
+            }
+            // Prove the scalar is actually a usable P-256 key before we report success.
+            guard (try? DeviceKey(rawPrivateKey: keyBytes)) != nil else {
+                throw IdentityFileError.invalidContents(path: fileURL.path, reason: "the private key is not a valid P-256 scalar")
+            }
+        } else {
+            guard let keyStorage = record.keyStorage, keyStorage != "file" else {
+                throw IdentityFileError.invalidContents(path: fileURL.path, reason: "the private key is missing")
+            }
         }
 
         return Loaded(record: record, permissionWarning: read.warning)

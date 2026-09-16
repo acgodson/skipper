@@ -221,32 +221,39 @@ struct InputBlockedBanner: View {
     }
 }
 
-/// States plainly where the identity lives and what protects it.
+/// Says where this Mac's private key is kept, and nothing more.
 ///
-/// Deliberately understated: this is POSIX file permissions plus FileVault at
-/// rest. It is NOT hardware-backed and NOT the Secure Enclave (which needs a
-/// paid Apple Developer account and a provisioning profile this build does not
-/// have), so the wording must not imply either. It gets a real SectionCard
-/// rather than faint footer text because a claim about where the user's private
-/// key lives should be readable.
-/// Surfaces a problem with the identity file, and NOTHING when there isn't one.
+/// One line, three possible values, no path and no jargon. It matters because
+/// the three are genuinely different promises — the Secure Enclave never lets
+/// the key leave the chip, the Keychain encrypts it at rest, a file is
+/// permissions only — and because the wording must never claim the strongest
+/// one when the build fell back to a weaker one.
 ///
-/// This used to be an "Identity Storage" card showing the file path, the key
-/// type and a public-key prefix. That is implementation detail: the user cannot
-/// act on it, it is the same on every launch, and it pushed the controls that
-/// matter further down the window. The facts still live in PLAN.md and the file
-/// is still exactly where it was — the UI simply stops narrating it.
+/// Still surfaces a problem with the identity file when there is one.
 struct DeviceKeyFooter: View {
 
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        if let warning = model.identity?.permissionWarning {
-            SectionCard(title: "Identity File") {
-                Label(warning, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+        if let identity = model.identity {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Key: \(identity.keyStorageLabel)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let note = identity.keyStorageNote {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let warning = identity.permissionWarning {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
