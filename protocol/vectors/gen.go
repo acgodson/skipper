@@ -146,11 +146,26 @@ func main() {
 			HostDeviceID: "739000587", ControllerDeviceID: "481930275",
 		})
 
-	add("session_start", "signaling", p.TypeSessionStart, "same shape as connect_ok", "", "", ts,
+	add("session_start", "signaling", p.TypeSessionStart,
+		"connect_ok plus controllerPubkey, which the host keys its guess policy on", "", "", ts,
 		p.SessionStart{
-			SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "dG9rZW4y",
-			ExpiresAt: ts + 600000, TTLSec: 600,
-			HostDeviceID: "739000587", ControllerDeviceID: "481930275",
+			ConnectOK: p.ConnectOK{
+				SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "dG9rZW4y",
+				ExpiresAt: ts + 600000, TTLSec: 600,
+				HostDeviceID: "739000587", ControllerDeviceID: "481930275",
+				HostPubkey: hostPubkey,
+			},
+			ControllerPubkey: controllerPubkey,
+		})
+
+	add("session_start_no_controller_pubkey", "signaling", p.TypeSessionStart,
+		"controllerPubkey is omitempty: absent, never an empty string", "", "", ts,
+		p.SessionStart{
+			ConnectOK: p.ConnectOK{
+				SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "dG9rZW4y",
+				ExpiresAt: ts + 600000, TTLSec: 600,
+				HostDeviceID: "739000587", ControllerDeviceID: "481930275",
+			},
 		})
 
 	add("resume", "signaling", p.TypeResume, "", "c-8", "", ts,
@@ -198,12 +213,19 @@ func main() {
 	add("bye_peer_auth_failed", "signaling", p.TypeBye,
 		"the peer's signed SDP fingerprints did not verify", "", "", ts,
 		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByePeerAuthFailed})
+	add("bye_auth_failed", "signaling", p.TypeBye,
+		"the host refused the access code, or refused to try one from a locked-out controller",
+		"", "", ts,
+		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByeAuthFailed})
 
 	add("pake_step1", "signaling", p.TypePake,
 		"v2: opaque to the server, relayed verbatim like sdp and ice", "", "", ts,
 		p.Pake{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Step: 1, Payload: "cGFrZXN0ZXAx"})
 	add("pake_step2", "signaling", p.TypePake, "", "", "", ts,
 		p.Pake{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Step: 2, Payload: "cGFrZXN0ZXAy"})
+	add("pake_step3", "signaling", p.TypePake, "the controller's confirmation ends the exchange",
+		"", "", ts,
+		p.Pake{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Step: 3, Payload: "cGFrZXN0ZXAz"})
 
 	add("refresh_code", "signaling", p.TypeRefreshCode, "", "c-10", "", ts, p.RefreshCode(recCode))
 	add("refresh_code_ok", "signaling", p.TypeRefreshCodeOK, "", "", "c-10", ts,

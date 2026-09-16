@@ -35,6 +35,7 @@ public enum Wire {
         public static let bye = "bye"
         public static let refreshCode = "refresh_code"
         public static let refreshCodeOK = "refresh_code_ok"
+        public static let pake = "pake"
         public static let error = "error"
     }
 
@@ -46,6 +47,7 @@ public enum Wire {
         public static let unauthenticated = "unauthenticated"
         public static let badSignature = "bad_signature"
         public static let unknownDevice = "unknown_device"
+        /// *v1 only.* A v2 server never sends it: it does not know the code.
         public static let badCode = "bad_code"
         public static let offline = "offline"
         public static let busy = "busy"
@@ -56,6 +58,8 @@ public enum Wire {
         public static let peerOffline = "peer_offline"
         public static let displaced = "displaced"
         public static let forbidden = "forbidden"
+        /// *v2.* Carries a `reason` from API.md §4.3 in `ErrorPayload.reason`.
+        public static let entitlement = "entitlement"
         public static let internalError = "internal"
     }
 
@@ -72,6 +76,10 @@ public enum Wire {
         /// The peer's signed SDP fingerprints did not verify against the device
         /// key this side expects (PROTOCOL.md §2.12).
         public static let peerAuthFailed = "peer_auth_failed"
+        /// The host refused the access code, or refused to try one because this
+        /// controller is serving a lockout (PROTOCOL.md §2.14, §2.17). About the
+        /// code, where `peerAuthFailed` is about the device key.
+        public static let authFailed = "auth_failed"
     }
 
     /// Owned by the shared core, so the state machine and the wire agree by
@@ -86,7 +94,7 @@ public enum WireError: Swift.Error, LocalizedError, Equatable {
     case unsupportedVersion(Int)
     case missingType
     case badPayload(String)
-    case protocolError(code: String, message: String, retryAfterSec: Int)
+    case protocolError(code: String, message: String, retryAfterSec: Int, reason: String? = nil)
 
     public var errorDescription: String? {
         switch self {
@@ -94,18 +102,31 @@ public enum WireError: Swift.Error, LocalizedError, Equatable {
         case .unsupportedVersion(let v): return "Unsupported protocol version \(v)."
         case .missingType: return "The frame has no `type`."
         case .badPayload(let why): return "The payload could not be decoded: \(why)"
-        case .protocolError(let code, let message, _): return "\(code): \(message)"
+        case .protocolError(let code, let message, _, _): return "\(code): \(message)"
         }
     }
 
     /// The `code` of a server `error` frame, when this is one.
     public var serverCode: String? {
-        if case .protocolError(let code, _, _) = self { return code }
+        if case .protocolError(let code, _, _, _) = self { return code }
+        return nil
+    }
+
+    /// The server's human sentence, without the code prefix `errorDescription`
+    /// adds. API.md §4.2 says an unrecognised `entitlement` reason renders this.
+    public var serverMessage: String? {
+        if case .protocolError(_, let message, _, _) = self { return message }
         return nil
     }
 
     public var retryAfterSec: Int? {
-        if case .protocolError(_, _, let retry) = self { return retry > 0 ? retry : nil }
+        if case .protocolError(_, _, let retry, _) = self { return retry > 0 ? retry : nil }
+        return nil
+    }
+
+    /// PROTOCOL.md §7: set only on `entitlement`.
+    public var reason: String? {
+        if case .protocolError(_, _, _, let reason) = self { return reason }
         return nil
     }
 }
@@ -188,7 +209,8 @@ public struct Envelope: Equatable {
         guard type == Wire.MessageType.error else { return nil }
         let body = (try? decodePayload(ErrorPayload.self))
             ?? ErrorPayload(code: Wire.ErrorCode.internalError, message: "undecodable error frame")
-        return .protocolError(code: body.code, message: body.message, retryAfterSec: body.retryAfterSec ?? 0)
+        return .protocolError(code: body.code, message: body.message,
+                              retryAfterSec: body.retryAfterSec ?? 0, reason: body.reason)
     }
 }
 
@@ -204,7 +226,10 @@ public struct ChallengePayload: Codable, Equatable {
     public init(nonce: String, serverTime: Int64) { self.nonce = nonce; self.serverTime = serverTime }
 }
 
-/// PROTOCOL.md §2.3. The plaintext access code never appears here.
+/// PROTOCOL.md §2.3, *v1 only*. A v2 client sends this nowhere: the server
+/// stores nothing about any access code, which is proved peer to peer by the
+/// §2.17 exchange instead. Kept because §2.3 is kept — it is what a v2 server
+/// rejects with `bad_request`, and what the Argon2id implementation is held to.
 public struct CodeVerifier: Codable, Equatable {
     public var alg: String
     public var salt: String
@@ -256,13 +281,14 @@ public struct CodeVerifier: Codable, Equatable {
     }
 }
 
+/// PROTOCOL.md §2.2. In v2 there is no `code`: a server that receives one
+/// answers `bad_request`.
 public struct RegisterPayload: Codable, Equatable {
     public var pubkey: String
     public var sig: String
     public var label: String?
-    public var code: CodeVerifier
-    public init(pubkey: String, sig: String, label: String?, code: CodeVerifier) {
-        self.pubkey = pubkey; self.sig = sig; self.label = label; self.code = code
+    public init(pubkey: String, sig: String, label: String?) {
+        self.pubkey = pubkey; self.sig = sig; self.label = label
     }
 }
 
@@ -328,14 +354,12 @@ public struct PresencePayload: Codable, Equatable {
     }
 }
 
-/// Carries the plaintext access code. Never log an instance of this type.
-public struct ConnectReqPayload: Codable, Equatable, CustomStringConvertible {
+/// PROTOCOL.md §2.9. Only the host's Device ID: authorisation is the host's
+/// entitlement, and the access code is proved peer to peer by §2.17. A v2 server
+/// rejects an `accessCode` field with `bad_request`, so there is no such field.
+public struct ConnectReqPayload: Codable, Equatable {
     public var deviceId: String
-    public var accessCode: String
-    public init(deviceId: String, accessCode: String) {
-        self.deviceId = deviceId; self.accessCode = accessCode
-    }
-    public var description: String { "connect_req(deviceId: \(deviceId), accessCode: <redacted>)" }
+    public init(deviceId: String) { self.deviceId = deviceId }
 }
 
 /// `connect_ok` and `session_start` share a shape (PROTOCOL.md §2.9).
@@ -350,12 +374,17 @@ public struct SessionGrantPayload: Codable, Equatable, CustomStringConvertible {
     /// requires on the host's signed `sdp` (PROTOCOL.md §2.12). Absent from a
     /// server that does not speak this part of v2 yet.
     public var hostPubkey: String?
+    /// `session_start` only: the controller's registered `pubkey`. The host keys
+    /// its guess counter and its trusted-controller list on it, and requires the
+    /// key in `pake` step 1 to match (PROTOCOL.md §2.9, §2.17).
+    public var controllerPubkey: String?
     public init(sessionId: String, sessionToken: String, expiresAt: Int64, ttlSec: Int,
-                hostDeviceId: String, controllerDeviceId: String, hostPubkey: String? = nil) {
+                hostDeviceId: String, controllerDeviceId: String,
+                hostPubkey: String? = nil, controllerPubkey: String? = nil) {
         self.sessionId = sessionId; self.sessionToken = sessionToken
         self.expiresAt = expiresAt; self.ttlSec = ttlSec
         self.hostDeviceId = hostDeviceId; self.controllerDeviceId = controllerDeviceId
-        self.hostPubkey = hostPubkey
+        self.hostPubkey = hostPubkey; self.controllerPubkey = controllerPubkey
     }
     public var description: String {
         "session(\(sessionId), host: \(hostDeviceId), controller: \(controllerDeviceId), token: <redacted>)"
@@ -444,6 +473,24 @@ public struct ICEPayload: Codable, Equatable {
     }
 }
 
+/// PROTOCOL.md §2.17. One opaque message of the SPAKE2 exchange. The server
+/// routes it and reads nothing of `payload`; neither does anything in this app
+/// outside `PakeExchange`.
+public struct PakePayload: Codable, Equatable {
+    public var sessionId: String
+    public var step: Int
+    public var payload: String
+    public init(sessionId: String, step: Int, payload: String) {
+        self.sessionId = sessionId; self.step = step; self.payload = payload
+    }
+
+    public init(sessionId: String, message: PakeMessage) {
+        self.init(sessionId: sessionId, step: message.step, payload: message.payload)
+    }
+
+    public var message: PakeMessage { PakeMessage(step: step, payload: payload) }
+}
+
 public struct ByePayload: Codable, Equatable {
     public var sessionId: String
     public var reason: String
@@ -460,8 +507,11 @@ public struct ErrorPayload: Codable, Equatable {
     public var code: String
     public var message: String
     public var retryAfterSec: Int?
-    public init(code: String, message: String, retryAfterSec: Int? = nil) {
-        self.code = code; self.message = message; self.retryAfterSec = retryAfterSec
+    /// PROTOCOL.md §7: present only on `entitlement`, from API.md §4.3's set.
+    public var reason: String?
+    public init(code: String, message: String, retryAfterSec: Int? = nil, reason: String? = nil) {
+        self.code = code; self.message = message
+        self.retryAfterSec = retryAfterSec; self.reason = reason
     }
 }
 

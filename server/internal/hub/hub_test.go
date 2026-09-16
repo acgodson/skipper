@@ -537,6 +537,18 @@ func TestConnectIsAuthorisedByEntitlement(t *testing.T) {
 	if start.SessionToken == ok.SessionToken {
 		t.Fatal("host and controller must not share a session token")
 	}
+	// Each side is told which device key must sign the other's SDP, and the
+	// host is told which controller key to key its guess policy on.
+	if ok.HostPubkey != host.pubB64 {
+		t.Fatalf("connect_ok hostPubkey = %q, want the host's registered key", ok.HostPubkey)
+	}
+	if start.HostPubkey != host.pubB64 {
+		t.Fatalf("session_start hostPubkey = %q, want the host's registered key", start.HostPubkey)
+	}
+	if start.ControllerPubkey != ctrl.pubB64 {
+		t.Fatalf("session_start controllerPubkey = %q, want the controller's registered key",
+			start.ControllerPubkey)
+	}
 	if got := hn.hub.SessionState(ok.SessionID); got != protocol.SessionOpen {
 		t.Fatalf("session state = %q, want %q", got, protocol.SessionOpen)
 	}

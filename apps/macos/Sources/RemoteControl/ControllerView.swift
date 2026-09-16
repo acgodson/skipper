@@ -41,13 +41,14 @@ struct ControllerView: View {
                             deviceIDField = DeviceID.formatted(model.settings.savedPeerDeviceID)
                             labelField = model.settings.savedPeerLabel
                             if model.settings.rememberPeerCode {
-                                accessCodeField = AccessCode.formatted(model.rememberedPeerCode())
+                                accessCodeField = AccessCode.formatted(
+                                    model.rememberedPeerCode(forHost: model.settings.savedPeerDeviceID))
                                 remember = true
                             }
                         }
                         Button("Forget") {
+                            model.forgetPeerCode(forHost: model.settings.savedPeerDeviceID)
                             model.settings.forgetPeer()
-                            model.forgetPeerCode()
                             model.presence.stopWatching()
                         }
                     }
@@ -152,7 +153,10 @@ struct ControllerView: View {
                 deviceIDField = DeviceID.formatted(model.settings.savedPeerDeviceID)
                 labelField = model.settings.savedPeerLabel
                 remember = model.settings.rememberPeerCode
-                if remember { accessCodeField = AccessCode.formatted(model.rememberedPeerCode()) }
+                if remember {
+                    accessCodeField = AccessCode.formatted(
+                        model.rememberedPeerCode(forHost: model.settings.savedPeerDeviceID))
+                }
             }
         }
     }

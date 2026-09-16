@@ -97,8 +97,9 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
             "That Mac is offline.")
         try expectEqual(
             EntitlementPresentation.connectFailureSentence(
-                code: "bad_code", reason: nil, retryAfterSec: nil, fallback: "That access code was not accepted."),
-            "That access code was not accepted.")
+                code: "auth_failed", reason: nil, retryAfterSec: nil, fallback: "ignored"),
+            EntitlementPresentation.wrongCodeSentence,
+            "the one failure the user can fix by typing says so plainly")
     },
 
     // MARK: - ConnectFailure adapter
@@ -112,8 +113,16 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
             EntitlementPresentation.sentence(for: .offline),
             ConnectFailure.offline.errorDescription ?? "")
         try expectEqual(
-            EntitlementPresentation.sentence(for: .other(code: "entitlement", message: "trial has ended")),
+            EntitlementPresentation.sentence(for: .entitlement(reason: "trial_expired", message: "m")),
+            "That Mac's trial has ended.")
+        // API.md §4.2: a reason this build does not know renders the server's
+        // own sentence, not a guess at one of the five.
+        try expectEqual(
+            EntitlementPresentation.sentence(for: .entitlement(reason: "brand_new", message: "trial has ended")),
             "trial has ended")
+        try expectEqual(
+            EntitlementPresentation.sentence(for: .authFailed),
+            EntitlementPresentation.wrongCodeSentence)
     },
 
     // MARK: - API.md §4.1 host status line

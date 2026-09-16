@@ -10,6 +10,7 @@ public let allSuites: [TestSuite] = [
     sdpAuthSuite,
     secureFileSuite,
     identityFileSuite,
+    secretStoreSuite,
     deviceKeySuite,
     deviceKeyStorageSuite,
     identitySuite,

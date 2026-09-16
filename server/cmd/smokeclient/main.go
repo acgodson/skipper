@@ -312,6 +312,12 @@ func main() {
 	check("host is told about the session with its own token",
 		start.SessionID == conn.SessionID && start.SessionToken != "" && start.SessionToken != conn.SessionToken,
 		fmt.Sprintf("host=%+v", start))
+	check("each side is told which device key must sign the other's SDP",
+		conn.HostPubkey == host.pub && start.HostPubkey == host.pub,
+		fmt.Sprintf("connect_ok=%q session_start=%q", conn.HostPubkey, start.HostPubkey))
+	check("the host is told the controller's key, which its guess policy is keyed on",
+		start.ControllerPubkey == ctrl.pub,
+		fmt.Sprintf("session_start controllerPubkey=%q", start.ControllerPubkey))
 
 	// ---- 7. strict 1:1 ---------------------------------------------------
 	third := newClient("ctrl2", url)

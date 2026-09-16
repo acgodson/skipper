@@ -145,9 +145,13 @@ else
 fi
 cat <<EOF
 
-RemoteControl now keeps its identity in:
+RemoteControl now keeps its Device ID in:
     ~/Library/Application Support/RemoteControl/identity.json   (0600)
 
-Do NOT delete that file unless you intend to change this Mac's Device ID and
-access code — the other Mac's saved entry would stop working.
+and its device key, access code, remembered peer codes and trusted controllers
+in the login Keychain under the service "app.skipperdesk.desktop" — which is a
+different service from the one this script cleans up, and is not touched by it.
+
+Do NOT delete either unless you intend to change this Mac's Device ID and access
+code — the other Mac's saved entry would stop working.
 EOF

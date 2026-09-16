@@ -149,7 +149,8 @@ fn every_go_vector_round_trips_through_the_rust_types() {
             }
             m::PRESENCE => roundtrip::<sig::Presence>(case, &env),
             m::CONNECT_REQ => roundtrip::<sig::ConnectReq>(case, &env),
-            m::CONNECT_OK | m::SESSION_START => roundtrip::<sig::ConnectOk>(case, &env),
+            m::CONNECT_OK => roundtrip::<sig::ConnectOk>(case, &env),
+            m::SESSION_START => roundtrip::<sig::SessionStart>(case, &env),
             m::RESUME | m::RENEW => roundtrip::<sig::Resume>(case, &env),
             m::RESUME_OK => roundtrip::<sig::ResumeOk>(case, &env),
             m::RENEW_OK => roundtrip::<sig::RenewOk>(case, &env),

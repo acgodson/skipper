@@ -128,6 +128,10 @@ const (
 	// ByePeerAuthFailed: the peer's signed SDP fingerprints did not verify
 	// against the device key this side expects (PROTOCOL.md §2.12).
 	ByePeerAuthFailed = "peer_auth_failed"
+	// ByeAuthFailed: the host refused the controller's access code, or refused
+	// to look at it because that controller is locked out (PROTOCOL.md §2.17).
+	// Distinct from ByePeerAuthFailed, which is about device keys, not codes.
+	ByeAuthFailed = "auth_failed"
 )
 
 // Session states. PROTOCOL.md §4.2.
@@ -252,11 +256,9 @@ type Presence struct {
 	Since    int64  `json:"since"` // unix ms, 0 if never seen
 }
 
-// ConnectReq asks the server to open a session against a host.
-//
-// TODO: delete AccessCode at the v2 bump. In v2 the request carries only
-// DeviceID, authorisation is the host's entitlement, and the access code is
-// proved peer to peer by the Pake exchange.
+// ConnectReq asks the server to open a session against a host. Authorisation is
+// the host's entitlement; the access code is proved peer to peer by the Pake
+// exchange, so AccessCode survives only to be rejected when a v1 client sends it.
 type ConnectReq struct {
 	DeviceID   string `json:"deviceId"`
 	AccessCode string `json:"accessCode,omitempty"`
@@ -275,8 +277,15 @@ type ConnectOK struct {
 	HostPubkey string `json:"hostPubkey,omitempty"`
 }
 
-// SessionStart is pushed to the host when a controller connects.
-type SessionStart ConnectOK
+// SessionStart is pushed to the host when a controller connects. It carries
+// everything ConnectOK does plus the controller's registered pubkey, which the
+// server has held since that device registered. The host needs it before the
+// Pake exchange starts: it is what its guess counter and its trusted-controller
+// list are keyed on (PROTOCOL.md §2.9).
+type SessionStart struct {
+	ConnectOK
+	ControllerPubkey string `json:"controllerPubkey,omitempty"`
+}
 
 type Resume struct {
 	SessionID    string `json:"sessionId"`

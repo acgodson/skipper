@@ -205,10 +205,10 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
             Push::SessionStart(grant) => {
                 let actions = self.machine.session_granted(
                     &SessionGrant {
-                        session_id: grant.session_id,
-                        session_token: grant.session_token,
-                        host_device_id: grant.host_device_id,
-                        controller_device_id: grant.controller_device_id,
+                        session_id: grant.session.session_id,
+                        session_token: grant.session.session_token,
+                        host_device_id: grant.session.host_device_id,
+                        controller_device_id: grant.session.controller_device_id,
                     },
                     now_ms(),
                 );

@@ -84,6 +84,14 @@ final class Node {
             emit("remote_sdp", ["sdpType": type, "restart": restart])
         case .peerAuthFailed(let reason):
             emit("peer_auth_failed", ["reason": reason])
+        case .pake(let step, let outgoing):
+            emit("pake", ["step": step, "outgoing": outgoing])
+        case .pakeCompleted(let peerPubkey):
+            // The key, not the code: a pubkey is public material, and it is what
+            // every later `sdp` on this session has to be signed by.
+            emit("pake_ok", ["peerPubkey": peerPubkey])
+        case .pakeFailed(let reason, let authentication):
+            emit("pake_failed", ["reason": reason, "auth": authentication])
         case .captureState(let state):
             switch state {
             case .idle: emit("capture", ["state": "idle"])
@@ -297,6 +305,12 @@ final class Node {
 
         case "bye":
             coordinator.disconnect(reason: Wire.ByeReason.userEnded)
+
+        // The host's allow-list (PROTOCOL.md §4.5). Keys only: it is what
+        // Refresh Code revokes, and the test asserts that it does.
+        case "trusted":
+            let trusted = (try? identity.secrets.trustedControllers()) ?? [:]
+            emit("trusted", ["count": trusted.count, "pubkeys": trusted.keys.sorted()])
 
         case "refresh-code":
             Task {

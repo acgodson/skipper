@@ -12,7 +12,8 @@
 #
 # Proves, in order:
 #   a. both register and authenticate; presence flips offline -> online
-#   b. wrong access code -> bad_code; correct code -> connected
+#   b. wrong access code -> the HOST refuses the PAKE and says bye{auth_failed},
+#      and no peer connection is ever started; correct code -> connected
 #   c. RTCPeerConnection reaches `connected` and BOTH data channels open
 #   d. ping/pong round-trips over `ctrl` with a real RTT
 #   e. a second controller is refused with `busy`
@@ -195,16 +196,40 @@ echo
 # ---------------------------------------------------------------------------
 # b. wrong then right access code
 # ---------------------------------------------------------------------------
-echo "== b. access code"
+echo "== b. access code, proved peer to peer (PROTOCOL.md §2.17)"
 MARK=$(( $(lines_in "$WORK/ctrl.log") + 1 ))
+HOST_MARK=$(( $(lines_in "$WORK/host.log") + 1 ))
 say ctrl "connect $HOST_ID ZZZZZZZZZZZZ"
-if wait_for "$WORK/ctrl.log" '"code":"bad_code"' 25 "$MARK"; then
-  pass "a wrong access code is rejected with bad_code"
+# The server no longer knows anything about codes: it opens the session on
+# entitlement alone, and the HOST is what refuses the exchange.
+#
+# §2.17: a wrong code fails for the CONTROLLER at step 2 and for the host at
+# step 3, so the controller is the side that speaks first — and the host counts
+# the abandoned exchange against its guess policy rather than letting a guesser
+# hang up for free.
+if wait_for "$WORK/ctrl.log" '"auth":true,"event":"pake_failed"' 30 "$MARK" &&
+   wait_for "$WORK/ctrl.log" '"code":"auth_failed"' 10 "$MARK"; then
+  pass "the exchange fails on a wrong code and the controller can say so"
 else
-  fail "wrong access code -> bad_code" "$(tail -n "+$MARK" "$WORK/ctrl.log")"
+  fail "wrong access code -> auth_failed" "$(tail -n "+$MARK" "$WORK/ctrl.log")"
 fi
+if wait_for "$WORK/host.log" '"auth":true,"event":"pake_failed"' 25 "$HOST_MARK" &&
+   wait_for "$WORK/host.log" '"event":"bye","reason":"auth_failed"' 10 "$HOST_MARK"; then
+  pass "the HOST saw the failure and counted it — the server never saw the code"
+else
+  fail "the host records the failed attempt" "$(tail -n "+$HOST_MARK" "$WORK/host.log")"
+fi
+if must_not_appear "$WORK/ctrl.log" '"event":"ice"' "$MARK" &&
+   must_not_appear "$WORK/host.log" '"event":"ice"' "$HOST_MARK"; then
+  pass "no peer connection was ever started for the unauthenticated controller"
+else
+  fail "a wrong code must not reach the media path" \
+       "$(tail -n "+$MARK" "$WORK/ctrl.log" | grep '"event":"ice"')"
+fi
+sleep 2
 
 MARK=$(( $(lines_in "$WORK/ctrl.log") + 1 ))
+HOST_MARK=$(( $(lines_in "$WORK/host.log") + 1 ))
 say ctrl "connect $HOST_ID $HOST_CODE remember"
 if wait_for "$WORK/ctrl.log" '"event":"session"' 30 "$MARK"; then
   SESSION_ID="$(field "$WORK/ctrl.log" session sessionId)"
@@ -212,10 +237,28 @@ if wait_for "$WORK/ctrl.log" '"event":"session"' 30 "$MARK"; then
 else
   fail "correct access code opens a session" "$(tail -n "+$MARK" "$WORK/ctrl.log")"; exit 1
 fi
-if wait_for "$WORK/host.log" '"event":"session"' 20; then
+if wait_for "$WORK/host.log" '"event":"session"' 20 "$HOST_MARK"; then
   pass "the host is told about the session (session_start push)"
 else
   fail "host receives session_start" "$(tail -5 "$WORK/host.log")"
+fi
+if wait_for "$WORK/ctrl.log" '"event":"pake_ok"' 25 "$MARK" &&
+   wait_for "$WORK/host.log" '"event":"pake_ok"' 25 "$HOST_MARK"; then
+  pass "both Macs completed the SPAKE2 exchange and pinned each other's device key"
+else
+  fail "the PAKE exchange completes on both sides" \
+       "$(tail -n "+$MARK" "$WORK/ctrl.log" | grep pake)"
+fi
+# The controller that proved the code is now on the host's trusted list, which
+# is what Refresh Code revokes in step (i).
+MARK_T=$(( $(lines_in "$WORK/host.log") + 1 ))
+say host trusted
+if wait_for "$WORK/host.log" '"event":"trusted","pubkeys"' 15 "$MARK_T" &&
+   ! grep -q '"count":0' <(tail -n "+$MARK_T" "$WORK/host.log"); then
+  pass "the host recorded the controller as a trusted controller"
+else
+  fail "the controller is on the host's trusted list" \
+       "$(tail -n "+$MARK_T" "$WORK/host.log" | grep trusted)"
 fi
 echo
 
@@ -298,7 +341,7 @@ else
   fail "controller resumes after a signaling drop" "$(tail -n "+$DROP_MARK" "$WORK/ctrl.log")"
 fi
 if must_not_appear "$WORK/ctrl.log" '"event":"access_code_required"' "$DROP_MARK" &&
-   must_not_appear "$WORK/ctrl.log" '"code":"bad_code"' "$DROP_MARK"; then
+   must_not_appear "$WORK/ctrl.log" '"code":"auth_failed"' "$DROP_MARK"; then
   pass "the access code was NOT requested again"
 else
   fail "no access code re-prompt" "$(tail -n "+$DROP_MARK" "$WORK/ctrl.log" | grep -E 'access_code|bad_code')"
@@ -393,29 +436,39 @@ echo
 # ---------------------------------------------------------------------------
 # i. access-code refresh propagates to the live server (the AccessCodeSink seam)
 # ---------------------------------------------------------------------------
-echo "== i. access-code refresh reaches the server"
+echo "== i. Refresh Code revokes the old code AND every trusted controller"
 MARK=$(( $(lines_in "$WORK/host.log") + 1 ))
 say host refresh-code
 if wait_for "$WORK/host.log" '"event":"code_refreshed"' 30 "$MARK"; then
   NEW_CODE="$(tail -n "+$MARK" "$WORK/host.log" | grep '"event":"code_refreshed"' | head -1 |
               python3 -c 'import json,sys; print(json.loads(sys.stdin.readline())["accessCode"])')"
-  pass "the host minted a new access code and the server accepted the new verifier"
+  pass "the host minted a new access code and the server accepted refresh_code"
 else
   fail "refresh_code is accepted by the server" "$(tail -n "+$MARK" "$WORK/host.log")"
   NEW_CODE=""
 fi
 
+MARK=$(( $(lines_in "$WORK/host.log") + 1 ))
+say host trusted
+if wait_for "$WORK/host.log" '"count":0,"event":"trusted"' 15 "$MARK"; then
+  pass "the trusted-controller list was cleared with the code (PROTOCOL.md §4.5)"
+else
+  fail "Refresh Code clears the trusted list" "$(tail -n "+$MARK" "$WORK/host.log" | grep trusted)"
+fi
+
 if [[ -n "$NEW_CODE" ]]; then
   MARK=$(( $(lines_in "$WORK/ctrl.log") + 1 ))
   say ctrl "connect $HOST_ID $HOST_CODE"
-  if wait_for "$WORK/ctrl.log" '"code":"bad_code"' 25 "$MARK"; then
-    pass "the OLD access code now fails with bad_code (revoked off-machine, not just locally)"
+  if wait_for "$WORK/ctrl.log" '"code":"auth_failed"' 30 "$MARK"; then
+    pass "the OLD access code now fails the exchange (revoked off-machine, not just locally)"
   else
-    fail "the old access code is revoked server-side" "$(tail -n "+$MARK" "$WORK/ctrl.log")"
+    fail "the old access code is revoked" "$(tail -n "+$MARK" "$WORK/ctrl.log")"
   fi
+  sleep 2
   MARK=$(( $(lines_in "$WORK/ctrl.log") + 1 ))
   say ctrl "connect $HOST_ID $NEW_CODE"
-  if wait_for "$WORK/ctrl.log" '"event":"session"' 30 "$MARK"; then
+  if wait_for "$WORK/ctrl.log" '"event":"session"' 30 "$MARK" &&
+     wait_for "$WORK/ctrl.log" '"event":"pake_ok"' 25 "$MARK"; then
     pass "the NEW access code opens a session"
     say ctrl bye
     sleep 2

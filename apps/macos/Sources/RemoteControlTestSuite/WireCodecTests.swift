@@ -20,7 +20,7 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
 
     TestCase("the envelope is exactly the documented shape") {
         let data = try Envelope.encode(type: "connect_req", id: "c-17",
-                                       payload: ConnectReqPayload(deviceId: "481930275", accessCode: "K7FM3Q8PW2XY"))
+                                       payload: ConnectReqPayload(deviceId: "481930275"))
         let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         try expectEqual(object["v"] as? Int, 2)
         try expectEqual(object["type"] as? String, "connect_req")
@@ -28,7 +28,6 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
         try expectNil(object["re"], "re must be absent, not null, on a request")
         let payload = try expectNotNil(object["payload"] as? [String: Any])
         try expectEqual(payload["deviceId"] as? String, "481930275")
-        try expectEqual(payload["accessCode"] as? String, "K7FM3Q8PW2XY")
     },
 
     TestCase("a version other than 2 is refused") {
@@ -68,19 +67,16 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
         try expectEqual(try roundTrip("challenge", value), value)
     },
 
-    TestCase("register + the code verifier round-trip with the exact Go field names") {
-        let verifier = CodeVerifier(salt: "c2FsdA==", hash: "aGFzaA==", time: 3, memKiB: 65536, par: 1, len: 32)
-        let value = RegisterPayload(pubkey: "cHVi", sig: "c2ln", label: "Studio Mac", code: verifier)
+    TestCase("register carries no access-code verifier at all") {
+        let value = RegisterPayload(pubkey: "cHVi", sig: "c2ln", label: "Studio Mac")
         try expectEqual(try roundTrip("register", value), value)
 
         let data = try Envelope.encode(type: "register", payload: value)
         let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        let code = (object["payload"] as! [String: Any])["code"] as! [String: Any]
-        try expectEqual(code["alg"] as? String, "argon2id")
-        try expectEqual(code["memKiB"] as? Int, 65536)   // NOT memKib, NOT memoryKiB
-        try expectEqual(code["par"] as? Int, 1)
-        try expectEqual(code["len"] as? Int, 32)
-        try expectEqual(code["time"] as? Int, 3)
+        let payload = object["payload"] as! [String: Any]
+        try expectNil(payload["code"], "a v2 server rejects register with a code verifier")
+        try expectEqual(payload["pubkey"] as? String, "cHVi")
+        try expectEqual(payload["label"] as? String, "Studio Mac")
     },
 
     TestCase("register_ok round-trips") {
@@ -119,11 +115,21 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
         try expectEqual(try roundTrip("presence", presence), presence)
     },
 
-    TestCase("connect_req round-trips and never prints the access code") {
-        let value = ConnectReqPayload(deviceId: "481930275", accessCode: "K7FM3Q8PW2XY")
+    TestCase("connect_req carries only the device id") {
+        let value = ConnectReqPayload(deviceId: "481930275")
         try expectEqual(try roundTrip("connect_req", value), value)
-        try expectFalse("\(value)".contains("K7FM3Q8PW2XY"), "description must redact the plaintext code")
-        try expect("\(value)".contains("redacted"))
+
+        let object = try JSONSerialization.jsonObject(
+            with: try Envelope.encode(type: "connect_req", payload: value)) as! [String: Any]
+        let payload = object["payload"] as! [String: Any]
+        try expectEqual(payload.count, 1, "the access code has no field to travel in")
+    },
+
+    TestCase("pake round-trips as the opaque frame the server relays") {
+        let value = PakePayload(sessionId: String(repeating: "b", count: 32), step: 2,
+                                payload: "cGFrZXN0ZXAy")
+        try expectEqual(try roundTrip("pake", value), value)
+        try expectEqual(value.message, PakeMessage(step: 2, payload: "cGFrZXN0ZXAy"))
     },
 
     TestCase("connect_ok / session_start round-trip and redact the token") {
@@ -194,7 +200,7 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
         let codes = ["bad_request", "unsupported_version", "unsupported", "unauthenticated",
                      "bad_signature", "unknown_device", "bad_code", "offline", "busy",
                      "rate_limited", "self_connect", "no_session", "bad_token",
-                     "peer_offline", "displaced", "forbidden", "internal"]
+                     "peer_offline", "displaced", "forbidden", "entitlement", "internal"]
         for code in codes {
             let payload = ErrorPayload(code: code, message: "m", retryAfterSec: code == "rate_limited" ? 240 : nil)
             let data = try Envelope.encode(type: "error", re: "c-1", payload: payload)
@@ -210,10 +216,15 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
     },
 
     TestCase("server error codes map to specific, actionable UI errors") {
-        func failure(_ code: String, retryAfter: Int = 0) -> ConnectFailure {
-            ConnectFailure(WireError.protocolError(code: code, message: "m", retryAfterSec: retryAfter))
+        func failure(_ code: String, retryAfter: Int = 0, reason: String? = nil) -> ConnectFailure {
+            ConnectFailure(WireError.protocolError(code: code, message: "m",
+                                                   retryAfterSec: retryAfter, reason: reason))
         }
-        try expectEqual(failure("bad_code"), .badCode)
+        // `auth_failed` is a bye reason, not a server error code: in v2 the
+        // server has no opinion about access codes.
+        try expectEqual(failure("auth_failed"), .authFailed)
+        try expectEqual(failure("entitlement", reason: "trial_expired"),
+                        .entitlement(reason: "trial_expired", message: "m"))
         try expectEqual(failure("offline"), .offline)
         try expectEqual(failure("busy"), .busy)
         try expectEqual(failure("rate_limited", retryAfter: 240), .rateLimited(retryAfterSec: 240))
@@ -223,7 +234,7 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
         let message = try expectNotNil(failure("rate_limited", retryAfter: 240).errorDescription)
         try expect(message.contains("4 minutes"), "got: \(message)")
         // Four distinct codes must not collapse into one message.
-        let messages = Set([failure("bad_code"), failure("offline"), failure("busy"),
+        let messages = Set([failure("auth_failed"), failure("offline"), failure("busy"),
                             failure("unknown_device")].map { $0.errorDescription ?? "" })
         try expectEqual(messages.count, 4)
     },

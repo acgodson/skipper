@@ -1,6 +1,6 @@
 # RemoteControl wire protocol
 
-Version: **1** (`v: 1` in every envelope)
+Version: **2** (`v: 2` in every envelope)
 Status: normative. This document is the single source of truth. `protocol/protocol.go`
 (and the Swift mirror) must match it exactly; if they disagree, this file wins.
 
@@ -16,9 +16,9 @@ The server sees only surface 1. It never sees, parses or stores anything from 2 
 
 ## v2 changes (summary)
 
-Version **2** is specified here but **not yet spoken**: `protocol.go` still declares `Version = 1`
-and carries a `TODO:` for the bump. Everything below marked *v1 only* or *REMOVED in v2* stays
-normative for v1 until every client and the server speak v2 on the same day.
+Version **2** is what the server, the shared core and the Mac app now speak. Everything below
+marked *v1 only* or *REMOVED in v2* is kept for the record: a v2 server rejects those fields
+rather than ignoring them, so the sections say exactly what is refused and why.
 
 What changes, and why:
 
@@ -33,6 +33,7 @@ What changes, and why:
 | 7 | New relayed message `pake`: the access code is proved **peer to peer** by a SPAKE2 exchange that the server relays as opaque bytes. | §2.17 |
 | 8 | `sdp` carries **signed DTLS fingerprints**: `fp`, `pubkey` and `sig`. The peer verifies them against the key it expects, so a compromised server cannot MITM the media. `connect_ok` gains `hostPubkey`, `pake` steps 1 and 2 carry each sender's pubkey, and `bye` gains the reason `peer_auth_failed`. | §2.12, §2.9, §2.17, §2.14 |
 | 9 | Access-code rate limiting moves to the host. The server's §3.3 limiter no longer applies to codes; the host counts and throttles failed PAKE attempts itself, because the server no longer knows what a failure is. | §3.3 |
+| 10 | `session_start` gains `controllerPubkey`, and `bye` gains the reason `auth_failed` — the host's answer to a code it refused, or to a controller it is currently locked out. | §2.9, §2.14 |
 
 The point of the change: after it, a server operator who reads every byte the server ever sees
 still cannot connect to a host. The code never reaches the server in any form — not as plaintext,
@@ -66,7 +67,7 @@ Every message on every surface uses the same envelope:
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "type": "connect_req",
   "id": "c-17",
   "re": null,
@@ -77,7 +78,7 @@ Every message on every surface uses the same envelope:
 
 | Field | Type | Req | Meaning |
 |---|---|:--:|---|
-| `v` | int | yes | Protocol version. Must be `1`. Server rejects anything else with `error{unsupported_version}` and closes. |
+| `v` | int | yes | Protocol version. Must be `2`. Server rejects anything else with `error{unsupported_version}` and closes. |
 | `type` | string | yes | Message type; see tables below. |
 | `id` | string | no | Sender-assigned correlation id. Required if the sender wants to match the reply. Servers echo it in `re`. |
 | `re` | string | no | Set on a reply/error to the `id` of the request it answers. Absent on unsolicited pushes. |
@@ -87,8 +88,8 @@ Every message on every surface uses the same envelope:
 **Every error is the same shape** (`type: "error"`), and carries `re` when it answers a request:
 
 ```json
-{"v":1,"type":"error","re":"c-17","ts":1755600000001,
- "payload":{"code":"bad_code","message":"access code rejected","retryAfterSec":0}}
+{"v":2,"type":"error","re":"c-17","ts":1755600000001,
+ "payload":{"code":"entitlement","message":"trial has ended","reason":"trial_expired"}}
 ```
 
 | Field | Type | Req | Meaning |
@@ -286,7 +287,8 @@ Nothing about the access code is checked, because the server no longer knows it.
 `connect_ok` opens is a *signaling* session: the two peers then run the §2.17 exchange over it,
 and a controller that does not know the code cannot complete it, cannot derive the session key,
 and gets nothing but a relayed handshake that fails. The host ends the session itself, with
-`bye{reason:"failed"}`, when the exchange fails.
+`bye{reason:"auth_failed"}` when the code was refused and `bye{reason:"failed"}` when the
+exchange broke for any other reason (§2.14).
 
 Reply: **`connect_ok`**
 
@@ -304,7 +306,12 @@ Errors, v1: `bad_code`, `offline`, `busy`, `rate_limited`, `unknown_device`, `se
 Errors, v2: `entitlement`, `offline`, `busy`, `rate_limited`, `unknown_device`, `self_connect`.
 
 Simultaneously the host receives a push **`session_start`** with the same fields plus its own
-`sessionToken` (each side gets a *different* token bound to its own deviceId).
+`sessionToken` (each side gets a *different* token bound to its own deviceId) and one field of
+its own:
+
+| Field | Type | Req | Meaning |
+|---|---|:--:|---|
+| `controllerPubkey` | string | no | *v2.* The **controller's** registered `pubkey` (base64 DER SPKI), which the server has held since that device registered. The host keys its §2.17 guess counter and its trusted-controller list (§4) on it, and it must byte-equal the key the controller puts in its own `pake` step 1 — if the two disagree the host abandons the exchange with `bye{auth_failed}`. A v2 server MUST send it. |
 
 **Ordering rule:** the controller must not send `sdp` before it has `connect_ok`, and the host
 must not send `sdp` before it has `session_start`. The **controller is always the offerer** for
@@ -407,11 +414,26 @@ peer is detached are dropped with `error{peer_offline}` and re-gathered after re
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
 | `sessionId` | string | yes | |
-| `reason` | string | yes | One of `user_ended`, `host_ended`, `timeout`, `failed`, `code_refreshed`, `replaced`, `shutdown`, `error`, `peer_auth_failed`. |
+| `reason` | string | yes | One of `user_ended`, `host_ended`, `timeout`, `failed`, `code_refreshed`, `replaced`, `shutdown`, `error`, `peer_auth_failed`, `auth_failed`. |
 
 `peer_auth_failed` is *v2* and means exactly one thing: the peer's `sdp` did not pass §2.12 —
 a bad signature, fingerprints that are not the ones in the SDP, or the wrong device key. It is
 not a network failure and must never be retried automatically.
+
+`auth_failed` is *v2* and means the §2.17 exchange failed **authentication**: a confirmation
+that did not verify (the access code is wrong), a `pake` step 1 whose key was not the
+`controllerPubkey` of `session_start`, or a controller serving a lockout, whose step 1 the host
+refuses without running SPAKE2 at all. It is about the **code**, where `peer_auth_failed` is
+about the **device key**; the two are never interchangeable. It replaces `bye{failed}` for those
+cases only — an exchange that broke for a non-authentication reason (a malformed payload, a step
+out of order, the 10-second timeout) is still `failed`.
+
+Either side may send it. A wrong code fails for the controller at step 2 and for the host at
+step 3, so in practice the **controller** speaks first and the host is the one told. The host
+must therefore treat a `bye` that arrives mid-exchange as the abandonment §2.17 already counts
+against its guess policy — otherwise a guesser gets unlimited attempts simply by hanging up
+before step 3. A controller that receives it shows "wrong access code", forgets any code it had
+remembered for that host, and does not retry without the user.
 
 On `bye` the server closes the session **immediately and permanently**: both tokens die, the
 host's 1:1 slot frees, and the peer (if attached) receives the same `bye`. A later `resume` for
@@ -427,7 +449,9 @@ replace, and the host rotates its own code locally. Every side effect below is u
 Reply: **`refresh_code_ok`** `{"deviceId": string, "updatedAt": int64}`.
 
 Side effects, all immediate and atomic:
-1. The old verifier is overwritten (never retained, never versioned).
+1. The old verifier is overwritten (never retained, never versioned). *v2:* there is none; the
+   host rotates its own code locally and clears its trusted-controller list and guess counters
+   at the same moment (§4.5).
 2. Every live session in which this device participates is closed; both peers get
    `bye{reason:"code_refreshed"}`.
 3. Every outstanding session token for this device is invalidated.
@@ -535,10 +559,14 @@ server's side, from a dropped one.
 
 The policy the host applies, per controller public key and session:
 
-- A failure is a step 3 whose `confirmC` does not verify, or an exchange abandoned after step 1.
+- A failure is a step 3 whose `confirmC` does not verify, or an exchange abandoned after step 1 —
+  including one the controller ends itself with `bye` after its own step-2 check fails (§2.14).
 - The **5th** failure locks that controller out; every further failure doubles the lockout:
   `lockout = min(60 min, 1 min × 2^(failures − 5))` → 1, 2, 4, 8, 16, 32, 60, 60 … minutes.
-  A locked-out controller's `pake` step 1 is refused without the code being looked at.
+  A locked-out controller's `pake` step 1 is refused without the code being looked at: the host
+  answers `bye{auth_failed}` (§2.14) without running SPAKE2 at all, so a lockout costs it nothing.
+  The counter is keyed on `session_start.controllerPubkey`, which the host has before step 1
+  arrives, and which step 1's own key prefix must then match.
 - Failures are forgotten after **15 minutes** of quiet, measured from the later of the last
   failure and the end of any lockout being served — so waiting out a long lockout does not also
   reset the count that earned it. A completed exchange clears the counter.
@@ -670,6 +698,31 @@ resume attempt is never rejected for a reason the user cannot understand.
 - Token rotation means an in-flight duplicate `resume` (e.g. the client retried) will fail with
   `bad_token`. Clients must not have two `resume`s in flight.
 
+### 4.5 Note: what "trusted controller" means, and what it does not
+
+A trusted controller is **not** a wire feature. There is no message that skips §2.17 and none is
+wanted: an exchange the host could be talked out of running is an exchange an attacker can talk
+it out of running. Every controller runs the full SPAKE2 exchange on every session, trusted or
+not — it costs one round trip and it is the only thing that proves the code.
+
+What "trusted" removes is the **prompt**, and it lives on the controller:
+
+- **Controller side — a remembered code.** After a successful exchange the controller may store
+  the host's access code locally, encrypted at rest (the Keychain on macOS). A later session
+  runs §2.17 with the remembered code instead of asking the user. Nothing about this reaches the
+  wire: the frames are byte-for-byte what a freshly typed code produces.
+- **Host side — an allow-list.** The host records the `controllerPubkey` of every controller that
+  has completed an exchange, with a label and first/last-seen times. The list does **not** gate
+  §2.17: an unknown key may still attempt the exchange, because a controller with the right code
+  is by definition allowed. It exists so the host can *show* who has connected and so Refresh
+  Code has something concrete to revoke.
+
+**Refresh Code** (§2.15) is therefore the whole revocation story, and it is one button: the host
+mints a new code, the server bumps the epoch and kills every session and token, and the host
+clears its trusted list and its guess counters. Every remembered code on every controller now
+fails §2.17 and prompts its user again — which is exactly what revoking a shared secret should
+look like.
+
 ---
 
 ## 5. `ctrl` data channel (reliable, ordered)
@@ -712,7 +765,7 @@ Nothing else may be sent on `hi`.
 | Code | Meaning | Client action |
 |---|---|---|
 | `bad_request` | Malformed JSON, missing required field, bad type, out-of-range value. | Bug. Log and fix. |
-| `unsupported_version` | `v` ≠ 1. Socket is closed. | Prompt to update the app. |
+| `unsupported_version` | `v` ≠ 2. Socket is closed. | Prompt to update the app. |
 | `unsupported` | Unknown `type` for this surface. | Ignore. |
 | `unauthenticated` | Sent an authenticated message while `CHALLENGED`. | Complete `hello` first. |
 | `bad_signature` | Signature invalid, key mismatch, or nonce replayed/expired. | Re-challenge and retry once; then treat the identity as broken. |

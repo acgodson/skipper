@@ -89,7 +89,9 @@ open -n "$APP_BUNDLE" \
 sleep 10
 
 ID="$(python3 -c "import json;print(json.load(open('$W/id-app/identity.json'))['deviceId'])" 2>/dev/null)"
-CODE="$(python3 -c "import json;print(json.load(open('$W/id-app/identity.json'))['accessCode'])" 2>/dev/null)"
+# The access code lives in the Keychain, or — for an overridden identity
+# directory like this one — in its dev-file stand-in beside identity.json.
+CODE="$(python3 -c "import json;print(json.load(open('$W/id-app/access-code.json')))" 2>/dev/null)"
 [[ -n "$ID" ]] || { echo "the app did not create an identity; see $W/app.log" >&2; exit 1; }
 echo "   host device $ID"
 

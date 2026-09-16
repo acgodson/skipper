@@ -392,15 +392,23 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 	h.attachLocked(s, &s.Ctrl, c)
 	h.attachLocked(s, &s.Host, hostConn)
 
+	// Both keys are public material the server has held since `register`. They
+	// are what each side pins the other's signed SDP to (PROTOCOL.md §2.12) and
+	// what the host keys its guess policy on (§2.17).
 	h.sendLocked(c, protocol.TypeConnectOK, e.ID, protocol.ConnectOK{
 		SessionID: sid, SessionToken: ctrlTok, ExpiresAt: ctrlExp.UnixMilli(),
 		TTLSec: protocol.SessionTokenTTLSec, HostDeviceID: p.DeviceID,
 		ControllerDeviceID: c.deviceID,
+		HostPubkey:         h.devicePubkeyLocked(p.DeviceID),
 	})
 	h.sendLocked(hostConn, protocol.TypeSessionStart, "", protocol.SessionStart{
-		SessionID: sid, SessionToken: hostTok, ExpiresAt: hostExp.UnixMilli(),
-		TTLSec: protocol.SessionTokenTTLSec, HostDeviceID: p.DeviceID,
-		ControllerDeviceID: c.deviceID,
+		ConnectOK: protocol.ConnectOK{
+			SessionID: sid, SessionToken: hostTok, ExpiresAt: hostExp.UnixMilli(),
+			TTLSec: protocol.SessionTokenTTLSec, HostDeviceID: p.DeviceID,
+			ControllerDeviceID: c.deviceID,
+			HostPubkey:         h.devicePubkeyLocked(p.DeviceID),
+		},
+		ControllerPubkey: h.devicePubkeyLocked(c.deviceID),
 	})
 	h.reportSessionStart(protocol.SessionStartReport{
 		SessionID: sid, HostDeviceID: p.DeviceID, ControllerDeviceID: c.deviceID,
@@ -428,6 +436,17 @@ func (h *Hub) hasLiveSessionLocked(deviceID string) bool {
 	}
 	s := h.sessions[sid]
 	return s != nil && s.State != protocol.SessionClosed
+}
+
+// devicePubkeyLocked returns the registered base64 DER SPKI key for a device,
+// or "" if it cannot be read — the field is omitempty, and an absent key is a
+// state both peers already have to handle.
+func (h *Hub) devicePubkeyLocked(deviceID string) string {
+	d, err := h.opt.Store.GetDevice(deviceID)
+	if err != nil {
+		return ""
+	}
+	return d.Pubkey
 }
 
 func (h *Hub) deviceEpochLocked(deviceID string) int64 {

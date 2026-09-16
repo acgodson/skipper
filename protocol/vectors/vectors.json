@@ -368,10 +368,31 @@
           "expiresAt": 1755600600000,
           "ttlSec": 600,
           "hostDeviceId": "739000587",
+          "controllerDeviceId": "481930275",
+          "hostPubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuBGGi2DgfaFZytt5/esidQP3Qd3pzdIUC2MN8/OzOl+mubtCml0DONiJGrtUrhqnO7XcFGUDx/gNpT3TdtsLuA==",
+          "controllerPubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEb/A7lJJBzh2t1DUZ5pYOCoW0GmmgXDKBA6orzhWUyhY8T3U6Vb8B3FP2wLDH7ueLQMb/fSWpbiKCuYnO9xwUSg=="
+        }
+      },
+      "note": "connect_ok plus controllerPubkey, which the host keys its guess policy on"
+    },
+    {
+      "name": "session_start_no_controller_pubkey",
+      "surface": "signaling",
+      "type": "session_start",
+      "frame": {
+        "v": 2,
+        "type": "session_start",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "sessionToken": "dG9rZW4y",
+          "expiresAt": 1755600600000,
+          "ttlSec": 600,
+          "hostDeviceId": "739000587",
           "controllerDeviceId": "481930275"
         }
       },
-      "note": "same shape as connect_ok"
+      "note": "controllerPubkey is omitempty: absent, never an empty string"
     },
     {
       "name": "resume",
@@ -584,6 +605,21 @@
       "note": "the peer's signed SDP fingerprints did not verify"
     },
     {
+      "name": "bye_auth_failed",
+      "surface": "signaling",
+      "type": "bye",
+      "frame": {
+        "v": 2,
+        "type": "bye",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "reason": "auth_failed"
+        }
+      },
+      "note": "the host refused the access code, or refused to try one from a locked-out controller"
+    },
+    {
       "name": "pake_step1",
       "surface": "signaling",
       "type": "pake",
@@ -613,6 +649,22 @@
           "payload": "cGFrZXN0ZXAy"
         }
       }
+    },
+    {
+      "name": "pake_step3",
+      "surface": "signaling",
+      "type": "pake",
+      "frame": {
+        "v": 2,
+        "type": "pake",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "step": 3,
+          "payload": "cGFrZXN0ZXAz"
+        }
+      },
+      "note": "the controller's confirmation ends the exchange"
     },
     {
       "name": "refresh_code",

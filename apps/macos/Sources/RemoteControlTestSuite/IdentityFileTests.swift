@@ -286,43 +286,6 @@ public let identityFileSuite = TestSuite("IdentityFileStore", [
         }
     },
 
-    // MARK: Peer code
-
-    TestCase("the saved peer code round-trips and is 0600") {
-        try withTempIdentityDirectory { directory in
-            let store = IdentityFileStore(directory: directory)
-            try expectNil(try store.loadPeerAccessCode())
-
-            let code = try AccessCode.generate()
-            try store.savePeerAccessCode(AccessCode.formatted(code).lowercased())
-            try expectEqual(try store.loadPeerAccessCode(), code, "it must be stored canonicalised")
-            try expectEqual(try mode(of: store.peerCodeURL), 0o600)
-
-            try expect(try store.forgetPeerAccessCode())
-            try expectNil(try store.loadPeerAccessCode())
-            try expectFalse(try store.forgetPeerAccessCode())
-        }
-    },
-
-    TestCase("an invalid peer code is not written at all") {
-        try withTempIdentityDirectory { directory in
-            let store = IdentityFileStore(directory: directory)
-            try store.savePeerAccessCode("nope")
-            try expectFalse(FileManager.default.fileExists(atPath: store.peerCodeURL.path))
-        }
-    },
-
-    TestCase("forgetting the peer code never touches the identity file") {
-        try withTempIdentityDirectory { directory in
-            let store = IdentityFileStore(directory: directory)
-            let record = try sampleRecord()
-            try store.save(record)
-            try store.savePeerAccessCode(try AccessCode.generate())
-
-            try expect(try store.forgetPeerAccessCode())
-            try expectEqual(try requireLoaded(store).record, record)
-        }
-    },
 ])
 
 // MARK: - Helpers

@@ -111,7 +111,18 @@ start_node ctrl controller "$WORK/id-ctrl"
 wait_for "$WORK/host.log" '"state":"authenticated"' 30 || { fail "host authenticates" ""; exit 1; }
 wait_for "$WORK/ctrl.log" '"state":"authenticated"' 30 || { fail "controller authenticates" ""; exit 1; }
 HOST_ID="$(python3 -c "import json;print(json.load(open('$WORK/id-host/identity.json'))['deviceId'])")"
-HOST_CODE="$(python3 -c "import json;print(json.load(open('$WORK/id-host/identity.json'))['accessCode'])")"
+# The access code is in the Keychain (or, for this overridden identity
+# directory, its dev-file stand-in) and deliberately NOT in identity.json any
+# more; rc-node reports it once, on `ready`.
+HOST_CODE="$(python3 -c "
+import json,sys
+for line in open('$WORK/host.log'):
+    line = line.strip()
+    if line.startswith('{'):
+        d = json.loads(line)
+        if d.get('event') == 'ready':
+            print(d['accessCode']); break
+")"
 say ctrl "connect $HOST_ID $HOST_CODE"
 if wait_for "$WORK/ctrl.log" '"allOpen":true' 45 && wait_for "$WORK/host.log" '"allOpen":true' 45; then
   pass "both data channels are open on a real peer connection"

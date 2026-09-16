@@ -178,9 +178,9 @@ async fn full_signaling_lifecycle_against_the_real_server() {
         Push::SessionStart(s) => s,
         other => panic!("expected session_start, got {other:?}"),
     };
-    assert_eq!(host_grant.session_id, ok.session_id);
+    assert_eq!(host_grant.session.session_id, ok.session_id);
     // Tokens are per-side: the host's must not equal the controller's.
-    assert_ne!(host_grant.session_token, ok.session_token);
+    assert_ne!(host_grant.session.session_token, ok.session_token);
 
     // The host was online when the session was created, so the server tells
     // the controller its peer is attached.

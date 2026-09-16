@@ -4,11 +4,15 @@ import SkipperCore
 /// Owns this machine's durable identity: the Device ID, the access code and the
 /// device keypair.
 ///
-/// The Device ID, the access code and the registration flag live in one
-/// owner-only file (`IdentityFileStore`). The private key lives in the strongest
-/// backend this build can reach: the Secure Enclave, else the Keychain, else —
-/// only for the dev flag or an overridden identity directory — the file itself.
-/// Nothing here rotates on a timer and nothing here is ever silently regenerated.
+/// The Device ID and the registration flag live in one owner-only file
+/// (`IdentityFileStore`). The private key and the access code live in the
+/// strongest backend this build can reach: the key in the Secure Enclave, else
+/// the Keychain; the code in the Keychain (`SecretAccount.accessCode`). Only the
+/// dev flag or an overridden identity directory puts either in a file. A code
+/// written into `identity.json` by an older build is **moved** into the Keychain
+/// on first load, exactly as the private key was in Phase 2.2, and the Device ID
+/// is not touched by that move. Nothing here rotates on a timer and nothing here
+/// is ever silently regenerated.
 @MainActor
 public final class IdentityStore: ObservableObject {
 
@@ -34,6 +38,9 @@ public final class IdentityStore: ObservableObject {
 
     private let fileStore: IdentityFileStore
     private let key: DeviceSigningKey
+    /// Where the access code, the remembered peer codes and the trusted
+    /// controllers live. Exposed because the session layer reads the last two.
+    public let secrets: SecretStore
     public weak var sink: AccessCodeSink?
 
     public var formattedDeviceID: String { DeviceID.formatted(deviceID) }
@@ -61,23 +68,34 @@ public final class IdentityStore: ObservableObject {
         fileStore: IdentityFileStore = IdentityFileStore(),
         sink: AccessCodeSink? = nil,
         blobStore: DeviceKeyBlobStore = DeviceKeyKeychain(),
+        secrets: SecretStore? = nil,
         devFileIdentity: Bool? = nil
     ) throws {
         self.fileStore = fileStore
         self.sink = sink
+        let secrets = secrets ?? SecretStore.forThisMac(fileStore: fileStore)
+        self.secrets = secrets
 
         let loaded = try fileStore.load()
         let devFileIdentity = devFileIdentity ?? Self.usesDevFileIdentity(fileStore: fileStore)
 
+        // MIGRATION: the Keychain is authoritative. A code still in the identity
+        // file is one an older build wrote, and is moved here — the file copy is
+        // dropped when the record is rewritten below. The Device ID is not part
+        // of the move: it stays exactly where and what it was.
+        let storedCode = try secrets.accessCode()
+        let migratedCode = storedCode == nil ? loaded?.record.accessCode : nil
+        let resolvedCode = try storedCode ?? migratedCode ?? AccessCode.generate()
+        if storedCode == nil { try secrets.saveAccessCode(resolvedCode) }
+        self.accessCode = resolvedCode
+
         if let loaded {
             self.deviceID = loaded.record.deviceID
-            self.accessCode = loaded.record.accessCode
             self.createdAt = loaded.record.createdAt
             self.permissionWarning = loaded.permissionWarning
             self.isServerRegistered = loaded.record.serverRegistered
         } else {
             self.deviceID = try DeviceID.generateLocal()
-            self.accessCode = try AccessCode.generate()
             self.createdAt = IdentityRecord.timestamp()
             self.permissionWarning = nil
             self.isServerRegistered = false
@@ -95,10 +113,9 @@ public final class IdentityStore: ObservableObject {
         self.publicKeyHex = resolved.key.publicKeyHex
         self.publicKeyBase64 = resolved.key.publicKeyBase64
 
-        if loaded == nil || resolved.rewriteRecord {
+        if loaded == nil || resolved.rewriteRecord || migratedCode != nil {
             try fileStore.save(IdentityRecord(
                 deviceID: deviceID,
-                accessCode: accessCode,
                 privateKeyBase64: Self.filePrivateKey(resolved.key),
                 createdAt: createdAt,
                 serverRegistered: isServerRegistered,
@@ -243,11 +260,15 @@ public final class IdentityStore: ObservableObject {
 
     // MARK: - Mutations
 
-    /// Mints a new access code, writes it through to disk, then tells the sink so
-    /// the old one can be revoked server-side.
+    /// Mints a new access code, stores it, revokes every controller this Mac had
+    /// trusted, then tells the sink so the server kills the live sessions.
     ///
-    /// Storage happens *before* propagation: if the network is down the user still
-    /// ends up with exactly one code that both the UI and the file agree on.
+    /// This is the whole revocation story (PROTOCOL.md §4.5): the trusted list
+    /// and the guess counters go with the code, so every controller that
+    /// remembered the old one now fails the §2.17 exchange and prompts its user.
+    ///
+    /// Storage happens *before* propagation: if the network is down the user
+    /// still ends up with exactly one code that the UI and the Keychain agree on.
     @discardableResult
     public func refreshAccessCode() async throws -> String {
         let previous = accessCode
@@ -256,12 +277,13 @@ public final class IdentityStore: ObservableObject {
         // code would silently break the user's expectation, so rule it out.
         while fresh == previous { fresh = try AccessCode.generate() }
 
-        try persist(accessCode: fresh, deviceID: deviceID)
+        try secrets.saveAccessCode(fresh)
+        try secrets.revokeControllers()
         accessCode = fresh
         lastRefreshError = nil
 
         do {
-            try await sink?.accessCodeDidChange(deviceID: deviceID, newCode: fresh)
+            try await sink?.accessCodeDidChange(deviceID: deviceID)
         } catch {
             // Surfaced in the UI: the local code changed but the server may still
             // honour the old one until we can reach it.
@@ -278,7 +300,7 @@ public final class IdentityStore: ObservableObject {
     public func adoptServerAssignedDeviceID(_ assigned: String) throws {
         guard let canonical = DeviceID.canonicalize(assigned) else { return }
         guard canonical != deviceID else { return }
-        try persist(accessCode: accessCode, deviceID: canonical, serverRegistered: isServerRegistered)
+        try persist(deviceID: canonical, serverRegistered: isServerRegistered)
         deviceID = canonical
     }
 
@@ -288,16 +310,16 @@ public final class IdentityStore: ObservableObject {
     /// failure to `hello` would not.
     public func markServerRegistered() {
         guard !isServerRegistered else { return }
-        try? persist(accessCode: accessCode, deviceID: deviceID, serverRegistered: true)
+        try? persist(deviceID: deviceID, serverRegistered: true)
         isServerRegistered = true
     }
 
     /// Rewrites the whole record. The key and createdAt are carried through
-    /// untouched — only the caller's two mutable fields ever change.
-    private func persist(accessCode: String, deviceID: String, serverRegistered: Bool? = nil) throws {
+    /// untouched — only the caller's two mutable fields ever change. The access
+    /// code is not among them: it lives in the Keychain, not in this file.
+    private func persist(deviceID: String, serverRegistered: Bool? = nil) throws {
         try fileStore.save(IdentityRecord(
             deviceID: deviceID,
-            accessCode: accessCode,
             privateKeyBase64: Self.filePrivateKey(key),
             createdAt: createdAt,
             serverRegistered: serverRegistered ?? isServerRegistered,
@@ -316,11 +338,13 @@ public final class IdentityStore: ObservableObject {
     /// peer Mac's saved entry with no explanation.
     public static func resetIdentity(
         fileStore: IdentityFileStore = IdentityFileStore(),
-        blobStore: DeviceKeyBlobStore = DeviceKeyKeychain()
+        blobStore: DeviceKeyBlobStore = DeviceKeyKeychain(),
+        secrets: SecretStore? = nil
     ) throws {
         if !usesDevFileIdentity(fileStore: fileStore) {
             discardStoredKeys(blobStore: blobStore)
         }
+        (secrets ?? SecretStore.forThisMac(fileStore: fileStore)).discardEverything()
         try fileStore.reset()
     }
 }

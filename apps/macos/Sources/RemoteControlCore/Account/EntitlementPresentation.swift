@@ -61,6 +61,11 @@ public enum EntitlementPresentation {
 
     public static let busySentence = "That Mac already has a controller connected."
 
+    /// PROTOCOL.md §2.14 `auth_failed`: the other Mac refused the access code.
+    /// The only failure in v2 that is about the code, and the only one the user
+    /// can fix by typing.
+    public static let wrongCodeSentence = "Wrong access code. Check it on the other Mac."
+
     /// `reason` is one of API.md §4.3's closed set. An unknown reason renders
     /// `fallback` — the server's own `message` — rather than guessing at one
     /// of the five (API.md §4.2: render what the server said).
@@ -94,6 +99,7 @@ public enum EntitlementPresentation {
     ) -> String {
         switch code {
         case "busy": return busySentence
+        case "auth_failed": return wrongCodeSentence
         case "entitlement": return entitlementSentence(reason: reason, fallback: fallback)
         case "rate_limited": return retryAfterSec.map(rateLimitedSentence) ?? fallback
         default: return fallback
@@ -108,16 +114,24 @@ public enum EntitlementPresentation {
             return connectFailureSentence(
                 code: Wire.ErrorCode.busy, reason: nil, retryAfterSec: nil,
                 fallback: failure.errorDescription ?? busySentence)
+        case .authFailed:
+            return connectFailureSentence(
+                code: Wire.ByeReason.authFailed, reason: nil, retryAfterSec: nil,
+                fallback: wrongCodeSentence)
+        case .entitlement(let reason, let message):
+            // API.md §4.2: an unrecognised reason renders the server's own
+            // `message` verbatim rather than a guess at one of the five.
+            return connectFailureSentence(
+                code: Wire.ErrorCode.entitlement, reason: reason, retryAfterSec: nil,
+                fallback: message)
         case .rateLimited(let retryAfterSec):
             return connectFailureSentence(
                 code: Wire.ErrorCode.rateLimited, reason: nil, retryAfterSec: retryAfterSec,
                 fallback: failure.errorDescription ?? "")
         case .other(let code, let message):
-            // API.md §4.2: an entitlement fallback renders the server's own
-            // `message` verbatim. Any other unrecognised code keeps its
-            // existing "message (code)" wording.
-            let fallback = code == "entitlement" ? message : (failure.errorDescription ?? message)
-            return connectFailureSentence(code: code, reason: nil, retryAfterSec: nil, fallback: fallback)
+            return connectFailureSentence(
+                code: code, reason: nil, retryAfterSec: nil,
+                fallback: failure.errorDescription ?? message)
         default:
             return failure.errorDescription ?? "Connection failed."
         }

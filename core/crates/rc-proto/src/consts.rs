@@ -128,6 +128,9 @@ pub mod bye {
     /// The peer's signed SDP fingerprints did not verify against the device key
     /// this side expects. PROTOCOL.md §2.12.
     pub const PEER_AUTH_FAILED: &str = "peer_auth_failed";
+    /// The host refused the controller's access code, or refused to look at it
+    /// because that controller is locked out. PROTOCOL.md §2.17.
+    pub const AUTH_FAILED: &str = "auth_failed";
 }
 
 /// Server-side session states. PROTOCOL.md §4.2.

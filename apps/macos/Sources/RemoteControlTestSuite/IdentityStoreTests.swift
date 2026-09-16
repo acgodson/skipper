@@ -18,7 +18,7 @@ private func withIdentity(_ body: @MainActor (IdentityFileStore) async throws ->
 private final class FailingSink: AccessCodeSink {
     struct Boom: Error, LocalizedError { var errorDescription: String? { "no server" } }
     var callCount = 0
-    func accessCodeDidChange(deviceID: String, newCode: String) async throws {
+    func accessCodeDidChange(deviceID: String) async throws {
         callCount += 1
         throw Boom()
     }
@@ -70,7 +70,7 @@ public let identitySuite = TestSuite("IdentityStore", [
                        "the reloaded key must be the same private key, not just the same public metadata")
 
             let record = try requireLoaded(fileStore).record
-            try expectEqual(record.accessCode, code)
+            try expectNil(record.accessCode, "the code lives in the Keychain, never in the file")
             try expectEqual(record.deviceID, deviceID)
         }
     },
@@ -96,11 +96,7 @@ public let identitySuite = TestSuite("IdentityStore", [
             try expectEqual(store.accessCode, refreshed)
             try expectNotNil(AccessCode.canonicalize(refreshed))
 
-            // On disk, right now — not just in memory.
-            let record = try requireLoaded(fileStore).record
-            try expectEqual(record.accessCode, refreshed,
-                            "the new code must be the one that survives a restart")
-            // And after a full reload.
+            // Stored right now — not just in memory — and after a full reload.
             let reloaded = try IdentityStore(fileStore: fileStore)
             try expectEqual(reloaded.accessCode, refreshed)
             try expectNotEqual(reloaded.accessCode, original)
@@ -111,25 +107,21 @@ public let identitySuite = TestSuite("IdentityStore", [
         }
     },
 
-    TestCase("refresh notifies the sink with the new code") {
+    // The sink is told THAT the code changed, never what it changed to: a v2
+    // `refresh_code` carries `{}` and the code never leaves this Mac.
+    TestCase("refresh notifies the sink without handing it the code") {
         try await withIdentity { fileStore in
             let sink = PreviewAccessCodeSink()
             let store = try IdentityStore(fileStore: fileStore, sink: sink)
-            let original = store.accessCode
 
-            try expect(sink.calls.isEmpty, "constructing must not notify the sink")
+            try expect(sink.refreshedDeviceIDs.isEmpty, "constructing must not notify the sink")
 
             let first = try await store.refreshAccessCode()
-            try expectEqual(sink.calls.count, 1)
-            try expectEqual(sink.calls.last?.newCode, first)
-            try expectEqual(sink.calls.last?.deviceID, store.deviceID)
-            try expectNotEqual(sink.calls.last?.newCode, original)
+            try expectEqual(sink.refreshedDeviceIDs, [store.deviceID])
 
             let second = try await store.refreshAccessCode()
-            try expectEqual(sink.calls.count, 2)
-            try expectEqual(sink.calls.last?.newCode, second)
+            try expectEqual(sink.refreshedDeviceIDs.count, 2)
             try expectNotEqual(first, second)
-            try expectEqual(Set(sink.calls.map(\.newCode)).count, 2)
         }
     },
 
@@ -141,7 +133,7 @@ public let identitySuite = TestSuite("IdentityStore", [
                 let code = try await store.refreshAccessCode()
                 try expectFalse(seen.contains(code), "refresh reissued a code it had already used")
                 seen.insert(code)
-                try expectEqual(try requireLoaded(fileStore).record.accessCode, code)
+                try expectEqual(try IdentityStore(fileStore: fileStore).accessCode, code)
             }
             try expectEqual(seen.count, 21)
         }
@@ -160,7 +152,7 @@ public let identitySuite = TestSuite("IdentityStore", [
 
             try expectEqual(sink.callCount, 1)
             try expectNotEqual(store.accessCode, original)
-            try expectEqual(try requireLoaded(fileStore).record.accessCode, store.accessCode)
+            try expectEqual(try IdentityStore(fileStore: fileStore).accessCode, store.accessCode)
             try expectNotNil(store.lastRefreshError)
         }
     },
@@ -247,6 +239,43 @@ public let identitySuite = TestSuite("IdentityStore", [
                                            "the UI needs to be able to show this")
             try expect(warning.contains("0644"))
             try expectEqual(try SecureFile.currentMode(of: fileStore.fileURL), 0o600)
+        }
+    },
+
+    // PHASE 2.5 MIGRATION. An identity written by an older build has the access
+    // code in `identity.json`. Opening it must move the code into the secret
+    // store, drop the file copy, and leave the Device ID and the key alone —
+    // exactly what the Phase 2.2 private-key move had to do.
+    TestCase("an access code in the identity file is moved into the Keychain") {
+        try await withIdentity { fileStore in
+            let key = DeviceKey()
+            let legacyCode = try AccessCode.generate()
+            let legacy = IdentityRecord(deviceID: "482719351", accessCode: legacyCode,
+                                        key: key, createdAt: IdentityRecord.timestamp(),
+                                        serverRegistered: true)
+            try fileStore.save(legacy)
+            try expectEqual(try requireLoaded(fileStore).record.accessCode, legacyCode,
+                            "the fixture really is a pre-migration file")
+
+            let secrets = SecretStore(blobs: InMemorySecretStore())
+            let store = try IdentityStore(fileStore: fileStore, secrets: secrets,
+                                          devFileIdentity: true)
+
+            try expectEqual(store.accessCode, legacyCode, "the code must not be regenerated")
+            try expectEqual(try secrets.accessCode(), legacyCode, "and it must now be in the store")
+            try expectEqual(store.deviceID, "482719351", "the Device ID is untouched by the move")
+            try expect(store.isServerRegistered, "and so is the registration flag")
+            try expectEqual(store.publicKeyBase64, try key.publicKeyBase64())
+
+            let record = try requireLoaded(fileStore).record
+            try expectNil(record.accessCode, "the file copy is dropped: a move, not a copy")
+            try expectEqual(record.deviceID, "482719351")
+
+            // And a second launch reads the code back out of the store.
+            let reopened = try IdentityStore(fileStore: fileStore, secrets: secrets,
+                                             devFileIdentity: true)
+            try expectEqual(reopened.accessCode, legacyCode)
+            try expectEqual(reopened.deviceID, "482719351")
         }
     },
 ])

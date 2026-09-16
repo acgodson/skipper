@@ -5,9 +5,17 @@ import WebRTC
 /// Errors the Connect flow shows the user, mapped from PROTOCOL.md §7 codes so
 /// the UI can be specific rather than saying "connection failed".
 public enum ConnectFailure: Swift.Error, LocalizedError, Equatable {
-    case badCode
+    /// The other Mac refused the access code, or refused to try one because
+    /// this controller is serving a lockout. It arrives as `bye{auth_failed}`
+    /// (PROTOCOL.md §2.14), not as a server `error`: in v2 the server has no
+    /// opinion about codes.
+    case authFailed
     case offline
     case busy
+    /// *v2.* The host's account may not open a session. `reason` is API.md
+    /// §4.3's closed set; `message` is the server's own sentence, which is what
+    /// an unrecognised reason renders.
+    case entitlement(reason: String?, message: String)
     case rateLimited(retryAfterSec: Int)
     case unknownDevice
     case selfConnect
@@ -20,9 +28,12 @@ public enum ConnectFailure: Swift.Error, LocalizedError, Equatable {
             return
         }
         switch code {
-        case Wire.ErrorCode.badCode: self = .badCode
+        case Wire.ByeReason.authFailed: self = .authFailed
         case Wire.ErrorCode.offline: self = .offline
         case Wire.ErrorCode.busy: self = .busy
+        case Wire.ErrorCode.entitlement:
+            self = .entitlement(reason: wire.reason,
+                                message: wire.serverMessage ?? wire.errorDescription ?? code)
         case Wire.ErrorCode.rateLimited: self = .rateLimited(retryAfterSec: wire.retryAfterSec ?? 60)
         case Wire.ErrorCode.unknownDevice: self = .unknownDevice
         case Wire.ErrorCode.selfConnect: self = .selfConnect
@@ -32,9 +43,10 @@ public enum ConnectFailure: Swift.Error, LocalizedError, Equatable {
 
     public var code: String {
         switch self {
-        case .badCode: return Wire.ErrorCode.badCode
+        case .authFailed: return Wire.ByeReason.authFailed
         case .offline: return Wire.ErrorCode.offline
         case .busy: return Wire.ErrorCode.busy
+        case .entitlement: return Wire.ErrorCode.entitlement
         case .rateLimited: return Wire.ErrorCode.rateLimited
         case .unknownDevice: return Wire.ErrorCode.unknownDevice
         case .selfConnect: return Wire.ErrorCode.selfConnect
@@ -45,8 +57,10 @@ public enum ConnectFailure: Swift.Error, LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .badCode:
+        case .authFailed:
             return "That access code was not accepted. Check it on the other Mac — codes are case-insensitive but every character counts."
+        case .entitlement(_, let message):
+            return message
         case .offline:
             return "That Mac is offline. It has to be running RemoteControl and connected to the internet."
         case .busy:
@@ -98,6 +112,16 @@ public enum CoordinatorEvent {
     /// A remote offer/answer was REFUSED because its signed fingerprints did
     /// not verify. The session is over; this is never retried.
     case peerAuthFailed(reason: String)
+    /// One frame of the §2.17 access-code exchange crossed the wire. The step
+    /// number only — the payload is opaque here as it is to the server.
+    case pake(step: Int, outgoing: Bool)
+    /// The exchange completed: both Macs proved the same access code, and this
+    /// is the device key the peer's `sdp` must now carry.
+    case pakeCompleted(peerPubkey: String)
+    /// The exchange did not complete. `authentication` separates "the code is
+    /// wrong, or this controller is locked out" from "it broke for another
+    /// reason" — the same split as `bye{auth_failed}` against `bye{failed}`.
+    case pakeFailed(reason: String, authentication: Bool)
     /// HOST: the capture pipeline changed state, including "the Screen
     /// Recording grant is missing", which must never be a silent black screen.
     case captureState(CaptureState)
@@ -131,7 +155,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     @Published public private(set) var signalingState: SignalingState = .idle
     @Published public private(set) var peerPresence: PresenceState = .unknown
     @Published public private(set) var lastRoundTrip: TimeInterval?
-    @Published public private(set) var lastError: String?
+    @Published public internal(set) var lastError: String?
     @Published public private(set) var iceState: ICELinkState = .new
     @Published public private(set) var dataChannelsOpen = false
     @Published public private(set) var remoteDisplay: DisplayInfoPayload?
@@ -196,8 +220,10 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         didSet { clipboard?.isEnabled = clipboardSyncEnabled }
     }
     private var clipboard: ClipboardMonitor?
-    private let machine: SessionStateMachine
-    private let identity: IdentityStore
+    /// Internal rather than private so the §2.17 exchange, which lives in its
+    /// own file, can drive the same machine and identity this file does.
+    let machine: SessionStateMachine
+    let identity: IdentityStore
     private let config: RCConfig
     private var ticker: Task<Void, Never>?
     private var watchedPeer: String?
@@ -213,6 +239,24 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     /// §2.17 exchange. Every incoming `sdp` must be signed by it.
     public private(set) var expectedPeerPublicKey: String?
 
+    // MARK: The access-code exchange (PROTOCOL.md §2.17) — see SessionPake.swift
+
+    /// This side of the SPAKE2 exchange, for the life of one session.
+    var pakeExchange: PakeExchange?
+    /// True once the exchange has completed. Until then no offer may leave and
+    /// no remote description may be applied: an unauthenticated peer must not
+    /// reach the media path at all.
+    var pakeComplete = false
+    /// Set while a session exists that has not finished its exchange.
+    var pakeRequired = false
+    /// The `startPeerConnection` the state machine asked for while the exchange
+    /// was still running, held until it completes.
+    var deferredPeerStart: Bool?
+    /// HOST: `session_start.controllerPubkey` — what the guess counter and the
+    /// trusted list are keyed on, and what step 1's own key must equal.
+    var pakeControllerPubkey: String?
+    var pakeTimeout: Task<Void, Never>?
+
     /// The live replacement for `PreviewPresenceSource`. Bind the UI to this.
     public let presence = SignalingPresenceSource()
 
@@ -221,7 +265,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     /// Observation stream; see `CoordinatorEvent`.
     public var onEvent: ((CoordinatorEvent) -> Void)?
 
-    private func emit(_ event: CoordinatorEvent) { onEvent?(event) }
+    func emit(_ event: CoordinatorEvent) { onEvent?(event) }
 
     public init(identity: IdentityStore, role: Wire.Role, config: RCConfig = .current,
                 captureSource: CaptureSourceKind = .fromEnvironment()) {
@@ -351,7 +395,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
     // MARK: - Action execution
 
-    private func perform(_ actions: [SessionAction]) async {
+    func perform(_ actions: [SessionAction]) async {
         for action in actions { await perform(action) }
         syncPhase()
     }
@@ -360,10 +404,15 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         switch action {
         case .sendConnectReq(let deviceID, let accessCode):
             do {
-                let grant = try await signaling.connectRequest(deviceID: deviceID, accessCode: accessCode)
+                // The code does not travel with the request: §2.9 authorises by
+                // entitlement, and the code is settled by the §2.17 exchange the
+                // session below exists to carry.
+                let grant = try await signaling.connectRequest(deviceID: deviceID)
                 expectPeerPublicKey(grant.hostPubkey)
                 emit(.sessionGranted(sessionID: grant.sessionId, role: .controller))
+                armPake(for: grant)
                 await perform(machine.sessionGranted(grant))
+                await startControllerPake(grant: grant, accessCode: accessCode)
             } catch {
                 let failure = ConnectFailure(error)
                 lastError = failure.localizedDescription
@@ -422,6 +471,13 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             applyLocalInputReset()
 
         case .startPeerConnection(let offerer):
+            // Nothing touches the media path until the access code is proved:
+            // the offer waits for the §2.17 exchange to finish (or for the
+            // session to end because it did not).
+            guard !pakeRequired || pakeComplete else {
+                deferredPeerStart = offerer
+                return
+            }
             startPeer(offerer: offerer)
 
         case .restartICE:
@@ -445,6 +501,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         case .clearStoredSession:
             negotiating = false
             expectedPeerPublicKey = nil
+            clearPake()
 
         case .promptForAccessCode(let reason):
             needsAccessCode = true
@@ -463,6 +520,14 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     }
 
     // MARK: - Peer connection
+
+    /// The peer connection the §2.17 exchange was holding back, now that the two
+    /// Macs have proved the same access code.
+    func startPeerAfterPake(offerer: Bool) { startPeer(offerer: offerer) }
+
+    /// The exchange completed but bound a device key that is not the one the
+    /// server named. That is the relay, not the code: §2.12's ending, not §2.17's.
+    func refusePeerFromPake(reason: String) async { await refusePeer(reason: reason) }
 
     private func startPeer(offerer: Bool) {
         peer?.close()
@@ -577,7 +642,13 @@ extension SessionCoordinator: SignalingClientDelegate {
             guard let grant = try? envelope.decodePayload(SessionGrantPayload.self) else { return }
             RCLog.info("session_start received")
             emit(.sessionGranted(sessionID: grant.sessionId, role: .host))
+            armPake(for: grant)
             await perform(machine.sessionGranted(grant))
+            await startHostPake(grant: grant)
+
+        case Wire.MessageType.pake:
+            guard let frame = try? envelope.decodePayload(PakePayload.self) else { return }
+            await handlePake(frame)
 
         case Wire.MessageType.peerState:
             // Informational: the other side attached or detached. The ICE state
@@ -597,6 +668,7 @@ extension SessionCoordinator: SignalingClientDelegate {
             guard let bye = try? envelope.decodePayload(ByePayload.self) else { return }
             guard bye.sessionId == machine.sessionID else { return }
             emit(.bye(reason: bye.reason))
+            peerEndedExchange(byeReason: bye.reason)
             await perform(machine.closeLocally(reason: bye.reason))
 
         case Wire.MessageType.error:
@@ -609,6 +681,13 @@ extension SessionCoordinator: SignalingClientDelegate {
 
     private func handleRemoteSDP(_ sdp: SDPPayload) async {
         guard sdp.sessionId == machine.sessionID else { return }
+        // Before §2.17 completes neither side knows who the other is, and the
+        // host has not yet pinned the key this signature would be checked
+        // against. A description that arrives that early is dropped, not applied.
+        guard !pakeRequired || pakeComplete else {
+            RCLog.error("dropped an sdp that arrived before the access code was proved")
+            return
+        }
         guard let signature = sdp.signature else {
             await refusePeer(reason: "the sdp carried no signature")
             return

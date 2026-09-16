@@ -1,33 +1,28 @@
 import Foundation
 
-/// Notified whenever the access code changes, so that a refresh can be pushed
-/// outward and the previous code revoked everywhere it is known.
+/// Notified whenever this Mac's access code changes, so the refresh can be
+/// pushed outward.
 ///
-/// PHASE 3 will supply a signaling-server-backed implementation: it uploads the
-/// Argon2id hash of the new code and the server invalidates the old one, which
-/// is what makes `AGENT.md`'s "old access code invalid immediately after refresh"
-/// true off-machine as well as on it.
+/// The new code is deliberately **not** a parameter. In v2 the server stores
+/// nothing about any access code (PROTOCOL.md §2.3): what propagates is
+/// `refresh_code`, which bumps the device's epoch and kills every live session
+/// and token. The code stays on this Mac, and every controller that remembered
+/// the old one simply fails the §2.17 exchange from now on.
 public protocol AccessCodeSink: AnyObject {
     /// Throwing here must leave the caller free to keep the newly stored code:
     /// local storage is authoritative, propagation is best-effort and retried.
-    func accessCodeDidChange(deviceID: String, newCode: String) async throws
+    func accessCodeDidChange(deviceID: String) async throws
 }
 
-/// STUB. Records calls and does nothing else — there is no server in Phase 2, so
-/// a refresh is local-only until the signaling client lands.
+/// Records the calls and does nothing else, so a test can assert that a refresh
+/// was propagated without a signaling server.
 public final class PreviewAccessCodeSink: AccessCodeSink {
 
-    public struct Call: Equatable {
-        public let deviceID: String
-        public let newCode: String
-    }
-
-    public private(set) var calls: [Call] = []
+    public private(set) var refreshedDeviceIDs: [String] = []
 
     public init() {}
 
-    public func accessCodeDidChange(deviceID: String, newCode: String) async throws {
-        // Deliberately does not log `newCode` — no plaintext access-code logging.
-        calls.append(Call(deviceID: deviceID, newCode: newCode))
+    public func accessCodeDidChange(deviceID: String) async throws {
+        refreshedDeviceIDs.append(deviceID)
     }
 }

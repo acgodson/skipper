@@ -15,7 +15,14 @@ public struct IdentityRecord: Equatable {
 
     public var schemaVersion: Int
     public var deviceID: String
-    public var accessCode: String
+    /// The access code, for a file written before Phase 2.5 moved it into the
+    /// Keychain (`SecretAccount.accessCode`).
+    ///
+    /// Optional on decode so such a file still loads, and omitted on encode so
+    /// the migration is a move and not a copy — the same shape as the Phase 2.2
+    /// private-key move above. `IdentityStore` is what performs the move; nil
+    /// here means it has already happened.
+    public var accessCode: String?
     /// Base64 of the 32-byte P-256 private scalar. Never logged, never displayed.
     ///
     /// Nil once the key has moved to the Keychain or the Secure Enclave, which is
@@ -40,7 +47,7 @@ public struct IdentityRecord: Equatable {
     public init(
         schemaVersion: Int = IdentityRecord.currentSchemaVersion,
         deviceID: String,
-        accessCode: String,
+        accessCode: String? = nil,
         privateKeyBase64: String?,
         createdAt: Date,
         serverRegistered: Bool = false,
@@ -69,7 +76,7 @@ public struct IdentityRecord: Equatable {
 
     /// Builds a record around a live key, so callers never have to handle the
     /// raw private bytes themselves. `IdentityStore` and the tests both use this.
-    public init(deviceID: String, accessCode: String, key: DeviceKey, createdAt: Date,
+    public init(deviceID: String, accessCode: String? = nil, key: DeviceKey, createdAt: Date,
                 serverRegistered: Bool = false) {
         self.init(
             deviceID: deviceID,
@@ -97,7 +104,7 @@ extension IdentityRecord: Codable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(schemaVersion, forKey: .schemaVersion)
         try c.encode(deviceID, forKey: .deviceID)
-        try c.encode(accessCode, forKey: .accessCode)
+        try c.encodeIfPresent(accessCode, forKey: .accessCode)
         try c.encodeIfPresent(privateKeyBase64, forKey: .privateKeyBase64)
         try c.encodeIfPresent(keyStorage, forKey: .keyStorage)
         try c.encode(createdAt, forKey: .createdAt)
@@ -111,7 +118,7 @@ extension IdentityRecord: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
         deviceID = try c.decode(String.self, forKey: .deviceID)
-        accessCode = try c.decode(String.self, forKey: .accessCode)
+        accessCode = try c.decodeIfPresent(String.self, forKey: .accessCode)
         privateKeyBase64 = try c.decodeIfPresent(String.self, forKey: .privateKeyBase64)
         keyStorage = try c.decodeIfPresent(String.self, forKey: .keyStorage)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
@@ -172,7 +179,6 @@ public enum IdentityFileError: Error, LocalizedError, Equatable {
 public struct IdentityFileStore {
 
     public static let fileName = "identity.json"
-    public static let peerCodeFileName = "peer-code"
 
     public let directory: URL
 
@@ -218,7 +224,6 @@ public struct IdentityFileStore {
     }
 
     public var fileURL: URL { directory.appendingPathComponent(Self.fileName) }
-    public var peerCodeURL: URL { directory.appendingPathComponent(Self.peerCodeFileName) }
 
     // MARK: Load
 
@@ -267,7 +272,7 @@ public struct IdentityFileStore {
         guard DeviceID.canonicalize(record.deviceID) != nil else {
             throw IdentityFileError.invalidContents(path: fileURL.path, reason: "deviceId is not nine digits")
         }
-        guard AccessCode.canonicalize(record.accessCode) != nil else {
+        if let accessCode = record.accessCode, AccessCode.canonicalize(accessCode) == nil {
             throw IdentityFileError.invalidContents(path: fileURL.path, reason: "the access code is not a valid 12-symbol code")
         }
         if let privateKeyBase64 = record.privateKeyBase64 {
@@ -312,39 +317,6 @@ public struct IdentityFileStore {
     public func reset() throws -> Bool {
         do {
             return try SecureFile.remove(fileURL)
-        } catch {
-            throw IdentityFileError.io(error.localizedDescription)
-        }
-    }
-
-    // MARK: Saved peer access code (controller side, "Remember this code")
-
-    /// Kept in its own file rather than inside `identity.json`: it belongs to the
-    /// *peer*, has a different lifetime, and forgetting it must not risk touching
-    /// this Mac's own identity.
-    public func loadPeerAccessCode() throws -> String? {
-        do {
-            guard let read = try SecureFile.read(peerCodeURL) else { return nil }
-            guard let text = String(data: read.data, encoding: .utf8) else { return nil }
-            return AccessCode.canonicalize(text)
-        } catch {
-            throw IdentityFileError.io(error.localizedDescription)
-        }
-    }
-
-    public func savePeerAccessCode(_ code: String) throws {
-        guard let canonical = AccessCode.canonicalize(code) else { return }
-        do {
-            try SecureFile.writeAtomically(Data(canonical.utf8), to: peerCodeURL)
-        } catch {
-            throw IdentityFileError.io(error.localizedDescription)
-        }
-    }
-
-    @discardableResult
-    public func forgetPeerAccessCode() throws -> Bool {
-        do {
-            return try SecureFile.remove(peerCodeURL)
         } catch {
             throw IdentityFileError.io(error.localizedDescription)
         }

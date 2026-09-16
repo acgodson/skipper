@@ -282,13 +282,13 @@ public final class SignalingClient {
         delegate?.signaling(self, didAuthenticate: ok)
     }
 
+    /// PROTOCOL.md §2.2. No verifier: the server stores nothing about the access
+    /// code, so the code never leaves this Mac except through the §2.17 exchange.
     private func register(nonce: String, on task: URLSessionWebSocketTask) async throws -> RegisterOKPayload {
-        let verifier = try CodeVerifier.make(for: identity.accessCode)
         let payload = RegisterPayload(
             pubkey: identity.publicKeyBase64,
             sig: try signature(overNonce: nonce),
-            label: config.deviceLabel,
-            code: verifier)
+            label: config.deviceLabel)
         let reply = try await request(type: Wire.MessageType.register, payload: payload,
                                       expect: [Wire.MessageType.registerOK],
                                       timeout: config.handshakeTimeout)
@@ -466,10 +466,12 @@ public final class SignalingClient {
                           expect: [Wire.MessageType.unwatchOK])
     }
 
-    public func connectRequest(deviceID: String, accessCode: String) async throws -> SessionGrantPayload {
+    /// PROTOCOL.md §2.9. The code is not sent: the server authorises by the
+    /// host's entitlement and the code is settled between the two peers.
+    public func connectRequest(deviceID: String) async throws -> SessionGrantPayload {
         let reply = try await request(
             type: Wire.MessageType.connectReq,
-            payload: ConnectReqPayload(deviceId: deviceID, accessCode: accessCode),
+            payload: ConnectReqPayload(deviceId: deviceID),
             expect: [Wire.MessageType.connectOK])
         return try reply.decodePayload(SessionGrantPayload.self)
     }
@@ -515,21 +517,29 @@ public final class SignalingClient {
                                     payload: ByePayload(sessionId: sessionID, reason: reason))
     }
 
-    /// PROTOCOL.md §2.15. Replaces the verifier for THIS device and kills its
-    /// sessions and tokens server-side.
-    public func refreshCode(to newPlaintextCode: String) async throws {
-        let verifier = try CodeVerifier.make(for: newPlaintextCode)
-        try await request(type: Wire.MessageType.refreshCode, payload: verifier,
+    /// PROTOCOL.md §2.17. One opaque frame of the SPAKE2 exchange, relayed like
+    /// `sdp` and `ice`. The contents are the shared core's; nothing is read here.
+    public func sendPake(sessionID: String, message: PakeMessage) async throws {
+        try await sendFireAndForget(type: Wire.MessageType.pake,
+                                    payload: PakePayload(sessionId: sessionID, message: message))
+    }
+
+    /// PROTOCOL.md §2.15. The payload is `{}` — there is no stored verifier to
+    /// replace. It bumps the device's epoch, which kills every session and token
+    /// this device holds; the new code itself never leaves this Mac.
+    public func refreshCode() async throws {
+        try await request(type: Wire.MessageType.refreshCode, payload: EmptyPayload(),
                           expect: [Wire.MessageType.refreshCodeOK])
     }
 }
 
 // MARK: - AccessCodeSink
 
-/// Wiring the real server into the Phase 2 seam: refreshing the access code
-/// locally now propagates, and the old code stops working off-machine too.
+/// Refreshing the access code locally propagates as `refresh_code`, which is
+/// what kills every live session and token for this device. The code itself does
+/// not travel: what the server revokes is the epoch, not a secret it holds.
 extension SignalingClient: AccessCodeSink {
-    public nonisolated func accessCodeDidChange(deviceID: String, newCode: String) async throws {
-        try await refreshCode(to: newCode)
+    public nonisolated func accessCodeDidChange(deviceID: String) async throws {
+        try await refreshCode()
     }
 }

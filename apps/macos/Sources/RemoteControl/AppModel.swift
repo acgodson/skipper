@@ -450,29 +450,25 @@ final class AppModel: ObservableObject {
 
     // MARK: - Controller
 
-    func rememberedPeerCode() -> String {
-        ((try? fileStore.loadPeerAccessCode()) ?? nil) ?? ""
+    /// The code this Mac remembers for one host, from the Keychain. It is stored
+    /// only once the §2.17 exchange has actually succeeded with it, so a
+    /// remembered code is always one that worked (PROTOCOL.md §4.5).
+    func rememberedPeerCode(forHost deviceID: String) -> String {
+        guard let canonical = DeviceID.canonicalize(deviceID) else { return "" }
+        return ((try? identity?.secrets.peerCode(forHost: canonical)) ?? nil) ?? ""
     }
 
-    func storePeerCode(_ code: String) {
-        try? fileStore.savePeerAccessCode(code)
-    }
-
-    func forgetPeerCode() {
-        _ = try? fileStore.forgetPeerAccessCode()
+    func forgetPeerCode(forHost deviceID: String) {
+        guard let canonical = DeviceID.canonicalize(deviceID) else { return }
+        try? identity?.secrets.forgetPeerCode(forHost: canonical)
     }
 
     func connect(deviceID: String, accessCode: String, remember: Bool, label: String) {
         connectError = nil
         isConnecting = true
         settings.savePeer(label: label, deviceID: deviceID)
-        if remember {
-            storePeerCode(accessCode)
-            settings.rememberPeerCode = true
-        } else {
-            forgetPeerCode()
-            settings.rememberPeerCode = false
-        }
+        settings.rememberPeerCode = remember
+        if !remember { forgetPeerCode(forHost: deviceID) }
         if let peer = DeviceID.canonicalize(deviceID) {
             presence.watch(deviceID: peer)
         }

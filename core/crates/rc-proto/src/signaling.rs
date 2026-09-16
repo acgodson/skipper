@@ -253,8 +253,20 @@ pub struct ConnectOk {
     pub host_pubkey: String,
 }
 
-/// §2.9. Pushed to the host when a controller connects. Same shape as `connect_ok`.
-pub type SessionStart = ConnectOk;
+/// §2.9. Pushed to the host when a controller connects: everything `connect_ok`
+/// carries plus the controller's registered `pubkey`, which the host's guess
+/// counter and trusted-controller list are keyed on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionStart {
+    #[serde(flatten)]
+    pub session: ConnectOk,
+    #[serde(
+        rename = "controllerPubkey",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub controller_pubkey: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Resume {
