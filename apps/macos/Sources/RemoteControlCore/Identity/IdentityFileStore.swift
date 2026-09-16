@@ -1,4 +1,5 @@
 import Foundation
+import SkipperCore
 
 /// The on-disk shape of `identity.json`.
 ///

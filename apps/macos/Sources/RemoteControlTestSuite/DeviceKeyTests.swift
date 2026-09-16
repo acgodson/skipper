@@ -2,6 +2,7 @@ import Foundation
 import CryptoKit
 import RCTestKit
 import RemoteControlCore
+import SkipperCore
 
 public let deviceKeySuite = TestSuite("DeviceKey", [
 

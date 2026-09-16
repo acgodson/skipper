@@ -44,7 +44,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "RemoteControl",
-            dependencies: ["RemoteControlCore"],
+            dependencies: ["RemoteControlCore", "SkipperCore"],
             path: "Sources/RemoteControl"
         ),
         // BLAKE2b + Argon2id. Its own target for exactly one reason: it is
@@ -93,7 +93,7 @@ let package = Package(
         .target(name: "RCTestKit", path: "Sources/RCTestKit"),
         .target(
             name: "RemoteControlTestSuite",
-            dependencies: ["RCTestKit", "RemoteControlCore"],
+            dependencies: ["RCTestKit", "RemoteControlCore", "SkipperCore"],
             path: "Sources/RemoteControlTestSuite"
         ),
         .executableTarget(

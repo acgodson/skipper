@@ -3,7 +3,7 @@ name = "rc-ffi"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "C ABI over rc-session, so the Mac app drives the one session state machine."
+description = "C ABI over rc-session and rc-identity, so the platform apps drive the one session state machine and the one access-code exchange."
 
 [lib]
 name = "rc_ffi"
@@ -11,4 +11,5 @@ crate-type = ["staticlib"]
 
 [dependencies]
 rc-session = { path = "../rc-session" }
+rc-identity = { path = "../rc-identity" }
 serde_json.workspace = true

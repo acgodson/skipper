@@ -1,6 +1,7 @@
 import Foundation
 import RCTestKit
 import RemoteControlCore
+import SkipperCore
 
 /// Every case runs against a throwaway directory under the system temp dir, so
 /// the user's real `~/Library/Application Support/RemoteControl/identity.json`

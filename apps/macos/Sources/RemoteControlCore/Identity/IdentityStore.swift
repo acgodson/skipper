@@ -1,4 +1,5 @@
 import Foundation
+import SkipperCore
 
 /// Owns this machine's durable identity: the Device ID, the access code and the
 /// device keypair.
