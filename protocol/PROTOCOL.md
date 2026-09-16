@@ -14,6 +14,37 @@ The server sees only surface 1. It never sees, parses or stores anything from 2 
 
 ---
 
+## v2 changes (summary)
+
+Version **2** is specified here but **not yet spoken**: `protocol.go` still declares `Version = 1`
+and carries a `TODO:` for the bump. Everything below marked *v1 only* or *REMOVED in v2* stays
+normative for v1 until every client and the server speak v2 on the same day.
+
+What changes, and why:
+
+| # | Change | Where |
+|---|---|---|
+| 1 | The `code` verifier object is **REMOVED**. The server stores nothing about any access code. | §2.3 |
+| 2 | `register` no longer carries `code`; its payload is `pubkey`, `sig` and the optional `label`. | §2.2 |
+| 3 | `refresh_code` no longer carries a verifier; its payload is `{}`. Every side effect in §2.15 is unchanged — it still kills sessions, tokens and the trusted-controller list. | §2.15 |
+| 4 | `connect_req` no longer carries `accessCode`. It carries **only** `deviceId`. | §2.9 |
+| 5 | `connect_req` is authorised by **entitlement**, not by a code. The server replies `connect_ok` only if the host's entitlement allows a session and the host has no active session; otherwise `error{entitlement, reason}` or `error{busy}`. | §2.9, §3.3 |
+| 6 | New error code `entitlement`, carrying a `reason`. `bad_code` is retired; a v2 server never sends it. | §7 |
+| 7 | New relayed message `pake`: the access code is proved **peer to peer** by a SPAKE2 exchange that the server relays as opaque bytes. | §2.17 |
+| 8 | Access-code rate limiting moves to the host. The server's §3.3 limiter no longer applies to codes; the host counts and throttles failed PAKE attempts itself, because the server no longer knows what a failure is. | §3.3 |
+
+The point of the change: after it, a server operator who reads every byte the server ever sees
+still cannot connect to a host. The code never reaches the server in any form — not as plaintext,
+not as a verifier it could grind offline. Authorisation the server *can* make (is this host paid
+up, is it already busy) stays on the server; authorisation it *must not* be able to forge (does
+this controller know the code) moves to the two peers. The crypto itself — the SPAKE2 group, the
+key schedule, and what the derived key is then used for — is specified separately; §2.17 defines
+only the envelope that carries it.
+
+`protocol/API.md` is the other half of change 5: it defines the entitlement the server reads.
+
+---
+
 ## 0. Conventions
 
 | Convention | Rule |
@@ -64,6 +95,7 @@ Every message on every surface uses the same envelope:
 | `code` | string | yes | Machine-readable, from §6. Clients branch on this, never on `message`. |
 | `message` | string | yes | Human-readable, English, safe to log. Never contains a secret. |
 | `retryAfterSec` | int | no | Present on `rate_limited`; seconds until the next attempt may succeed. |
+| `reason` | string | no | *v2.* Present on `entitlement`; see §7. Absent on every other code. |
 
 ---
 
@@ -93,7 +125,7 @@ Every message on every surface uses the same envelope:
   CHALLENGED,   └───────────────────┘
   new nonce)         │
                      ├── heartbeat / watch / connect_req / resume / renew /
-                     │   sdp / ice / bye / refresh_code / unwatch
+                     │   sdp / ice / pake / bye / refresh_code / unwatch
                      ▼
                   (close)
 ```
@@ -130,7 +162,7 @@ First-run only. Creates a device record and mints a `deviceId`.
 | `pubkey` | string | yes | base64 DER SPKI, P-256. |
 | `sig` | string | yes | base64 DER ECDSA-SHA256 over the raw `nonce` bytes of the current challenge. Proves possession of the private key. |
 | `label` | string | no | Human label, ≤ 64 chars, e.g. `"Studio Mac"`. Stored verbatim; not secret. |
-| `code` | object | yes | Access-code verifier, see §2.3. |
+| `code` | object | yes | *v1 only.* Access-code verifier, see §2.3. **REMOVED in v2.** |
 
 If this `pubkey` is already registered, the server **does not** create a second device: it
 returns `register_ok` with the existing `deviceId` and leaves the stored code untouched.
@@ -143,7 +175,13 @@ Reply: **`register_ok`**
 | `deviceId` | string | yes | 9 digits. Permanent. |
 | `existing` | bool | yes | `true` if the key was already registered. |
 
-### 2.3 The `code` verifier object
+### 2.3 The `code` verifier object — *v1 only, REMOVED in v2*
+
+**REMOVED in v2.** A v2 server stores nothing about any access code: no plaintext, no salt, no
+hash, no parameters. The code is proved directly between the two peers by the SPAKE2 exchange of
+§2.17, and `connect_req` is authorised by entitlement instead (§2.9). A v2 client sends no `code`
+object anywhere, and a v2 server rejects one with `error{bad_request}`. The section is kept whole
+because v1 servers and v1 clients are still in the field.
 
 The plaintext access code **never leaves the client that owns it**, except inside
 `connect_req` from the peer that is trying to connect. The owning host sends only a verifier:
@@ -234,7 +272,20 @@ offline edge is reported within `offlineAfterSec + 5 s`. A socket close reports 
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
 | `deviceId` | string | yes | The **host** to connect to. |
-| `accessCode` | string | yes | Plaintext, ≤ 64 chars. Never logged, never stored, never forwarded to the host. |
+| `accessCode` | string | yes | *v1 only.* Plaintext, ≤ 64 chars. Never logged, never stored, never forwarded to the host. **REMOVED in v2:** a v2 `connect_req` carries only `deviceId`, and a v2 server rejects the field with `error{bad_request}`. |
+
+**v2 authorisation.** A v2 server grants `connect_ok` when, and only when, both hold:
+
+1. The **host's** entitlement allows a session — `status` is `trial` or `active` and the account's
+   `maxActivePairs` is not already in use (API.md §4). Otherwise:
+   `error{entitlement}` with a `reason` from §7.
+2. The host has no session in any state but `closed`. Otherwise: `error{busy}`.
+
+Nothing about the access code is checked, because the server no longer knows it. The session that
+`connect_ok` opens is a *signaling* session: the two peers then run the §2.17 exchange over it,
+and a controller that does not know the code cannot complete it, cannot derive the session key,
+and gets nothing but a relayed handshake that fails. The host ends the session itself, with
+`bye{reason:"failed"}`, when the exchange fails.
 
 Reply: **`connect_ok`**
 
@@ -247,7 +298,8 @@ Reply: **`connect_ok`**
 | `hostDeviceId` | string | yes | |
 | `controllerDeviceId` | string | yes | |
 
-Errors: `bad_code`, `offline`, `busy`, `rate_limited`, `unknown_device`, `self_connect`.
+Errors, v1: `bad_code`, `offline`, `busy`, `rate_limited`, `unknown_device`, `self_connect`.
+Errors, v2: `entitlement`, `offline`, `busy`, `rate_limited`, `unknown_device`, `self_connect`.
 
 Simultaneously the host receives a push **`session_start`** with the same fields plus its own
 `sessionToken` (each side gets a *different* token bound to its own deviceId).
@@ -332,7 +384,8 @@ that `sessionId` returns `no_session`. `bye` is also pushed by the server on its
 
 Replaces the stored access-code verifier for the **calling device only**.
 
-Payload: the `code` object of §2.3.
+Payload, v1: the `code` object of §2.3. Payload, v2: `{}` — there is no stored verifier to
+replace, and the host rotates its own code locally. Every side effect below is unchanged in v2.
 Reply: **`refresh_code_ok`** `{"deviceId": string, "updatedAt": int64}`.
 
 Side effects, all immediate and atomic:
@@ -362,7 +415,29 @@ Side effects, all immediate and atomic:
 | `ice` | C↔C | relayed as `ice` |
 | `bye` | C↔C, S→C | relayed as `bye` |
 | `refresh_code` | C→S | `refresh_code_ok` |
+| `pake` | C↔C | relayed as `pake` *(v2)* |
 | `error` | S→C | — |
+
+### 2.17 `pake` — client ↔ client, relayed — *v2*
+
+One message of the peer-to-peer SPAKE2 exchange that proves the access code. The server treats it
+exactly as it treats `sdp` and `ice`: it checks `sessionId` and attachment, routes it verbatim,
+and parses, stores and logs **nothing** of its contents.
+
+| Field | Type | Req | Notes |
+|---|---|:--:|---|
+| `sessionId` | string | yes | Must be a session this connection is attached to, else `error{no_session}`. |
+| `step` | int | yes | 1-based index of this message within the exchange, strictly increasing per sender. The server does not interpret it; a receiver that gets a `step` it did not expect abandons the exchange. |
+| `payload` | string | yes | base64 (std, padded) of the opaque PAKE message. ≤ 4096 base64 chars. |
+
+The controller sends `step: 1`. The peer is detached ⇒ `error{peer_offline}`; `pake` is **not**
+queued. A client must abandon an exchange that has not completed within **10 s** of `step: 1` and
+send `bye{reason:"failed"}`.
+
+Guess rate limiting is the **host's** job in v2 (§3.3): the host counts failed exchanges per
+controller device key and per unit time, and refuses to start another one while it is throttling.
+The server cannot do this for it, because a failed exchange is indistinguishable, from the
+server's side, from a dropped one.
 
 ---
 
@@ -390,7 +465,12 @@ old token dead after `resume`/`renew`. Verification requires **all** of: MAC val
 `nonce` equal to the session's current nonce for that device. Tokens are bearer credentials
 with a 10-minute TTL; they are never logged.
 
-### 3.3 Access-code rate limiting (per host `deviceId`, server-wide)
+### 3.3 Access-code rate limiting (per host `deviceId`, server-wide) — *v1 only*
+
+**v2:** this limiter no longer applies to access codes; the server cannot see a code attempt, let
+alone a failed one. The host rate-limits the §2.17 exchange itself, with the same shape of policy.
+The server keeps the limiter for `connect_req` as a whole — the counter then measures connection
+attempts against a host, not code guesses — and still answers `rate_limited` with `retryAfterSec`.
 
 - A sliding window of **15 minutes** counts failed `connect_req` attempts.
 - Attempts 1–5 that present the wrong code return `bad_code`.
@@ -533,7 +613,7 @@ Nothing else may be sent on `hi`.
 | `unauthenticated` | Sent an authenticated message while `CHALLENGED`. | Complete `hello` first. |
 | `bad_signature` | Signature invalid, key mismatch, or nonce replayed/expired. | Re-challenge and retry once; then treat the identity as broken. |
 | `unknown_device` | No such `deviceId`. | Surface "device not found". |
-| `bad_code` | Access code did not verify. | Prompt again; count locally too. |
+| `bad_code` | *v1 only.* Access code did not verify. A v2 server never sends it. | Prompt again; count locally too. |
 | `offline` | Target host has no live authenticated socket. | Show ○ Offline, keep watching presence. |
 | `busy` | Host already has an active session (any state but `closed`). | If it might be *your* session, `resume`. Otherwise surface "in use". |
 | `rate_limited` | Locked out per §3.3. `retryAfterSec` is set. | Back off exactly that long; do not retry sooner. |
@@ -543,11 +623,12 @@ Nothing else may be sent on `hi`.
 | `peer_offline` | Relay target is detached right now. | Hold; retry after `peer_state{attached:true}`. |
 | `displaced` | Another socket authenticated as this `deviceId`. Socket is closed. | Do **not** reconnect in a loop; the other instance won. |
 | `forbidden` | Operation not allowed for this role (e.g. `refresh_code` for another device). | Bug. |
+| `entitlement` | *v2.* The host's account may not open a session. `reason` is one of `unlinked`, `trial_expired`, `no_balance`, `concurrency`, `suspended` — the same set as API.md §4.3. | Render the reason; re-fetch `GET /v1/entitlement` once. Do not retry until the user acts. |
 | `internal` | Server fault. | Retry with backoff. |
 
 ## 8. Server-side privacy guarantees (normative)
 
 The server **must not** log, persist, or transmit to third parties: plaintext access codes,
-session tokens, SDP bodies, ICE candidates, clipboard text, keystrokes, mouse coordinates, or
-any media. Log lines may contain: `deviceId`, `sessionId`, message `type`, error `code`,
+access-code verifiers, `pake` payloads, session tokens, SDP bodies, ICE candidates, clipboard
+text, keystrokes, mouse coordinates, or any media. Log lines may contain: `deviceId`, `sessionId`, message `type`, error `code`,
 byte counts, and timings. Anything else is a bug in the server.

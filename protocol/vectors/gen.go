@@ -114,8 +114,12 @@ func main() {
 		p.Presence{DeviceID: "739000587", Online: false, Since: 0})
 
 	add("connect_req", "signaling", p.TypeConnectReq,
-		"carries the plaintext access code; never log this frame", "c-7", "", ts,
+		"v1: carries the plaintext access code; never log this frame", "c-7", "", ts,
 		p.ConnectReq{DeviceID: "739000587", AccessCode: "K7M2QX9P"})
+
+	add("connect_req_v2_no_access_code", "signaling", p.TypeConnectReq,
+		"v2: only deviceId; accessCode is omitempty and must be absent, not empty", "c-7", "", ts,
+		p.ConnectReq{DeviceID: "739000587"})
 
 	add("connect_ok", "signaling", p.TypeConnectOK, "", "", "c-7", ts,
 		p.ConnectOK{
@@ -167,6 +171,12 @@ func main() {
 	add("bye", "signaling", p.TypeBye, "", "", "", ts,
 		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByeUserEnded})
 
+	add("pake_step1", "signaling", p.TypePake,
+		"v2: opaque to the server, relayed verbatim like sdp and ice", "", "", ts,
+		p.Pake{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Step: 1, Payload: "cGFrZXN0ZXAx"})
+	add("pake_step2", "signaling", p.TypePake, "", "", "", ts,
+		p.Pake{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Step: 2, Payload: "cGFrZXN0ZXAy"})
+
 	add("refresh_code", "signaling", p.TypeRefreshCode, "", "c-10", "", ts, p.RefreshCode(recCode))
 	add("refresh_code_ok", "signaling", p.TypeRefreshCodeOK, "", "", "c-10", ts,
 		p.RefreshCodeOK{DeviceID: "739000587", UpdatedAt: ts})
@@ -177,6 +187,10 @@ func main() {
 		p.Error{Code: p.ErrRateLimited, Message: "too many attempts", RetryAfterSec: 30})
 	add("error_busy", "signaling", p.TypeError, "", "", "c-7", ts,
 		p.Error{Code: p.ErrBusy, Message: "device already has a remote session"})
+	add("error_entitlement", "signaling", p.TypeError,
+		"v2: reason is present only on the entitlement code", "", "c-7", ts,
+		p.Error{Code: p.ErrEntitlement, Message: "trial has ended",
+			Reason: p.EntitlementTrialExpired})
 
 	// -- ctrl ----------------------------------------------------------------
 	add("mouse_down_left", "ctrl", p.CtrlMouseDown, "", "", "", ts,

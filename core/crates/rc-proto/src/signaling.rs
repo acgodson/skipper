@@ -198,15 +198,24 @@ pub struct Presence {
     pub since: i64,
 }
 
-/// §2.9. Carries the **plaintext** access code. Never log, store or forward it.
+/// §2.9. In v1 this carries the **plaintext** access code. Never log, store or
+/// forward it.
 ///
 /// It has no `Debug` derive on purpose: a `{:?}` on this type in a log line is
 /// exactly the accident the whole verifier design exists to prevent.
+///
+/// TODO: delete `access_code` at the v2 bump. A v2 `connect_req` carries only
+/// `device_id`; authorisation is the host's entitlement and the code is proved
+/// peer to peer by the [`Pake`] exchange.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectReq {
     #[serde(rename = "deviceId")]
     pub device_id: String,
-    #[serde(rename = "accessCode")]
+    #[serde(
+        rename = "accessCode",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub access_code: String,
 }
 
@@ -336,6 +345,18 @@ pub struct RefreshCodeOk {
     pub updated_at: i64,
 }
 
+/// §2.17. One opaque message of the peer-to-peer PAKE exchange, relayed by the
+/// server exactly as `sdp` and `ice` are: validated for attachment, routed
+/// verbatim, never parsed, stored or logged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pake {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub step: i32,
+    /// base64 of the opaque PAKE message.
+    pub payload: String,
+}
+
 /// §0.1. Every error on every surface is this shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorPayload {
@@ -348,6 +369,9 @@ pub struct ErrorPayload {
         skip_serializing_if = "is_zero_i32"
     )]
     pub retry_after_sec: i32,
+    /// Set when `code` is `entitlement`; see `consts::entitlement`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 impl std::fmt::Display for ErrorPayload {

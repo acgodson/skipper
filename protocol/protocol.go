@@ -11,6 +11,11 @@ import (
 )
 
 // Version is the only protocol version this build speaks.
+//
+// TODO: bump to 2 once the SPAKE2 exchange and the entitlement gate are
+// implemented on both the server and every client. PROTOCOL.md "v2 changes"
+// lists what changes at that bump; the v2 types and constants below already
+// exist so implementations can be written against them first.
 const Version = 1
 
 // Tunables the server advertises in hello_ok. Duplicated in PROTOCOL.md §2.4.
@@ -67,8 +72,12 @@ const (
 	TypeBye           = "bye"
 	TypeRefreshCode   = "refresh_code"
 	TypeRefreshCodeOK = "refresh_code_ok"
+	TypePake          = "pake"
 	TypeError         = "error"
 )
+
+// MaxPakePayloadBytes caps the base64 text of a single Pake.Payload.
+const MaxPakePayloadBytes = 4096
 
 // Roles.
 const (
@@ -94,7 +103,18 @@ const (
 	ErrPeerOffline        = "peer_offline"
 	ErrDisplaced          = "displaced"
 	ErrForbidden          = "forbidden"
+	ErrEntitlement        = "entitlement"
 	ErrInternal           = "internal"
+)
+
+// Reasons carried by Error.Reason, which is set only when Code is ErrEntitlement.
+// PROTOCOL.md §7. The server decides these; clients only render them.
+const (
+	EntitlementUnlinked     = "unlinked"
+	EntitlementTrialExpired = "trial_expired"
+	EntitlementNoBalance    = "no_balance"
+	EntitlementConcurrency  = "concurrency"
+	EntitlementSuspended    = "suspended"
 )
 
 // Bye reasons. PROTOCOL.md §2.14.
@@ -231,11 +251,14 @@ type Presence struct {
 	Since    int64  `json:"since"` // unix ms, 0 if never seen
 }
 
-// ConnectReq carries the plaintext access code. It must never be logged,
-// stored, or forwarded to the host.
+// ConnectReq asks the server to open a session against a host.
+//
+// TODO: delete AccessCode at the v2 bump. In v2 the request carries only
+// DeviceID, authorisation is the host's entitlement, and the access code is
+// proved peer to peer by the Pake exchange.
 type ConnectReq struct {
 	DeviceID   string `json:"deviceId"`
-	AccessCode string `json:"accessCode"`
+	AccessCode string `json:"accessCode,omitempty"`
 }
 
 type ConnectOK struct {
@@ -311,10 +334,20 @@ type RefreshCodeOK struct {
 	UpdatedAt int64  `json:"updatedAt"`
 }
 
+// Pake relays one opaque SPAKE2 message between the two peers. Payload is
+// base64 of the opaque PAKE message. The server validates SessionID and
+// attachment, then routes it verbatim: it never parses, stores or logs Payload.
+type Pake struct {
+	SessionID string `json:"sessionId"`
+	Step      int    `json:"step"`
+	Payload   string `json:"payload"`
+}
+
 type Error struct {
 	Code          string `json:"code"`
 	Message       string `json:"message"`
 	RetryAfterSec int    `json:"retryAfterSec,omitempty"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 func (e Error) Error() string { return e.Code + ": " + e.Message }

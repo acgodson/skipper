@@ -159,6 +159,7 @@ fn every_go_vector_round_trips_through_the_rust_types() {
             m::BYE => roundtrip::<sig::Bye>(case, &env),
             m::REFRESH_CODE => roundtrip::<sig::CodeVerifier>(case, &env),
             m::REFRESH_CODE_OK => roundtrip::<sig::RefreshCodeOk>(case, &env),
+            m::PAKE => roundtrip::<sig::Pake>(case, &env),
             m::ERROR => roundtrip::<sig::ErrorPayload>(case, &env),
 
             // -- ctrl --------------------------------------------------------

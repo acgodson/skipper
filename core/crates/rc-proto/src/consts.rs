@@ -49,6 +49,7 @@ pub mod msg {
     pub const BYE: &str = "bye";
     pub const REFRESH_CODE: &str = "refresh_code";
     pub const REFRESH_CODE_OK: &str = "refresh_code_ok";
+    pub const PAKE: &str = "pake";
     pub const ERROR: &str = "error";
 }
 
@@ -100,7 +101,18 @@ pub mod err {
     pub const PEER_OFFLINE: &str = "peer_offline";
     pub const DISPLACED: &str = "displaced";
     pub const FORBIDDEN: &str = "forbidden";
+    pub const ENTITLEMENT: &str = "entitlement";
     pub const INTERNAL: &str = "internal";
+}
+
+/// Reasons carried by `ErrorPayload::reason` when the code is
+/// [`err::ENTITLEMENT`]. PROTOCOL.md §7; the same set as API.md §4.3.
+pub mod entitlement {
+    pub const UNLINKED: &str = "unlinked";
+    pub const TRIAL_EXPIRED: &str = "trial_expired";
+    pub const NO_BALANCE: &str = "no_balance";
+    pub const CONCURRENCY: &str = "concurrency";
+    pub const SUSPENDED: &str = "suspended";
 }
 
 /// `bye` reasons. PROTOCOL.md §2.14.
@@ -123,6 +135,9 @@ pub mod session_state {
     pub const ORPHANED: &str = "orphaned";
     pub const CLOSED: &str = "closed";
 }
+
+/// The base64 text of a single `Pake::payload` may not exceed this.
+pub const MAX_PAKE_PAYLOAD_BYTES: usize = 4096;
 
 /// The only accepted `CodeVerifier::alg`.
 pub const ALG_ARGON2ID: &str = "argon2id";
