@@ -96,7 +96,7 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
     TestCase("hello_ok round-trips, with and without an active session") {
         let servers = [
             ICEServerSpec(urls: ["stun:stun.l.google.com:19302"]),
-            ICEServerSpec(urls: ["turn:54.246.73.81:3478?transport=udp"],
+            ICEServerSpec(urls: ["turn:198.51.100.7:3478?transport=udp"],
                           username: "1755600000:481930275", credential: "Y3JlZA==",
                           expiresAt: 1_755_643_200_000),
         ]

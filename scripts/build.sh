@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Assembles a launchable RemoteControl.app without Xcode.
+# Assembles a launchable SkipperDesk.app without Xcode.
 #
 # This machine has Command Line Tools only, so there is no `xcodebuild` and no
 # .xcodeproj anywhere in this repo. SwiftPM compiles the binary; this script
@@ -11,8 +11,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="${REPO_ROOT}/apps/macos"
 DIST_DIR="${REPO_ROOT}/dist"
-APP_NAME="RemoteControl"
-BUNDLE_ID="com.godson.remotecontrol"
+# The SwiftPM product is still named "RemoteControl" (apps/macos/Package.swift);
+# the shipped bundle and everything user-visible is "SkipperDesk".
+SWIFT_PRODUCT="RemoteControl"
+APP_NAME="SkipperDesk"
+BUNDLE_ID="app.skipperdesk.desktop"
+URL_SCHEME="skipperdesk"
 VERSION="1.0.0"          # V1: phases 0-7
 BUILD_NUMBER="3"
 MIN_MACOS="13.0"
@@ -45,7 +49,7 @@ NOTARY_PROFILE="${RC_NOTARY_PROFILE:-}"
 # brand-new app to macOS: the grant the user just gave stops applying, the app
 # re-prompts, and System Settings fills up with identical dead "RemoteControl"
 # rows. Signing with any stable certificate makes the requirement
-# `identifier "com.godson.remotecontrol" and certificate leaf = H"..."`, which
+# `identifier "app.skipperdesk.desktop" and certificate leaf = H"..."`, which
 # does not move when the code does. This buys nothing for Gatekeeper or for
 # distribution — that still needs a paid Developer ID — but it is the difference
 # between granting Screen Recording once and granting it after every build.
@@ -75,8 +79,8 @@ cd "${APP_DIR}"
 swift build -c "${CONFIG}" --arch "${ARCH}"
 
 BIN_PATH="$(swift build -c "${CONFIG}" --arch "${ARCH}" --show-bin-path)"
-if [[ ! -x "${BIN_PATH}/${APP_NAME}" ]]; then
-    echo "error: expected executable at ${BIN_PATH}/${APP_NAME}" >&2
+if [[ ! -x "${BIN_PATH}/${SWIFT_PRODUCT}" ]]; then
+    echo "error: expected executable at ${BIN_PATH}/${SWIFT_PRODUCT}" >&2
     exit 1
 fi
 
@@ -84,7 +88,7 @@ echo "==> Assembling ${BUNDLE}"
 rm -rf "${BUNDLE}"
 mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Resources"
 
-cp "${BIN_PATH}/${APP_NAME}" "${CONTENTS}/MacOS/${APP_NAME}"
+cp "${BIN_PATH}/${SWIFT_PRODUCT}" "${CONTENTS}/MacOS/${APP_NAME}"
 chmod +x "${CONTENTS}/MacOS/${APP_NAME}"
 
 # SwiftPM emits the SwiftUI/Foundation resource bundles next to the binary when
@@ -134,48 +138,28 @@ cat > "${CONTENTS}/Info.plist" <<PLIST
     <key>CFBundleInfoDictionaryVersion</key> <string>6.0</string>
     <key>LSMinimumSystemVersion</key>        <string>${MIN_MACOS}</string>
     <key>NSHumanReadableCopyright</key>      <string>Private build. Not for distribution.</string>
-
-    <!-- LSUIElement stays false: RemoteControl is a normal app with a Dock icon
-         and a window. Menu-bar residency comes from the MenuBarExtra scene plus
-         applicationShouldTerminateAfterLastWindowClosed = false, so closing the
-         window leaves the host reachable without hiding the app from the user.
-         AGENT.md: "Do not design the app as covert or hidden remote-control
-         software." Flip this to <true/> only if the product decision changes. -->
     <key>LSUIElement</key>                   <false/>
 
-    <!-- Shown by macOS in the Screen Recording consent dialog. -->
     <key>NSScreenCaptureUsageDescription</key>
-    <string>RemoteControl shares this Mac's screen with a device you authorise using its Access Code.</string>
-    <!-- Accessibility has no usage-description key; macOS uses the app name in
-         System Settings > Privacy & Security > Accessibility. -->
+    <string>${APP_NAME} shares this Mac's screen with a device you authorise using its Access Code.</string>
     <key>NSAppleEventsUsageDescription</key>
-    <string>RemoteControl does not automate other apps. This key is present only so any incidental system prompt is explained.</string>
+    <string>${APP_NAME} does not automate other apps. This key is present only so any incidental system prompt is explained.</string>
 
-    <!-- App Transport Security.
-
-         rc-signal is reached at an IP literal over a SELF-SIGNED certificate
-         (PLAN.md §3: there is no domain, so there is no CA). ATS applies to code
-         that has a bundle Info.plist and it rejects such a certificate outright,
-         BEFORE any URLSession delegate is consulted - so the app's certificate
-         pinning never gets a say and every connection fails with NSURLErrorCode
-         -1200. (The command-line test driver has no Info.plist, which is why it
-         connects and the .app did not: exactly the kind of difference that only
-         shows up in the real bundle.)
-
-         ATS is therefore disabled and REPLACED, not merely removed: every
-         connection this app makes is pinned to the SHA-256 of the server's DER
-         certificate (Sources/RemoteControlCore/Signaling/CertificatePinner.swift)
-         and a mismatch refuses the connection. For a private two-device system
-         that is stronger than ATS's CA check, because there is no certificate
-         authority that could be induced to issue a second valid certificate.
-
-         NSExceptionDomains is not usable here: it matches domain names, not IP
-         literals. Give this box a domain name and this key should become a
-         scoped NSExceptionDomains entry instead. -->
     <key>NSAppTransportSecurity</key>
     <dict>
-        <key>NSAllowsArbitraryLoads</key>     <true/>
+        <key>NSAllowsLocalNetworking</key>   <true/>
     </dict>
+
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>       <string>${BUNDLE_ID}</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>${URL_SCHEME}</string>
+            </array>
+        </dict>
+    </array>
 
     <key>NSHighResolutionCapable</key>       <true/>
     <key>NSSupportsAutomaticTermination</key><false/>
@@ -271,7 +255,7 @@ fi
 # SIGN_IDENTITY / NOTARY_PROFILE at the top of this file. What is still missing
 # for Phase 7 is the .dmg:
 #
-#   hdiutil create -volname RemoteControl -srcfolder "${BUNDLE}" -ov -format UDZO \
+#   hdiutil create -volname SkipperDesk -srcfolder "${BUNDLE}" -ov -format UDZO \
 #            "${DIST_DIR}/${APP_NAME}.dmg"
 #
 # And the one prerequisite that is NOT true yet: a paid Apple Developer account

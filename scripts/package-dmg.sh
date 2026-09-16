@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds RemoteControl.dmg — the thing you actually copy to the second Mac.
+# Builds SkipperDesk.dmg — the thing you actually copy to the second Mac.
 #
 # Ad-hoc / locally signed, deliberately: there is no paid Apple Developer
 # account (PLAN.md 2.5). Gatekeeper therefore needs ONE right-click > Open on
@@ -8,9 +8,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP="dist/RemoteControl.app"
+APP="dist/SkipperDesk.app"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist" 2>/dev/null || echo 0.0.0)"
-DMG="dist/RemoteControl-${VERSION}.dmg"
+DMG="dist/SkipperDesk-${VERSION}.dmg"
 STAGE="$(mktemp -d -t rc-dmg)"
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -20,7 +20,7 @@ echo "==> Verifying the bundle before shipping it"
 codesign --verify --deep --strict "$APP" || { echo "FAIL: signature invalid" >&2; exit 1; }
 # A .dmg that installs an app which then cannot find its own framework is the
 # single worst thing to discover on a machine you cannot debug on.
-if ! otool -l "$APP/Contents/MacOS/RemoteControl" | grep -q "@executable_path/../Frameworks"; then
+if ! otool -l "$APP/Contents/MacOS/SkipperDesk" | grep -q "@executable_path/../Frameworks"; then
   echo "FAIL: no @executable_path rpath — WebRTC.framework will not resolve" >&2; exit 1
 fi
 [[ -d "$APP/Contents/Frameworks/WebRTC.framework" ]] || { echo "FAIL: WebRTC.framework not embedded" >&2; exit 1; }
@@ -29,15 +29,15 @@ echo "==> Staging"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 cat > "$STAGE/READ ME FIRST.txt" <<'TXT'
-RemoteControl
-=============
+SkipperDesk
+===========
 
-1. Drag RemoteControl.app onto the Applications folder.
+1. Drag SkipperDesk.app onto the Applications folder.
 
 2. FIRST LAUNCH. This app is not notarised by Apple (no paid Developer ID),
    so macOS blocks it once. Easiest fix - run this in Terminal:
 
-       xattr -cr /Applications/RemoteControl.app
+       xattr -cr /Applications/SkipperDesk.app
 
    Then open the app normally. No warning at all.
 
@@ -66,11 +66,11 @@ TXT
 
 echo "==> Building $DMG"
 rm -f "$DMG"
-hdiutil create -volname "RemoteControl" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname "SkipperDesk" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 
 echo "==> Verifying the image mounts and the app inside it is intact"
 MP="$(hdiutil attach "$DMG" -nobrowse -readonly | grep -o '/Volumes/.*' | tail -1)"
-codesign --verify --deep --strict "$MP/RemoteControl.app" \
+codesign --verify --deep --strict "$MP/SkipperDesk.app" \
   && echo "    signature OK inside the image" \
   || { hdiutil detach "$MP" >/dev/null; echo "FAIL: bad signature inside dmg" >&2; exit 1; }
 hdiutil detach "$MP" >/dev/null
@@ -108,7 +108,7 @@ else
     That is expected, not a failure. Recipient does ONE of:
       - right-click the app > Open > Open        (macOS 14 and earlier)
       - System Settings > Privacy & Security > "Open Anyway"   (macOS 15+)
-      - xattr -c /Applications/RemoteControl.app
+      - xattr -c /Applications/SkipperDesk.app
 
     To remove the warning entirely with an Apple Developer account:
       RC_SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" \

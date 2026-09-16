@@ -160,7 +160,6 @@ final class Node {
             "accessCode": identity.accessCode,
             "registered": identity.isServerRegistered,
             "server": coordinator.signaling.config.signalingURL.absoluteString,
-            "pinned": coordinator.signaling.config.certificatePinBase64 != nil,
         ])
         coordinator.start()
     }

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Phase 4 integration test: video frames actually flow between TWO real
-# app-core instances, over the LIVE signaling server.
+# app-core instances, over a backend reachable at SKIPPER_API_BASE_URL (the
+# local dev server by default).
 #
 # Nothing here is mocked. Each instance is `rc-node`, the same IdentityStore /
 # SignalingClient / SessionCoordinator / PeerSession / capture pipeline the .app
@@ -36,8 +37,7 @@ APP_DIR="$ROOT/apps/macos"
 WORK="$(mktemp -d -t rc-media)"
 BIN="$APP_DIR/.build/debug/rc-node"
 
-SERVER_URL="${RC_SERVER_URL:-wss://54.246.73.81:8443/ws}"
-CERT_PIN="${RC_CERT_PIN:-E30xoxEp9t658+TJEVdaGb8Ooi7HGGMWp1kxVpeSpgk=}"
+API_BASE_URL="${SKIPPER_API_BASE_URL:-http://127.0.0.1:18443}"
 # How long the two stats samples are apart. Longer = a more stable measurement.
 SAMPLE_SECONDS="${RC_SAMPLE_SECONDS:-8}"
 
@@ -92,8 +92,8 @@ start_node() {  # start_node <name> <role> <identity-dir> [extra env assignments
   local name="$1" role="$2" dir="$3"; shift 3
   mkdir -p "$dir"
   mkfifo "$WORK/$name.in"
-  env RC_ROLE="$role" RC_IDENTITY_DIR="$dir" RC_SERVER_URL="$SERVER_URL" \
-      RC_CERT_PIN="$CERT_PIN" RC_DEVICE_LABEL="rc-media-$name" "$@" \
+  env RC_ROLE="$role" RC_IDENTITY_DIR="$dir" SKIPPER_API_BASE_URL="$API_BASE_URL" \
+      RC_DEVICE_LABEL="rc-media-$name" "$@" \
       "$BIN" < "$WORK/$name.in" > "$WORK/$name.log" 2>&1 &
   PIDS+=("$!")
   eval "exec ${NEXT_FD}> \"$WORK/$name.in\""
@@ -111,11 +111,11 @@ fi
 [[ -x "$BIN" ]] || { fail "build rc-node" "no binary at $BIN"; exit 1; }
 
 echo "== server health"
-HEALTH_URL="$(printf '%s' "$SERVER_URL" | sed -e 's|^wss://|https://|' -e 's|^ws://|http://|' -e 's|/ws$|/healthz|')"
+HEALTH_URL="$(printf '%s' "$API_BASE_URL" | sed -e 's|/$||')/healthz"
 if [[ "$(curl -sk --max-time 10 "$HEALTH_URL")" == "ok" ]]; then
-  pass "the live signaling server is healthy ($HEALTH_URL)"
+  pass "the signaling server is healthy ($HEALTH_URL)"
 else
-  fail "the live signaling server is healthy" "$HEALTH_URL did not return ok"; exit 1
+  fail "the signaling server is healthy" "$HEALTH_URL did not return ok"; exit 1
 fi
 echo
 

@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Phase 3 integration test: TWO real app-core instances on this Mac, against the
-# LIVE deployed signaling server.
+# Phase 3 integration test: TWO real app-core instances on this Mac, against a
+# backend reachable at SKIPPER_API_BASE_URL — the local dev server
+# (scripts/smoke-signal.sh) by default. The app is backend-agnostic
+# (docs/SCOPE.md §4): nothing here is specific to any one deployment.
 #
 # Nothing here is mocked. Each instance is `rc-node`, a headless driver around
 # the same IdentityStore / SignalingClient / SessionCoordinator /
 # SessionStateMachine / PeerSession the .app uses. They are given separate
-# RC_IDENTITY_DIRs so they are genuinely two devices, and they talk to
-# wss://54.246.73.81:8443/ws with the production certificate pin.
+# RC_IDENTITY_DIRs so they are genuinely two devices.
 #
 # Proves, in order:
-#   0. a WRONG certificate pin refuses to connect            (the pin is real)
 #   a. both register and authenticate; presence flips offline -> online
 #   b. wrong access code -> bad_code; correct code -> connected
 #   c. RTCPeerConnection reaches `connected` and BOTH data channels open
@@ -29,8 +29,7 @@ APP_DIR="$ROOT/apps/macos"
 WORK="$(mktemp -d -t rc-transport)"
 BIN="$APP_DIR/.build/debug/rc-node"
 
-SERVER_URL="${RC_SERVER_URL:-wss://54.246.73.81:8443/ws}"
-CERT_PIN="${RC_CERT_PIN:-E30xoxEp9t658+TJEVdaGb8Ooi7HGGMWp1kxVpeSpgk=}"
+API_BASE_URL="${SKIPPER_API_BASE_URL:-http://127.0.0.1:18443}"
 
 steps=0
 failures=0
@@ -99,12 +98,12 @@ for line in open(path):
 PY
 }
 
-start_node() {  # start_node <name> <role> <identity-dir> [pin]
-  local name="$1" role="$2" dir="$3" pin="${4:-$CERT_PIN}"
+start_node() {  # start_node <name> <role> <identity-dir>
+  local name="$1" role="$2" dir="$3"
   mkdir -p "$dir"
   mkfifo "$WORK/$name.in"
-  env RC_ROLE="$role" RC_IDENTITY_DIR="$dir" RC_SERVER_URL="$SERVER_URL" \
-      RC_CERT_PIN="$pin" RC_DEVICE_LABEL="rc-test-$name" \
+  env RC_ROLE="$role" RC_IDENTITY_DIR="$dir" SKIPPER_API_BASE_URL="$API_BASE_URL" \
+      RC_DEVICE_LABEL="rc-test-$name" \
       "$BIN" < "$WORK/$name.in" > "$WORK/$name.log" 2>&1 &
   PIDS+=("$!")
   # Hold the write end open so the node does not see EOF between commands.
@@ -130,44 +129,13 @@ fi
 [[ -x "$BIN" ]] || { fail "build rc-node" "no binary at $BIN"; exit 1; }
 
 echo "== server health"
-HEALTH_URL="$(printf '%s' "$SERVER_URL" | sed -e 's|^wss://|https://|' -e 's|^ws://|http://|' -e 's|/ws$|/healthz|')"
+HEALTH_URL="$(printf '%s' "$API_BASE_URL" | sed -e 's|/$||')/healthz"
 if [[ "$(curl -sk --max-time 10 "$HEALTH_URL")" == "ok" ]]; then
-  pass "the live signaling server is healthy ($HEALTH_URL)"
+  pass "the signaling server is healthy ($HEALTH_URL)"
 else
-  fail "the live signaling server is healthy" "$HEALTH_URL did not return ok"
+  fail "the signaling server is healthy" "$HEALTH_URL did not return ok; is scripts/smoke-signal.sh's server (or another SKIPPER_API_BASE_URL) running?"
   exit 1
 fi
-echo
-
-# ---------------------------------------------------------------------------
-# 0. certificate pinning is load-bearing
-# ---------------------------------------------------------------------------
-echo "== 0. certificate pinning"
-start_node badpin controller "$WORK/id-badpin" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-if wait_for "$WORK/badpin.log" 'Certificate fingerprint mismatch' 20; then
-  pass "a wrong certificate pin refuses the connection (the pin is enforced, not decorative)"
-else
-  fail "a wrong certificate pin refuses to connect" "no mismatch reported; see $WORK/badpin.log"
-fi
-if must_not_appear "$WORK/badpin.log" '"state":"authenticated"'; then
-  pass "the wrongly-pinned instance never authenticated"
-else
-  fail "wrongly-pinned instance must not authenticate" "$(grep authenticated "$WORK/badpin.log")"
-fi
-if wait_for "$WORK/badpin.log" '"state":"retry_in' 10; then
-  sleep 4   # let a few more attempts accumulate so the jitter is observable
-  RETRIES="$(grep -c 'retry_in' "$WORK/badpin.log")"
-  DISTINCT="$(grep -o 'retry_in_[0-9.]*' "$WORK/badpin.log" | sort -u | wc -l | tr -d ' ')"
-  if [[ "$RETRIES" -ge 2 && "$DISTINCT" -ge 2 ]]; then
-    pass "the reconnect schedule backs off with real jitter ($(grep -o 'retry_in_[0-9.]*' "$WORK/badpin.log" | tr '\n' ' '))"
-  else
-    pass "the reconnect schedule retries indefinitely ($RETRIES attempts)"
-  fi
-else
-  fail "reconnect backoff runs" "no retry_in state"
-fi
-say badpin quit
-sleep 0.5
 echo
 
 # ---------------------------------------------------------------------------

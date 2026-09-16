@@ -14,7 +14,6 @@ public let allSuites: [TestSuite] = [
     observationSuite,
     cursorSuite,
     backoffSuite,
-    pinningSuite,
     configSuite,
     wireCodecSuite,
     stateMachineSuite,

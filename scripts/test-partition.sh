@@ -30,9 +30,8 @@ APP_DIR="$ROOT/apps/macos"
 BIN="$APP_DIR/.build/debug/rc-node"
 ANCHOR="rc-partition"
 
-SERVER_URL="${RC_SERVER_URL:-wss://54.246.73.81:8443/ws}"
-CERT_PIN="${RC_CERT_PIN:-E30xoxEp9t658+TJEVdaGb8Ooi7HGGMWp1kxVpeSpgk=}"
-SERVER_HOST="$(printf '%s' "$SERVER_URL" | sed -e 's|^wss\{0,1\}://||' -e 's|:.*$||')"
+API_BASE_URL="${SKIPPER_API_BASE_URL:-http://127.0.0.1:18443}"
+SERVER_HOST="$(printf '%s' "$API_BASE_URL" | sed -e 's|^https\{0,1\}://||' -e 's|:.*$||' -e 's|/.*$||')"
 
 SHORT_BLACKOUT="${RC_SHORT_BLACKOUT:-20}"
 LONG_BLACKOUT="${RC_LONG_BLACKOUT:-120}"
@@ -136,8 +135,8 @@ start_node() {
   local name="$1" role="$2" dir="$3"
   mkdir -p "$dir"
   mkfifo "$WORK/$name.in"
-  env RC_ROLE="$role" RC_IDENTITY_DIR="$dir" RC_SERVER_URL="$SERVER_URL" \
-      RC_CERT_PIN="$CERT_PIN" RC_DEVICE_LABEL="rc-part-$name" \
+  env RC_ROLE="$role" RC_IDENTITY_DIR="$dir" SKIPPER_API_BASE_URL="$API_BASE_URL" \
+      RC_DEVICE_LABEL="rc-part-$name" \
       RC_ICE_POLICY=relay \
       "$BIN" < "$WORK/$name.in" > "$WORK/$name.log" 2>&1 &
   PIDS+=("$!")

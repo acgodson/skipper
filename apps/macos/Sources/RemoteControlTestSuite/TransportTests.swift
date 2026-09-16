@@ -62,74 +62,14 @@ public let backoffSuite = TestSuite("Reconnect backoff", [
     },
 ])
 
-// MARK: - Certificate pinning
-
-public let pinningSuite = TestSuite("Certificate pinning", [
-
-    TestCase("the fingerprint of the live server's certificate is the documented pin") {
-        let pin = CertificatePinner.fingerprint(ofDER: TestCertificates.live)
-        try expectEqual(pin, TestCertificates.liveServerPin,
-                        "infra/README.md and RCConfig must agree with the deployed certificate")
-        try expectEqual(pin, RCConfig.defaultCertificatePin)
-    },
-
-    TestCase("a matching certificate is accepted") {
-        let pinner = CertificatePinner(expectedPinBase64: TestCertificates.liveServerPin)
-        try expectEqual(pinner.evaluate(derChain: [TestCertificates.live]), .accepted)
-    },
-
-    TestCase("a DIFFERENT certificate is rejected — this is the assertion that matters") {
-        let pinner = CertificatePinner(expectedPinBase64: TestCertificates.liveServerPin)
-        let outcome = pinner.evaluate(derChain: [TestCertificates.other])
-        guard case .rejectedFingerprintMismatch(let presented, let expected) = outcome else {
-            throw fail("expected a fingerprint mismatch, got \(outcome)")
-        }
-        try expectEqual(presented, TestCertificates.otherPin)
-        try expectEqual(expected, TestCertificates.liveServerPin)
-        try expectFalse(outcome.isAcceptable)
-    },
-
-    TestCase("a single flipped bit in the certificate is rejected") {
-        var tampered = TestCertificates.live
-        tampered[tampered.count - 1] ^= 0x01
-        let pinner = CertificatePinner(expectedPinBase64: TestCertificates.liveServerPin)
-        try expectFalse(pinner.evaluate(derChain: [tampered]).isAcceptable)
-    },
-
-    TestCase("an empty chain is rejected, never silently accepted") {
-        let pinner = CertificatePinner(expectedPinBase64: TestCertificates.liveServerPin)
-        try expectEqual(pinner.evaluate(derChain: []), .rejectedNoCertificate)
-    },
-
-    TestCase("only the LEAF is pinned; a matching leaf behind other certs still passes") {
-        let pinner = CertificatePinner(expectedPinBase64: TestCertificates.liveServerPin)
-        try expectEqual(pinner.evaluate(derChain: [TestCertificates.live, TestCertificates.other]), .accepted)
-        // ...and a wrong leaf is not rescued by a right certificate further down.
-        try expectFalse(pinner.evaluate(derChain: [TestCertificates.other, TestCertificates.live]).isAcceptable)
-    },
-
-    TestCase("pinning off means pinning off, and says so") {
-        let pinner = CertificatePinner(expectedPinBase64: nil)
-        try expectEqual(pinner.evaluate(derChain: [TestCertificates.other]), .notPinned)
-        try expect(CertificatePinner.Outcome.notPinned.isAcceptable)
-    },
-
-    TestCase("pin comparison rejects a prefix and a length change") {
-        try expect(CertificatePinner.pinsMatch("abc", "abc"))
-        try expectFalse(CertificatePinner.pinsMatch("abc", "abcd"))
-        try expectFalse(CertificatePinner.pinsMatch("abc", "abd"))
-        try expectFalse(CertificatePinner.pinsMatch("", "a"))
-    },
-])
-
 // MARK: - Configuration
 
 public let configSuite = TestSuite("Config", [
 
-    TestCase("the shipped defaults are the deployed server and its pin") {
+    TestCase("the shipped defaults are the public API domain, over TLS") {
         let config = RCConfig.fromEnvironment([:])
-        try expectEqual(config.signalingURL.absoluteString, "wss://54.246.73.81:8443/ws")
-        try expectEqual(config.certificatePinBase64, "E30xoxEp9t658+TJEVdaGb8Ooi7HGGMWp1kxVpeSpgk=")
+        try expectEqual(config.apiBaseURL.absoluteString, "https://api.skipperdesk.app")
+        try expectEqual(config.signalingURL.absoluteString, "wss://api.skipperdesk.app/ws")
         try expectEqual(config.backoffMinimum, 0.5)
         try expectEqual(config.backoffMaximum, 15)
         try expectEqual(config.heartbeatInterval, 15)
@@ -140,8 +80,7 @@ public let configSuite = TestSuite("Config", [
 
     TestCase("every knob has an environment override") {
         let config = RCConfig.fromEnvironment([
-            "RC_SERVER_URL": "wss://198.51.100.9:9443/ws",
-            "RC_CERT_PIN": "AAAA",
+            "SKIPPER_API_BASE_URL": "https://api.example.com",
             "RC_DEVICE_LABEL": "Bench",
             "RC_HEARTBEAT_SEC": "7",
             "RC_RENEW_SEC": "60",
@@ -150,8 +89,8 @@ public let configSuite = TestSuite("Config", [
             "RC_ICE_RESTART_DELAY": "1",
             "RC_ICE_FAILURE_GRACE": "5",
         ])
-        try expectEqual(config.signalingURL.absoluteString, "wss://198.51.100.9:9443/ws")
-        try expectEqual(config.certificatePinBase64, "AAAA")
+        try expectEqual(config.apiBaseURL.absoluteString, "https://api.example.com")
+        try expectEqual(config.signalingURL.absoluteString, "wss://api.example.com/ws")
         try expectEqual(config.deviceLabel, "Bench")
         try expectEqual(config.heartbeatInterval, 7)
         try expectEqual(config.renewInterval, 60)
@@ -159,18 +98,21 @@ public let configSuite = TestSuite("Config", [
         try expectEqual(config.backoffMaximum, 3)
         try expectEqual(config.iceRestartDelay, 1)
         try expectEqual(config.iceFailureGrace, 5)
-        try expectEqual(config.healthURL?.absoluteString, "https://198.51.100.9:9443/healthz")
+        try expectEqual(config.healthURL?.absoluteString, "https://api.example.com/healthz")
     },
 
-    TestCase("RC_CERT_PIN=off disables pinning, and ws:// has nothing to pin") {
-        try expectNil(RCConfig.fromEnvironment(["RC_CERT_PIN": "off"]).certificatePinBase64)
-        let local = RCConfig.fromEnvironment(["RC_SERVER_URL": "ws://127.0.0.1:18443/ws"])
-        try expectNil(local.certificatePinBase64, "a plain ws:// endpoint presents no certificate")
-        try expectEqual(local.healthURL?.absoluteString, "http://127.0.0.1:18443/healthz")
+    TestCase("http:// and ws:// are accepted for localhost and 127.0.0.1, for local dev") {
+        let localhost = RCConfig.fromEnvironment(["SKIPPER_API_BASE_URL": "http://localhost:18443"])
+        try expectEqual(localhost.signalingURL.absoluteString, "ws://localhost:18443/ws")
+        try expectEqual(localhost.healthURL?.absoluteString, "http://localhost:18443/healthz")
+
+        let loopback = RCConfig.fromEnvironment(["SKIPPER_API_BASE_URL": "http://127.0.0.1:18443"])
+        try expectEqual(loopback.signalingURL.absoluteString, "ws://127.0.0.1:18443/ws")
+        try expectEqual(loopback.healthURL?.absoluteString, "http://127.0.0.1:18443/healthz")
     },
 
-    TestCase("a malformed RC_SERVER_URL falls back rather than crashing") {
-        let config = RCConfig.fromEnvironment(["RC_SERVER_URL": "   "])
-        try expectEqual(config.signalingURL.absoluteString, RCConfig.defaultServerURLString)
+    TestCase("a malformed SKIPPER_API_BASE_URL falls back rather than crashing") {
+        let config = RCConfig.fromEnvironment(["SKIPPER_API_BASE_URL": "   "])
+        try expectEqual(config.apiBaseURL.absoluteString, RCConfig.defaultAPIBaseURLString)
     },
 ])
