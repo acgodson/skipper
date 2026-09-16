@@ -1,7 +1,4 @@
-// Command rc-signal is the SkipperDesk signaling server: device registry,
-// entitlement-gated connect, presence, session management and the
-// sdp/ice/pake relay.
-//
+// Command rc-signal is the SkipperDesk signaling server.
 // It never sees media, input or clipboard content, and never logs secrets.
 package main
 
@@ -27,7 +24,6 @@ import (
 	"rc-signal/internal/wsserver"
 )
 
-// env returns the environment override for a flag, if set.
 func env(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok {
 		return v
@@ -139,9 +135,6 @@ func main() {
 	}
 }
 
-// entitlementMode resolves the configured provider name. Local development
-// (-insecure-http) defaults to static; anything else must say so explicitly,
-// so a production deployment cannot silently run without a real gate.
 func entitlementMode(mode string, insecure bool) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" && insecure {

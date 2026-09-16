@@ -1,14 +1,7 @@
-// REST contract between the desktop app / website and api.skipperdesk.app.
-//
-// API.md in this directory is normative; these types must mirror it exactly.
-// The document carries the semantics, the limits and the auth class of every
-// endpoint; this file carries only the shapes, so that nothing is stated twice.
 package protocol
 
 import "encoding/json"
 
-// APIVersion is the path prefix of the REST surface. It moves independently of
-// Version, which versions the wire protocol of PROTOCOL.md.
 const APIVersion = "v1"
 
 const (
@@ -32,7 +25,6 @@ const (
 	PathInternalEntitlement  = "/internal/entitlement"
 )
 
-// Headers defined by API.md §0 and §0.6.
 const (
 	HeaderAuthorization       = "Authorization"
 	HeaderClient              = "X-SkipperDesk-Client"
@@ -44,8 +36,6 @@ const (
 	BearerPrefix = "Bearer "
 )
 
-// Tunables the API states in API.md. Clients must prefer a value carried in a
-// response (Entitlement.RefreshAfterSec) over the constant.
 const (
 	APIMaxBodyBytes          = 64 * 1024
 	LinkCodeTTLSec           = 120
@@ -70,7 +60,6 @@ const (
 	RevocationEffectiveInSec = 5
 )
 
-// API error codes. Keep in sync with API.md §0.4.
 const (
 	APIErrBadRequest          = "bad_request"
 	APIErrUnauthenticated     = "unauthenticated"
@@ -85,8 +74,6 @@ const (
 	APIErrUnavailable         = "unavailable"
 )
 
-// Reasons attached to a conflict or forbidden response. Entitlement reasons are
-// the Entitlement* constants of protocol.go, shared with the signaling surface.
 const (
 	ReasonBodyMismatch    = "body_mismatch"
 	ReasonInProgress      = "in_progress"
@@ -94,7 +81,6 @@ const (
 	ReasonRevoked         = "revoked"
 )
 
-// Entitlement statuses. API.md §4.1.
 const (
 	StatusTrial     = "trial"
 	StatusActive    = "active"
@@ -102,19 +88,16 @@ const (
 	StatusUnlinked  = "unlinked"
 )
 
-// Tiers. API.md §4.1.
 const (
 	TierBase    = "base"
 	TierSkipper = "skipper"
 )
 
-// Device platforms. API.md §3.1.
 const (
 	PlatformMacOS   = "macos"
 	PlatformWindows = "windows"
 )
 
-// Ledger entry types. API.md §7.2.
 const (
 	LedgerTopup         = "topup"
 	LedgerSessionCharge = "session_charge"
@@ -124,7 +107,6 @@ const (
 	LedgerAdjustment    = "adjustment"
 )
 
-// Gift statuses. API.md §7.3.
 const (
 	GiftPending   = "pending"
 	GiftAccepted  = "accepted"
@@ -132,7 +114,6 @@ const (
 	GiftExpired   = "expired"
 )
 
-// Gift list directions. API.md §7.3.
 const (
 	GiftDirectionSent     = "sent"
 	GiftDirectionReceived = "received"
@@ -141,11 +122,6 @@ const (
 // CurrencyUSD is the only currency the ledger holds.
 const CurrencyUSD = "USD"
 
-// ---------------------------------------------------------------------------
-// Error envelope
-// ---------------------------------------------------------------------------
-
-// APIErrorBody is the whole body of every non-2xx response.
 type APIErrorBody struct {
 	Error APIError `json:"error"`
 }
@@ -160,11 +136,6 @@ type APIError struct {
 
 func (e APIError) Error() string { return e.Code + ": " + e.Message }
 
-// ---------------------------------------------------------------------------
-// Auth handoff
-// ---------------------------------------------------------------------------
-
-// LinkRequest is sent by the website once the user is signed in.
 type LinkRequest struct {
 	Nonce    string `json:"nonce"`
 	Pubkey   string `json:"pubkey"`
@@ -190,9 +161,7 @@ type DeviceChallengeResponse struct {
 	ExpiresAt  int64  `json:"expiresAt"`
 }
 
-// DeviceTokenRequest redeems a one-time link code. HardwareID is the raw
-// platform serial; the server keeps only its salted HMAC and discards the raw
-// value before responding. See API.md §1.1 and §3.2.
+// DeviceTokenRequest.HardwareID is the raw platform serial; the server keeps only its salted HMAC and discards the raw value.
 type DeviceTokenRequest struct {
 	Code       string `json:"code"`
 	Pubkey     string `json:"pubkey"`
@@ -202,14 +171,12 @@ type DeviceTokenRequest struct {
 	Label      string `json:"label,omitempty"`
 }
 
-// DeviceRefreshRequest mints a fresh token from possession of the device key.
 type DeviceRefreshRequest struct {
 	DeviceID string `json:"deviceId"`
 	Pubkey   string `json:"pubkey"`
 	Sig      string `json:"sig"`
 }
 
-// DeviceTokenResponse answers both the token and the refresh calls.
 type DeviceTokenResponse struct {
 	DeviceToken string `json:"deviceToken"`
 	ExpiresAt   int64  `json:"expiresAt"`
@@ -218,12 +185,7 @@ type DeviceTokenResponse struct {
 	AccountID   string `json:"accountId"`
 }
 
-// ---------------------------------------------------------------------------
-// Devices
-// ---------------------------------------------------------------------------
-
-// Device is the record as returned by the API. The stored record also holds a
-// server-salted hardwareHash, which no response ever carries.
+// Device: the stored record also holds a server-salted hardwareHash, which no response ever carries.
 type Device struct {
 	DeviceID    string `json:"deviceId"`
 	Label       string `json:"label"`
@@ -245,15 +207,11 @@ type DeviceRenameRequest struct {
 	Label string `json:"label"`
 }
 
-// ---------------------------------------------------------------------------
-// Entitlement
-// ---------------------------------------------------------------------------
-
 type Concurrency struct {
 	MaxActivePairs int `json:"maxActivePairs"`
 }
 
-// Entitlement is what the app renders. The client derives no policy from it.
+// Entitlement is what the app renders; the client derives no policy from it.
 type Entitlement struct {
 	Status          string      `json:"status"`
 	Tier            string      `json:"tier"`
@@ -263,11 +221,7 @@ type Entitlement struct {
 	RefreshAfterSec int         `json:"refreshAfterSec"`
 }
 
-// ---------------------------------------------------------------------------
-// Sessions accounting
-// ---------------------------------------------------------------------------
-
-// SessionRecord is metadata only. No content of any session is ever recorded.
+// SessionRecord: no content of any session is ever recorded.
 type SessionRecord struct {
 	SessionID    string `json:"sessionId"`
 	PeerDeviceID string `json:"peerDeviceId"`
@@ -282,10 +236,6 @@ type SessionList struct {
 	Sessions   []SessionRecord `json:"sessions"`
 	NextCursor string          `json:"nextCursor,omitempty"`
 }
-
-// ---------------------------------------------------------------------------
-// Credits
-// ---------------------------------------------------------------------------
 
 type Balance struct {
 	BalanceCents int64  `json:"balanceCents"`
@@ -337,18 +287,10 @@ type CreateGiftRequest struct {
 // TopupRequest, TopupResponse and the provider webhook body. Nothing already in
 // this file changes when they land.
 
-// ---------------------------------------------------------------------------
-// Health
-// ---------------------------------------------------------------------------
-
 type Health struct {
 	Status     string `json:"status"`
 	ServerTime int64  `json:"serverTime"`
 }
-
-// ---------------------------------------------------------------------------
-// Internal surface: signaling server to API. Never exposed publicly.
-// ---------------------------------------------------------------------------
 
 type SessionStartReport struct {
 	SessionID          string `json:"sessionId"`
@@ -365,17 +307,11 @@ type SessionStopReport struct {
 	Reason       string `json:"reason"`
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// NewAPIError builds the whole body of a non-2xx response.
 func NewAPIError(code, message, requestID string) APIErrorBody {
 	return APIErrorBody{Error: APIError{Code: code, Message: message, RequestID: requestID}}
 }
 
-// DecodeAPIError reads an error body. A response that is not the documented
-// envelope yields an APIErrInternal error rather than a zero value.
+// DecodeAPIError returns an APIErrInternal error, not a zero value, when b is not the documented envelope.
 func DecodeAPIError(b []byte) APIError {
 	var body APIErrorBody
 	if err := json.Unmarshal(b, &body); err != nil || body.Error.Code == "" {
@@ -384,7 +320,6 @@ func DecodeAPIError(b []byte) APIError {
 	return body.Error
 }
 
-// ValidIdempotencyKey reports whether s is an acceptable Idempotency-Key.
 func ValidIdempotencyKey(s string) bool {
 	if len(s) < MinIdempotencyKeyLen || len(s) > MaxIdempotencyKeyLen {
 		return false

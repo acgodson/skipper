@@ -12,12 +12,8 @@ import (
 	"rcprotocol"
 )
 
-// Handle processes one inbound frame from a client.
-//
-// Nothing in here logs a payload body: tokens, SDP, ICE candidates, PAKE
-// messages and clipboard text never reach the logger.
 func (h *Hub) Handle(c *Client, raw []byte) {
-	// Version check first, so a future client gets a clear answer.
+
 	var probe struct {
 		V    int    `json:"v"`
 		Type string `json:"type"`
@@ -44,8 +40,6 @@ func (h *Hub) Handle(c *Client, raw []byte) {
 		return
 	}
 
-	// connect_req asks the entitlement provider, which may be a network call.
-	// Give it its own path so the global lock is not held across it.
 	if e.Type == protocol.TypeConnectReq {
 		h.handleConnectReq(c, e)
 		return
@@ -103,17 +97,13 @@ func (h *Hub) handleLocked(c *Client, e protocol.Envelope) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// register / hello
-// ---------------------------------------------------------------------------
-
 func (h *Hub) checkNonceLocked(c *Client, pubkey, sig string) bool {
 	now := h.clock.Now()
 	if len(c.nonce) == 0 || !now.Before(c.nonceExp) {
 		return false
 	}
 	nonce := c.nonce
-	c.nonce = nil // single use, even on failure
+	c.nonce = nil
 	return auth.VerifyDeviceSig(pubkey, sig, nonce) == nil
 }
 
@@ -145,7 +135,7 @@ func (h *Hub) handleRegisterLocked(c *Client, e protocol.Envelope) {
 	h.log.Info("device registered", "deviceId", dev.DeviceID, "existing", existing)
 	h.sendLocked(c, protocol.TypeRegisterOK, e.ID, protocol.RegisterOK{
 		DeviceID: dev.DeviceID, Existing: existing})
-	// The connection is still unauthenticated; give it a fresh nonce to hello with.
+
 	h.issueChallengeLocked(c)
 }
 
@@ -174,15 +164,13 @@ func (h *Hub) handleHelloLocked(c *Client, e protocol.Envelope) {
 		h.sendErrLocked(c, e.ID, protocol.ErrInternal, "lookup failed", 0)
 		return
 	}
-	// The presented key must be byte-identical to the registered one, and the
-	// signature over the live nonce must verify. Both failures look the same.
+
 	if p.Pubkey != dev.Pubkey || !h.checkNonceLocked(c, p.Pubkey, p.Sig) {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadSignature, "challenge signature rejected", 0)
 		h.issueChallengeLocked(c)
 		return
 	}
 
-	// One authenticated socket per device: displace the older one.
 	if old := h.byDevice[p.DeviceID]; old != nil && old != c {
 		h.sendErrLocked(old, "", protocol.ErrDisplaced, "another connection authenticated as this device", 0)
 		h.removeClientLocked(old)
@@ -231,10 +219,6 @@ func (h *Hub) iceServersLocked(deviceID string) []protocol.ICEServer {
 	return out
 }
 
-// ---------------------------------------------------------------------------
-// watch / unwatch
-// ---------------------------------------------------------------------------
-
 func (h *Hub) handleWatchLocked(c *Client, e protocol.Envelope) {
 	var p protocol.Watch
 	if err := protocol.Unmarshal(e, &p); err != nil || !protocol.ValidDeviceID(p.DeviceID) {
@@ -272,13 +256,6 @@ func (h *Hub) handleUnwatchLocked(c *Client, e protocol.Envelope) {
 	h.sendLocked(c, protocol.TypeUnwatchOK, e.ID, protocol.UnwatchOK{DeviceID: p.DeviceID})
 }
 
-// ---------------------------------------------------------------------------
-// connect_req
-// ---------------------------------------------------------------------------
-
-// handleConnectReq authorises a session by ENTITLEMENT (PROTOCOL.md §2.9).
-// The server knows nothing about the access code: that is proved peer to peer
-// by the pake exchange once this session exists.
 func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 	var p protocol.ConnectReq
 	if err := protocol.Unmarshal(e, &p); err != nil {
@@ -392,9 +369,6 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 	h.attachLocked(s, &s.Ctrl, c)
 	h.attachLocked(s, &s.Host, hostConn)
 
-	// Both keys are public material the server has held since `register`. They
-	// are what each side pins the other's signed SDP to (PROTOCOL.md §2.12) and
-	// what the host keys its guess policy on (§2.17).
 	h.sendLocked(c, protocol.TypeConnectOK, e.ID, protocol.ConnectOK{
 		SessionID: sid, SessionToken: ctrlTok, ExpiresAt: ctrlExp.UnixMilli(),
 		TTLSec: protocol.SessionTokenTTLSec, HostDeviceID: p.DeviceID,
@@ -417,7 +391,6 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 	h.log.Info("session opened", "sessionId", sid, "host", p.DeviceID, "controller", c.deviceID)
 }
 
-// checkEntitlement asks the provider without the hub lock held.
 func (h *Hub) checkEntitlement(hostDeviceID string) (entitlement.Decision, error) {
 	if h.opt.Entitlement == nil {
 		return entitlement.Decision{}, errors.New("no entitlement provider configured")
@@ -427,8 +400,6 @@ func (h *Hub) checkEntitlement(hostDeviceID string) (entitlement.Decision, error
 	return h.opt.Entitlement.Check(ctx, hostDeviceID)
 }
 
-// hasLiveSessionLocked reports whether a device holds a session in any state
-// but closed — the 1:1 slot of PROTOCOL.md §2.9.
 func (h *Hub) hasLiveSessionLocked(deviceID string) bool {
 	sid, ok := h.devSess[deviceID]
 	if !ok {
@@ -438,9 +409,6 @@ func (h *Hub) hasLiveSessionLocked(deviceID string) bool {
 	return s != nil && s.State != protocol.SessionClosed
 }
 
-// devicePubkeyLocked returns the registered base64 DER SPKI key for a device,
-// or "" if it cannot be read — the field is omitempty, and an absent key is a
-// state both peers already have to handle.
 func (h *Hub) devicePubkeyLocked(deviceID string) string {
 	d, err := h.opt.Store.GetDevice(deviceID)
 	if err != nil {
@@ -456,10 +424,6 @@ func (h *Hub) deviceEpochLocked(deviceID string) int64 {
 	}
 	return d.CodeEpoch
 }
-
-// ---------------------------------------------------------------------------
-// resume / renew
-// ---------------------------------------------------------------------------
 
 func (h *Hub) handleResumeLocked(c *Client, e protocol.Envelope) {
 	var p protocol.Resume
@@ -520,13 +484,6 @@ func (h *Hub) handleRenewLocked(c *Client, e protocol.Envelope) {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// relay + bye
-// ---------------------------------------------------------------------------
-
-// handleRelayLocked forwards sdp, ice and pake verbatim. The server does not
-// parse, rewrite, store or log the bodies — only the routing metadata. A pake
-// payload is measured, never read: PROTOCOL.md §2.17 caps it.
 func (h *Hub) handleRelayLocked(c *Client, e protocol.Envelope) {
 	var meta struct {
 		SessionID string `json:"sessionId"`
@@ -550,7 +507,7 @@ func (h *Hub) handleRelayLocked(c *Client, e protocol.Envelope) {
 		h.sendErrLocked(c, e.ID, protocol.ErrPeerOffline, "peer is not attached", 0)
 		return
 	}
-	// Re-encode the envelope unchanged apart from the server timestamp.
+
 	b, err := json.Marshal(protocol.Envelope{
 		V: protocol.Version, Type: e.Type, TS: h.clock.Now().UnixMilli(), Payload: e.Payload,
 	})
@@ -579,13 +536,6 @@ func (h *Hub) handleByeLocked(c *Client, e protocol.Envelope) {
 	h.closeSessionLocked(s, reason)
 }
 
-// ---------------------------------------------------------------------------
-// refresh_code
-// ---------------------------------------------------------------------------
-
-// handleRefreshLocked applies PROTOCOL.md §2.15. In v2 the payload is {}:
-// there is no stored verifier to replace, so the epoch bump and the session
-// and token kill are the whole of the operation.
 func (h *Hub) handleRefreshLocked(c *Client, e protocol.Envelope) {
 	now := h.clock.Now()
 	if err := h.opt.Store.BumpEpoch(c.deviceID, now); err != nil {
@@ -603,5 +553,4 @@ func (h *Hub) handleRefreshLocked(c *Client, e protocol.Envelope) {
 	h.log.Info("access code refreshed", "deviceId", c.deviceID)
 }
 
-// SweepInterval is how often the server should call Sweep.
 const SweepInterval = 5 * time.Second

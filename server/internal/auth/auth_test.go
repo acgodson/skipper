@@ -51,30 +51,29 @@ func TestVerifyDeviceSig(t *testing.T) {
 		t.Fatalf("a valid signature was rejected: %v", err)
 	}
 
-	// Signature over different bytes.
 	other := append([]byte{}, nonce...)
 	other[0] ^= 0xff
 	if err := VerifyDeviceSig(pub, sign(t, k, other), nonce); err == nil {
 		t.Fatal("a signature over the wrong nonce was accepted")
 	}
-	// Signature from a different key.
+
 	k2, _ := newKey(t)
 	if err := VerifyDeviceSig(pub, sign(t, k2, nonce), nonce); err == nil {
 		t.Fatal("a signature from the wrong key was accepted")
 	}
-	// Right signature, wrong advertised key.
+
 	_, pub2 := newKey(t)
 	if err := VerifyDeviceSig(pub2, sign(t, k, nonce), nonce); err == nil {
 		t.Fatal("a mismatched pubkey was accepted")
 	}
-	// Truncated / mangled signature bytes.
+
 	good := sign(t, k, nonce)
 	raw, _ := base64.StdEncoding.DecodeString(good)
 	raw[len(raw)-1] ^= 0x01
 	if err := VerifyDeviceSig(pub, base64.StdEncoding.EncodeToString(raw), nonce); err == nil {
 		t.Fatal("a tampered signature was accepted")
 	}
-	// Garbage inputs must return an error, never panic.
+
 	for _, bad := range []string{"", "not base64!!", base64.StdEncoding.EncodeToString([]byte("hello"))} {
 		if err := VerifyDeviceSig(bad, good, nonce); err == nil {
 			t.Fatalf("garbage pubkey %q was accepted", bad)
@@ -83,7 +82,7 @@ func TestVerifyDeviceSig(t *testing.T) {
 			t.Fatalf("garbage signature %q was accepted", bad)
 		}
 	}
-	// An RSA or non-P256 key must be refused.
+
 	k384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -114,19 +113,16 @@ func TestTokenMintAndParse(t *testing.T) {
 		t.Fatalf("expiry = %v, want %v", got.Expiry, exp)
 	}
 
-	// Different claims produce different tokens.
 	claims2 := claims
 	claims2.Nonce = "n2"
 	if s.Mint(claims2) == tok {
 		t.Fatal("rotating the nonce did not change the token")
 	}
 
-	// A different secret cannot verify it.
 	if _, err := NewSigner([]byte("secret-two-secret-two-secret-two")).Parse(tok); err == nil {
 		t.Fatal("a token was accepted under the wrong secret")
 	}
 
-	// Tampering with the body invalidates the MAC.
 	body, mac, _ := strings.Cut(tok, ".")
 	raw, _ := base64.RawURLEncoding.DecodeString(body)
 	tampered := strings.Replace(string(raw), "481930275", "999999999", 1)
@@ -134,7 +130,7 @@ func TestTokenMintAndParse(t *testing.T) {
 	if _, err := s.Parse(forged); err == nil {
 		t.Fatal("a token whose deviceId was swapped was accepted")
 	}
-	// Tampering with the MAC too.
+
 	macRaw := []byte(mac)
 	macRaw[0] ^= 0x01
 	if _, err := s.Parse(body + "." + string(macRaw)); err == nil {
@@ -159,13 +155,13 @@ func TestTurnCredsMatchCoturnRESTAuth(t *testing.T) {
 	if user != wantUser {
 		t.Fatalf("username = %q, want %q", user, wantUser)
 	}
-	// Independently recompute the credential.
+
 	m := hmac.New(sha1.New, []byte("s3cr3t"))
 	m.Write([]byte(wantUser))
 	if want := base64.StdEncoding.EncodeToString(m.Sum(nil)); cred != want {
 		t.Fatalf("credential = %q, want %q", cred, want)
 	}
-	// A different secret or device yields a different credential.
+
 	if _, c2, _ := TurnCreds("other", "481930275", now, 12*time.Hour); c2 == cred {
 		t.Fatal("changing the TURN secret did not change the credential")
 	}

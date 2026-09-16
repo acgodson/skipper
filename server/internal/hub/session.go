@@ -9,17 +9,14 @@ import (
 	"rcprotocol"
 )
 
-// side is one participant's server-side session state.
 type side struct {
 	deviceID string
 	conn     *Client
-	nonce    string    // current token nonce; rotating it kills the previous token
-	expiry   time.Time // current token expiry
-	epoch    int64     // device code epoch at issue time
+	nonce    string
+	expiry   time.Time
+	epoch    int64
 }
 
-// Session is server-side state that deliberately outlives any WebSocket.
-// See PROTOCOL.md §4. It holds no SDP, no candidates, no media state.
 type Session struct {
 	ID        string
 	State     string
@@ -63,9 +60,6 @@ func (s *Session) roleOf(deviceID string) string {
 	return protocol.RoleController
 }
 
-// expiredLocked reports whether the session should die: every DETACHED side's
-// token has expired, so nobody can resume it any more. An attached side keeps
-// the session alive regardless (it renews).
 func (s *Session) expiredLocked(now time.Time) bool {
 	if s.State == protocol.SessionOpen || s.State == protocol.SessionPending {
 		return false
@@ -75,14 +69,13 @@ func (s *Session) expiredLocked(now time.Time) bool {
 		if sd.conn == nil {
 			anyDetached = true
 			if now.Before(sd.expiry) {
-				return false // still resumable by this side
+				return false
 			}
 		}
 	}
 	return anyDetached
 }
 
-// recomputeStateLocked derives open/half_open/orphaned from attachment.
 func (s *Session) recomputeStateLocked() {
 	if s.State == protocol.SessionClosed || s.State == protocol.SessionPending {
 		return
@@ -97,7 +90,6 @@ func (s *Session) recomputeStateLocked() {
 	}
 }
 
-// State returns a session's state (test hook).
 func (h *Hub) SessionState(id string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -108,7 +100,6 @@ func (h *Hub) SessionState(id string) string {
 	return s.State
 }
 
-// issueTokenLocked rotates the token nonce for one side and mints a new token.
 func (h *Hub) issueTokenLocked(s *Session, sd *side, now time.Time) (string, time.Time, error) {
 	n, err := auth.NewTokenNonce()
 	if err != nil {
@@ -123,8 +114,6 @@ func (h *Hub) issueTokenLocked(s *Session, sd *side, now time.Time) (string, tim
 	return tok, sd.expiry, nil
 }
 
-// verifyTokenLocked applies every check from PROTOCOL.md §3.2.
-// It returns the session and the caller's side, or a protocol error code.
 func (h *Hub) verifyTokenLocked(deviceID, sessionID, token string, now time.Time) (*Session, *side, string) {
 	claims, err := h.opt.Signer.Parse(token)
 	if err != nil {
@@ -150,7 +139,6 @@ func (h *Hub) verifyTokenLocked(deviceID, sessionID, token string, now time.Time
 	return s, sd, ""
 }
 
-// attachLocked binds a connection to a session side and notifies the peer.
 func (h *Hub) attachLocked(s *Session, sd *side, c *Client) {
 	if sd.conn != nil && sd.conn != c {
 		sd.conn.sessionID = ""
@@ -167,7 +155,6 @@ func (h *Hub) attachLocked(s *Session, sd *side, c *Client) {
 	}
 }
 
-// detachLocked unbinds a dropped connection. The session stays alive.
 func (h *Hub) detachLocked(c *Client) {
 	s := h.sessions[c.sessionID]
 	c.sessionID = ""
@@ -186,8 +173,6 @@ func (h *Hub) detachLocked(c *Client) {
 	}
 }
 
-// closeSessionLocked is terminal: both sides get bye, all state is dropped and
-// the host's 1:1 slot is freed.
 func (h *Hub) closeSessionLocked(s *Session, reason string) {
 	if s.State == protocol.SessionClosed {
 		return
@@ -212,7 +197,6 @@ func (h *Hub) closeSessionLocked(s *Session, reason string) {
 	h.log.Info("session closed", "sessionId", s.ID, "reason", reason)
 }
 
-// closeSessionsForDeviceLocked kills every session a device participates in.
 func (h *Hub) closeSessionsForDeviceLocked(deviceID, reason string) {
 	for _, s := range h.sessions {
 		if s.Host.deviceID == deviceID || s.Ctrl.deviceID == deviceID {
