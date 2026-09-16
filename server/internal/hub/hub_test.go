@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -8,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -15,10 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/argon2"
-
 	"rc-signal/internal/auth"
 	"rc-signal/internal/clockx"
+	"rc-signal/internal/entitlement"
 	"rc-signal/internal/store"
 	"rcprotocol"
 )
@@ -27,21 +28,76 @@ import (
 // harness
 // ---------------------------------------------------------------------------
 
-// fastVerifier builds an Argon2id verifier with the cheapest parameters the
-// protocol permits, so tests stay fast while exercising the real code path.
-func fastVerifier(t *testing.T, code string) protocol.CodeVerifier {
+// fakeEntitlement is the hub's entitlement provider under test: allow by
+// default, deny or fail on demand, and record the accounting reports.
+type fakeEntitlement struct {
+	mu     sync.Mutex
+	deny   map[string]string
+	err    error
+	starts []protocol.SessionStartReport
+	stops  []protocol.SessionStopReport
+}
+
+func newFakeEntitlement() *fakeEntitlement {
+	return &fakeEntitlement{deny: map[string]string{}}
+}
+
+func (f *fakeEntitlement) Check(_ context.Context, hostDeviceID string) (entitlement.Decision, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return entitlement.Decision{}, f.err
+	}
+	if reason, denied := f.deny[hostDeviceID]; denied {
+		return entitlement.Denied(reason), nil
+	}
+	return entitlement.Allowed, nil
+}
+
+func (f *fakeEntitlement) SessionStarted(_ context.Context, r protocol.SessionStartReport) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.starts = append(f.starts, r)
+	return nil
+}
+
+func (f *fakeEntitlement) SessionStopped(_ context.Context, r protocol.SessionStopReport) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stops = append(f.stops, r)
+	return nil
+}
+
+func (f *fakeEntitlement) denyDevice(deviceID, reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deny[deviceID] = reason
+}
+
+func (f *fakeEntitlement) failWith(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+// awaitReports waits for the fire-and-forget report goroutines to land.
+func (f *fakeEntitlement) awaitReports(t *testing.T, starts, stops int) ([]protocol.SessionStartReport, []protocol.SessionStopReport) {
 	t.Helper()
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		t.Fatal(err)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		f.mu.Lock()
+		gotStarts := append([]protocol.SessionStartReport(nil), f.starts...)
+		gotStops := append([]protocol.SessionStopReport(nil), f.stops...)
+		f.mu.Unlock()
+		if len(gotStarts) >= starts && len(gotStops) >= stops {
+			return gotStarts, gotStops
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reports = %d start / %d stop, want %d / %d",
+				len(gotStarts), len(gotStops), starts, stops)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	v := protocol.CodeVerifier{
-		Alg: protocol.AlgArgon2id, Salt: base64.StdEncoding.EncodeToString(salt),
-		Time: 1, MemKiB: 8192, Par: 1, Len: 32,
-	}
-	sum := argon2.IDKey([]byte(code), salt, v.Time, v.MemKiB, v.Par, v.Len)
-	v.Hash = base64.StdEncoding.EncodeToString(sum)
-	return v
 }
 
 type harness struct {
@@ -49,6 +105,7 @@ type harness struct {
 	hub   *Hub
 	clock *clockx.Fake
 	store *store.Store
+	ent   *fakeEntitlement
 }
 
 func newHarness(t *testing.T) *harness {
@@ -59,16 +116,18 @@ func newHarness(t *testing.T) *harness {
 	}
 	t.Cleanup(func() { st.Close() })
 	clk := clockx.NewFake()
+	ent := newFakeEntitlement()
 	h := New(Options{
-		Store:      st,
-		Clock:      clk,
-		Signer:     auth.NewSigner([]byte("test-hmac-secret-0123456789abcdef")),
-		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		TurnSecret: "turnsecret",
-		TurnURLs:   []string{"turn:198.51.100.7:3478?transport=udp"},
-		StunURLs:   []string{"stun:stun.example:3478"},
+		Store:       st,
+		Entitlement: ent,
+		Clock:       clk,
+		Signer:      auth.NewSigner([]byte("test-hmac-secret-0123456789abcdef")),
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		TurnSecret:  "turnsecret",
+		TurnURLs:    []string{"turn:198.51.100.7:3478?transport=udp"},
+		StunURLs:    []string{"stun:stun.example:3478"},
 	})
-	return &harness{t: t, hub: h, clock: clk, store: st}
+	return &harness{t: t, hub: h, clock: clk, store: st, ent: ent}
 }
 
 // peer is a fake client connection driven directly against the hub.
@@ -256,10 +315,10 @@ func unmarshal[T any](t *testing.T, e protocol.Envelope) T {
 }
 
 // register + hello, the common setup.
-func (p *peer) register(label string, v protocol.CodeVerifier) string {
+func (p *peer) register(label string) string {
 	p.t.Helper()
 	p.send(protocol.TypeRegister, protocol.Register{
-		Pubkey: p.pubB64, Sig: p.sig(false), Label: label, Code: v})
+		Pubkey: p.pubB64, Sig: p.sig(false), Label: label})
 	ok := unmarshal[protocol.RegisterOK](p.t, p.last(protocol.TypeRegisterOK))
 	p.deviceID = ok.DeviceID
 	return ok.DeviceID
@@ -279,7 +338,7 @@ func (p *peer) hello(role string) protocol.HelloOK {
 func TestRegisterMintsNineDigitIDAndIsIdempotent(t *testing.T) {
 	hn := newHarness(t)
 	p := hn.newPeer()
-	id := p.register("Studio Mac", fastVerifier(t, "ABCD2345"))
+	id := p.register("Studio Mac")
 
 	if len(id) != 9 {
 		t.Fatalf("deviceId %q: want 9 characters, got %d", id, len(id))
@@ -297,7 +356,7 @@ func TestRegisterMintsNineDigitIDAndIsIdempotent(t *testing.T) {
 
 	// Same key again: same id, existing=true, and no second row.
 	p.send(protocol.TypeRegister, protocol.Register{
-		Pubkey: p.pubB64, Sig: p.sig(false), Code: fastVerifier(t, "OTHERCODE")})
+		Pubkey: p.pubB64, Sig: p.sig(false)})
 	second := unmarshal[protocol.RegisterOK](t, p.last(protocol.TypeRegisterOK))
 	if second.DeviceID != id {
 		t.Fatalf("re-registering the same key minted a new id: %q vs %q", second.DeviceID, id)
@@ -308,7 +367,7 @@ func TestRegisterMintsNineDigitIDAndIsIdempotent(t *testing.T) {
 
 	// A different key gets a different id.
 	q := hn.newPeer()
-	id2 := q.register("Laptop", fastVerifier(t, "ZZZZ9999"))
+	id2 := q.register("Laptop")
 	if id2 == id {
 		t.Fatalf("two distinct keys got the same deviceId %q", id)
 	}
@@ -317,7 +376,7 @@ func TestRegisterMintsNineDigitIDAndIsIdempotent(t *testing.T) {
 func TestHelloValidSignatureAuthenticates(t *testing.T) {
 	hn := newHarness(t)
 	p := hn.newPeer()
-	id := p.register("host", fastVerifier(t, "GOODCODE"))
+	id := p.register("host")
 
 	ok := p.hello(protocol.RoleHost)
 	if ok.DeviceID != id {
@@ -356,7 +415,7 @@ func TestHelloValidSignatureAuthenticates(t *testing.T) {
 func TestHelloForgedSignatureRejected(t *testing.T) {
 	hn := newHarness(t)
 	p := hn.newPeer()
-	id := p.register("host", fastVerifier(t, "GOODCODE"))
+	id := p.register("host")
 
 	// A signature over the wrong bytes.
 	p.reset()
@@ -435,41 +494,24 @@ func TestUnauthenticatedMessagesRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // pair registers a host and a controller and brings both online.
-func (hn *harness) pair(t *testing.T, code string) (host, ctrl *peer) {
+func (hn *harness) pair(t *testing.T) (host, ctrl *peer) {
 	t.Helper()
 	host = hn.newPeer()
-	host.register("host", fastVerifier(t, code))
+	host.register("host")
 	host.hello(protocol.RoleHost)
 	ctrl = hn.newPeer()
-	ctrl.register("ctrl", fastVerifier(t, "CTRLCODE"))
+	ctrl.register("ctrl")
 	ctrl.hello(protocol.RoleController)
 	return host, ctrl
 }
 
-func TestConnectRightAndWrongCode(t *testing.T) {
+func TestConnectIsAuthorisedByEntitlement(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl := hn.pair(t, "SW7K2M9Q")
+	host, ctrl := hn.pair(t)
 
-	// Wrong code.
-	ctrl.reset()
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "SW7K2M9R"})
-	if ctrl.has(protocol.TypeConnectOK) {
-		t.Fatal("a wrong access code produced connect_ok")
-	}
-	if got := ctrl.lastErr().Code; got != protocol.ErrBadCode {
-		t.Fatalf("error code = %q, want %q", got, protocol.ErrBadCode)
-	}
-	if host.has(protocol.TypeSessionStart) {
-		t.Fatal("host was told about a session that was never created")
-	}
-	if n := hn.hub.FailCount(host.deviceID); n != 1 {
-		t.Fatalf("fail count = %d, want 1", n)
-	}
-
-	// Right code.
 	ctrl.reset()
 	host.reset()
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "SW7K2M9Q"})
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
 	ok := unmarshal[protocol.ConnectOK](t, ctrl.last(protocol.TypeConnectOK))
 	if len(ok.SessionID) != 32 {
 		t.Fatalf("sessionId %q: want 32 hex chars", ok.SessionID)
@@ -498,128 +540,82 @@ func TestConnectRightAndWrongCode(t *testing.T) {
 	if got := hn.hub.SessionState(ok.SessionID); got != protocol.SessionOpen {
 		t.Fatalf("session state = %q, want %q", got, protocol.SessionOpen)
 	}
-	// A success clears the earlier failure.
-	if n := hn.hub.FailCount(host.deviceID); n != 0 {
-		t.Fatalf("fail count after success = %d, want 0", n)
+
+	starts, _ := hn.ent.awaitReports(t, 1, 0)
+	if starts[0].SessionID != ok.SessionID || starts[0].HostDeviceID != host.deviceID ||
+		starts[0].ControllerDeviceID != ctrl.deviceID {
+		t.Fatalf("session start report = %+v", starts[0])
+	}
+
+	ctrl.send(protocol.TypeBye, protocol.Bye{SessionID: ok.SessionID, Reason: protocol.ByeUserEnded})
+	_, stops := hn.ent.awaitReports(t, 1, 1)
+	if stops[0].SessionID != ok.SessionID || stops[0].Reason != protocol.ByeUserEnded {
+		t.Fatalf("session stop report = %+v", stops[0])
+	}
+}
+
+func TestConnectDeniedByEntitlement(t *testing.T) {
+	hn := newHarness(t)
+	host, ctrl := hn.pair(t)
+	hn.ent.denyDevice(host.deviceID, protocol.EntitlementNoBalance)
+
+	ctrl.reset()
+	host.reset()
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
+	if ctrl.has(protocol.TypeConnectOK) {
+		t.Fatal("a denied entitlement produced connect_ok")
+	}
+	e := ctrl.lastErr()
+	if e.Code != protocol.ErrEntitlement || e.Reason != protocol.EntitlementNoBalance {
+		t.Fatalf("error = %+v, want entitlement/%s", e, protocol.EntitlementNoBalance)
+	}
+	if host.has(protocol.TypeSessionStart) {
+		t.Fatal("host was told about a session that was never created")
+	}
+}
+
+func TestConnectEntitlementFailureIsInternal(t *testing.T) {
+	hn := newHarness(t)
+	host, ctrl := hn.pair(t)
+	hn.ent.failWith(errors.New("internal API unreachable"))
+
+	ctrl.reset()
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
+	if got := ctrl.lastErr().Code; got != protocol.ErrInternal {
+		t.Fatalf("error code = %q, want %q", got, protocol.ErrInternal)
+	}
+}
+
+func TestConnectRejectsAnAccessCode(t *testing.T) {
+	hn := newHarness(t)
+	host, ctrl := hn.pair(t)
+
+	ctrl.reset()
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{
+		DeviceID: host.deviceID, AccessCode: "SW7K2M9Q"})
+	if ctrl.has(protocol.TypeConnectOK) {
+		t.Fatal("a v1 connect_req carrying an access code was accepted")
+	}
+	if got := ctrl.lastErr().Code; got != protocol.ErrBadRequest {
+		t.Fatalf("error code = %q, want %q", got, protocol.ErrBadRequest)
 	}
 }
 
 func TestConnectOfflineAndUnknownDevice(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl := hn.pair(t, "SW7K2M9Q")
+	host, ctrl := hn.pair(t)
 
 	ctrl.reset()
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: "999999999", AccessCode: "x"})
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: "999999999"})
 	if got := ctrl.lastErr().Code; got != protocol.ErrUnknownDevice {
 		t.Fatalf("error code = %q, want %q", got, protocol.ErrUnknownDevice)
 	}
 
 	hn.hub.RemoveClient(host.c)
 	ctrl.reset()
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "SW7K2M9Q"})
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
 	if got := ctrl.lastErr().Code; got != protocol.ErrOffline {
 		t.Fatalf("error code = %q, want %q", got, protocol.ErrOffline)
-	}
-	// An offline rejection must not burn a rate-limit attempt.
-	if n := hn.hub.FailCount(host.deviceID); n != 0 {
-		t.Fatalf("fail count = %d, want 0 (offline is not a code failure)", n)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// rate limiting
-// ---------------------------------------------------------------------------
-
-func TestRateLimitKicksInOnSixthFailure(t *testing.T) {
-	hn := newHarness(t)
-	host, ctrl := hn.pair(t, "SW7K2M9Q")
-
-	for i := 1; i <= 5; i++ {
-		ctrl.reset()
-		ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "WRONG"})
-		if got := ctrl.lastErr().Code; got != protocol.ErrBadCode {
-			t.Fatalf("attempt %d: error code = %q, want %q", i, got, protocol.ErrBadCode)
-		}
-		if n := hn.hub.FailCount(host.deviceID); n != i {
-			t.Fatalf("attempt %d: fail count = %d, want %d", i, n, i)
-		}
-		hn.clock.Advance(time.Second)
-	}
-
-	// 6th attempt is locked out, even though the code is wrong for a different reason.
-	ctrl.reset()
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "WRONG"})
-	e := ctrl.lastErr()
-	if e.Code != protocol.ErrRateLimited {
-		t.Fatalf("6th attempt: error code = %q, want %q", e.Code, protocol.ErrRateLimited)
-	}
-	if e.RetryAfterSec <= 0 || e.RetryAfterSec > 60 {
-		t.Fatalf("retryAfterSec = %d, want 1..60 (first lockout is 1 minute)", e.RetryAfterSec)
-	}
-
-	// The CORRECT code is also refused while locked out.
-	ctrl.reset()
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "SW7K2M9Q"})
-	if ctrl.has(protocol.TypeConnectOK) {
-		t.Fatal("lockout must refuse even the correct code")
-	}
-	if got := ctrl.lastErr().Code; got != protocol.ErrRateLimited {
-		t.Fatalf("locked-out correct code: error code = %q, want %q", got, protocol.ErrRateLimited)
-	}
-	// A locked-out attempt does not count as a new failure.
-	if n := hn.hub.FailCount(host.deviceID); n != 5 {
-		t.Fatalf("fail count during lockout = %d, want 5", n)
-	}
-
-	// After the 1-minute lockout the correct code works again.
-	hn.clock.Advance(61 * time.Second)
-	ctrl.reset()
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "SW7K2M9Q"})
-	if !ctrl.has(protocol.TypeConnectOK) {
-		t.Fatalf("connect after lockout expiry failed: %s", ctrl.typesLocked())
-	}
-}
-
-func TestRateLimitLockoutIsExponential(t *testing.T) {
-	hn := newHarness(t)
-	host, ctrl := hn.pair(t, "SW7K2M9Q")
-
-	fail := func() protocol.Error {
-		ctrl.reset()
-		ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "WRONG"})
-		return ctrl.lastErr()
-	}
-	for i := 0; i < 5; i++ {
-		if got := fail().Code; got != protocol.ErrBadCode {
-			t.Fatalf("attempt %d should be bad_code, got %s", i+1, got)
-		}
-	}
-	// Lockouts double: 60s, then 120s, then 240s.
-	for i, want := range []int{60, 120, 240} {
-		if got := fail(); got.Code != protocol.ErrRateLimited || got.RetryAfterSec != want {
-			t.Fatalf("lockout %d: code=%s retryAfterSec=%d, want rate_limited/%d",
-				i+1, got.Code, got.RetryAfterSec, want)
-		}
-		hn.clock.Advance(time.Duration(want) * time.Second)
-		// One more failure past the expired lockout deepens it.
-		if got := fail().Code; got != protocol.ErrBadCode {
-			t.Fatalf("after lockout %d expired, expected bad_code, got %s", i+1, got)
-		}
-	}
-}
-
-func TestRateLimitWindowDecays(t *testing.T) {
-	hn := newHarness(t)
-	host, ctrl := hn.pair(t, "SW7K2M9Q")
-	for i := 0; i < 4; i++ {
-		ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "WRONG"})
-	}
-	if n := hn.hub.FailCount(host.deviceID); n != 4 {
-		t.Fatalf("fail count = %d, want 4", n)
-	}
-	hn.clock.Advance(FailWindow + time.Second)
-	if n := hn.hub.FailCount(host.deviceID); n != 0 {
-		t.Fatalf("fail count after the window elapsed = %d, want 0", n)
 	}
 }
 
@@ -629,15 +625,15 @@ func TestRateLimitWindowDecays(t *testing.T) {
 
 func TestSecondControllerGetsBusy(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl := hn.pair(t, "SW7K2M9Q")
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "SW7K2M9Q"})
+	host, ctrl := hn.pair(t)
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
 	first := unmarshal[protocol.ConnectOK](t, ctrl.last(protocol.TypeConnectOK))
 
 	second := hn.newPeer()
-	second.register("ctrl2", fastVerifier(t, "OTHER"))
+	second.register("ctrl2")
 	second.hello(protocol.RoleController)
 	second.reset()
-	second.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "SW7K2M9Q"})
+	second.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
 
 	if second.has(protocol.TypeConnectOK) {
 		t.Fatal("a second controller was allowed into an active session")
@@ -655,7 +651,7 @@ func TestSecondControllerGetsBusy(t *testing.T) {
 		t.Fatalf("session state after controller drop = %q, want half_open", got)
 	}
 	second.reset()
-	second.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "SW7K2M9Q"})
+	second.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
 	if got := second.lastErr().Code; got != protocol.ErrBusy {
 		t.Fatalf("half_open session: error code = %q, want busy", got)
 	}
@@ -666,7 +662,7 @@ func TestSecondControllerGetsBusy(t *testing.T) {
 		t.Fatalf("session should be gone after bye, state = %q", got)
 	}
 	second.reset()
-	second.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "SW7K2M9Q"})
+	second.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
 	if !second.has(protocol.TypeConnectOK) {
 		t.Fatalf("second controller should connect after bye; got %s", second.typesLocked())
 	}
@@ -674,9 +670,9 @@ func TestSecondControllerGetsBusy(t *testing.T) {
 
 func TestSelfConnectRejected(t *testing.T) {
 	hn := newHarness(t)
-	host, _ := hn.pair(t, "SW7K2M9Q")
+	host, _ := hn.pair(t)
 	host.reset()
-	host.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "SW7K2M9Q"})
+	host.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
 	if got := host.lastErr().Code; got != protocol.ErrSelfConnect {
 		t.Fatalf("error code = %q, want %q", got, protocol.ErrSelfConnect)
 	}
@@ -688,7 +684,7 @@ func TestSelfConnectRejected(t *testing.T) {
 
 func TestPresenceGoesOfflineAfterTimeout(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl := hn.pair(t, "SW7K2M9Q")
+	host, ctrl := hn.pair(t)
 
 	ctrl.reset()
 	ctrl.send(protocol.TypeWatch, protocol.Watch{DeviceID: host.deviceID})
@@ -758,7 +754,7 @@ func TestPresenceGoesOfflineAfterTimeout(t *testing.T) {
 
 func TestPresenceOfflineImmediatelyOnDisconnect(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl := hn.pair(t, "SW7K2M9Q")
+	host, ctrl := hn.pair(t)
 	ctrl.send(protocol.TypeWatch, protocol.Watch{DeviceID: host.deviceID})
 	ctrl.reset()
 	hn.hub.RemoveClient(host.c)
@@ -773,7 +769,7 @@ func TestPresenceOfflineImmediatelyOnDisconnect(t *testing.T) {
 
 func TestUnwatchStopsPushes(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl := hn.pair(t, "SW7K2M9Q")
+	host, ctrl := hn.pair(t)
 	ctrl.send(protocol.TypeWatch, protocol.Watch{DeviceID: host.deviceID})
 	ctrl.send(protocol.TypeUnwatch, protocol.Unwatch{DeviceID: host.deviceID})
 	ctrl.reset()
@@ -788,10 +784,10 @@ func TestUnwatchStopsPushes(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // openSession brings up a host+controller session and returns both tokens.
-func (hn *harness) openSession(t *testing.T, code string) (host, ctrl *peer, sessionID, hostTok, ctrlTok string) {
+func (hn *harness) openSession(t *testing.T) (host, ctrl *peer, sessionID, hostTok, ctrlTok string) {
 	t.Helper()
-	host, ctrl = hn.pair(t, code)
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: code})
+	host, ctrl = hn.pair(t)
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
 	ok := unmarshal[protocol.ConnectOK](t, ctrl.last(protocol.TypeConnectOK))
 	st := unmarshal[protocol.SessionStart](t, host.last(protocol.TypeSessionStart))
 	return host, ctrl, ok.SessionID, st.SessionToken, ok.SessionToken
@@ -799,7 +795,7 @@ func (hn *harness) openSession(t *testing.T, code string) (host, ctrl *peer, ses
 
 func TestResumeWithValidTokenSurvivesSocketDrop(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl, sid, _, ctrlTok := hn.openSession(t, "SW7K2M9Q")
+	host, ctrl, sid, _, ctrlTok := hn.openSession(t)
 
 	// The controller's socket dies. The session must NOT.
 	host.reset()
@@ -868,7 +864,7 @@ func TestResumeWithValidTokenSurvivesSocketDrop(t *testing.T) {
 
 func TestResumeWithForgedOrExpiredTokenFails(t *testing.T) {
 	hn := newHarness(t)
-	_, ctrl, sid, _, ctrlTok := hn.openSession(t, "SW7K2M9Q")
+	_, ctrl, sid, _, ctrlTok := hn.openSession(t)
 	hn.reconnect(ctrl)
 	ctrl.hello(protocol.RoleController)
 
@@ -916,7 +912,7 @@ func TestResumeWithForgedOrExpiredTokenFails(t *testing.T) {
 
 func TestResumeRejectsAnotherDevicesToken(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl, sid, hostTok, _ := hn.openSession(t, "SW7K2M9Q")
+	host, ctrl, sid, hostTok, _ := hn.openSession(t)
 	_ = host
 	hn.reconnect(ctrl)
 	ctrl.hello(protocol.RoleController)
@@ -933,7 +929,7 @@ func TestResumeRejectsAnotherDevicesToken(t *testing.T) {
 
 func TestOrphanedSessionSurvivesUntilTokenExpiry(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl, sid, hostTok, ctrlTok := hn.openSession(t, "SW7K2M9Q")
+	host, ctrl, sid, hostTok, ctrlTok := hn.openSession(t)
 
 	hn.hub.RemoveClient(host.c)
 	hn.hub.RemoveClient(ctrl.c)
@@ -971,7 +967,7 @@ func TestOrphanedSessionSurvivesUntilTokenExpiry(t *testing.T) {
 
 func TestRenewExtendsTheResumeWindow(t *testing.T) {
 	hn := newHarness(t)
-	_, ctrl, sid, _, ctrlTok := hn.openSession(t, "SW7K2M9Q")
+	_, ctrl, sid, _, ctrlTok := hn.openSession(t)
 
 	hn.clock.Advance(5 * time.Minute)
 	ctrl.reset()
@@ -1005,7 +1001,7 @@ func TestRenewExtendsTheResumeWindow(t *testing.T) {
 
 func TestSDPAndICERelayVerbatim(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl, sid, _, _ := hn.openSession(t, "SW7K2M9Q")
+	host, ctrl, sid, _, _ := hn.openSession(t)
 
 	const body = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
 	host.reset()
@@ -1049,9 +1045,55 @@ func TestSDPAndICERelayVerbatim(t *testing.T) {
 	}
 }
 
+func TestPakeIsRelayedLikeSDP(t *testing.T) {
+	hn := newHarness(t)
+	host, ctrl, sid, _, _ := hn.openSession(t)
+
+	body := base64.StdEncoding.EncodeToString([]byte("spake2-message-one"))
+	host.reset()
+	ctrl.send(protocol.TypePake, protocol.Pake{SessionID: sid, Step: 1, Payload: body})
+	got := unmarshal[protocol.Pake](t, host.last(protocol.TypePake))
+	if got.Payload != body || got.Step != 1 || got.SessionID != sid {
+		t.Fatalf("relayed pake = %+v, want step 1 payload %q", got, body)
+	}
+
+	ctrl.reset()
+	back := base64.StdEncoding.EncodeToString([]byte("spake2-message-two"))
+	host.send(protocol.TypePake, protocol.Pake{SessionID: sid, Step: 2, Payload: back})
+	if got := unmarshal[protocol.Pake](t, ctrl.last(protocol.TypePake)).Payload; got != back {
+		t.Fatalf("relayed payload = %q, want %q", got, back)
+	}
+
+	// Oversized payloads are refused, not relayed.
+	host.reset()
+	ctrl.reset()
+	ctrl.send(protocol.TypePake, protocol.Pake{
+		SessionID: sid, Step: 3, Payload: strings.Repeat("A", protocol.MaxPakePayloadBytes+1)})
+	if host.has(protocol.TypePake) {
+		t.Fatal("an oversized pake payload was relayed")
+	}
+	if got := ctrl.lastErr().Code; got != protocol.ErrBadRequest {
+		t.Fatalf("oversized pake: error = %q, want %q", got, protocol.ErrBadRequest)
+	}
+
+	// An unknown session, and a detached peer, behave exactly as for sdp.
+	ctrl.reset()
+	ctrl.send(protocol.TypePake, protocol.Pake{
+		SessionID: "00000000000000000000000000000000", Step: 1, Payload: body})
+	if got := ctrl.lastErr().Code; got != protocol.ErrNoSession {
+		t.Fatalf("pake to an unknown session: error = %q, want %q", got, protocol.ErrNoSession)
+	}
+	hn.reconnect(host)
+	ctrl.reset()
+	ctrl.send(protocol.TypePake, protocol.Pake{SessionID: sid, Step: 2, Payload: body})
+	if got := ctrl.lastErr().Code; got != protocol.ErrPeerOffline {
+		t.Fatalf("pake with the peer detached: error = %q, want %q", got, protocol.ErrPeerOffline)
+	}
+}
+
 func TestByeClosesSessionForBothSides(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl, sid, _, ctrlTok := hn.openSession(t, "SW7K2M9Q")
+	host, ctrl, sid, _, ctrlTok := hn.openSession(t)
 	host.reset()
 	ctrl.send(protocol.TypeBye, protocol.Bye{SessionID: sid, Reason: protocol.ByeUserEnded})
 	b := unmarshal[protocol.Bye](t, host.last(protocol.TypeBye))
@@ -1074,9 +1116,9 @@ func TestByeClosesSessionForBothSides(t *testing.T) {
 // access-code refresh
 // ---------------------------------------------------------------------------
 
-func TestRefreshInvalidatesOldCodeAndSessions(t *testing.T) {
+func TestRefreshBumpsTheEpochAndKillsSessions(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl, sid, _, ctrlTok := hn.openSession(t, "SW7K2M9Q")
+	host, ctrl, sid, _, ctrlTok := hn.openSession(t)
 
 	before, err := hn.store.GetDevice(host.deviceID)
 	if err != nil {
@@ -1086,7 +1128,7 @@ func TestRefreshInvalidatesOldCodeAndSessions(t *testing.T) {
 	ctrl.reset()
 	host.reset()
 	hn.clock.Advance(time.Minute)
-	host.send(protocol.TypeRefreshCode, fastVerifier(t, "NEWCODE1"))
+	host.send(protocol.TypeRefreshCode, map[string]any{})
 	ok := unmarshal[protocol.RefreshCodeOK](t, host.last(protocol.TypeRefreshCodeOK))
 	if ok.DeviceID != host.deviceID {
 		t.Fatalf("refresh_code_ok.deviceId = %q, want %q", ok.DeviceID, host.deviceID)
@@ -1095,13 +1137,9 @@ func TestRefreshInvalidatesOldCodeAndSessions(t *testing.T) {
 		t.Fatalf("refresh_code_ok.updatedAt = %d, want %d", ok.UpdatedAt, hn.clock.Now().UnixMilli())
 	}
 
-	// The stored verifier really changed and the epoch advanced.
 	after, err := hn.store.GetDevice(host.deviceID)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if after.Code.Hash == before.Code.Hash || after.Code.Salt == before.Code.Salt {
-		t.Fatal("the stored verifier was not replaced")
 	}
 	if after.CodeEpoch != before.CodeEpoch+1 {
 		t.Fatalf("code epoch = %d, want %d", after.CodeEpoch, before.CodeEpoch+1)
@@ -1125,40 +1163,11 @@ func TestRefreshInvalidatesOldCodeAndSessions(t *testing.T) {
 		t.Fatalf("resume after refresh: error = %q, want %q", got, protocol.ErrNoSession)
 	}
 
-	// The OLD access code is rejected, the NEW one works.
+	// A new session still opens: the refresh revokes, it does not lock out.
 	ctrl.reset()
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "SW7K2M9Q"})
-	if ctrl.has(protocol.TypeConnectOK) {
-		t.Fatal("the old access code still works after a refresh")
-	}
-	if got := ctrl.lastErr().Code; got != protocol.ErrBadCode {
-		t.Fatalf("old code error = %q, want %q", got, protocol.ErrBadCode)
-	}
-	ctrl.reset()
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID, AccessCode: "NEWCODE1"})
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
 	if !ctrl.has(protocol.TypeConnectOK) {
-		t.Fatalf("the new access code was rejected: %s", ctrl.typesLocked())
-	}
-}
-
-func TestRefreshRejectsBadParameters(t *testing.T) {
-	hn := newHarness(t)
-	host, _ := hn.pair(t, "SW7K2M9Q")
-	before, _ := hn.store.GetDevice(host.deviceID)
-
-	bad := fastVerifier(t, "X")
-	bad.MemKiB = 1024 // below the permitted floor
-	host.reset()
-	host.send(protocol.TypeRefreshCode, bad)
-	if host.has(protocol.TypeRefreshCodeOK) {
-		t.Fatal("an out-of-range Argon2 parameter was accepted")
-	}
-	if got := host.lastErr().Code; got != protocol.ErrBadRequest {
-		t.Fatalf("error = %q, want %q", got, protocol.ErrBadRequest)
-	}
-	after, _ := hn.store.GetDevice(host.deviceID)
-	if after.Code.Hash != before.Code.Hash {
-		t.Fatal("a rejected refresh still modified the stored verifier")
+		t.Fatalf("connect after refresh failed: %s", ctrl.typesLocked())
 	}
 }
 
@@ -1185,7 +1194,7 @@ func TestUnsupportedVersionClosesConnection(t *testing.T) {
 func TestSecondHelloDisplacesFirstConnection(t *testing.T) {
 	hn := newHarness(t)
 	first := hn.newPeer()
-	id := first.register("host", fastVerifier(t, "SW7K2M9Q"))
+	id := first.register("host")
 	first.hello(protocol.RoleHost)
 
 	second := hn.newPeer()
@@ -1209,7 +1218,7 @@ func TestSecondHelloDisplacesFirstConnection(t *testing.T) {
 
 func TestShutdownClosesSessions(t *testing.T) {
 	hn := newHarness(t)
-	host, ctrl, sid, _, _ := hn.openSession(t, "SW7K2M9Q")
+	host, ctrl, sid, _, _ := hn.openSession(t)
 	host.reset()
 	ctrl.reset()
 	hn.hub.Shutdown()

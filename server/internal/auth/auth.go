@@ -1,9 +1,12 @@
 // Package auth holds every cryptographic primitive the signaling server needs:
-// device-key challenge/response, Argon2id access-code verification, HMAC
-// session tokens and coturn REST-auth credential minting.
+// device-key challenge/response, HMAC session tokens and coturn REST-auth
+// credential minting.
+//
+// Under protocol v2 there is deliberately no access-code primitive here: the
+// code is proved peer to peer (PROTOCOL.md §2.17) and the server never sees it.
 //
 // Nothing in this package logs. Callers must never log its inputs either:
-// access-code plaintext and session tokens are secrets.
+// session tokens are secrets.
 package auth
 
 import (
@@ -21,9 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/crypto/argon2"
-	"rcprotocol"
 )
 
 // Errors returned by this package. Callers map them onto protocol error codes.
@@ -82,50 +82,6 @@ func VerifyDeviceSig(pubkeyB64, sigB64 string, nonce []byte) error {
 		return ErrBadSignature
 	}
 	return nil
-}
-
-// ---------------------------------------------------------------------------
-// Access code
-// ---------------------------------------------------------------------------
-
-// VerifyCode recomputes the Argon2id hash of the supplied plaintext under the
-// stored verifier's parameters and compares in constant time.
-//
-// plaintext is a secret: it is never returned, stored or logged.
-func VerifyCode(v protocol.CodeVerifier, plaintext string) bool {
-	if v.Alg != protocol.AlgArgon2id {
-		return false
-	}
-	if err := v.Validate(); err != nil {
-		return false
-	}
-	salt, err := base64.StdEncoding.DecodeString(v.Salt)
-	if err != nil {
-		return false
-	}
-	want, err := base64.StdEncoding.DecodeString(v.Hash)
-	if err != nil || len(want) != int(v.Len) {
-		return false
-	}
-	got := argon2.IDKey([]byte(plaintext), salt, v.Time, v.MemKiB, v.Par, v.Len)
-	return subtle.ConstantTimeCompare(got, want) == 1
-}
-
-// MakeVerifier builds a verifier for a plaintext code using the recommended
-// parameters. Clients normally do this themselves; the server uses it only in
-// tests and tools.
-func MakeVerifier(plaintext string) (protocol.CodeVerifier, error) {
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return protocol.CodeVerifier{}, err
-	}
-	v := protocol.CodeVerifier{
-		Alg: protocol.AlgArgon2id, Salt: base64.StdEncoding.EncodeToString(salt),
-		Time: 3, MemKiB: 65536, Par: 1, Len: 32,
-	}
-	sum := argon2.IDKey([]byte(plaintext), salt, v.Time, v.MemKiB, v.Par, v.Len)
-	v.Hash = base64.StdEncoding.EncodeToString(sum)
-	return v, nil
 }
 
 // ---------------------------------------------------------------------------

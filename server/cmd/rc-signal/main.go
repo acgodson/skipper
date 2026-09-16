@@ -1,5 +1,6 @@
-// Command rc-signal is the RemoteControl signaling server: device registry,
-// access-code auth, presence, session management and SDP/ICE relay.
+// Command rc-signal is the SkipperDesk signaling server: device registry,
+// entitlement-gated connect, presence, session management and the
+// sdp/ice/pake relay.
 //
 // It never sees media, input or clipboard content, and never logs secrets.
 package main
@@ -20,6 +21,7 @@ import (
 
 	"rc-signal/internal/auth"
 	"rc-signal/internal/clockx"
+	"rc-signal/internal/entitlement"
 	"rc-signal/internal/hub"
 	"rc-signal/internal/store"
 	"rc-signal/internal/wsserver"
@@ -45,6 +47,10 @@ func main() {
 		stunURLs   = flag.String("stun-urls", env("RC_STUN_URLS", "stun:stun.l.google.com:19302"), "comma-separated STUN URLs (RC_STUN_URLS)")
 		tokenKey   = flag.String("token-secret", env("RC_TOKEN_SECRET", ""), "hex HMAC secret for session tokens; random if empty (RC_TOKEN_SECRET)")
 		logLevel   = flag.String("log-level", env("RC_LOG_LEVEL", "info"), "debug|info|warn|error (RC_LOG_LEVEL)")
+		entMode    = flag.String("entitlement", env("RC_ENTITLEMENT", ""), "static|http — how connect_req is authorised (RC_ENTITLEMENT)")
+		entDeny    = flag.String("entitlement-deny", env("RC_ENTITLEMENT_DENY", ""), "static mode only: comma-separated <deviceId>|label:<label>[=<reason>] deny list (RC_ENTITLEMENT_DENY)")
+		apiURL     = flag.String("api-internal-url", env("RC_API_INTERNAL_URL", ""), "http mode only: internal API base URL (RC_API_INTERNAL_URL)")
+		apiToken   = flag.String("internal-token", env("RC_INTERNAL_TOKEN", ""), "http mode only: shared bearer secret for the internal API (RC_INTERNAL_TOKEN)")
 	)
 	flag.Parse()
 
@@ -78,18 +84,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	ent, err := makeEntitlement(*entMode, *insecure, *entDeny, *apiURL, *apiToken, st)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "rc-signal: "+err.Error())
+		os.Exit(2)
+	}
+
 	if *turnSecret == "" {
 		log.Warn("no TURN secret configured; hello_ok will advertise STUN only")
 	}
 
 	h := hub.New(hub.Options{
-		Store:      st,
-		Clock:      clockx.Real{},
-		Signer:     signer,
-		Logger:     log,
-		TurnSecret: *turnSecret,
-		TurnURLs:   splitList(*turnURLs),
-		StunURLs:   splitList(*stunURLs),
+		Store:       st,
+		Entitlement: ent,
+		Clock:       clockx.Real{},
+		Signer:      signer,
+		Logger:      log,
+		TurnSecret:  *turnSecret,
+		TurnURLs:    splitList(*turnURLs),
+		StunURLs:    splitList(*stunURLs),
 	})
 
 	srv := wsserver.New(wsserver.Config{
@@ -103,7 +116,8 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
-	log.Info("rc-signal started", "addr", *addr, "tls", !*insecure, "db", *dbPath)
+	log.Info("rc-signal started", "addr", *addr, "tls", !*insecure, "db", *dbPath,
+		"entitlement", entitlementMode(*entMode, *insecure))
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -122,6 +136,41 @@ func main() {
 		}
 		cancel()
 		log.Info("stopped")
+	}
+}
+
+// entitlementMode resolves the configured provider name. Local development
+// (-insecure-http) defaults to static; anything else must say so explicitly,
+// so a production deployment cannot silently run without a real gate.
+func entitlementMode(mode string, insecure bool) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" && insecure {
+		return modeStatic
+	}
+	return mode
+}
+
+const (
+	modeStatic = "static"
+	modeHTTP   = "http"
+)
+
+func makeEntitlement(mode string, insecure bool, deny, apiURL, apiToken string, st *store.Store) (entitlement.Entitlement, error) {
+	switch entitlementMode(mode, insecure) {
+	case modeStatic:
+		return entitlement.NewStatic(deny, func(deviceID string) string {
+			d, err := st.GetDevice(deviceID)
+			if err != nil {
+				return ""
+			}
+			return d.Label
+		})
+	case modeHTTP:
+		return entitlement.NewHTTP(apiURL, apiToken)
+	case "":
+		return nil, errors.New("-entitlement is required (static|http) unless -insecure-http is set")
+	default:
+		return nil, fmt.Errorf("unknown -entitlement %q: want static or http", mode)
 	}
 }
 

@@ -1,6 +1,6 @@
 // Package clockx provides the tiny clock abstraction the server uses so that
-// every time-dependent behaviour (presence timeouts, token TTLs, rate-limit
-// lockouts) can be tested deterministically without sleeping.
+// every time-dependent behaviour (presence timeouts, token TTLs, session
+// expiry) can be tested deterministically without sleeping.
 package clockx
 
 import (

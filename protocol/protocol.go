@@ -10,13 +10,11 @@ import (
 	"fmt"
 )
 
-// Version is the only protocol version this build speaks.
-//
-// TODO: bump to 2 once the SPAKE2 exchange and the entitlement gate are
-// implemented on both the server and every client. PROTOCOL.md "v2 changes"
-// lists what changes at that bump; the v2 types and constants below already
-// exist so implementations can be written against them first.
-const Version = 1
+// Version is the only protocol version this build speaks. PROTOCOL.md "v2
+// changes" lists what the bump to 2 changed: connect_req is gated by
+// entitlement, the access code is proved peer to peer by the relayed pake
+// exchange, and the server stores nothing about any code.
+const Version = 2
 
 // Tunables the server advertises in hello_ok. Duplicated in PROTOCOL.md §2.4.
 const (

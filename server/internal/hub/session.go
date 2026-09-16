@@ -207,6 +207,8 @@ func (h *Hub) closeSessionLocked(s *Session, reason string) {
 		}
 	}
 	delete(h.sessions, s.ID)
+	h.reportSessionStop(protocol.SessionStopReport{
+		SessionID: s.ID, EndedAt: h.clock.Now().UnixMilli(), Reason: reason})
 	h.log.Info("session closed", "sessionId", s.ID, "reason", reason)
 }
 

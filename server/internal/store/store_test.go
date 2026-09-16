@@ -1,19 +1,14 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"rcprotocol"
 )
-
-func verifier(hash string) protocol.CodeVerifier {
-	return protocol.CodeVerifier{
-		Alg: protocol.AlgArgon2id, Salt: "c2FsdHNhbHRzYWx0c2FsdA==", Hash: hash,
-		Time: 3, MemKiB: 65536, Par: 1, Len: 32,
-	}
-}
 
 func TestRegisterAndLookup(t *testing.T) {
 	s, err := Open(":memory:")
@@ -23,7 +18,7 @@ func TestRegisterAndLookup(t *testing.T) {
 	defer s.Close()
 	now := time.Unix(1_755_600_000, 0)
 
-	d, existing, err := s.Register("PUBKEY-A", "Studio Mac", verifier("hash-a"), now)
+	d, existing, err := s.Register("PUBKEY-A", "Studio Mac", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,29 +28,25 @@ func TestRegisterAndLookup(t *testing.T) {
 	if !protocol.ValidDeviceID(d.DeviceID) {
 		t.Fatalf("deviceId %q is not 9 digits", d.DeviceID)
 	}
-	if d.Label != "Studio Mac" || d.Code.Hash != "hash-a" || d.CodeEpoch != 1 {
+	if d.Label != "Studio Mac" || d.CodeEpoch != 1 {
 		t.Fatalf("stored device = %+v", d)
 	}
 	if !d.CreatedAt.Equal(now) || !d.UpdatedAt.Equal(now) {
 		t.Fatalf("timestamps = %v/%v, want %v", d.CreatedAt, d.UpdatedAt, now)
 	}
 
-	// Idempotent per key, and the code is NOT overwritten.
-	again, existing, err := s.Register("PUBKEY-A", "renamed", verifier("hash-z"), now.Add(time.Hour))
+	// Idempotent per key.
+	again, existing, err := s.Register("PUBKEY-A", "renamed", now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !existing || again.DeviceID != d.DeviceID {
 		t.Fatalf("re-register returned %q existing=%v, want %q true", again.DeviceID, existing, d.DeviceID)
 	}
-	if again.Code.Hash != "hash-a" {
-		t.Fatalf("re-registration overwrote the stored verifier: %q", again.Code.Hash)
-	}
-
 	// Distinct keys get distinct ids.
 	seen := map[string]bool{d.DeviceID: true}
 	for i := 0; i < 20; i++ {
-		x, _, err := s.Register("PUBKEY-"+string(rune('a'+i)), "", verifier("h"), now)
+		x, _, err := s.Register("PUBKEY-"+string(rune('a'+i)), "", now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -78,28 +69,25 @@ func TestRegisterAndLookup(t *testing.T) {
 	}
 }
 
-func TestUpdateCodeBumpsEpoch(t *testing.T) {
+func TestBumpEpoch(t *testing.T) {
 	s, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 	now := time.Unix(1_755_600_000, 0)
-	d, _, err := s.Register("PK", "", verifier("old"), now)
+	d, _, err := s.Register("PK", "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	later := now.Add(90 * time.Second)
-	if err := s.UpdateCode(d.DeviceID, verifier("new"), later); err != nil {
+	if err := s.BumpEpoch(d.DeviceID, later); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetDevice(d.DeviceID)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if got.Code.Hash != "new" {
-		t.Fatalf("code hash = %q, want %q", got.Code.Hash, "new")
 	}
 	if got.CodeEpoch != 2 {
 		t.Fatalf("code epoch = %d, want 2", got.CodeEpoch)
@@ -107,18 +95,74 @@ func TestUpdateCodeBumpsEpoch(t *testing.T) {
 	if !got.UpdatedAt.Equal(later) || !got.CreatedAt.Equal(now) {
 		t.Fatalf("timestamps = %v/%v", got.CreatedAt, got.UpdatedAt)
 	}
-	if err := s.UpdateCode("000000000", verifier("x"), later); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("UpdateCode on a missing device: err = %v, want ErrNotFound", err)
+	if err := s.BumpEpoch("000000000", later); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("BumpEpoch on a missing device: err = %v, want ErrNotFound", err)
 	}
-	// An invalid verifier is refused and changes nothing.
-	bad := verifier("nope")
-	bad.MemKiB = 10
-	if err := s.UpdateCode(d.DeviceID, bad, later); err == nil {
-		t.Fatal("an out-of-range verifier was stored")
+}
+
+// TestMigrationDropsV1VerifierColumns proves the v2 schema can open a database
+// written by a v1 server: the device survives, the verifier does not.
+func TestMigrationDropsV1VerifierColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v1.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	after, _ := s.GetDevice(d.DeviceID)
-	if after.Code.Hash != "new" || after.CodeEpoch != 2 {
-		t.Fatalf("a rejected update mutated state: %+v", after)
+	const v1Schema = `CREATE TABLE devices (
+  device_id    TEXT PRIMARY KEY,
+  pubkey       TEXT NOT NULL UNIQUE,
+  label        TEXT NOT NULL DEFAULT '',
+  code_alg     TEXT NOT NULL,
+  code_salt    TEXT NOT NULL,
+  code_hash    TEXT NOT NULL,
+  code_time    INTEGER NOT NULL,
+  code_mem_kib INTEGER NOT NULL,
+  code_par     INTEGER NOT NULL,
+  code_len     INTEGER NOT NULL,
+  code_epoch   INTEGER NOT NULL DEFAULT 1,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);`
+	if _, err := db.Exec(v1Schema); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_755_600_000, 0)
+	if _, err := db.Exec(`INSERT INTO devices VALUES
+ ('481930275','PUBKEY-A','Studio Mac','argon2id','c2FsdA==','aGFzaA==',3,65536,1,32,7,?,?)`,
+		now.UnixMilli(), now.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("opening a v1 database: %v", err)
+	}
+	defer s.Close()
+
+	d, err := s.GetDevice("481930275")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Pubkey != "PUBKEY-A" || d.Label != "Studio Mac" || d.CodeEpoch != 7 {
+		t.Fatalf("migrated device = %+v", d)
+	}
+	if !d.CreatedAt.Equal(now) {
+		t.Fatalf("createdAt = %v, want %v", d.CreatedAt, now)
+	}
+	var n int
+	if err := s.db.QueryRow(
+		`SELECT count(*) FROM pragma_table_info('devices') WHERE name LIKE 'code\_%' ESCAPE '\'`,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("code_* column count = %d, want 1 (code_epoch only)", n)
+	}
+	if _, _, err := s.Register("PUBKEY-B", "Laptop", now); err != nil {
+		t.Fatalf("registering into a migrated database: %v", err)
 	}
 }
 

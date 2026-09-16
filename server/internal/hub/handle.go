@@ -1,19 +1,21 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"time"
 
 	"rc-signal/internal/auth"
+	"rc-signal/internal/entitlement"
 	"rc-signal/internal/store"
 	"rcprotocol"
 )
 
 // Handle processes one inbound frame from a client.
 //
-// Nothing in here logs a payload body: access codes, tokens, SDP, ICE
-// candidates and clipboard text never reach the logger.
+// Nothing in here logs a payload body: tokens, SDP, ICE candidates, PAKE
+// messages and clipboard text never reach the logger.
 func (h *Hub) Handle(c *Client, raw []byte) {
 	// Version check first, so a future client gets a clear answer.
 	var probe struct {
@@ -42,8 +44,8 @@ func (h *Hub) Handle(c *Client, raw []byte) {
 		return
 	}
 
-	// connect_req runs Argon2id, which is intentionally slow. Give it its own
-	// path so the global lock is not held across the hash.
+	// connect_req asks the entitlement provider, which may be a network call.
+	// Give it its own path so the global lock is not held across it.
 	if e.Type == protocol.TypeConnectReq {
 		h.handleConnectReq(c, e)
 		return
@@ -88,7 +90,7 @@ func (h *Hub) handleLocked(c *Client, e protocol.Envelope) {
 		h.handleResumeLocked(c, e)
 	case protocol.TypeRenew:
 		h.handleRenewLocked(c, e)
-	case protocol.TypeSDP, protocol.TypeICE:
+	case protocol.TypeSDP, protocol.TypeICE, protocol.TypePake:
 		h.handleRelayLocked(c, e)
 	case protocol.TypeBye:
 		h.handleByeLocked(c, e)
@@ -118,11 +120,11 @@ func (h *Hub) checkNonceLocked(c *Client, pubkey, sig string) bool {
 func (h *Hub) handleRegisterLocked(c *Client, e protocol.Envelope) {
 	var p protocol.Register
 	if err := protocol.Unmarshal(e, &p); err != nil || p.Pubkey == "" || p.Sig == "" {
-		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "register requires pubkey, sig and code", 0)
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "register requires pubkey and sig", 0)
 		return
 	}
-	if err := p.Code.Validate(); err != nil {
-		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, err.Error(), 0)
+	if p.Code != (protocol.CodeVerifier{}) {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "register must not carry a code verifier", 0)
 		return
 	}
 	if len(p.Label) > 64 {
@@ -133,7 +135,7 @@ func (h *Hub) handleRegisterLocked(c *Client, e protocol.Envelope) {
 		h.issueChallengeLocked(c)
 		return
 	}
-	dev, existing, err := h.opt.Store.Register(p.Pubkey, p.Label, p.Code, h.clock.Now())
+	dev, existing, err := h.opt.Store.Register(p.Pubkey, p.Label, h.clock.Now())
 	if err != nil {
 		h.log.Error("register failed", "err", err)
 		h.sendErrLocked(c, e.ID, protocol.ErrInternal, "registration failed", 0)
@@ -274,6 +276,9 @@ func (h *Hub) handleUnwatchLocked(c *Client, e protocol.Envelope) {
 // connect_req
 // ---------------------------------------------------------------------------
 
+// handleConnectReq authorises a session by ENTITLEMENT (PROTOCOL.md §2.9).
+// The server knows nothing about the access code: that is proved peer to peer
+// by the pake exchange once this session exists.
 func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 	var p protocol.ConnectReq
 	if err := protocol.Unmarshal(e, &p); err != nil {
@@ -282,8 +287,6 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 		h.mu.Unlock()
 		return
 	}
-	// p.AccessCode is a secret from here on. It is never logged, stored or
-	// forwarded, and it does not outlive this function.
 
 	h.mu.Lock()
 	if !c.authed {
@@ -292,10 +295,14 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 		return
 	}
 	h.touchLocked(c)
-	now := h.clock.Now()
 
-	if !protocol.ValidDeviceID(p.DeviceID) || p.AccessCode == "" {
-		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "connect_req requires deviceId and accessCode", 0)
+	if !protocol.ValidDeviceID(p.DeviceID) {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "connect_req requires a 9-digit deviceId", 0)
+		h.mu.Unlock()
+		return
+	}
+	if p.AccessCode != "" {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "connect_req must not carry an access code", 0)
 		h.mu.Unlock()
 		return
 	}
@@ -304,75 +311,60 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 		h.mu.Unlock()
 		return
 	}
-	if secs := h.lockoutLocked(p.DeviceID, now); secs > 0 {
-		h.log.Warn("connect_req locked out", "deviceId", p.DeviceID, "retryAfterSec", secs)
-		h.sendErrLocked(c, e.ID, protocol.ErrRateLimited, "too many failed attempts", secs)
-		h.mu.Unlock()
-		return
-	}
-	dev, err := h.opt.Store.GetDevice(p.DeviceID)
-	if errors.Is(err, store.ErrNotFound) {
-		h.sendErrLocked(c, e.ID, protocol.ErrUnknownDevice, "unknown device", 0)
-		h.mu.Unlock()
-		return
-	}
-	if err != nil {
+	if _, err := h.opt.Store.GetDevice(p.DeviceID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			h.sendErrLocked(c, e.ID, protocol.ErrUnknownDevice, "unknown device", 0)
+			h.mu.Unlock()
+			return
+		}
 		h.log.Error("device lookup failed", "err", err)
 		h.sendErrLocked(c, e.ID, protocol.ErrInternal, "lookup failed", 0)
 		h.mu.Unlock()
 		return
 	}
-	hostConn := h.byDevice[p.DeviceID]
-	if hostConn == nil {
+	if h.byDevice[p.DeviceID] == nil {
 		h.sendErrLocked(c, e.ID, protocol.ErrOffline, "host is offline", 0)
 		h.mu.Unlock()
 		return
 	}
-	if sid, live := h.devSess[p.DeviceID]; live {
-		if s := h.sessions[sid]; s != nil && s.State != protocol.SessionClosed {
-			h.sendErrLocked(c, e.ID, protocol.ErrBusy, "host already has an active session", 0)
-			h.mu.Unlock()
-			return
-		}
+	if h.hasLiveSessionLocked(p.DeviceID) {
+		h.sendErrLocked(c, e.ID, protocol.ErrBusy, "host already has an active session", 0)
+		h.mu.Unlock()
+		return
 	}
-	verifier := dev.Code
-	epoch := dev.CodeEpoch
 	h.mu.Unlock()
 
-	// Argon2id, deliberately expensive, run without the lock held.
-	okCode := auth.VerifyCode(verifier, p.AccessCode)
+	decision, err := h.checkEntitlement(p.DeviceID)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if c.closed {
 		return
 	}
-	now = h.clock.Now()
-	if !okCode {
-		h.recordFailLocked(p.DeviceID, now)
-		h.log.Warn("connect_req rejected", "deviceId", p.DeviceID, "code", protocol.ErrBadCode)
-		h.sendErrLocked(c, e.ID, protocol.ErrBadCode, "access code rejected", 0)
+	if err != nil {
+		h.log.Error("entitlement check failed", "deviceId", p.DeviceID, "err", err)
+		h.sendErrLocked(c, e.ID, protocol.ErrInternal, "entitlement check failed", 0)
 		return
 	}
-	h.clearFailsLocked(p.DeviceID)
+	if !decision.Allow {
+		h.log.Info("connect_req denied", "deviceId", p.DeviceID, "reason", decision.Reason)
+		h.sendEntitlementErrLocked(c, e.ID, decision.Reason, "the host's account may not open a session")
+		return
+	}
+	now := h.clock.Now()
 
-	// Re-check the racy preconditions now that we hold the lock again.
-	hostConn = h.byDevice[p.DeviceID]
+	hostConn := h.byDevice[p.DeviceID]
 	if hostConn == nil {
 		h.sendErrLocked(c, e.ID, protocol.ErrOffline, "host is offline", 0)
 		return
 	}
-	if sid, live := h.devSess[p.DeviceID]; live {
-		if s := h.sessions[sid]; s != nil && s.State != protocol.SessionClosed {
-			h.sendErrLocked(c, e.ID, protocol.ErrBusy, "host already has an active session", 0)
-			return
-		}
+	if h.hasLiveSessionLocked(p.DeviceID) {
+		h.sendErrLocked(c, e.ID, protocol.ErrBusy, "host already has an active session", 0)
+		return
 	}
-	if sid, live := h.devSess[c.deviceID]; live {
-		if s := h.sessions[sid]; s != nil && s.State != protocol.SessionClosed {
-			h.sendErrLocked(c, e.ID, protocol.ErrBusy, "controller already has an active session", 0)
-			return
-		}
+	if h.hasLiveSessionLocked(c.deviceID) {
+		h.sendErrLocked(c, e.ID, protocol.ErrBusy, "controller already has an active session", 0)
+		return
 	}
 
 	sid, err := newSessionID()
@@ -382,7 +374,7 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 	}
 	s := &Session{
 		ID: sid, State: protocol.SessionPending, CreatedAt: now,
-		Host: side{deviceID: p.DeviceID, epoch: epoch},
+		Host: side{deviceID: p.DeviceID, epoch: h.deviceEpochLocked(p.DeviceID)},
 		Ctrl: side{deviceID: c.deviceID, epoch: h.deviceEpochLocked(c.deviceID)},
 	}
 	h.sessions[sid] = s
@@ -410,7 +402,32 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 		TTLSec: protocol.SessionTokenTTLSec, HostDeviceID: p.DeviceID,
 		ControllerDeviceID: c.deviceID,
 	})
+	h.reportSessionStart(protocol.SessionStartReport{
+		SessionID: sid, HostDeviceID: p.DeviceID, ControllerDeviceID: c.deviceID,
+		StartedAt: now.UnixMilli(),
+	})
 	h.log.Info("session opened", "sessionId", sid, "host", p.DeviceID, "controller", c.deviceID)
+}
+
+// checkEntitlement asks the provider without the hub lock held.
+func (h *Hub) checkEntitlement(hostDeviceID string) (entitlement.Decision, error) {
+	if h.opt.Entitlement == nil {
+		return entitlement.Decision{}, errors.New("no entitlement provider configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), entitlement.CheckTimeout)
+	defer cancel()
+	return h.opt.Entitlement.Check(ctx, hostDeviceID)
+}
+
+// hasLiveSessionLocked reports whether a device holds a session in any state
+// but closed — the 1:1 slot of PROTOCOL.md §2.9.
+func (h *Hub) hasLiveSessionLocked(deviceID string) bool {
+	sid, ok := h.devSess[deviceID]
+	if !ok {
+		return false
+	}
+	s := h.sessions[sid]
+	return s != nil && s.State != protocol.SessionClosed
 }
 
 func (h *Hub) deviceEpochLocked(deviceID string) int64 {
@@ -488,14 +505,20 @@ func (h *Hub) handleRenewLocked(c *Client, e protocol.Envelope) {
 // relay + bye
 // ---------------------------------------------------------------------------
 
-// handleRelayLocked forwards sdp and ice verbatim. The server does not parse,
-// rewrite, store or log the bodies — only the routing metadata.
+// handleRelayLocked forwards sdp, ice and pake verbatim. The server does not
+// parse, rewrite, store or log the bodies — only the routing metadata. A pake
+// payload is measured, never read: PROTOCOL.md §2.17 caps it.
 func (h *Hub) handleRelayLocked(c *Client, e protocol.Envelope) {
 	var meta struct {
 		SessionID string `json:"sessionId"`
+		Payload   string `json:"payload"`
 	}
 	if err := json.Unmarshal(e.Payload, &meta); err != nil || meta.SessionID == "" {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "relay requires sessionId", 0)
+		return
+	}
+	if e.Type == protocol.TypePake && len(meta.Payload) > protocol.MaxPakePayloadBytes {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "pake payload is too large", 0)
 		return
 	}
 	s := h.sessions[meta.SessionID]
@@ -541,18 +564,12 @@ func (h *Hub) handleByeLocked(c *Client, e protocol.Envelope) {
 // refresh_code
 // ---------------------------------------------------------------------------
 
+// handleRefreshLocked applies PROTOCOL.md §2.15. In v2 the payload is {}:
+// there is no stored verifier to replace, so the epoch bump and the session
+// and token kill are the whole of the operation.
 func (h *Hub) handleRefreshLocked(c *Client, e protocol.Envelope) {
-	var p protocol.CodeVerifier
-	if err := protocol.Unmarshal(e, &p); err != nil {
-		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "malformed refresh_code", 0)
-		return
-	}
-	if err := p.Validate(); err != nil {
-		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, err.Error(), 0)
-		return
-	}
 	now := h.clock.Now()
-	if err := h.opt.Store.UpdateCode(c.deviceID, p, now); err != nil {
+	if err := h.opt.Store.BumpEpoch(c.deviceID, now); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			h.sendErrLocked(c, e.ID, protocol.ErrUnknownDevice, "unknown device", 0)
 			return
@@ -561,9 +578,7 @@ func (h *Hub) handleRefreshLocked(c *Client, e protocol.Envelope) {
 		h.sendErrLocked(c, e.ID, protocol.ErrInternal, "refresh failed", 0)
 		return
 	}
-	// Every session and token for this device dies immediately.
 	h.closeSessionsForDeviceLocked(c.deviceID, protocol.ByeCodeRefreshed)
-	h.clearFailsLocked(c.deviceID)
 	h.sendLocked(c, protocol.TypeRefreshCodeOK, e.ID, protocol.RefreshCodeOK{
 		DeviceID: c.deviceID, UpdatedAt: now.UnixMilli()})
 	h.log.Info("access code refreshed", "deviceId", c.deviceID)

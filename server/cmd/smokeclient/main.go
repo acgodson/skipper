@@ -15,11 +15,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 
-	"rc-signal/internal/auth"
+	"rc-signal/internal/entitlement"
 	"rcprotocol"
 )
 
@@ -206,13 +207,18 @@ func decode[T any](e env) T {
 	return v
 }
 
-func (c *client) register(label, code string) string {
-	v, err := auth.MakeVerifier(code)
-	if err != nil {
-		fatal("verifier: %v", err)
-	}
+// legacyCode is a v1 access code, sent once to prove a v2 server refuses the
+// field. deniedLabel is the device label the static entitlement provider
+// refuses in development, which is how the deny path is exercised without
+// knowing a device id in advance.
+const (
+	legacyCode  = "SW7K2M9Q"
+	deniedLabel = entitlement.DevDenyLabel
+)
+
+func (c *client) register(label string) string {
 	c.send(protocol.TypeRegister, protocol.Register{
-		Pubkey: c.pub, Sig: c.sig(), Label: label, Code: v})
+		Pubkey: c.pub, Sig: c.sig(), Label: label})
 	ok := decode[protocol.RegisterOK](c.mustGet(protocol.TypeRegisterOK))
 	c.deviceID = ok.DeviceID
 	c.mustGet(protocol.TypeChallenge) // fresh nonce for hello
@@ -228,13 +234,6 @@ func (c *client) hello(role string) protocol.HelloOK {
 	}
 	return decode[protocol.HelloOK](e)
 }
-
-// ---------------------------------------------------------------------------
-
-const (
-	hostCode = "SW7K2M9Q"
-	newCode  = "TQ4X8B2N"
-)
 
 var insecureTLS bool
 
@@ -255,8 +254,8 @@ func main() {
 	ctrl.dial()
 
 	// ---- 1. registration -------------------------------------------------
-	hostID := host.register("Smoke Host", hostCode)
-	ctrlID := ctrl.register("Smoke Controller", "CTRLCODE")
+	hostID := host.register("Smoke Host")
+	ctrlID := ctrl.register("Smoke Controller")
 	check("register host device", protocol.ValidDeviceID(hostID),
 		fmt.Sprintf("deviceId %q is not 9 digits", hostID))
 	check("register controller device",
@@ -289,25 +288,25 @@ func main() {
 	check("watch reports the host online", wok.DeviceID == hostID && pres.Online && pres.DeviceID == hostID,
 		fmt.Sprintf("watch_ok=%+v presence=%+v", wok, pres))
 
-	// ---- 5. wrong access code -------------------------------------------
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID, AccessCode: "WRONGXXX"})
+	// ---- 5. a v1 access code is refused ----------------------------------
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID, AccessCode: legacyCode})
 	e, _ := ctrl.wait(protocol.TypeConnectOK, protocol.TypeError)
 	errp := decode[protocol.Error](e)
-	check("wrong access code is rejected with bad_code",
-		e.Type == protocol.TypeError && errp.Code == protocol.ErrBadCode,
+	check("connect_req carrying an access code is rejected with bad_request",
+		e.Type == protocol.TypeError && errp.Code == protocol.ErrBadRequest,
 		fmt.Sprintf("got %s %+v", e.Type, errp))
 
-	// ---- 6. correct access code -----------------------------------------
-	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID, AccessCode: hostCode})
+	// ---- 6. entitlement opens the session --------------------------------
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID})
 	e, ok := ctrl.wait(protocol.TypeConnectOK, protocol.TypeError)
 	if !ok || e.Type != protocol.TypeConnectOK {
-		fatal("correct access code was rejected: %s %+v", e.Type, decode[protocol.Error](e))
+		fatal("an entitled host refused the connection: %s %+v", e.Type, decode[protocol.Error](e))
 	}
 	conn := decode[protocol.ConnectOK](e)
 	ctrl.session, ctrl.token = conn.SessionID, conn.SessionToken
 	start := decode[protocol.SessionStart](host.mustGet(protocol.TypeSessionStart))
 	host.session, host.token = start.SessionID, start.SessionToken
-	check("correct access code opens a session",
+	check("connect_req opens a session without any access code",
 		len(conn.SessionID) == 32 && conn.HostDeviceID == hostID && conn.ControllerDeviceID == ctrlID,
 		fmt.Sprintf("%+v", conn))
 	check("host is told about the session with its own token",
@@ -317,9 +316,9 @@ func main() {
 	// ---- 7. strict 1:1 ---------------------------------------------------
 	third := newClient("ctrl2", url)
 	third.dial()
-	third.register("Smoke Controller 2", "OTHERCOD")
+	third.register("Smoke Controller 2")
 	third.hello(protocol.RoleController)
-	third.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID, AccessCode: hostCode})
+	third.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID})
 	e, _ = third.wait(protocol.TypeConnectOK, protocol.TypeError)
 	busy := decode[protocol.Error](e)
 	check("second controller is rejected with busy",
@@ -327,7 +326,7 @@ func main() {
 		fmt.Sprintf("got %s %+v", e.Type, busy))
 	third.hangUp()
 
-	// ---- 8. SDP / ICE relay ---------------------------------------------
+	// ---- 8. SDP / ICE / PAKE relay ---------------------------------------
 	const offerSDP = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
 	ctrl.send(protocol.TypeSDP, protocol.SDP{SessionID: ctrl.session, SDPType: "offer", SDP: offerSDP})
 	got := decode[protocol.SDP](host.mustGet(protocol.TypeSDP))
@@ -347,6 +346,28 @@ func main() {
 	ice := decode[protocol.ICE](host.mustGet(protocol.TypeICE))
 	check("ICE candidate relayed", ice.Candidate == cand && ice.SDPMid == "0",
 		fmt.Sprintf("got %+v", ice))
+
+	pakeOne := base64.StdEncoding.EncodeToString([]byte("spake2-message-one"))
+	ctrl.send(protocol.TypePake, protocol.Pake{SessionID: ctrl.session, Step: 1, Payload: pakeOne})
+	pk := decode[protocol.Pake](host.mustGet(protocol.TypePake))
+	check("pake step 1 relayed to the host verbatim",
+		pk.Payload == pakeOne && pk.Step == 1 && pk.SessionID == ctrl.session,
+		fmt.Sprintf("got %+v", pk))
+
+	pakeTwo := base64.StdEncoding.EncodeToString([]byte("spake2-message-two"))
+	host.send(protocol.TypePake, protocol.Pake{SessionID: host.session, Step: 2, Payload: pakeTwo})
+	pk2 := decode[protocol.Pake](ctrl.mustGet(protocol.TypePake))
+	check("pake step 2 relayed back to the controller",
+		pk2.Payload == pakeTwo && pk2.Step == 2,
+		fmt.Sprintf("got %+v", pk2))
+
+	oversize := strings.Repeat("A", protocol.MaxPakePayloadBytes+4)
+	ctrl.send(protocol.TypePake, protocol.Pake{SessionID: ctrl.session, Step: 3, Payload: oversize})
+	e, _ = ctrl.wait(protocol.TypeError)
+	big := decode[protocol.Error](e)
+	check("an oversized pake payload is rejected with bad_request",
+		e.Type == protocol.TypeError && big.Code == protocol.ErrBadRequest,
+		fmt.Sprintf("got %s %+v", e.Type, big))
 
 	// ---- 9. kill the controller socket and resume ------------------------
 	ctrl.hangUp()
@@ -369,7 +390,7 @@ func main() {
 		fatal("resume failed: %s %+v", e.Type, decode[protocol.Error](e))
 	}
 	rok := decode[protocol.ResumeOK](e)
-	check("resume re-attaches without the access code",
+	check("resume re-attaches without any access code",
 		rok.SessionID == ctrl.session && rok.PeerAttached && rok.Role == protocol.RoleController,
 		fmt.Sprintf("%+v", rok))
 	check("resume rotates the session token", rok.SessionToken != ctrl.token, "token unchanged")
@@ -407,14 +428,10 @@ func main() {
 	check("ICE-restart offer relays after resume",
 		rst.SDP == offerSDP && rst.Restart, fmt.Sprintf("got %+v", rst))
 
-	// ---- 11. access-code refresh ----------------------------------------
-	v, err := auth.MakeVerifier(newCode)
-	if err != nil {
-		fatal("verifier: %v", err)
-	}
-	host.send(protocol.TypeRefreshCode, v)
+	// ---- 11. refresh_code ------------------------------------------------
+	host.send(protocol.TypeRefreshCode, map[string]any{})
 	rc := decode[protocol.RefreshCodeOK](host.mustGet(protocol.TypeRefreshCodeOK))
-	check("refresh_code acknowledged", rc.DeviceID == hostID, fmt.Sprintf("%+v", rc))
+	check("refresh_code acknowledged with an empty payload", rc.DeviceID == hostID, fmt.Sprintf("%+v", rc))
 
 	hostBye, hostGotBye := host.wait(protocol.TypeBye)
 	check("the host is also told its session ended",
@@ -434,16 +451,9 @@ func main() {
 		e.Type == protocol.TypeError && re.Code == protocol.ErrNoSession,
 		fmt.Sprintf("got %s %+v", e.Type, re))
 
-	live.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID, AccessCode: hostCode})
-	e, _ = live.wait(protocol.TypeConnectOK, protocol.TypeError)
-	oe := decode[protocol.Error](e)
-	check("the OLD access code now fails with bad_code",
-		e.Type == protocol.TypeError && oe.Code == protocol.ErrBadCode,
-		fmt.Sprintf("got %s %+v", e.Type, oe))
-
-	live.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID, AccessCode: newCode})
+	live.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID})
 	e, ok = live.wait(protocol.TypeConnectOK, protocol.TypeError)
-	check("the NEW access code opens a session",
+	check("a fresh session opens after the refresh",
 		ok && e.Type == protocol.TypeConnectOK,
 		fmt.Sprintf("got %s %+v", e.Type, decode[protocol.Error](e)))
 	if e.Type == protocol.TypeConnectOK {
@@ -451,36 +461,26 @@ func main() {
 		host.session = decode[protocol.SessionStart](host.mustGet(protocol.TypeSessionStart)).SessionID
 	}
 
-	// Close it again so the rate-limit probe below is not answered with busy.
 	live.send(protocol.TypeBye, protocol.Bye{SessionID: live.session, Reason: protocol.ByeUserEnded})
 	hb2, ok := host.wait(protocol.TypeBye)
 	check("bye closes the session for both sides",
 		ok && decode[protocol.Bye](hb2).SessionID == live.session,
 		fmt.Sprintf("host bye = %+v", decode[protocol.Bye](hb2)))
 
-	// ---- 12. rate limiting ----------------------------------------------
-	rl := newClient("ctrl-rl", url)
-	rl.dial()
-	rl.register("Rate Limit Probe", "PROBECOD")
-	rl.hello(protocol.RoleController)
-	var lastCode string
-	var retryAfter int
-	for i := 1; i <= 6; i++ {
-		rl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID, AccessCode: "NOPENOPE"})
-		e, _ := rl.wait(protocol.TypeConnectOK, protocol.TypeError)
-		ep := decode[protocol.Error](e)
-		lastCode, retryAfter = ep.Code, ep.RetryAfterSec
-		if i <= 5 && ep.Code != protocol.ErrBadCode {
-			check(fmt.Sprintf("attempt %d returns bad_code", i), false, "got "+ep.Code)
-		}
-	}
-	check("the 6th failed attempt is rate_limited",
-		lastCode == protocol.ErrRateLimited && retryAfter > 0,
-		fmt.Sprintf("code=%s retryAfterSec=%d", lastCode, retryAfter))
-	rl.hangUp()
+	// ---- 12. a denied entitlement refuses the connection ------------------
+	denied := newClient("denied-host", url)
+	denied.dial()
+	deniedID := denied.register(deniedLabel)
+	denied.hello(protocol.RoleHost)
+	live.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: deniedID})
+	e, _ = live.wait(protocol.TypeConnectOK, protocol.TypeError)
+	de := decode[protocol.Error](e)
+	check("a host the entitlement denies gets error{entitlement} with a reason",
+		e.Type == protocol.TypeError && de.Code == protocol.ErrEntitlement && de.Reason != "",
+		fmt.Sprintf("got %s %+v", e.Type, de))
+	denied.hangUp()
 
 	// ---- 13. presence flips offline when a socket dies -------------------
-	// live is watching nothing; make it watch the host, then kill the host.
 	live.send(protocol.TypeWatch, protocol.Watch{DeviceID: hostID})
 	live.mustGet(protocol.TypeWatchOK)
 	live.mustGet(protocol.TypePresence) // current state: online
