@@ -43,3 +43,4 @@ certs/
 .env.*
 
 !.env.example
+.claude/worktrees/
