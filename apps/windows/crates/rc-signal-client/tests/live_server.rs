@@ -198,6 +198,9 @@ async fn full_signaling_lifecycle_against_the_real_server() {
         sdp_type: "offer".into(),
         sdp: "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n".into(),
         restart: false,
+        fp: String::new(),
+        pubkey: String::new(),
+        sig: String::new(),
     };
     ctrl.send(msg::SDP, &offer).await.unwrap();
     match next_push(&mut host_rx, "sdp offer").await {

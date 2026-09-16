@@ -95,6 +95,9 @@ public enum CoordinatorEvent {
     /// A remote offer/answer was applied. `restart` mirrors PROTOCOL.md §2.12's
     /// advisory flag, which is how the far side proves an ICE restart completed.
     case remoteDescription(type: String, restart: Bool)
+    /// A remote offer/answer was REFUSED because its signed fingerprints did
+    /// not verify. The session is over; this is never retried.
+    case peerAuthFailed(reason: String)
     /// HOST: the capture pipeline changed state, including "the Screen
     /// Recording grant is missing", which must never be a silent black screen.
     case captureState(CaptureState)
@@ -205,6 +208,10 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     private var captureRetry: Task<Void, Never>?
     /// Serialises negotiation so two offers can never be in flight.
     private var negotiating = false
+    /// The peer's device key, as this side learned it: the controller learns the
+    /// host's from `connect_ok`, the host learns the controller's from the
+    /// §2.17 exchange. Every incoming `sdp` must be signed by it.
+    public private(set) var expectedPeerPublicKey: String?
 
     /// The live replacement for `PreviewPresenceSource`. Bind the UI to this.
     public let presence = SignalingPresenceSource()
@@ -300,6 +307,12 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         try await connect(deviceID: deviceID, accessCode: accessCode, remember: false)
     }
 
+    /// Pins the key every incoming `sdp` must be signed by. The host calls this
+    /// with the controller key the §2.17 exchange bound into its transcript.
+    public func expectPeerPublicKey(_ pubkey: String?) {
+        expectedPeerPublicKey = (pubkey?.isEmpty == false) ? pubkey : nil
+    }
+
     public func connect(deviceID: String, accessCode: String, remember: Bool) async throws {
         guard let canonicalID = DeviceID.canonicalize(deviceID) else { throw TransportError.invalidDeviceID }
         guard let canonicalCode = AccessCode.canonicalize(accessCode) else { throw TransportError.invalidAccessCode }
@@ -348,6 +361,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         case .sendConnectReq(let deviceID, let accessCode):
             do {
                 let grant = try await signaling.connectRequest(deviceID: deviceID, accessCode: accessCode)
+                expectPeerPublicKey(grant.hostPubkey)
                 emit(.sessionGranted(sessionID: grant.sessionId, role: .controller))
                 await perform(machine.sessionGranted(grant))
             } catch {
@@ -430,6 +444,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
         case .clearStoredSession:
             negotiating = false
+            expectedPeerPublicKey = nil
 
         case .promptForAccessCode(let reason):
             needsAccessCode = true
@@ -482,12 +497,41 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         defer { negotiating = false }
         do {
             let offer = try await peer.createOffer(restart: restart)
-            try await signaling.sendSDP(sessionID: sessionID, type: offer.type, sdp: offer.sdp, restart: restart)
+            try await sendSignedSDP(sessionID: sessionID, type: offer.type, sdp: offer.sdp,
+                                    restart: restart)
         } catch {
             RCLog.error("offer failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
         }
     }
+
+    // MARK: - Signed SDP (PROTOCOL.md §2.12)
+
+    /// Every `sdp` this Mac sends goes through here, including an ICE-restart
+    /// re-offer, so nothing can leave unsigned: the fingerprints are extracted
+    /// by the shared core and signed with the device key, which may be in the
+    /// Secure Enclave.
+    private func sendSignedSDP(sessionID: String, type: String, sdp: String,
+                               restart: Bool) async throws {
+        let signable = try SdpAuth.signable(sessionID: sessionID, sdpType: type, sdp: sdp)
+        let signature = SdpSignature(
+            fingerprints: signable.fingerprints,
+            pubkey: identity.publicKeyBase64,
+            signature: try identity.signatureBase64(for: signable.message))
+        try await signaling.sendSDP(sessionID: sessionID, type: type, sdp: sdp,
+                                    restart: restart, signature: signature)
+    }
+
+    /// The other Mac could not be proven to be the other Mac. That is not a
+    /// network problem and is never retried: `bye`, tear down, say so.
+    private func refusePeer(reason: String) async {
+        RCLog.error("peer authentication failed: \(reason)")
+        lastError = SessionCoordinator.peerAuthFailureMessage
+        emit(.peerAuthFailed(reason: reason))
+        await perform(machine.userEnded(reason: Wire.ByeReason.peerAuthFailed))
+    }
+
+    public static let peerAuthFailureMessage = "The other device could not be verified."
 }
 
 // MARK: - SignalingClientDelegate
@@ -565,6 +609,17 @@ extension SessionCoordinator: SignalingClientDelegate {
 
     private func handleRemoteSDP(_ sdp: SDPPayload) async {
         guard sdp.sessionId == machine.sessionID else { return }
+        guard let signature = sdp.signature else {
+            await refusePeer(reason: "the sdp carried no signature")
+            return
+        }
+        do {
+            try SdpAuth.verify(sessionID: sdp.sessionId, sdpType: sdp.sdpType, sdp: sdp.sdp,
+                               signature: signature, expectedPubkey: expectedPeerPublicKey)
+        } catch {
+            await refusePeer(reason: error.localizedDescription)
+            return
+        }
         // The host has no peer connection until the first offer arrives if the
         // session_start push and the offer race; start it lazily.
         if peer == nil { startPeer(offerer: machine.isOfferer) }
@@ -574,8 +629,8 @@ extension SessionCoordinator: SignalingClientDelegate {
             emit(.remoteDescription(type: sdp.sdpType, restart: sdp.restart ?? false))
             if sdp.sdpType == "offer" {
                 let answer = try await peer.createAnswer()
-                try await signaling.sendSDP(sessionID: sdp.sessionId, type: answer.type,
-                                            sdp: answer.sdp, restart: sdp.restart ?? false)
+                try await sendSignedSDP(sessionID: sdp.sessionId, type: answer.type,
+                                        sdp: answer.sdp, restart: sdp.restart ?? false)
             }
         } catch {
             RCLog.error("remote \(sdp.sdpType) failed: \(error.localizedDescription)")
@@ -590,7 +645,10 @@ extension SessionCoordinator: PeerSessionDelegate {
 
     public func peerSession(_ session: PeerSession, didCreateLocalDescription type: String, sdp: String, restart: Bool) {
         guard let sessionID = machine.sessionID else { return }
-        Task { try? await signaling.sendSDP(sessionID: sessionID, type: type, sdp: sdp, restart: restart) }
+        Task { [weak self] in
+            try? await self?.sendSignedSDP(sessionID: sessionID, type: type, sdp: sdp,
+                                           restart: restart)
+        }
     }
 
     public func peerSession(_ session: PeerSession, didGatherCandidate candidate: String, sdpMid: String?, sdpMLineIndex: Int?) {

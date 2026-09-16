@@ -1,5 +1,6 @@
 import Foundation
 import RCTestKit
+import RemoteControlCore
 import SkipperCore
 
 /// The SPAKE2 exchange of PROTOCOL.md §2.17, driven the way the app will drive
@@ -12,15 +13,21 @@ import SkipperCore
 
 private let deviceID = "482719351"
 private let sessionID = "sess-ffi-1"
+private let controllerKey = DeviceKey()
+private let hostKey = DeviceKey()
+private let controllerPubkey = ((try? controllerKey.publicKeyDER()) ?? Data()).base64EncodedString()
+private let hostPubkey = ((try? hostKey.publicKeyDER()) ?? Data()).base64EncodedString()
 
 public let pakeSuite = TestSuite("PakeExchange", [
 
     TestCase("a round trip agrees on one session key") {
         let code = try AccessCode.generate()
         let controller = try PakeExchange.controller(accessCode: AccessCode.formatted(code),
-                                                     deviceID: deviceID, sessionID: sessionID)
+                                                     deviceID: deviceID, sessionID: sessionID,
+                                                     ownPublicKey: controllerPubkey)
         let host = try PakeExchange.host(accessCode: code.lowercased(),
-                                         deviceID: deviceID, sessionID: sessionID)
+                                         deviceID: deviceID, sessionID: sessionID,
+                                         ownPublicKey: hostPubkey)
 
         let step1 = try expectNotNil(try controller.step(nil), "the controller opens the exchange")
         try expectEqual(step1.step, 1)
@@ -38,13 +45,20 @@ public let pakeSuite = TestSuite("PakeExchange", [
         let key = try expectNotNil(controller.sessionKey, "the controller has a session key")
         try expectEqual(key.count, 32)
         try expectEqual(key, host.sessionKey)
+
+        try expectEqual(host.peerPublicKey, controllerPubkey,
+                        "the host learned the controller's device key from step 1")
+        try expectEqual(controller.peerPublicKey, hostPubkey,
+                        "the controller learned the host's device key from step 2")
     },
 
     TestCase("a wrong code is refused by the host") {
         let controller = try PakeExchange.controller(accessCode: "K7FM3Q8PW2XY",
-                                                     deviceID: deviceID, sessionID: sessionID)
+                                                     deviceID: deviceID, sessionID: sessionID,
+                                                     ownPublicKey: controllerPubkey)
         let host = try PakeExchange.host(accessCode: "K7FM3Q8PW2X0",
-                                         deviceID: deviceID, sessionID: sessionID)
+                                         deviceID: deviceID, sessionID: sessionID,
+                                         ownPublicKey: hostPubkey)
 
         let step1 = try expectNotNil(try controller.step(nil))
         let step2 = try expectNotNil(try host.step(step1))
@@ -63,10 +77,13 @@ public let pakeSuite = TestSuite("PakeExchange", [
 
     TestCase("a code the core cannot use is rejected at construction") {
         try await expectThrows("an empty access code") {
-            _ = try PakeExchange.controller(accessCode: "--", deviceID: deviceID, sessionID: sessionID)
+            _ = try PakeExchange.controller(accessCode: "--", deviceID: deviceID,
+                                            sessionID: sessionID,
+                                            ownPublicKey: controllerPubkey)
         }
         try await expectThrows("a missing session") {
-            _ = try PakeExchange.host(accessCode: "K7FM3Q8PW2XY", deviceID: deviceID, sessionID: "")
+            _ = try PakeExchange.host(accessCode: "K7FM3Q8PW2XY", deviceID: deviceID,
+                                      sessionID: "", ownPublicKey: hostPubkey)
         }
     },
 ])

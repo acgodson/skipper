@@ -20,6 +20,7 @@ use rc_session::{
 use serde_json::{json, Value};
 
 mod pake;
+mod sdp;
 
 pub use pake::SkipperPake;
 
@@ -110,6 +111,24 @@ fn state_json(machine: &SessionStateMachine) -> Value {
         "rememberedAccessCode": machine.remembered_access_code,
         "serverAdvertisedSessionId": machine.server_advertised_session_id,
     })
+}
+
+/// The result shape of every call that is not a state-machine transition:
+/// the body's own fields plus `ok`, or `{"ok":false,"error":...}`.
+pub(crate) fn respond<F>(panic_message: &str, body: F) -> *mut c_char
+where
+    F: FnOnce() -> Result<Value, String>,
+{
+    let outcome = catch_unwind(AssertUnwindSafe(|| match body() {
+        Ok(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("ok".to_string(), json!(true));
+            }
+            value.to_string()
+        }
+        Err(message) => error_string(&message),
+    }));
+    into_c_string(outcome.unwrap_or_else(|_| error_string(panic_message)))
 }
 
 pub(crate) fn into_c_string(value: String) -> *mut c_char {

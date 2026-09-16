@@ -51,6 +51,14 @@ func main() {
 
 	const ts = int64(1755600000000)
 
+	// Signed-SDP material (PROTOCOL.md §2.12). The keys are real DER SPKI P-256
+	// encodings so a decoder that parses them is exercised; the signature is
+	// opaque to the wire contract and is checked by rc-identity's own tests.
+	const hostPubkey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuBGGi2DgfaFZytt5/esidQP3Qd3pzdIUC2MN8/OzOl+mubtCml0DONiJGrtUrhqnO7XcFGUDx/gNpT3TdtsLuA=="
+	const controllerPubkey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEb/A7lJJBzh2t1DUZ5pYOCoW0GmmgXDKBA6orzhWUyhY8T3U6Vb8B3FP2wLDH7ueLQMb/fSWpbiKCuYnO9xwUSg=="
+	const signedFP = "sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A"
+	const signedOffer = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:" + signedFP + "\r\na=setup:actpass\r\n"
+
 	recCode := p.CodeVerifier{
 		Alg: p.AlgArgon2id, Salt: "c2FsdHNhbHRzYWx0c2FsdA==",
 		Hash: "aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g=",
@@ -121,7 +129,17 @@ func main() {
 		"v2: only deviceId; accessCode is omitempty and must be absent, not empty", "c-7", "", ts,
 		p.ConnectReq{DeviceID: "739000587"})
 
-	add("connect_ok", "signaling", p.TypeConnectOK, "", "", "c-7", ts,
+	add("connect_ok", "signaling", p.TypeConnectOK,
+		"hostPubkey is what the controller requires on the host's signed sdp", "", "c-7", ts,
+		p.ConnectOK{
+			SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "dG9rZW4=",
+			ExpiresAt: ts + 600000, TTLSec: 600,
+			HostDeviceID: "739000587", ControllerDeviceID: "481930275",
+			HostPubkey: hostPubkey,
+		})
+
+	add("connect_ok_no_host_pubkey", "signaling", p.TypeConnectOK,
+		"hostPubkey is omitempty: absent, never an empty string", "", "c-7", ts,
 		p.ConnectOK{
 			SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "dG9rZW4=",
 			ExpiresAt: ts + 600000, TTLSec: 600,
@@ -153,12 +171,19 @@ func main() {
 		"attached:false must be present, not omitted", "", "", ts,
 		p.PeerState{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Attached: false})
 
-	add("sdp_offer", "signaling", p.TypeSDP, "", "", "", ts,
+	add("sdp_offer", "signaling", p.TypeSDP,
+		"fp, pubkey and sig are the signed DTLS fingerprints; the server relays them unchecked",
+		"", "", ts,
 		p.SDP{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SDPType: "offer",
-			SDP: "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"})
+			SDP: signedOffer, FP: signedFP, Pubkey: controllerPubkey, Sig: "c2lnbmF0dXJl"})
 	add("sdp_restart", "signaling", p.TypeSDP, "restart is omitempty when false", "", "", ts,
 		p.SDP{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SDPType: "offer",
 			SDP: "v=0\r\n", Restart: true})
+	add("sdp_two_fingerprints", "signaling", p.TypeSDP,
+		"several fingerprints are sorted and joined with a newline", "", "", ts,
+		p.SDP{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SDPType: "answer",
+			SDP: "v=0\r\n", FP: "sha-256 AA:01\nsha-256 BB:02",
+			Pubkey: hostPubkey, Sig: "c2lnbmF0dXJl"})
 
 	add("ice_candidate", "signaling", p.TypeICE, "", "", "", ts,
 		p.ICE{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
@@ -170,6 +195,9 @@ func main() {
 
 	add("bye", "signaling", p.TypeBye, "", "", "", ts,
 		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByeUserEnded})
+	add("bye_peer_auth_failed", "signaling", p.TypeBye,
+		"the peer's signed SDP fingerprints did not verify", "", "", ts,
+		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByePeerAuthFailed})
 
 	add("pake_step1", "signaling", p.TypePake,
 		"v2: opaque to the server, relayed verbatim like sdp and ice", "", "", ts,

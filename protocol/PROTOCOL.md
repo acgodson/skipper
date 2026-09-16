@@ -31,7 +31,8 @@ What changes, and why:
 | 5 | `connect_req` is authorised by **entitlement**, not by a code. The server replies `connect_ok` only if the host's entitlement allows a session and the host has no active session; otherwise `error{entitlement, reason}` or `error{busy}`. | §2.9, §3.3 |
 | 6 | New error code `entitlement`, carrying a `reason`. `bad_code` is retired; a v2 server never sends it. | §7 |
 | 7 | New relayed message `pake`: the access code is proved **peer to peer** by a SPAKE2 exchange that the server relays as opaque bytes. | §2.17 |
-| 8 | Access-code rate limiting moves to the host. The server's §3.3 limiter no longer applies to codes; the host counts and throttles failed PAKE attempts itself, because the server no longer knows what a failure is. | §3.3 |
+| 8 | `sdp` carries **signed DTLS fingerprints**: `fp`, `pubkey` and `sig`. The peer verifies them against the key it expects, so a compromised server cannot MITM the media. `connect_ok` gains `hostPubkey`, `pake` steps 1 and 2 carry each sender's pubkey, and `bye` gains the reason `peer_auth_failed`. | §2.12, §2.9, §2.17, §2.14 |
+| 9 | Access-code rate limiting moves to the host. The server's §3.3 limiter no longer applies to codes; the host counts and throttles failed PAKE attempts itself, because the server no longer knows what a failure is. | §3.3 |
 
 The point of the change: after it, a server operator who reads every byte the server ever sees
 still cannot connect to a host. The code never reaches the server in any form — not as plaintext,
@@ -297,6 +298,7 @@ Reply: **`connect_ok`**
 | `ttlSec` | int | yes | `= (expiresAt - now)/1000`, i.e. 600. |
 | `hostDeviceId` | string | yes | |
 | `controllerDeviceId` | string | yes | |
+| `hostPubkey` | string | no | *v2.* The host's registered `pubkey` (base64 DER SPKI), which the server has held since `register`. It is the key the controller **requires** on every `sdp` the host sends (§2.12). A v2 server MUST send it; a controller that does not receive it cannot pin the host key and must treat the session as unauthenticated until §2.17 supplies the key instead. |
 
 Errors, v1: `bad_code`, `offline`, `busy`, `rate_limited`, `unknown_device`, `self_connect`.
 Errors, v2: `entitlement`, `offline`, `busy`, `rate_limited`, `unknown_device`, `self_connect`.
@@ -351,10 +353,42 @@ same rules and errors as `resume`, but the connection must already be attached t
 | `sdpType` | string | yes | `"offer"`, `"answer"`, `"pranswer"` or `"rollback"`. |
 | `sdp` | string | yes | The SDP body, verbatim. |
 | `restart` | bool | no | `true` marks an ICE-restart renegotiation. Advisory for the peer. |
+| `fp` | string | yes | *v2.* Every `a=fingerprint` value in `sdp`, de-duplicated, sorted, joined with `\n`. The value is the whole attribute value, e.g. `sha-256 7B:8C:…`. |
+| `pubkey` | string | yes | *v2.* The **sender's** device key, base64 DER SPKI (§0). |
+| `sig` | string | yes | *v2.* base64 DER ECDSA-SHA256 over the UTF-8 bytes of `"skipperdesk/sdp/v1|" sessionId "|" sdpType "|" fp`. |
 
 The server **routes and forgets**: it validates `sessionId` and attachment, rewrites nothing,
 parses nothing, stores nothing, logs no part of `sdp`. If the peer is detached, the server
 replies `error{peer_offline}`; SDP is **not** queued (a stale offer is worse than none).
+The server relays `fp`, `pubkey` and `sig` **unchanged and never validates `sig`**. It cannot —
+it holds neither device key — and it must not need to: the whole point of the signature is that
+it is checked by the peer, against a key the server did not choose.
+
+#### Why the fingerprints are signed
+
+DTLS-SRTP already keeps everyone but the two peers out of the media. Everyone *but the server*:
+the server relays the SDP, so a compromised one could put its own fingerprint in each direction,
+complete two DTLS handshakes and read the desktop. Signing the fingerprint with the device key
+closes that, because the server has neither private key.
+
+A receiver **must**, before `setRemoteDescription`:
+
+1. verify `sig` over `"skipperdesk/sdp/v1|" sessionId "|" sdpType "|" fp` with `pubkey`;
+2. check that `fp` is exactly the fingerprint set in the `sdp` body (same de-duplication, same
+   sort) — a signature over fingerprints that are not the ones being installed proves nothing;
+3. check that `pubkey` is **the peer it expects**:
+   - the **host** expects the controller key it learned in the §2.17 exchange, where that key is
+     bound into the SPAKE2 transcript and into the guess-policy counter;
+   - the **controller** expects `connect_ok.hostPubkey`, and, once §2.17 completes, requires the
+     host key it learned there to be the same one.
+
+Any failure is terminal for the session: `bye{reason:"peer_auth_failed"}` (§2.14), tear the peer
+connection down, and tell the user the other device could not be verified. Never fall back to an
+unverified description.
+
+`sessionId` in the signed string binds the signature to one session, so a captured offer cannot
+be replayed into another, and `sdpType` stops an offer being replayed as an answer. An ICE
+restart is an ordinary re-offer: it is signed again, over its own fingerprints.
 
 ### 2.13 `ice` — client ↔ client, relayed
 
@@ -373,7 +407,11 @@ peer is detached are dropped with `error{peer_offline}` and re-gathered after re
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
 | `sessionId` | string | yes | |
-| `reason` | string | yes | One of `user_ended`, `host_ended`, `timeout`, `failed`, `code_refreshed`, `replaced`, `shutdown`, `error`. |
+| `reason` | string | yes | One of `user_ended`, `host_ended`, `timeout`, `failed`, `code_refreshed`, `replaced`, `shutdown`, `error`, `peer_auth_failed`. |
+
+`peer_auth_failed` is *v2* and means exactly one thing: the peer's `sdp` did not pass §2.12 —
+a bad signature, fingerprints that are not the ones in the SDP, or the wrong device key. It is
+not a network failure and must never be retried automatically.
 
 On `bye` the server closes the session **immediately and permanently**: both tokens die, the
 host's 1:1 slot frees, and the peer (if attached) receives the same `bye`. A later `resume` for
@@ -441,9 +479,21 @@ Three steps, implemented in `core/crates/rc-identity` (`pake`) and pinned by
 
 | `step` | From | `payload` (before base64) |
 |:--:|---|---|
-| 1 | controller | the controller's SPAKE2 message |
-| 2 | host | the host's SPAKE2 message ‖ `confirmH` (32 bytes) |
+| 1 | controller | `len32(controllerPubkey)` ‖ `controllerPubkey` ‖ the controller's SPAKE2 message |
+| 2 | host | `len32(hostPubkey)` ‖ `hostPubkey` ‖ the host's SPAKE2 message ‖ `confirmH` (32 bytes) |
 | 3 | controller | `confirmC` (32 bytes) |
+
+Steps 1 and 2 each carry the sender's **device pubkey** — the raw DER SPKI bytes, with a
+big-endian 4-byte length prefix — ahead of the SPAKE2 message. Both keys are in the transcript
+below, so a relay that forwarded a genuine exchange but substituted a key would fail the
+confirmation it cannot compute. That is what makes the key learned here safe to use as the
+expected signer of the peer's `sdp` fingerprints (§2.12): the host pins the controller key it
+reads at step 1 (and keys its guess-policy counter on it), the controller pins the host key it
+reads at step 2 and requires it to equal `connect_ok.hostPubkey`.
+
+*This extends the step-1 and step-2 payloads, which previously held the bare 33-byte SPAKE2
+message.* `protocol/vectors/pake-vectors.json` was regenerated: the key schedule changed, because
+the transcript gained the two keys.
 
 Symmetric SPAKE2 over Ed25519 (RustCrypto `spake2`), with
 
@@ -461,6 +511,7 @@ Key schedule over the 32-byte SPAKE2 output, with `len32(x)` a big-endian length
 
 ```
 transcript = len32("skipperdesk/pake/v1") ‖ len32(deviceId) ‖ len32(sessionId)
+             ‖ len32(controllerPubkey) ‖ len32(hostPubkey)
              ‖ len32(controllerMessage) ‖ len32(hostMessage)
 prk        = HKDF-SHA256-Extract(salt = transcript, ikm = sharedKey)
 sessionKey = HKDF-Expand(prk, "skipperdesk/pake/v1 session-key", 32)

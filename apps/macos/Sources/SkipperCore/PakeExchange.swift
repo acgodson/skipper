@@ -28,6 +28,11 @@ public final class PakeExchange {
     private let handle: OpaquePointer
     public let role: SessionRole
     public private(set) var isComplete = false
+    /// The peer's device `pubkey`, base64 DER SPKI, once its first frame has
+    /// arrived — the host learns it at step 1, the controller at step 2. It is
+    /// bound into the SPAKE2 transcript, which is what makes it the key the
+    /// peer's `sdp` signatures must carry (PROTOCOL.md §2.12).
+    public private(set) var peerPublicKey: String?
 
     private struct StepResult: Decodable {
         struct Outgoing: Decodable {
@@ -36,21 +41,32 @@ public final class PakeExchange {
         }
         let outgoing: Outgoing?
         let complete: Bool
+        let peerPubkey: String
     }
 
     private struct KeyResult: Decodable {
         let sessionKey: String
     }
 
-    public init(role: SessionRole, accessCode: String, deviceID: String, sessionID: String) throws {
+    /// `ownPublicKey` is this device's own `pubkey`, base64 DER SPKI. It
+    /// travels in this side's first frame, so the peer finishes the exchange
+    /// knowing which key must sign the `sdp` it will accept.
+    public init(
+        role: SessionRole,
+        accessCode: String,
+        deviceID: String,
+        sessionID: String,
+        ownPublicKey: String
+    ) throws {
         self.role = role
         guard let handle = skipper_pake_new(
             role == .host ? Int32(SKIPPER_ROLE_HOST) : Int32(SKIPPER_ROLE_CONTROLLER),
             accessCode,
             deviceID,
-            sessionID)
+            sessionID,
+            ownPublicKey)
         else {
-            throw SkipperCoreError("the shared core refused the access code or the session context")
+            throw SkipperCoreError("the shared core refused the access code, the session context or the device key")
         }
         self.handle = handle
     }
@@ -58,19 +74,23 @@ public final class PakeExchange {
     public static func controller(
         accessCode: String,
         deviceID: String,
-        sessionID: String
+        sessionID: String,
+        ownPublicKey: String
     ) throws -> PakeExchange {
         try PakeExchange(role: .controller, accessCode: accessCode,
-                         deviceID: deviceID, sessionID: sessionID)
+                         deviceID: deviceID, sessionID: sessionID,
+                         ownPublicKey: ownPublicKey)
     }
 
     public static func host(
         accessCode: String,
         deviceID: String,
-        sessionID: String
+        sessionID: String,
+        ownPublicKey: String
     ) throws -> PakeExchange {
         try PakeExchange(role: .host, accessCode: accessCode,
-                         deviceID: deviceID, sessionID: sessionID)
+                         deviceID: deviceID, sessionID: sessionID,
+                         ownPublicKey: ownPublicKey)
     }
 
     deinit { skipper_pake_free(handle) }
@@ -83,6 +103,7 @@ public final class PakeExchange {
             skipper_pake_step(handle, Int32(incoming?.step ?? 0), incoming?.payload)
         }
         isComplete = result.complete
+        peerPublicKey = result.peerPubkey.isEmpty ? nil : result.peerPubkey
         guard let outgoing = result.outgoing else { return nil }
         return PakeMessage(step: outgoing.step, payload: outgoing.payload)
     }

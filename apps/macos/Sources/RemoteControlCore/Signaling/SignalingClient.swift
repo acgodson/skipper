@@ -490,10 +490,17 @@ public final class SignalingClient {
         return try reply.decodePayload(RenewOKPayload.self)
     }
 
-    public func sendSDP(sessionID: String, type: String, sdp: String, restart: Bool) async throws {
+    /// PROTOCOL.md §2.12. `signature` is the sender's signed DTLS fingerprints;
+    /// the server relays the three fields unchanged and never checks them.
+    public func sendSDP(sessionID: String, type: String, sdp: String, restart: Bool,
+                        signature: SdpSignature?) async throws {
         try await sendFireAndForget(
             type: Wire.MessageType.sdp,
-            payload: SDPPayload(sessionId: sessionID, sdpType: type, sdp: sdp, restart: restart ? true : nil))
+            payload: SDPPayload(sessionId: sessionID, sdpType: type, sdp: sdp,
+                                restart: restart ? true : nil,
+                                fp: signature?.fingerprints,
+                                pubkey: signature?.pubkey,
+                                sig: signature?.signature))
     }
 
     public func sendICE(sessionID: String, candidate: String, sdpMid: String?, sdpMLineIndex: Int?) async throws {

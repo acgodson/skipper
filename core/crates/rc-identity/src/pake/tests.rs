@@ -6,6 +6,18 @@ const CODE: &str = "K7FM-3Q8P-W2XY";
 const DEVICE: &str = "482719351";
 const SESSION: &str = "sess-0001";
 
+/// Device keys for the vectors, from a fixed scalar so the pinned transcript is
+/// reproducible. Production keys come from the OS CSPRNG or the Secure Enclave.
+fn vector_key(seed: u8) -> crate::DeviceKey {
+    let mut raw = [1u8; 32];
+    raw[31] = seed;
+    crate::DeviceKey::from_raw(&raw).unwrap()
+}
+
+fn pubkey(seed: u8) -> String {
+    vector_key(seed).public_key_spki_base64()
+}
+
 /// A SHA-256 counter stream, so `protocol/vectors/pake-vectors.json` can pin the
 /// key schedule. Test-only: the product always uses `OsRng`.
 pub(crate) struct SeededRng {
@@ -59,8 +71,9 @@ struct Pair {
 
 fn pair(controller_code: &str, host_code: &str) -> Pair {
     Pair {
-        controller: PakeExchange::controller(controller_code, DEVICE, SESSION).unwrap(),
-        host: PakeExchange::host(host_code, DEVICE, SESSION).unwrap(),
+        controller: PakeExchange::controller(controller_code, DEVICE, SESSION, &pubkey(1))
+            .unwrap(),
+        host: PakeExchange::host(host_code, DEVICE, SESSION, &pubkey(2)).unwrap(),
     }
 }
 
@@ -110,7 +123,8 @@ fn a_tampered_host_message_is_rejected() {
     let mut pair = pair(CODE, CODE);
     let step1 = pair.controller.step(None).unwrap().unwrap();
     let mut step2 = pair.host.step(Some(&step1)).unwrap().unwrap();
-    step2.payload[1] ^= 0x40;
+    let body = step2.payload.len() - CONFIRM_LEN - 1;
+    step2.payload[body] ^= 0x40;
 
     assert!(pair.controller.step(Some(&step2)).is_err());
     assert!(!pair.controller.is_complete());
@@ -120,7 +134,8 @@ fn a_tampered_host_message_is_rejected() {
 fn a_tampered_controller_message_never_reaches_a_shared_key() {
     let mut pair = pair(CODE, CODE);
     let mut step1 = pair.controller.step(None).unwrap().unwrap();
-    step1.payload[5] ^= 0x11;
+    let body = step1.payload.len() - 1;
+    step1.payload[body] ^= 0x11;
 
     match pair.host.step(Some(&step1)) {
         Err(_) => {}
@@ -136,15 +151,15 @@ fn a_tampered_controller_message_never_reaches_a_shared_key() {
 
 #[test]
 fn the_exchange_is_bound_to_the_device_and_session() {
-    let mut controller = PakeExchange::controller(CODE, DEVICE, SESSION).unwrap();
-    let mut host = PakeExchange::host(CODE, DEVICE, "sess-0002").unwrap();
+    let mut controller = PakeExchange::controller(CODE, DEVICE, SESSION, &pubkey(1)).unwrap();
+    let mut host = PakeExchange::host(CODE, DEVICE, "sess-0002", &pubkey(2)).unwrap();
 
     let step1 = controller.step(None).unwrap().unwrap();
     let step2 = host.step(Some(&step1)).unwrap().unwrap();
     assert_eq!(controller.step(Some(&step2)).unwrap_err(), PakeError::ConfirmationFailed);
 
-    let mut controller = PakeExchange::controller(CODE, DEVICE, SESSION).unwrap();
-    let mut host = PakeExchange::host(CODE, "999999999", SESSION).unwrap();
+    let mut controller = PakeExchange::controller(CODE, DEVICE, SESSION, &pubkey(1)).unwrap();
+    let mut host = PakeExchange::host(CODE, "999999999", SESSION, &pubkey(2)).unwrap();
     let step1 = controller.step(None).unwrap().unwrap();
     let step2 = host.step(Some(&step1)).unwrap().unwrap();
     assert_eq!(controller.step(Some(&step2)).unwrap_err(), PakeError::ConfirmationFailed);
@@ -152,7 +167,7 @@ fn the_exchange_is_bound_to_the_device_and_session() {
 
 #[test]
 fn steps_must_arrive_in_order() {
-    let mut host = PakeExchange::host(CODE, DEVICE, SESSION).unwrap();
+    let mut host = PakeExchange::host(CODE, DEVICE, SESSION, &pubkey(2)).unwrap();
     let stray = PakeMessage { step: STEP_CONTROLLER_CONFIRM, payload: vec![0u8; CONFIRM_LEN] };
     assert_eq!(
         host.step(Some(&stray)).unwrap_err(),
@@ -178,13 +193,63 @@ fn payload_limits_are_enforced() {
 #[test]
 fn an_empty_code_is_refused() {
     assert!(matches!(
-        PakeExchange::controller("---", DEVICE, SESSION).err(),
+        PakeExchange::controller("---", DEVICE, SESSION, &pubkey(1)).err(),
         Some(PakeError::EmptyCode)
     ));
     assert!(matches!(
-        PakeExchange::host(CODE, "", SESSION).err(),
+        PakeExchange::host(CODE, "", SESSION, &pubkey(2)).err(),
         Some(PakeError::MissingContext)
     ));
+    assert!(matches!(
+        PakeExchange::host(CODE, DEVICE, SESSION, "").err(),
+        Some(PakeError::MissingContext)
+    ));
+}
+
+#[test]
+fn each_side_learns_the_other_device_public_key() {
+    let mut pair = pair(CODE, CODE);
+    assert!(pair.controller.peer_public_key_base64().is_empty());
+
+    let step1 = pair.controller.step(None).unwrap().unwrap();
+    assert_eq!(pair.host.peer_public_key_base64(), String::new());
+    let step2 = pair.host.step(Some(&step1)).unwrap().unwrap();
+    assert_eq!(pair.host.peer_public_key_base64(), pubkey(1));
+
+    let step3 = pair.controller.step(Some(&step2)).unwrap().unwrap();
+    assert_eq!(pair.controller.peer_public_key_base64(), pubkey(2));
+    assert!(pair.host.step(Some(&step3)).unwrap().is_none());
+}
+
+/// The reason the key is in the transcript rather than merely alongside it: a
+/// relay that forwards a genuine exchange untouched but swaps the announced
+/// public key would otherwise be trusted to sign the peer's SDP.
+#[test]
+fn a_swapped_public_key_breaks_the_confirmation() {
+    let mut controller = PakeExchange::controller(CODE, DEVICE, SESSION, &pubkey(1)).unwrap();
+    let mut host = PakeExchange::host(CODE, DEVICE, SESSION, &pubkey(2)).unwrap();
+
+    let step1 = controller.step(None).unwrap().unwrap();
+    let relayed = PakeMessage {
+        step: step1.step,
+        payload: prefix_public_key(
+            &B64.decode(pubkey(9)).unwrap(),
+            split_public_key(&step1.payload).unwrap().1,
+        ),
+    };
+    let step2 = host.step(Some(&relayed)).unwrap().unwrap();
+    assert_eq!(host.peer_public_key_base64(), pubkey(9));
+    assert_eq!(controller.step(Some(&step2)).unwrap_err(), PakeError::ConfirmationFailed);
+}
+
+#[test]
+fn a_public_key_prefix_that_does_not_fit_is_refused() {
+    let mut host = PakeExchange::host(CODE, DEVICE, SESSION, &pubkey(2)).unwrap();
+    let nonsense = PakeMessage {
+        step: STEP_CONTROLLER_START,
+        payload: vec![0xff, 0xff, 0xff, 0xff, 0x01, 0x02],
+    };
+    assert_eq!(host.step(Some(&nonsense)).unwrap_err(), PakeError::BadPayload);
 }
 
 const MINUTE: i64 = 60_000;
@@ -284,6 +349,10 @@ struct VectorCase {
     controller_seed: u8,
     #[serde(rename = "hostSeed")]
     host_seed: u8,
+    #[serde(rename = "controllerPubkey")]
+    controller_pubkey: String,
+    #[serde(rename = "hostPubkey")]
+    host_pubkey: String,
     step1: String,
     step2: String,
     step3: String,
@@ -292,8 +361,13 @@ struct VectorCase {
 }
 
 fn vector_case(name: &str, code: &str, device: &str, session: &str, seeds: (u8, u8)) -> VectorCase {
-    let mut controller = PakeExchange::controller(code, device, session).unwrap().with_seed(seeds.0);
-    let mut host = PakeExchange::host(code, device, session).unwrap().with_seed(seeds.1);
+    let (controller_pubkey, host_pubkey) = (pubkey(seeds.0), pubkey(seeds.1));
+    let mut controller = PakeExchange::controller(code, device, session, &controller_pubkey)
+        .unwrap()
+        .with_seed(seeds.0);
+    let mut host = PakeExchange::host(code, device, session, &host_pubkey)
+        .unwrap()
+        .with_seed(seeds.1);
     let step1 = controller.step(None).unwrap().unwrap();
     let step2 = host.step(Some(&step1)).unwrap().unwrap();
     let step3 = controller.step(Some(&step2)).unwrap().unwrap();
@@ -305,6 +379,8 @@ fn vector_case(name: &str, code: &str, device: &str, session: &str, seeds: (u8, 
         session_id: session.to_string(),
         controller_seed: seeds.0,
         host_seed: seeds.1,
+        controller_pubkey,
+        host_pubkey,
         step1: step1.to_base64(),
         step2: step2.to_base64(),
         step3: step3.to_base64(),
@@ -321,7 +397,9 @@ fn matches_the_shared_vectors() {
         version: 1,
         note: "SPAKE2 access-code exchange, PROTOCOL.md 2.17. Ephemeral scalars come from a \
                test-only SHA-256 counter stream seeded with controllerSeed / hostSeed; \
-               production uses the OS CSPRNG."
+               production uses the OS CSPRNG. step1 and step2 carry the sender's device \
+               pubkey as a len32-prefixed DER SPKI blob, and both pubkeys are in the \
+               transcript."
             .to_string(),
         cases: vec![
             vector_case("typical", "K7FM3Q8PW2XY", "482719351", "sess-0001", (1, 2)),
