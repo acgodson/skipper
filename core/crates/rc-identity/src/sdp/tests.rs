@@ -1,9 +1,6 @@
 use super::*;
 use crate::DeviceKey;
 
-/// A real libwebrtc offer, cut down to the lines that matter here: two m-lines,
-/// the same fingerprint repeated on each, CRLF endings and a session-level
-/// attribute block.
 const OFFER: &str = "v=0\r\n\
 o=- 8175905011317297321 2 IN IP4 127.0.0.1\r\n\
 s=-\r\n\
@@ -42,10 +39,7 @@ fn a_repeated_fingerprint_collapses_to_one_line() {
 #[test]
 fn several_fingerprints_are_sorted_and_joined() {
     let sdp = "v=0\r\na=fingerprint:sha-256 BB:02\r\na=fingerprint:sha-256 AA:01\r\n";
-    assert_eq!(
-        fingerprints(sdp).unwrap(),
-        "sha-256 AA:01\nsha-256 BB:02"
-    );
+    assert_eq!(fingerprints(sdp).unwrap(), "sha-256 AA:01\nsha-256 BB:02");
 }
 
 #[test]
@@ -71,7 +65,16 @@ fn a_fingerprint_swapped_by_the_relay_is_caught() {
     let pubkey = key.public_key_spki_base64();
     let tampered = OFFER.replace("7B:8C", "7B:8D");
     assert_eq!(
-        verify(SESSION, "offer", &tampered, FP, &pubkey, &sig, Some(&pubkey)).unwrap_err(),
+        verify(
+            SESSION,
+            "offer",
+            &tampered,
+            FP,
+            &pubkey,
+            &sig,
+            Some(&pubkey)
+        )
+        .unwrap_err(),
         SdpAuthError::FingerprintMismatch
     );
 }

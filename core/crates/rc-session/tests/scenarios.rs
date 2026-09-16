@@ -1,11 +1,3 @@
-//! Executes the shared conformance scenarios in
-//! `protocol/vectors/session-scenarios.json`.
-//!
-//! The same file is executed by the Mac app's suite, which reaches this very
-//! machine through `rc-ffi`. This suite therefore tests the rules alone: if it
-//! is green and the Swift one is red, the fault is at the FFI boundary rather
-//! than in PROTOCOL.md §4.
-
 use rc_session::{
     IceLinkState, ResumeOk, Role, SessionAction, SessionGrant, SessionPhase, SessionStateMachine,
 };
@@ -39,8 +31,6 @@ fn phase_matches(phase: &SessionPhase, expected: &str) -> bool {
     }
 }
 
-/// One wire-format action -> the machine's action type. Exhaustive on purpose:
-/// a vector using an action this executor cannot express must fail loudly.
 fn action_from_json(v: &Value) -> SessionAction {
     let s = |k: &str| -> String {
         v[k].as_str()
@@ -71,7 +61,9 @@ fn action_from_json(v: &Value) -> SessionAction {
         "reissueWatches" => SessionAction::ReissueWatches,
         "teardownPeerConnection" => SessionAction::TeardownPeerConnection,
         "clearStoredSession" => SessionAction::ClearStoredSession,
-        "promptForAccessCode" => SessionAction::PromptForAccessCode { reason: s("reason") },
+        "promptForAccessCode" => SessionAction::PromptForAccessCode {
+            reason: s("reason"),
+        },
         "sendBye" => SessionAction::SendBye {
             session_id: s("sessionId"),
             reason: s("reason"),
@@ -96,7 +88,12 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
         };
         let mut machine = SessionStateMachine::new(role);
 
-        for (i, step) in scenario["steps"].as_array().expect("steps").iter().enumerate() {
+        for (i, step) in scenario["steps"]
+            .as_array()
+            .expect("steps")
+            .iter()
+            .enumerate()
+        {
             let at = step["at"].as_f64().expect("at");
             let now_ms = (at * 1000.0).round() as i64;
             let ctx = || format!("scenario {name:?} step {i} (at {at}s)");
@@ -154,13 +151,18 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
             };
 
             if let Some(expected) = step.get("expectActions") {
-                let expected: Vec<SessionAction> =
-                    expected.as_array().unwrap().iter().map(action_from_json).collect();
+                let expected: Vec<SessionAction> = expected
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(action_from_json)
+                    .collect();
                 let actions = actions
                     .as_ref()
                     .unwrap_or_else(|| panic!("{}: expectActions on a non-action event", ctx()));
                 assert_eq!(
-                    actions, &expected,
+                    actions,
+                    &expected,
                     "{}: actions differ\n  got:      {actions:?}\n  expected: {expected:?}",
                     ctx()
                 );
@@ -182,5 +184,8 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
             steps_run += 1;
         }
     }
-    assert!(steps_run >= 200, "only {steps_run} steps ran; file looks truncated");
+    assert!(
+        steps_run >= 200,
+        "only {steps_run} steps ran; file looks truncated"
+    );
 }

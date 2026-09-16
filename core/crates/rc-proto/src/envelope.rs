@@ -1,16 +1,10 @@
-//! The envelope every message on every surface shares. PROTOCOL.md §0.1.
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::consts::VERSION;
 
-/// PROTOCOL.md §0.1.
-///
-/// `payload` is always present and never `null` — a type with no fields sends
-/// `{}`. That is why it is a plain `Value` with an object default rather than an
-/// `Option`: `null` on the wire is a protocol violation we normalise on read and
-/// can never produce on write.
+/// `payload` is always present and never `null` on the wire; a type with no
+/// fields sends `{}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Envelope {
     pub v: i32,
@@ -34,8 +28,6 @@ fn empty_object() -> Value {
     Value::Object(serde_json::Map::new())
 }
 
-/// A peer that sends `"payload": null` is violating §0.1, but dropping the whole
-/// message over it would be less useful than treating it as the `{}` it meant.
 fn null_as_empty_object<'de, D>(d: D) -> Result<Value, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -44,12 +36,10 @@ where
     Ok(if v.is_null() { empty_object() } else { v })
 }
 
-/// Why a frame could not be turned into an [`Envelope`].
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum DecodeError {
     #[error("malformed JSON: {0}")]
     Json(String),
-    /// Answered with `error{unsupported_version}` and a close, per §0.1.
     #[error("unsupported protocol version {0}")]
     Version(i32),
     #[error("missing type")]
@@ -61,8 +51,7 @@ pub enum DecodeError {
 }
 
 impl Envelope {
-    /// Build an envelope. `id` and `re` may be empty; `payload` of `None`
-    /// becomes `{}`.
+    /// `id` and `re` may be empty; `payload` of `None` becomes `{}`.
     pub fn new<T: Serialize>(
         msg_type: &str,
         id: &str,
@@ -88,7 +77,6 @@ impl Envelope {
         serde_json::to_vec(self).map_err(|e| DecodeError::Json(e.to_string()))
     }
 
-    /// Decode a frame, enforcing §0.1's version and type rules and §0's frame cap.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         if bytes.len() > crate::consts::MAX_FRAME_BYTES {
             return Err(DecodeError::TooLarge(
@@ -107,8 +95,7 @@ impl Envelope {
         Ok(env)
     }
 
-    /// Decode the payload into `T`. An absent payload decodes as `{}` so types
-    /// whose fields are all optional round-trip cleanly.
+    /// An absent payload decodes as `{}`.
     pub fn payload_as<T: serde::de::DeserializeOwned>(&self) -> Result<T, DecodeError> {
         let v = if self.payload.is_null() {
             &Value::Object(serde_json::Map::new())
@@ -120,8 +107,7 @@ impl Envelope {
     }
 }
 
-/// PROTOCOL.md §0: exactly 9 ASCII digits. Leading zeros are significant, which
-/// is why a device id is a `String` here and never an integer.
+/// Exactly 9 ASCII digits; leading zeros are significant.
 pub fn valid_device_id(s: &str) -> bool {
     s.len() == 9 && s.bytes().all(|b| b.is_ascii_digit())
 }

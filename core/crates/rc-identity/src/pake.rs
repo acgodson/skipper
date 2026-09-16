@@ -1,58 +1,3 @@
-//! The access-code exchange of PROTOCOL.md §2.17: symmetric SPAKE2 between the
-//! controller and the host, relayed verbatim by the server.
-//!
-//! The code itself never leaves either machine. Both sides run SPAKE2 over
-//! Ed25519 with the *same* password — the normalised access code — and the same
-//! symmetric identity, which is where the context binding lives:
-//!
-//! ```text
-//! identity = "skipperdesk/pake/v1|" deviceId "|" sessionId
-//! password = normalised access code (Crockford, uppercase, separators dropped)
-//! ```
-//!
-//! Binding the host `deviceId` and the `sessionId` into the SPAKE2 identity
-//! means a message captured in one session is useless in another: the two sides
-//! would derive different keys and the confirmation below would fail. The role
-//! names `skipperdesk-controller` / `skipperdesk-host` are **not** SPAKE2
-//! identities (symmetric SPAKE2 has exactly one); they are the HKDF `info` that
-//! separates the two confirmation keys, so neither side can replay the other's
-//! tag.
-//!
-//! Key schedule, once SPAKE2 agrees on a 32-byte shared key:
-//!
-//! ```text
-//! transcript = len32("skipperdesk/pake/v1") ‖ len32(deviceId) ‖ len32(sessionId)
-//!              ‖ len32(controllerPubkey) ‖ len32(hostPubkey)
-//!              ‖ len32(controllerMessage) ‖ len32(hostMessage)
-//! prk        = HKDF-SHA256-Extract(salt = transcript, ikm = sharedKey)
-//! sessionKey = Expand(prk, "skipperdesk/pake/v1 session-key", 32)
-//! kcC        = Expand(prk, "skipperdesk/pake/v1 confirm skipperdesk-controller", 32)
-//! kcH        = Expand(prk, "skipperdesk/pake/v1 confirm skipperdesk-host", 32)
-//! confirmC   = HMAC-SHA256(kcC, transcript)
-//! confirmH   = HMAC-SHA256(kcH, transcript)
-//! ```
-//!
-//! On the wire (`pake.step`, payloads base64, ≤ 4096 characters), where
-//! `len32(x)` is a big-endian 4-byte length prefix:
-//!
-//! | step | from | payload |
-//! |---|---|---|
-//! | 1 | controller | `len32(controllerPubkey)` ‖ controllerPubkey ‖ controller SPAKE2 message |
-//! | 2 | host | `len32(hostPubkey)` ‖ hostPubkey ‖ host SPAKE2 message ‖ `confirmH` |
-//! | 3 | controller | `confirmC` |
-//!
-//! The pubkeys are the two DER SPKI device keys, and they are in the transcript
-//! above, so a relay that swaps one for its own breaks the confirmation it
-//! cannot compute. That is what makes the key each side learns here safe to use
-//! as the expected signer of the peer's `sdp` fingerprints (§2.12): without the
-//! binding, a server that relayed a genuine exchange untouched could still have
-//! handed each side its own key and sat in the middle of the DTLS handshake.
-//!
-//! A wrong code produces different keys on the two sides, so step 2 fails for
-//! the controller and step 3 fails for the **host** — which is what matters:
-//! the host learns the attempt was wrong before it has done anything else, and
-//! feeds that failure to [`GuessPolicy`].
-
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use hkdf::Hkdf;
@@ -69,8 +14,8 @@ pub const MAX_PAYLOAD_BASE64: usize = 4096;
 pub const SESSION_KEY_LEN: usize = 32;
 pub const CONFIRM_LEN: usize = 32;
 
-/// A DER SPKI P-256 key is 91 bytes; the cap exists only so a malformed length
-/// prefix cannot make a receiver allocate.
+/// A DER SPKI P-256 key is 91 bytes; the cap stops a malformed length prefix
+/// from making a receiver allocate.
 pub const MAX_PUBLIC_KEY_LEN: usize = 256;
 
 const CONTEXT_LABEL: &str = "skipperdesk/pake/v1";
@@ -111,7 +56,6 @@ pub enum PakeError {
     NotComplete,
 }
 
-/// One `pake` frame's payload, decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PakeMessage {
     pub step: u32,
@@ -157,9 +101,8 @@ impl Drop for Keys {
     }
 }
 
-/// One side of the exchange. Drive it with [`PakeExchange::step`]: the
-/// controller starts by stepping `None`, every other call carries the frame
-/// that arrived from the peer.
+/// Drive with [`PakeExchange::step`]: the controller starts by stepping
+/// `None`, every other call carries the frame that arrived from the peer.
 pub struct PakeExchange {
     role: PakeRole,
     password: Vec<u8>,
@@ -184,9 +127,6 @@ impl Drop for PakeExchange {
 
 impl PakeExchange {
     /// `own_public_key_base64` is this device's own `pubkey` (base64 DER SPKI).
-    /// It travels in this side's first frame and is bound into the transcript,
-    /// so the peer ends the exchange knowing which key must sign the `sdp`
-    /// fingerprints it will accept.
     pub fn controller(
         access_code: &str,
         device_id: &str,
@@ -262,9 +202,7 @@ impl PakeExchange {
         self.stage == Stage::Complete
     }
 
-    /// The peer's device `pubkey`, base64 DER SPKI, once its first frame has
-    /// arrived: the host learns it at step 1, the controller at step 2. Empty
-    /// before that.
+    /// Empty until the peer's first frame has arrived.
     pub fn peer_public_key_base64(&self) -> String {
         if self.peer_public_key.is_empty() {
             String::new()
@@ -280,12 +218,15 @@ impl PakeExchange {
         }
     }
 
-    /// The 32-byte key, base64 (std, padded) — the form the FFI hands out.
+    /// base64 (std, padded) — the form the FFI hands out.
     pub fn session_key_base64(&self) -> Result<String, PakeError> {
         self.session_key().map(|key| B64.encode(key))
     }
 
-    pub fn step(&mut self, incoming: Option<&PakeMessage>) -> Result<Option<PakeMessage>, PakeError> {
+    pub fn step(
+        &mut self,
+        incoming: Option<&PakeMessage>,
+    ) -> Result<Option<PakeMessage>, PakeError> {
         match self.stage {
             Stage::Abandoned => return Err(PakeError::Abandoned),
             Stage::Complete => return Err(PakeError::AlreadyFinished),
@@ -298,7 +239,10 @@ impl PakeExchange {
         result
     }
 
-    fn advance(&mut self, incoming: Option<&PakeMessage>) -> Result<Option<PakeMessage>, PakeError> {
+    fn advance(
+        &mut self,
+        incoming: Option<&PakeMessage>,
+    ) -> Result<Option<PakeMessage>, PakeError> {
         match (self.role, self.stage, incoming) {
             (PakeRole::Controller, Stage::Fresh, None) => Ok(Some(self.controller_start())),
             (PakeRole::Controller, Stage::ControllerAwaitingReply, Some(message)) => {
@@ -325,7 +269,10 @@ impl PakeExchange {
         if message.step == expected {
             Ok(())
         } else {
-            Err(PakeError::UnexpectedStep { got: message.step, expected })
+            Err(PakeError::UnexpectedStep {
+                got: message.step,
+                expected,
+            })
         }
     }
 
@@ -357,7 +304,10 @@ impl PakeExchange {
         let controller_confirm = keys.controller_confirm.to_vec();
         self.keys = Some(keys);
         self.stage = Stage::Complete;
-        Ok(PakeMessage { step: STEP_CONTROLLER_CONFIRM, payload: controller_confirm })
+        Ok(PakeMessage {
+            step: STEP_CONTROLLER_CONFIRM,
+            payload: controller_confirm,
+        })
     }
 
     fn host_reply(&mut self, payload: &[u8]) -> Result<PakeMessage, PakeError> {
@@ -379,7 +329,10 @@ impl PakeExchange {
         payload.extend_from_slice(&keys.host_confirm);
         self.keys = Some(keys);
         self.stage = Stage::HostAwaitingConfirm;
-        Ok(PakeMessage { step: STEP_HOST_REPLY, payload })
+        Ok(PakeMessage {
+            step: STEP_HOST_REPLY,
+            payload,
+        })
     }
 
     fn host_finish(&mut self, controller_confirm: &[u8]) -> Result<(), PakeError> {
@@ -406,7 +359,9 @@ impl PakeExchange {
 
     fn finish_spake2(&mut self, peer_message: &[u8]) -> Result<Vec<u8>, PakeError> {
         let state = self.state.take().ok_or(PakeError::Abandoned)?;
-        state.finish(peer_message).map_err(|_| PakeError::BadPeerMessage)
+        state
+            .finish(peer_message)
+            .map_err(|_| PakeError::BadPeerMessage)
     }
 
     fn transcript(&self, controller_message: &[u8], host_message: &[u8]) -> Vec<u8> {
@@ -469,9 +424,21 @@ fn derive(shared: &[u8], transcript: &[u8]) -> Keys {
     };
     let mut controller_key = [0u8; 32];
     let mut host_key = [0u8; 32];
-    expand(&hkdf, &format!("{CONTEXT_LABEL} session-key"), &mut keys.session);
-    expand(&hkdf, &format!("{CONTEXT_LABEL} confirm {CONTROLLER_IDENTITY}"), &mut controller_key);
-    expand(&hkdf, &format!("{CONTEXT_LABEL} confirm {HOST_IDENTITY}"), &mut host_key);
+    expand(
+        &hkdf,
+        &format!("{CONTEXT_LABEL} session-key"),
+        &mut keys.session,
+    );
+    expand(
+        &hkdf,
+        &format!("{CONTEXT_LABEL} confirm {CONTROLLER_IDENTITY}"),
+        &mut controller_key,
+    );
+    expand(
+        &hkdf,
+        &format!("{CONTEXT_LABEL} confirm {HOST_IDENTITY}"),
+        &mut host_key,
+    );
     keys.controller_confirm = tag(&controller_key, transcript);
     keys.host_confirm = tag(&host_key, transcript);
     burn(&mut controller_key);
@@ -519,13 +486,6 @@ fn burn(bytes: &mut [u8]) {
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
-/// How many wrong codes a controller may present before the host stops
-/// answering, PROTOCOL.md §2.17.
-///
-/// Pure by design: it owns no clock and no storage. The caller passes `now_ms`
-/// and persists the [`GuessCounter`] it gets back, keyed by controller public
-/// key and session — which is what lets the platform survive a restart without
-/// the core knowing where anything is stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GuessPolicy {
     pub window_ms: i64,
@@ -568,33 +528,36 @@ impl GuessDecision {
 }
 
 impl GuessPolicy {
-    /// May this controller start another `pake` step 1?
     pub fn check(&self, counter: &GuessCounter, now_ms: i64) -> GuessDecision {
         if counter.locked_until_ms > now_ms {
-            GuessDecision::Locked { retry_after_ms: counter.locked_until_ms - now_ms }
+            GuessDecision::Locked {
+                retry_after_ms: counter.locked_until_ms - now_ms,
+            }
         } else {
             GuessDecision::Allowed
         }
     }
 
-    /// The host rejected a confirmation. Failures are forgotten once the
-    /// controller has stayed quiet for a whole window — measured from the end of
-    /// any lockout it is serving, so that waiting out a 32-minute lockout does
-    /// not also wipe the count that earned it.
     pub fn record_failure(&self, counter: &GuessCounter, now_ms: i64) -> GuessCounter {
         let quiet_since = counter.last_failure_ms.max(counter.locked_until_ms);
-        let expired =
-            counter.failures > 0 && now_ms.saturating_sub(quiet_since) > self.window_ms;
-        let failures = if expired { 1 } else { counter.failures.saturating_add(1) };
+        let expired = counter.failures > 0 && now_ms.saturating_sub(quiet_since) > self.window_ms;
+        let failures = if expired {
+            1
+        } else {
+            counter.failures.saturating_add(1)
+        };
         let locked_until_ms = if failures >= self.threshold {
             now_ms.saturating_add(self.lockout_ms(failures))
         } else {
             counter.locked_until_ms
         };
-        GuessCounter { failures, last_failure_ms: now_ms, locked_until_ms }
+        GuessCounter {
+            failures,
+            last_failure_ms: now_ms,
+            locked_until_ms,
+        }
     }
 
-    /// The exchange completed. The controller is trusted from here.
     pub fn record_success(&self, _counter: &GuessCounter) -> GuessCounter {
         GuessCounter::default()
     }
