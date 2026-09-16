@@ -1,22 +1,15 @@
-//! Signaling payloads — surface 1, client <-> `rc-signal`. PROTOCOL.md §2.
-
 use serde::{Deserialize, Serialize};
 
 use crate::consts::ALG_ARGON2ID;
 
-/// §2.1. Pushed unsolicited on connect and after `register_ok`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Challenge {
-    /// base64 of 32 random bytes. Single-use, valid 20 s.
+    /// base64 of 32 random bytes; single-use, valid 20s.
     pub nonce: String,
     #[serde(rename = "serverTime")]
     pub server_time: i64,
 }
 
-/// §2.3. The Argon2id verifier for an access code.
-///
-/// The plaintext code is deliberately absent: it never leaves the device that
-/// owns it, except inside `connect_req` from the peer trying to connect.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodeVerifier {
     pub alg: String,
@@ -31,9 +24,6 @@ pub struct CodeVerifier {
     pub len: u32,
 }
 
-/// Why a [`CodeVerifier`] is structurally unacceptable. These are the server's
-/// own accepted ranges (§2.3) restated so a bad verifier is caught before it
-/// costs a round trip.
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum VerifierError {
     #[error("code.alg must be {ALG_ARGON2ID:?}")]
@@ -51,13 +41,12 @@ pub enum VerifierError {
 }
 
 impl CodeVerifier {
-    /// Recommended parameters from §2.3.
     pub const REC_TIME: u32 = 3;
     pub const REC_MEM_KIB: u32 = 65536;
     pub const REC_PAR: u8 = 1;
     pub const REC_LEN: u32 = 32;
 
-    /// Structural sanity only — this does not verify the hash.
+    /// Structural sanity only — does not verify the hash.
     pub fn validate(&self) -> Result<(), VerifierError> {
         if self.alg != ALG_ARGON2ID {
             return Err(VerifierError::Alg);
@@ -81,8 +70,6 @@ impl CodeVerifier {
     }
 }
 
-/// §2.2. Idempotent per pubkey: re-registering a known key returns the existing
-/// `deviceId` and leaves the stored access code untouched.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Register {
     /// base64 DER SPKI, P-256.
@@ -101,7 +88,6 @@ pub struct RegisterOk {
     pub existing: bool,
 }
 
-/// §2.4.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hello {
     #[serde(rename = "deviceId")]
@@ -127,11 +113,6 @@ fn is_zero_i64(v: &i64) -> bool {
     *v == 0
 }
 
-/// Accept an explicit JSON `null` wherever a defaulted value is expected.
-///
-/// Go's `encoding/json` writes a nil slice or map as `null`, and several
-/// protocol fields have no `omitempty`. Without this, a perfectly legal frame
-/// from the reference implementation fails to decode.
 fn null_as_default<'de, D, T>(d: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -146,10 +127,6 @@ pub struct HelloOk {
     pub device_id: String,
     #[serde(rename = "serverTime")]
     pub server_time: i64,
-    /// Go encodes a nil slice as `null`, not `[]`, and `iceServers` has no
-    /// `omitempty` — so a server with no TURN configured really does send
-    /// `"iceServers": null`. `#[serde(default)]` alone does not cover an
-    /// explicit null, only an absent key.
     #[serde(rename = "iceServers", default, deserialize_with = "null_as_default")]
     pub ice_servers: Vec<IceServer>,
     #[serde(rename = "heartbeatSec")]
@@ -158,9 +135,6 @@ pub struct HelloOk {
     pub offline_after_sec: i32,
     #[serde(rename = "sessionTokenTtlSec")]
     pub session_token_ttl_sec: i32,
-    /// Present when this device already has a session server-side. The client
-    /// that did not issue it holds no token for it — see the stale-session
-    /// handling in the session state machine.
     #[serde(
         rename = "activeSessionId",
         default,
@@ -181,13 +155,11 @@ pub struct DeviceRef {
     pub device_id: String,
 }
 
-/// `watch`, `watch_ok`, `unwatch`, `unwatch_ok` all carry only a device id.
 pub type Watch = DeviceRef;
 pub type WatchOk = DeviceRef;
 pub type Unwatch = DeviceRef;
 pub type UnwatchOk = DeviceRef;
 
-/// §2.8.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Presence {
     #[serde(rename = "deviceId")]
@@ -198,15 +170,10 @@ pub struct Presence {
     pub since: i64,
 }
 
-/// §2.9. In v1 this carries the **plaintext** access code. Never log, store or
-/// forward it.
+/// Carries the plaintext access code. Never logged, stored or forwarded.
 ///
-/// It has no `Debug` derive on purpose: a `{:?}` on this type in a log line is
-/// exactly the accident the whole verifier design exists to prevent.
-///
-/// TODO: delete `access_code` at the v2 bump. A v2 `connect_req` carries only
-/// `device_id`; authorisation is the host's entitlement and the code is proved
-/// peer to peer by the [`Pake`] exchange.
+/// TODO: delete `access_code` at the v2 bump; authorisation moves to the
+/// host's entitlement and the code is proved peer to peer by [`Pake`].
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectReq {
     #[serde(rename = "deviceId")]
@@ -242,9 +209,7 @@ pub struct ConnectOk {
     pub host_device_id: String,
     #[serde(rename = "controllerDeviceId")]
     pub controller_device_id: String,
-    /// The host's registered `pubkey`, base64 DER SPKI — the key the controller
-    /// requires on the host's signed `sdp` (§2.12). Public material; the server
-    /// has had it since `register`.
+    /// base64 DER SPKI.
     #[serde(
         rename = "hostPubkey",
         default,
@@ -253,9 +218,6 @@ pub struct ConnectOk {
     pub host_pubkey: String,
 }
 
-/// §2.9. Pushed to the host when a controller connects: everything `connect_ok`
-/// carries plus the controller's registered `pubkey`, which the host's guess
-/// counter and trusted-controller list are keyed on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionStart {
     #[serde(flatten)]
@@ -313,9 +275,6 @@ pub struct PeerState {
     pub attached: bool,
 }
 
-/// §2.12. Relayed verbatim; the server never parses or stores `sdp`, and it
-/// neither checks nor could produce `sig` — which is exactly why the
-/// fingerprints are signed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sdp {
     #[serde(rename = "sessionId")]
@@ -326,15 +285,13 @@ pub struct Sdp {
     pub sdp: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub restart: bool,
-    /// Every `a=fingerprint` value in `sdp`, de-duplicated, sorted, joined
-    /// with `\n`.
+    /// Every `a=fingerprint` value in `sdp`, de-duplicated, sorted, joined with `\n`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub fp: String,
-    /// The sender's device key, base64 DER SPKI.
+    /// base64 DER SPKI.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub pubkey: String,
-    /// base64 DER ECDSA-SHA256 over
-    /// `"skipperdesk/sdp/v1|" session_id "|" sdp_type "|" fp`.
+    /// base64 DER ECDSA-SHA256 over `"skipperdesk/sdp/v1|" session_id "|" sdp_type "|" fp`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sig: String,
 }
@@ -343,7 +300,6 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
-/// §2.13. Relayed verbatim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ice {
     #[serde(rename = "sessionId")]
@@ -367,8 +323,6 @@ pub struct Bye {
     pub reason: String,
 }
 
-/// §2.15. Replaces this device's verifier and kills all of its sessions and
-/// tokens. Same shape as [`CodeVerifier`].
 pub type RefreshCode = CodeVerifier;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -379,9 +333,8 @@ pub struct RefreshCodeOk {
     pub updated_at: i64,
 }
 
-/// §2.17. One opaque message of the peer-to-peer PAKE exchange, relayed by the
-/// server exactly as `sdp` and `ice` are: validated for attachment, routed
-/// verbatim, never parsed, stored or logged.
+/// Relayed by the server exactly as `sdp` and `ice`: validated for
+/// attachment, routed verbatim, never parsed, stored or logged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Pake {
     #[serde(rename = "sessionId")]
@@ -391,17 +344,12 @@ pub struct Pake {
     pub payload: String,
 }
 
-/// §0.1. Every error on every surface is this shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorPayload {
-    /// Machine-readable, from §7. Branch on this, never on `message`.
+    /// Machine-readable; branch on this, never on `message`.
     pub code: String,
     pub message: String,
-    #[serde(
-        rename = "retryAfterSec",
-        default,
-        skip_serializing_if = "is_zero_i32"
-    )]
+    #[serde(rename = "retryAfterSec", default, skip_serializing_if = "is_zero_i32")]
     pub retry_after_sec: i32,
     /// Set when `code` is `entitlement`; see `consts::entitlement`.
     #[serde(default, skip_serializing_if = "String::is_empty")]

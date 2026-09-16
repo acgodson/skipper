@@ -1,16 +1,5 @@
-//! Device identity for the Windows host.
-//!
-//! Mirrors the Mac app's file-based identity (`IdentityFileStore.swift`): one
-//! JSON file, same schema, holding the P-256 private key, the device id the
-//! server minted, and the current access code. No OS keychain — that decision
-//! was made on the Mac side after the popup debacle and applies double on
-//! Windows, where DPAPI would tie the file to a user profile for no benefit a
-//! 1:1 remote-control pairing needs.
-//!
-//! Everything here is cross-checked against the server's own libraries by
-//! `tests/server_compat.rs`: the Argon2id verifier against `golang.org/x/crypto/
-//! argon2`, and the SPKI/DER signature against `crypto/ecdsa` + `crypto/x509`.
-//! "The server will accept what this crate produces" is tested, not hoped.
+//! Device identity: file-based, mirrors the Mac app's `IdentityFileStore.swift`
+//! schema. No OS keychain.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -24,19 +13,15 @@ use serde::{Deserialize, Serialize};
 pub mod pake;
 pub mod sdp;
 
-/// Standard Crockford base32 alphabet.
+/// Crockford base32 alphabet.
 pub const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/// Access codes: 12 Crockford symbols (60 bits), shown in groups of 4. This is
-/// the only generator in the product — the Mac app reaches it through
-/// `skipper_access_code_generate`.
 pub mod access_code {
     use super::*;
 
     pub const LENGTH: usize = 12;
     pub const GROUP: usize = 4;
 
-    /// A fresh code from the OS CSPRNG.
     pub fn generate() -> String {
         let mut bytes = [0u8; LENGTH];
         OsRng.fill_bytes(&mut bytes);
@@ -46,9 +31,7 @@ pub mod access_code {
             .collect()
     }
 
-    /// What a user actually types, made canonical: uppercase, separators
-    /// dropped, and Crockford's forgiving aliases applied (I/L → 1, O → 0).
-    /// This is the exact byte string the PAKE uses as its password.
+    /// The exact byte string the PAKE uses as its password.
     pub fn normalize(input: &str) -> String {
         input
             .chars()
@@ -61,15 +44,12 @@ pub mod access_code {
             .collect()
     }
 
-    /// `normalize`, plus the shape rules: exactly [`LENGTH`] legal symbols.
     pub fn canonicalize(input: &str) -> Option<String> {
         let compact = normalize(input);
-        let legal = compact.len() == LENGTH
-            && compact.bytes().all(|b| CROCKFORD.contains(&b));
+        let legal = compact.len() == LENGTH && compact.bytes().all(|b| CROCKFORD.contains(&b));
         legal.then_some(compact)
     }
 
-    /// `892992974` -> `892 992 974` for display, matching the Mac's grouping.
     pub fn formatted_device_id(id: &str) -> String {
         id.as_bytes()
             .chunks(3)
@@ -78,7 +58,6 @@ pub mod access_code {
             .join(" ")
     }
 
-    /// `K7M2QX9PW2XY` -> `K7M2-QX9P-W2XY` for display.
     pub fn formatted(code: &str) -> String {
         code.as_bytes()
             .chunks(GROUP)
@@ -88,14 +67,12 @@ pub mod access_code {
     }
 }
 
-/// Argon2id verifier construction, PROTOCOL.md §2.3 recommended parameters.
 pub fn build_verifier(plaintext_code: &str) -> CodeVerifier {
     let mut salt = [0u8; 16];
     OsRng.fill_bytes(&mut salt);
     build_verifier_with_salt(plaintext_code, &salt)
 }
 
-/// Deterministic form, for the cross-implementation tests.
 pub fn build_verifier_with_salt(plaintext_code: &str, salt: &[u8]) -> CodeVerifier {
     let params = argon2::Params::new(
         CodeVerifier::REC_MEM_KIB,
@@ -120,8 +97,7 @@ pub fn build_verifier_with_salt(plaintext_code: &str, salt: &[u8]) -> CodeVerifi
     }
 }
 
-/// The device's P-256 key. The raw 32-byte scalar is what the identity file
-/// stores, matching the Mac app's `privateKey` field.
+/// The raw 32-byte scalar is what the identity file stores.
 pub struct DeviceKey {
     signing: SigningKey,
 }
@@ -136,7 +112,9 @@ pub enum IdentityError {
 
 impl DeviceKey {
     pub fn generate() -> Self {
-        Self { signing: SigningKey::random(&mut OsRng) }
+        Self {
+            signing: SigningKey::random(&mut OsRng),
+        }
     }
 
     pub fn from_raw(raw32: &[u8]) -> Result<Self, IdentityError> {
@@ -149,7 +127,7 @@ impl DeviceKey {
         self.signing.to_bytes().to_vec()
     }
 
-    /// base64 of the DER SPKI encoding — the wire `pubkey` field (§0).
+    /// base64 of the DER SPKI encoding — the wire `pubkey` field.
     pub fn public_key_spki_base64(&self) -> String {
         let der = self
             .signing
@@ -159,24 +137,18 @@ impl DeviceKey {
         B64.encode(der.as_bytes())
     }
 
-    /// base64 of the ASN.1 DER ECDSA-SHA256 signature over `message`. The hash
-    /// is applied by the signer; the input is the raw message bytes, exactly as
-    /// §0 specifies.
+    /// base64 of the ASN.1 DER ECDSA-SHA256 signature over the raw `message` bytes.
     pub fn sign_base64(&self, message: &[u8]) -> String {
         let sig: DerSignature = self.signing.sign(message);
         B64.encode(sig.as_bytes())
     }
 
-    /// The wire `sig` field of `register` and `hello`: a signature over the raw
-    /// challenge nonce bytes, not over the base64 text.
+    /// Signs the raw challenge nonce bytes, not the base64 text.
     pub fn sign_nonce_base64(&self, nonce: &[u8]) -> String {
         self.sign_base64(nonce)
     }
 }
 
-/// The identity file. Field-for-field the Mac app's schema
-/// (`IdentityRecord` in `IdentityFileStore.swift`), so anyone debugging one can
-/// debug the other.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityRecord {
     #[serde(rename = "schemaVersion")]
@@ -228,9 +200,7 @@ impl IdentityRecord {
         Ok(record)
     }
 
-    /// Atomic write (temp + rename), owner-only on Unix. On Windows the file
-    /// lives under the user's profile, which is private to the account by
-    /// default ACLs.
+    /// Atomic write (temp + rename), owner-only permissions on Unix.
     pub fn save(&self, path: &std::path::Path) -> Result<(), IdentityError> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;

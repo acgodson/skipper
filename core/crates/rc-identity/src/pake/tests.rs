@@ -6,8 +6,6 @@ const CODE: &str = "K7FM-3Q8P-W2XY";
 const DEVICE: &str = "482719351";
 const SESSION: &str = "sess-0001";
 
-/// Device keys for the vectors, from a fixed scalar so the pinned transcript is
-/// reproducible. Production keys come from the OS CSPRNG or the Secure Enclave.
 fn vector_key(seed: u8) -> crate::DeviceKey {
     let mut raw = [1u8; 32];
     raw[31] = seed;
@@ -18,8 +16,6 @@ fn pubkey(seed: u8) -> String {
     vector_key(seed).public_key_spki_base64()
 }
 
-/// A SHA-256 counter stream, so `protocol/vectors/pake-vectors.json` can pin the
-/// key schedule. Test-only: the product always uses `OsRng`.
 pub(crate) struct SeededRng {
     seed: u8,
     counter: u64,
@@ -71,8 +67,7 @@ struct Pair {
 
 fn pair(controller_code: &str, host_code: &str) -> Pair {
     Pair {
-        controller: PakeExchange::controller(controller_code, DEVICE, SESSION, &pubkey(1))
-            .unwrap(),
+        controller: PakeExchange::controller(controller_code, DEVICE, SESSION, &pubkey(1)).unwrap(),
         host: PakeExchange::host(host_code, DEVICE, SESSION, &pubkey(2)).unwrap(),
     }
 }
@@ -112,8 +107,14 @@ fn a_wrong_code_is_rejected_by_the_host() {
         PakeError::ConfirmationFailed
     );
 
-    let forged = PakeMessage { step: STEP_CONTROLLER_CONFIRM, payload: vec![0u8; CONFIRM_LEN] };
-    assert_eq!(pair.host.step(Some(&forged)).unwrap_err(), PakeError::ConfirmationFailed);
+    let forged = PakeMessage {
+        step: STEP_CONTROLLER_CONFIRM,
+        payload: vec![0u8; CONFIRM_LEN],
+    };
+    assert_eq!(
+        pair.host.step(Some(&forged)).unwrap_err(),
+        PakeError::ConfirmationFailed
+    );
     assert!(!pair.host.is_complete());
     assert_eq!(pair.host.session_key().unwrap_err(), PakeError::NotComplete);
 }
@@ -156,22 +157,34 @@ fn the_exchange_is_bound_to_the_device_and_session() {
 
     let step1 = controller.step(None).unwrap().unwrap();
     let step2 = host.step(Some(&step1)).unwrap().unwrap();
-    assert_eq!(controller.step(Some(&step2)).unwrap_err(), PakeError::ConfirmationFailed);
+    assert_eq!(
+        controller.step(Some(&step2)).unwrap_err(),
+        PakeError::ConfirmationFailed
+    );
 
     let mut controller = PakeExchange::controller(CODE, DEVICE, SESSION, &pubkey(1)).unwrap();
     let mut host = PakeExchange::host(CODE, "999999999", SESSION, &pubkey(2)).unwrap();
     let step1 = controller.step(None).unwrap().unwrap();
     let step2 = host.step(Some(&step1)).unwrap().unwrap();
-    assert_eq!(controller.step(Some(&step2)).unwrap_err(), PakeError::ConfirmationFailed);
+    assert_eq!(
+        controller.step(Some(&step2)).unwrap_err(),
+        PakeError::ConfirmationFailed
+    );
 }
 
 #[test]
 fn steps_must_arrive_in_order() {
     let mut host = PakeExchange::host(CODE, DEVICE, SESSION, &pubkey(2)).unwrap();
-    let stray = PakeMessage { step: STEP_CONTROLLER_CONFIRM, payload: vec![0u8; CONFIRM_LEN] };
+    let stray = PakeMessage {
+        step: STEP_CONTROLLER_CONFIRM,
+        payload: vec![0u8; CONFIRM_LEN],
+    };
     assert_eq!(
         host.step(Some(&stray)).unwrap_err(),
-        PakeError::UnexpectedStep { got: STEP_CONTROLLER_CONFIRM, expected: STEP_CONTROLLER_START }
+        PakeError::UnexpectedStep {
+            got: STEP_CONTROLLER_CONFIRM,
+            expected: STEP_CONTROLLER_START
+        }
     );
     assert_eq!(host.step(None).unwrap_err(), PakeError::Abandoned);
 }
@@ -182,10 +195,18 @@ fn payload_limits_are_enforced() {
         PakeMessage::from_base64(1, &"A".repeat(MAX_PAYLOAD_BASE64 + 1)).unwrap_err(),
         PakeError::PayloadTooLarge
     );
-    assert_eq!(PakeMessage::from_base64(1, "not base64!!").unwrap_err(), PakeError::BadBase64);
-    let message = PakeMessage { step: 1, payload: vec![1, 2, 3] };
     assert_eq!(
-        PakeMessage::from_base64(1, &message.to_base64()).unwrap().payload,
+        PakeMessage::from_base64(1, "not base64!!").unwrap_err(),
+        PakeError::BadBase64
+    );
+    let message = PakeMessage {
+        step: 1,
+        payload: vec![1, 2, 3],
+    };
+    assert_eq!(
+        PakeMessage::from_base64(1, &message.to_base64())
+            .unwrap()
+            .payload,
         message.payload
     );
 }
@@ -221,9 +242,6 @@ fn each_side_learns_the_other_device_public_key() {
     assert!(pair.host.step(Some(&step3)).unwrap().is_none());
 }
 
-/// The reason the key is in the transcript rather than merely alongside it: a
-/// relay that forwards a genuine exchange untouched but swaps the announced
-/// public key would otherwise be trusted to sign the peer's SDP.
 #[test]
 fn a_swapped_public_key_breaks_the_confirmation() {
     let mut controller = PakeExchange::controller(CODE, DEVICE, SESSION, &pubkey(1)).unwrap();
@@ -239,7 +257,10 @@ fn a_swapped_public_key_breaks_the_confirmation() {
     };
     let step2 = host.step(Some(&relayed)).unwrap().unwrap();
     assert_eq!(host.peer_public_key_base64(), pubkey(9));
-    assert_eq!(controller.step(Some(&step2)).unwrap_err(), PakeError::ConfirmationFailed);
+    assert_eq!(
+        controller.step(Some(&step2)).unwrap_err(),
+        PakeError::ConfirmationFailed
+    );
 }
 
 #[test]
@@ -249,7 +270,10 @@ fn a_public_key_prefix_that_does_not_fit_is_refused() {
         step: STEP_CONTROLLER_START,
         payload: vec![0xff, 0xff, 0xff, 0xff, 0x01, 0x02],
     };
-    assert_eq!(host.step(Some(&nonsense)).unwrap_err(), PakeError::BadPayload);
+    assert_eq!(
+        host.step(Some(&nonsense)).unwrap_err(),
+        PakeError::BadPayload
+    );
 }
 
 const MINUTE: i64 = 60_000;
@@ -274,8 +298,16 @@ fn the_fifth_failure_locks_for_a_minute_and_then_doubles() {
     for _ in 0..5 {
         counter = policy.record_failure(&counter, 0);
     }
-    assert_eq!(policy.check(&counter, 0), GuessDecision::Locked { retry_after_ms: MINUTE });
-    assert_eq!(policy.check(&counter, MINUTE - 1), GuessDecision::Locked { retry_after_ms: 1 });
+    assert_eq!(
+        policy.check(&counter, 0),
+        GuessDecision::Locked {
+            retry_after_ms: MINUTE
+        }
+    );
+    assert_eq!(
+        policy.check(&counter, MINUTE - 1),
+        GuessDecision::Locked { retry_after_ms: 1 }
+    );
     assert_eq!(policy.check(&counter, MINUTE), GuessDecision::Allowed);
 
     let mut at = MINUTE;
@@ -283,7 +315,9 @@ fn the_fifth_failure_locks_for_a_minute_and_then_doubles() {
         counter = policy.record_failure(&counter, at);
         assert_eq!(
             policy.check(&counter, at),
-            GuessDecision::Locked { retry_after_ms: minutes * MINUTE },
+            GuessDecision::Locked {
+                retry_after_ms: minutes * MINUTE
+            },
             "failure {} at {at}",
             counter.failures
         );
@@ -303,11 +337,17 @@ fn failures_expire_after_the_window() {
     let on_the_boundary = 2 * MINUTE + policy.window_ms;
     counter = policy.record_failure(&counter, on_the_boundary);
     assert_eq!(counter.failures, 4, "exactly a window later still counts");
-    assert_eq!(policy.check(&counter, on_the_boundary), GuessDecision::Allowed);
+    assert_eq!(
+        policy.check(&counter, on_the_boundary),
+        GuessDecision::Allowed
+    );
 
     let later = on_the_boundary + policy.window_ms + 1;
     counter = policy.record_failure(&counter, later);
-    assert_eq!(counter.failures, 1, "the window has passed, the count restarts");
+    assert_eq!(
+        counter.failures, 1,
+        "the window has passed, the count restarts"
+    );
     assert_eq!(policy.check(&counter, later), GuessDecision::Allowed);
 }
 
@@ -320,11 +360,17 @@ fn a_lockout_does_not_hand_back_a_fresh_window() {
     }
     let after_the_lock = MINUTE + policy.window_ms;
     counter = policy.record_failure(&counter, after_the_lock);
-    assert_eq!(counter.failures, 6, "waiting out a lockout is not a clean slate");
+    assert_eq!(
+        counter.failures, 6,
+        "waiting out a lockout is not a clean slate"
+    );
 
     let much_later = after_the_lock + 2 * MINUTE + policy.window_ms + 1;
     counter = policy.record_failure(&counter, much_later);
-    assert_eq!(counter.failures, 1, "a quiet window after the lockout does clear it");
+    assert_eq!(
+        counter.failures, 1,
+        "a quiet window after the lockout does clear it"
+    );
 
     assert_eq!(policy.record_success(&counter), GuessCounter::default());
 }
@@ -388,9 +434,6 @@ fn vector_case(name: &str, code: &str, device: &str, session: &str, seeds: (u8, 
     }
 }
 
-/// The key schedule, pinned. Regenerate with `PAKE_VECTORS=write cargo test -p
-/// rc-identity` when the schedule changes on purpose — and then say so in
-/// PROTOCOL.md §2.17.
 #[test]
 fn matches_the_shared_vectors() {
     let produced = VectorFile {
@@ -403,14 +446,26 @@ fn matches_the_shared_vectors() {
             .to_string(),
         cases: vec![
             vector_case("typical", "K7FM3Q8PW2XY", "482719351", "sess-0001", (1, 2)),
-            vector_case("other-session", "K7FM3Q8PW2XY", "482719351", "sess-0002", (3, 4)),
+            vector_case(
+                "other-session",
+                "K7FM3Q8PW2XY",
+                "482719351",
+                "sess-0002",
+                (3, 4),
+            ),
             vector_case("all-zero-code", "000000000000", "100000009", "s", (5, 6)),
         ],
     };
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../protocol/vectors/pake-vectors.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../protocol/vectors/pake-vectors.json"
+    );
     if std::env::var("PAKE_VECTORS").as_deref() == Ok("write") {
-        std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(&produced).unwrap()))
-            .unwrap();
+        std::fs::write(
+            path,
+            format!("{}\n", serde_json::to_string_pretty(&produced).unwrap()),
+        )
+        .unwrap();
     }
     let committed: VectorFile =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();

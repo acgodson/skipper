@@ -1,16 +1,7 @@
-//! Constants mirrored from `protocol/protocol.go` and PROTOCOL.md.
-//!
-//! PROTOCOL.md is normative. If this file and that document disagree, the
-//! document wins and this file is a bug.
-
-/// The only protocol version this build speaks. PROTOCOL.md §0.1.
 pub const VERSION: i32 = 2;
 
-/// Frames larger than this are a protocol error (WebSocket close 1009).
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 
-/// Tunables the server advertises in `hello_ok`. PROTOCOL.md §2.4. These are the
-/// values used until the server states otherwise; they are not authoritative.
 pub mod tunable {
     pub const HEARTBEAT_SEC: i32 = 15;
     pub const OFFLINE_AFTER_SEC: i32 = 40;
@@ -22,7 +13,6 @@ pub mod tunable {
     pub const TURN_CRED_TTL_SEC: i32 = 12 * 60 * 60;
 }
 
-/// Signaling message types. PROTOCOL.md §2.16.
 pub mod msg {
     pub const CHALLENGE: &str = "challenge";
     pub const REGISTER: &str = "register";
@@ -53,7 +43,6 @@ pub mod msg {
     pub const ERROR: &str = "error";
 }
 
-/// `ctrl` data-channel types. PROTOCOL.md §5.
 pub mod ctrl {
     pub const MOUSE_DOWN: &str = "mouse_down";
     pub const MOUSE_UP: &str = "mouse_up";
@@ -72,18 +61,15 @@ pub mod ctrl {
     pub const SESSION_CLOSE: &str = "session_close";
 }
 
-/// The only type permitted on the unreliable `hi` channel. PROTOCOL.md §6.
 pub mod hi {
     pub const MOUSE_MOVE: &str = "mouse_move";
 }
 
-/// Device roles. PROTOCOL.md §2.4.
 pub mod role {
     pub const HOST: &str = "host";
     pub const CONTROLLER: &str = "controller";
 }
 
-/// Error codes. PROTOCOL.md §7. Clients branch on these, never on `message`.
 pub mod err {
     pub const BAD_REQUEST: &str = "bad_request";
     pub const UNSUPPORTED_VERSION: &str = "unsupported_version";
@@ -105,8 +91,6 @@ pub mod err {
     pub const INTERNAL: &str = "internal";
 }
 
-/// Reasons carried by `ErrorPayload::reason` when the code is
-/// [`err::ENTITLEMENT`]. PROTOCOL.md §7; the same set as API.md §4.3.
 pub mod entitlement {
     pub const UNLINKED: &str = "unlinked";
     pub const TRIAL_EXPIRED: &str = "trial_expired";
@@ -115,7 +99,6 @@ pub mod entitlement {
     pub const SUSPENDED: &str = "suspended";
 }
 
-/// `bye` reasons. PROTOCOL.md §2.14.
 pub mod bye {
     pub const USER_ENDED: &str = "user_ended";
     pub const HOST_ENDED: &str = "host_ended";
@@ -125,15 +108,10 @@ pub mod bye {
     pub const REPLACED: &str = "replaced";
     pub const SHUTDOWN: &str = "shutdown";
     pub const ERROR: &str = "error";
-    /// The peer's signed SDP fingerprints did not verify against the device key
-    /// this side expects. PROTOCOL.md §2.12.
     pub const PEER_AUTH_FAILED: &str = "peer_auth_failed";
-    /// The host refused the controller's access code, or refused to look at it
-    /// because that controller is locked out. PROTOCOL.md §2.17.
     pub const AUTH_FAILED: &str = "auth_failed";
 }
 
-/// Server-side session states. PROTOCOL.md §4.2.
 pub mod session_state {
     pub const PENDING: &str = "pending";
     pub const OPEN: &str = "open";
@@ -142,8 +120,6 @@ pub mod session_state {
     pub const CLOSED: &str = "closed";
 }
 
-/// The base64 text of a single `Pake::payload` may not exceed this.
 pub const MAX_PAKE_PAYLOAD_BYTES: usize = 4096;
 
-/// The only accepted `CodeVerifier::alg`.
 pub const ALG_ARGON2ID: &str = "argon2id";

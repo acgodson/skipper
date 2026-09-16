@@ -1,29 +1,3 @@
-//! Signed SDP fingerprints, PROTOCOL.md §2.12.
-//!
-//! WebRTC is already end-to-end encrypted against anyone who is not the
-//! signaling server. The server is the hole: it relays `sdp`, so it could
-//! replace the DTLS fingerprint with one of its own, terminate DTLS on both
-//! sides and read the desktop. Signing the fingerprint with the device key
-//! closes that hole, because the server has neither device key.
-//!
-//! What is signed:
-//!
-//! ```text
-//! fp      = every `a=fingerprint:` value in the SDP, de-duplicated, sorted,
-//!           joined with "\n"
-//! message = "skipperdesk/sdp/v1|" sessionId "|" sdpType "|" fp
-//! sig     = ECDSA-P256/SHA-256 over `message`, ASN.1 DER, base64
-//! ```
-//!
-//! The `sessionId` binds the signature to one session, so a captured offer
-//! cannot be replayed into another one, and `sdpType` stops an offer being
-//! replayed as an answer.
-//!
-//! Signing is **not** here: the device key may live in the Secure Enclave,
-//! where the private half never leaves the chip and only the platform can
-//! reach it. This module builds the bytes to sign and verifies what arrives —
-//! both pure, both identical on every platform.
-
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use p256::ecdsa::signature::Verifier;
@@ -52,12 +26,7 @@ pub enum SdpAuthError {
     UnexpectedPeer,
 }
 
-/// Every `a=fingerprint` value in `sdp`, de-duplicated, sorted and joined with
-/// `\n` — the exact `fp` field of a `sdp` message.
-///
-/// libwebrtc repeats one fingerprint per m-line, so de-duplication is what
-/// keeps `fp` stable as m-lines come and go; sorting removes the line order,
-/// which a renegotiation is free to change.
+/// De-duplicated, sorted `a=fingerprint` values joined with `\n` — the `fp` field.
 pub fn fingerprints(sdp: &str) -> Result<String, SdpAuthError> {
     let mut found: Vec<String> = Vec::new();
     for line in sdp.lines() {
@@ -77,8 +46,7 @@ pub fn fingerprints(sdp: &str) -> Result<String, SdpAuthError> {
     Ok(found.join("\n"))
 }
 
-/// The bytes the device key signs. The platform hands these to its own signer,
-/// which is the only thing that can reach a Secure Enclave key.
+/// The bytes the device key signs.
 pub fn message_to_sign(
     session_id: &str,
     sdp_type: &str,
@@ -93,8 +61,7 @@ pub fn message_to_sign(
     Ok(format!("{CONTEXT_LABEL}|{session_id}|{sdp_type}|{fingerprints}").into_bytes())
 }
 
-/// The two things a sender needs for one `sdp` message: the `fp` field, and the
-/// bytes to hand its own signer, base64 so they survive the FFI as text.
+/// Returns (`fp`, base64 message to sign).
 pub fn signing_material(
     session_id: &str,
     sdp_type: &str,
@@ -106,11 +73,7 @@ pub fn signing_material(
 }
 
 /// Everything a receiver must check before `setRemoteDescription`.
-///
-/// `expected_pubkey` is the peer's key as this side already knows it — the
-/// controller's, learned in the `pake` exchange, or the host's, learned in
-/// `connect_ok`. `None` means this side has not learned it yet, and only the
-/// signature and the fingerprint binding are checked.
+/// `expected_pubkey_base64` of `None` skips peer-identity pinning.
 pub fn verify(
     session_id: &str,
     sdp_type: &str,

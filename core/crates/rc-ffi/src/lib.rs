@@ -1,13 +1,6 @@
 //! The C ABI over [`rc_session`] and [`rc_identity`], described by
-//! `include/skipper_core.h`.
-//!
-//! The header is the contract; this file implements it and nothing else. Every
-//! entry point catches unwinds, holds no global state, and returns one JSON
-//! shape that the caller releases with `skipper_string_free`.
-//!
-//! The safety contract of every entry point is the header, not a per-function
-//! doc comment: pointers are the ones this API handed out, strings are
-//! NUL-terminated UTF-8, and one handle is never used from two threads at once.
+//! `include/skipper_core.h`. The header is the contract; this file implements
+//! it and nothing else.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -34,16 +27,25 @@ type CallResult = Result<Vec<SessionAction>, String>;
 
 fn action_json(action: &SessionAction) -> Value {
     match action {
-        SessionAction::SendConnectReq { device_id, access_code } => {
+        SessionAction::SendConnectReq {
+            device_id,
+            access_code,
+        } => {
             json!({ "action": "sendConnectReq", "deviceId": device_id, "accessCode": access_code })
         }
-        SessionAction::SendResume { session_id, session_token } => {
+        SessionAction::SendResume {
+            session_id,
+            session_token,
+        } => {
             json!({ "action": "sendResume", "sessionId": session_id, "sessionToken": session_token })
         }
         SessionAction::ScheduleResume { after_sec } => {
             json!({ "action": "scheduleResume", "afterSec": after_sec })
         }
-        SessionAction::SendRenew { session_id, session_token } => {
+        SessionAction::SendRenew {
+            session_id,
+            session_token,
+        } => {
             json!({ "action": "sendRenew", "sessionId": session_id, "sessionToken": session_token })
         }
         SessionAction::SendInputReset => json!({ "action": "sendInputReset" }),
@@ -113,8 +115,6 @@ fn state_json(machine: &SessionStateMachine) -> Value {
     })
 }
 
-/// The result shape of every call that is not a state-machine transition:
-/// the body's own fields plus `ok`, or `{"ok":false,"error":...}`.
 pub(crate) fn respond<F>(panic_message: &str, body: F) -> *mut c_char
 where
     F: FnOnce() -> Result<Value, String>,
@@ -145,8 +145,7 @@ pub(crate) fn error_string(message: &str) -> String {
     json!({ "ok": false, "error": message }).to_string()
 }
 
-/// SAFETY: `pointer` is either null or a NUL-terminated C string that outlives
-/// the call, as the header requires.
+// SAFETY: `pointer` is either null or an outliving NUL-terminated C string.
 pub(crate) unsafe fn optional_str<'a>(pointer: *const c_char) -> Result<Option<&'a str>, String> {
     if pointer.is_null() {
         return Ok(None);
@@ -157,7 +156,10 @@ pub(crate) unsafe fn optional_str<'a>(pointer: *const c_char) -> Result<Option<&
         .map_err(|_| "argument is not valid UTF-8".to_string())
 }
 
-pub(crate) unsafe fn required_str<'a>(pointer: *const c_char, name: &str) -> Result<&'a str, String> {
+pub(crate) unsafe fn required_str<'a>(
+    pointer: *const c_char,
+    name: &str,
+) -> Result<&'a str, String> {
     unsafe { optional_str(pointer) }?.ok_or_else(|| format!("argument {name} must not be null"))
 }
 
@@ -216,7 +218,9 @@ pub unsafe extern "C" fn skipper_string_free(string: *mut c_char) {
     if string.is_null() {
         return;
     }
-    let _ = catch_unwind(AssertUnwindSafe(|| drop(unsafe { CString::from_raw(string) })));
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        drop(unsafe { CString::from_raw(string) })
+    }));
 }
 
 #[no_mangle]
@@ -272,7 +276,9 @@ pub unsafe extern "C" fn skipper_session_connect_failed(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn skipper_session_signaling_lost(session: *mut SkipperSession) -> *mut c_char {
+pub unsafe extern "C" fn skipper_session_signaling_lost(
+    session: *mut SkipperSession,
+) -> *mut c_char {
     dispatch(session, |machine| Ok(machine.signaling_lost()))
 }
 
@@ -388,8 +394,7 @@ pub unsafe extern "C" fn skipper_session_set_remembered_access_code(
     access_code: *const c_char,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        machine.remembered_access_code =
-            unsafe { optional_str(access_code) }?.map(str::to_string);
+        machine.remembered_access_code = unsafe { optional_str(access_code) }?.map(str::to_string);
         Ok(vec![])
     })
 }
