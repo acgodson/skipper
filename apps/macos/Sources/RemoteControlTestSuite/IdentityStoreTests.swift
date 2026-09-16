@@ -1,6 +1,7 @@
 import Foundation
 import RCTestKit
 import RemoteControlCore
+import SkipperCore
 
 /// Each case gets its own throwaway directory, so the real identity file is
 /// never touched. There is nothing global to clean up any more — that was the

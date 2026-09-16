@@ -1,4 +1,5 @@
-//! The C ABI over [`rc_session`], described by `include/skipper_core.h`.
+//! The C ABI over [`rc_session`] and [`rc_identity`], described by
+//! `include/skipper_core.h`.
 //!
 //! The header is the contract; this file implements it and nothing else. Every
 //! entry point catches unwinds, holds no global state, and returns one JSON
@@ -18,11 +19,15 @@ use rc_session::{
 };
 use serde_json::{json, Value};
 
+mod pake;
+
+pub use pake::SkipperPake;
+
 pub struct SkipperSession {
     machine: SessionStateMachine,
 }
 
-const ROLE_HOST: i32 = 0;
+pub(crate) const ROLE_HOST: i32 = 0;
 
 type CallResult = Result<Vec<SessionAction>, String>;
 
@@ -107,7 +112,7 @@ fn state_json(machine: &SessionStateMachine) -> Value {
     })
 }
 
-fn into_c_string(value: String) -> *mut c_char {
+pub(crate) fn into_c_string(value: String) -> *mut c_char {
     match CString::new(value) {
         Ok(owned) => owned.into_raw(),
         Err(_) => match CString::new(r#"{"ok":false,"error":"result contained a NUL byte"}"#) {
@@ -117,13 +122,13 @@ fn into_c_string(value: String) -> *mut c_char {
     }
 }
 
-fn error_string(message: &str) -> String {
+pub(crate) fn error_string(message: &str) -> String {
     json!({ "ok": false, "error": message }).to_string()
 }
 
 /// SAFETY: `pointer` is either null or a NUL-terminated C string that outlives
 /// the call, as the header requires.
-unsafe fn optional_str<'a>(pointer: *const c_char) -> Result<Option<&'a str>, String> {
+pub(crate) unsafe fn optional_str<'a>(pointer: *const c_char) -> Result<Option<&'a str>, String> {
     if pointer.is_null() {
         return Ok(None);
     }
@@ -133,7 +138,7 @@ unsafe fn optional_str<'a>(pointer: *const c_char) -> Result<Option<&'a str>, St
         .map_err(|_| "argument is not valid UTF-8".to_string())
 }
 
-unsafe fn required_str<'a>(pointer: *const c_char, name: &str) -> Result<&'a str, String> {
+pub(crate) unsafe fn required_str<'a>(pointer: *const c_char, name: &str) -> Result<&'a str, String> {
     unsafe { optional_str(pointer) }?.ok_or_else(|| format!("argument {name} must not be null"))
 }
 

@@ -1,4 +1,5 @@
 import Foundation
+import SkipperCore
 
 public enum SessionState: Equatable {
     case idle

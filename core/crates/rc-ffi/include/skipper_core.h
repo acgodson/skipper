@@ -150,6 +150,63 @@ char *skipper_session_user_ended(SkipperSession *session, const char *reason);
 char *skipper_session_set_remembered_access_code(SkipperSession *session,
                                                  const char *access_code);
 
+/*
+ * Access code and SPAKE2 exchange (PROTOCOL.md §2.17).
+ *
+ * The exchange handle carries the access code and the derived keys, so it is
+ * freed as soon as the session key has been read; skipper_pake_free wipes both.
+ * Results follow the conventions above — JSON released with
+ * skipper_string_free, { "ok": false, "error": ... } for a rejected call — but
+ * carry their own fields instead of "actions"/"state":
+ *
+ *   skipper_pake_step            { "ok":true,
+ *                                  "outgoing": { "step":N, "payload":S } | null,
+ *                                  "complete": B }
+ *   skipper_pake_session_key     { "ok":true, "sessionKey": S }   (base64, 32 bytes)
+ *   skipper_pake_guess_policy_*  { "ok":true, "allowed":B, "retryAfterMs":N,
+ *                                  "counter": { "failures":N,
+ *                                               "lastFailureMs":N,
+ *                                               "lockedUntilMs":N } }
+ *   skipper_access_code_generate { "ok":true, "accessCode": S }
+ *
+ * The guess-policy calls are pure: the caller owns the counter, passes it back
+ * as the JSON object it received (NULL or "" means a fresh one), and persists
+ * whatever comes out, keyed by controller public key and session.
+ */
+
+typedef struct SkipperPake SkipperPake;
+
+/* NULL when an argument is not usable: null, not UTF-8, an access code that is
+ * empty once normalised, or an empty device_id / session_id. */
+SkipperPake *skipper_pake_new(int32_t role,
+                              const char *access_code,
+                              const char *device_id,
+                              const char *session_id);
+
+void skipper_pake_free(SkipperPake *pake);
+
+/* One turn of the exchange. The controller starts with step 0 and a NULL
+ * payload; every other call passes the step and base64 payload that arrived in
+ * the peer's `pake` frame. A wrong code surfaces here as an "ok": false result
+ * whose error names the failed confirmation, and the handle refuses to
+ * continue. */
+char *skipper_pake_step(SkipperPake *pake, int32_t step, const char *payload_base64);
+
+/* Only once "complete" was true. */
+char *skipper_pake_session_key(SkipperPake *pake);
+
+int32_t skipper_pake_max_payload_base64(void);
+
+/* May this controller start another exchange? */
+char *skipper_pake_guess_policy_check(const char *counter_json, int64_t now_ms);
+
+/* The host rejected a confirmation, or the exchange completed. */
+char *skipper_pake_guess_policy_record_failure(const char *counter_json, int64_t now_ms);
+char *skipper_pake_guess_policy_record_success(const char *counter_json);
+
+/* Twelve Crockford base32 symbols, 60 bits, from the OS CSPRNG. */
+char *skipper_access_code_generate(void);
+
 #ifdef __cplusplus
 }
 #endif

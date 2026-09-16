@@ -1,6 +1,7 @@
 import Foundation
 import RCTestKit
 import RemoteControlCore
+import SkipperCore
 
 public let crockfordSuite = TestSuite("CrockfordBase32", [
 

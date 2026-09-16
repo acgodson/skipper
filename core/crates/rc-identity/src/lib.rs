@@ -21,11 +21,14 @@ use rand_core::{OsRng, RngCore};
 use rc_proto::signaling::CodeVerifier;
 use serde::{Deserialize, Serialize};
 
-/// Standard Crockford base32 alphabet — identical to `CrockfordBase32.swift`.
+pub mod pake;
+
+/// Standard Crockford base32 alphabet.
 pub const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/// Access codes: 12 Crockford symbols (60 bits), shown in groups of 4,
-/// mirroring `AccessCode.swift`.
+/// Access codes: 12 Crockford symbols (60 bits), shown in groups of 4. This is
+/// the only generator in the product — the Mac app reaches it through
+/// `skipper_access_code_generate`.
 pub mod access_code {
     use super::*;
 
@@ -40,6 +43,29 @@ pub mod access_code {
             .iter()
             .map(|b| CROCKFORD[(b & 0x1F) as usize] as char)
             .collect()
+    }
+
+    /// What a user actually types, made canonical: uppercase, separators
+    /// dropped, and Crockford's forgiving aliases applied (I/L → 1, O → 0).
+    /// This is the exact byte string the PAKE uses as its password.
+    pub fn normalize(input: &str) -> String {
+        input
+            .chars()
+            .filter(|c| !matches!(c, '-' | ' ' | '\t' | '\n' | '\r'))
+            .map(|c| match c.to_ascii_uppercase() {
+                'I' | 'L' => '1',
+                'O' => '0',
+                other => other,
+            })
+            .collect()
+    }
+
+    /// `normalize`, plus the shape rules: exactly [`LENGTH`] legal symbols.
+    pub fn canonicalize(input: &str) -> Option<String> {
+        let compact = normalize(input);
+        let legal = compact.len() == LENGTH
+            && compact.bytes().all(|b| CROCKFORD.contains(&b));
+        legal.then_some(compact)
     }
 
     /// `892992974` -> `892 992 974` for display, matching the Mac's grouping.

@@ -1,5 +1,6 @@
 import SwiftUI
 import RemoteControlCore
+import SkipperCore
 
 struct ControllerView: View {
 

@@ -434,10 +434,63 @@ The controller sends `step: 1`. The peer is detached ⇒ `error{peer_offline}`; 
 queued. A client must abandon an exchange that has not completed within **10 s** of `step: 1` and
 send `bye{reason:"failed"}`.
 
+#### The exchange
+
+Three steps, implemented in `core/crates/rc-identity` (`pake`) and pinned by
+`protocol/vectors/pake-vectors.json`:
+
+| `step` | From | `payload` (before base64) |
+|:--:|---|---|
+| 1 | controller | the controller's SPAKE2 message |
+| 2 | host | the host's SPAKE2 message ‖ `confirmH` (32 bytes) |
+| 3 | controller | `confirmC` (32 bytes) |
+
+Symmetric SPAKE2 over Ed25519 (RustCrypto `spake2`), with
+
+```
+password = access code, normalised: uppercase, separators dropped, Crockford aliases applied
+identity = "skipperdesk/pake/v1|" deviceId "|" sessionId
+```
+
+The host `deviceId` and the `sessionId` are bound **into the SPAKE2 identity**, so a captured
+exchange cannot be replayed into another session or against another host: the two sides would
+derive different keys and confirmation would fail. The role names are not identities — symmetric
+SPAKE2 has exactly one — they are the HKDF `info` that separates the two confirmation keys.
+
+Key schedule over the 32-byte SPAKE2 output, with `len32(x)` a big-endian length prefix:
+
+```
+transcript = len32("skipperdesk/pake/v1") ‖ len32(deviceId) ‖ len32(sessionId)
+             ‖ len32(controllerMessage) ‖ len32(hostMessage)
+prk        = HKDF-SHA256-Extract(salt = transcript, ikm = sharedKey)
+sessionKey = HKDF-Expand(prk, "skipperdesk/pake/v1 session-key", 32)
+kcC        = HKDF-Expand(prk, "skipperdesk/pake/v1 confirm skipperdesk-controller", 32)
+kcH        = HKDF-Expand(prk, "skipperdesk/pake/v1 confirm skipperdesk-host", 32)
+confirmC   = HMAC-SHA256(kcC, transcript)
+confirmH   = HMAC-SHA256(kcH, transcript)
+```
+
+A wrong code therefore fails for the controller at step 2 and for the **host** at step 3, before
+the host has done anything else with the session. Either side treats a failed confirmation, an
+out-of-order `step`, an oversized payload or a reflected message as the end of the exchange:
+`bye{reason:"failed"}`, and the state is not reusable.
+
+#### Guessing
+
 Guess rate limiting is the **host's** job in v2 (§3.3): the host counts failed exchanges per
 controller device key and per unit time, and refuses to start another one while it is throttling.
 The server cannot do this for it, because a failed exchange is indistinguishable, from the
 server's side, from a dropped one.
+
+The policy the host applies, per controller public key and session:
+
+- A failure is a step 3 whose `confirmC` does not verify, or an exchange abandoned after step 1.
+- The **5th** failure locks that controller out; every further failure doubles the lockout:
+  `lockout = min(60 min, 1 min × 2^(failures − 5))` → 1, 2, 4, 8, 16, 32, 60, 60 … minutes.
+  A locked-out controller's `pake` step 1 is refused without the code being looked at.
+- Failures are forgotten after **15 minutes** of quiet, measured from the later of the last
+  failure and the end of any lockout being served — so waiting out a long lockout does not also
+  reset the count that earned it. A completed exchange clears the counter.
 
 ---
 

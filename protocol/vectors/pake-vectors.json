@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "note": "SPAKE2 access-code exchange, PROTOCOL.md 2.17. Ephemeral scalars come from a test-only SHA-256 counter stream seeded with controllerSeed / hostSeed; production uses the OS CSPRNG.",
+  "cases": [
+    {
+      "name": "typical",
+      "accessCode": "K7FM3Q8PW2XY",
+      "deviceId": "482719351",
+      "sessionId": "sess-0001",
+      "controllerSeed": 1,
+      "hostSeed": 2,
+      "step1": "U7Y9TWqQKf9trcpA0PlDmO/yx3vge+SMCDJVEicqrVwC",
+      "step2": "U+/cSNitmxdwTmB9XxUzqw7JU8IlrnQ+dZ8QH9bRTCChaWcNz3csc2O5W40A51GdYUo3vrgsyJfCzW/hHkMxF8g=",
+      "step3": "TVchF5jFT+9HqSjRvr+2xKXZyrKEjjefV9ttz3tvrNQ=",
+      "sessionKey": "zAQKC8fIjvQWnk9+MweEIVPScx5L8tgpCoPQNVFDgeo="
+    },
+    {
+      "name": "other-session",
+      "accessCode": "K7FM3Q8PW2XY",
+      "deviceId": "482719351",
+      "sessionId": "sess-0002",
+      "controllerSeed": 3,
+      "hostSeed": 4,
+      "step1": "U0cEPrwdzwRS9DvP80U6UYBbjR/w3/rh6ySHg6u/PDhh",
+      "step2": "U9TLKLzpTnZp9dLfOWpRMNyeBqD19uxmeW9iDOAARSUew9JPhtEnr9izndQjrHCJKrk+k3n1WEE3B14iGHx4VK8=",
+      "step3": "g8RVcTDF69hKl+n7g58RR5Nsi7P95OvUcNSXcmgS5AQ=",
+      "sessionKey": "4gcTyKlJZD4o6d54iYGx8ZBE2baWIvJgTkmOYnli6gg="
+    },
+    {
+      "name": "all-zero-code",
+      "accessCode": "000000000000",
+      "deviceId": "100000009",
+      "sessionId": "s",
+      "controllerSeed": 5,
+      "hostSeed": 6,
+      "step1": "U6WKMncbL0JiT4OFHn8WBHfdDzKq9YYAHSOdORQCxUEn",
+      "step2": "UzdsedIWFc5cRUPT9c7EJAv1VV7ZGc+33Kl9dtZFEoy5teNzZONTtFaHEPfuHpmDpcaY1Bkysh0QXWv1+TlCGvY=",
+      "step3": "sRpJ9W7HPUAucAWHqmbDf9WdZsajk4yz85kbzHgsTc8=",
+      "sessionKey": "taiFMZVXblfWPAijkJwjjq3ESTx7cqGJzB5yn5BvYBA="
+    }
+  ]
+}
