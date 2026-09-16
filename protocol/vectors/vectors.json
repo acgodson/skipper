@@ -328,9 +328,31 @@
           "expiresAt": 1755600600000,
           "ttlSec": 600,
           "hostDeviceId": "739000587",
+          "controllerDeviceId": "481930275",
+          "hostPubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuBGGi2DgfaFZytt5/esidQP3Qd3pzdIUC2MN8/OzOl+mubtCml0DONiJGrtUrhqnO7XcFGUDx/gNpT3TdtsLuA=="
+        }
+      },
+      "note": "hostPubkey is what the controller requires on the host's signed sdp"
+    },
+    {
+      "name": "connect_ok_no_host_pubkey",
+      "surface": "signaling",
+      "type": "connect_ok",
+      "frame": {
+        "v": 2,
+        "type": "connect_ok",
+        "re": "c-7",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "sessionToken": "dG9rZW4=",
+          "expiresAt": 1755600600000,
+          "ttlSec": 600,
+          "hostDeviceId": "739000587",
           "controllerDeviceId": "481930275"
         }
-      }
+      },
+      "note": "hostPubkey is omitempty: absent, never an empty string"
     },
     {
       "name": "session_start",
@@ -458,9 +480,13 @@
         "payload": {
           "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
           "sdpType": "offer",
-          "sdp": "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
+          "sdp": "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A\r\na=setup:actpass\r\n",
+          "fp": "sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A",
+          "pubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEb/A7lJJBzh2t1DUZ5pYOCoW0GmmgXDKBA6orzhWUyhY8T3U6Vb8B3FP2wLDH7ueLQMb/fSWpbiKCuYnO9xwUSg==",
+          "sig": "c2lnbmF0dXJl"
         }
-      }
+      },
+      "note": "fp, pubkey and sig are the signed DTLS fingerprints; the server relays them unchecked"
     },
     {
       "name": "sdp_restart",
@@ -478,6 +504,25 @@
         }
       },
       "note": "restart is omitempty when false"
+    },
+    {
+      "name": "sdp_two_fingerprints",
+      "surface": "signaling",
+      "type": "sdp",
+      "frame": {
+        "v": 2,
+        "type": "sdp",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "sdpType": "answer",
+          "sdp": "v=0\r\n",
+          "fp": "sha-256 AA:01\nsha-256 BB:02",
+          "pubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuBGGi2DgfaFZytt5/esidQP3Qd3pzdIUC2MN8/OzOl+mubtCml0DONiJGrtUrhqnO7XcFGUDx/gNpT3TdtsLuA==",
+          "sig": "c2lnbmF0dXJl"
+        }
+      },
+      "note": "several fingerprints are sorted and joined with a newline"
     },
     {
       "name": "ice_candidate",
@@ -522,6 +567,21 @@
           "reason": "user_ended"
         }
       }
+    },
+    {
+      "name": "bye_peer_auth_failed",
+      "surface": "signaling",
+      "type": "bye",
+      "frame": {
+        "v": 2,
+        "type": "bye",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "reason": "peer_auth_failed"
+        }
+      },
+      "note": "the peer's signed SDP fingerprints did not verify"
     },
     {
       "name": "pake_step1",

@@ -125,6 +125,9 @@ const (
 	ByeReplaced      = "replaced"
 	ByeShutdown      = "shutdown"
 	ByeError         = "error"
+	// ByePeerAuthFailed: the peer's signed SDP fingerprints did not verify
+	// against the device key this side expects (PROTOCOL.md §2.12).
+	ByePeerAuthFailed = "peer_auth_failed"
 )
 
 // Session states. PROTOCOL.md §4.2.
@@ -266,6 +269,10 @@ type ConnectOK struct {
 	TTLSec             int    `json:"ttlSec"`
 	HostDeviceID       string `json:"hostDeviceId"`
 	ControllerDeviceID string `json:"controllerDeviceId"`
+	// HostPubkey is the host's registered pubkey, base64 DER SPKI: the key the
+	// controller requires on the host's signed SDP (PROTOCOL.md §2.12). The
+	// server has it from `register`; it is public material, not a secret.
+	HostPubkey string `json:"hostPubkey,omitempty"`
 }
 
 // SessionStart is pushed to the host when a controller connects.
@@ -302,12 +309,22 @@ type PeerState struct {
 	Attached  bool   `json:"attached"`
 }
 
-// SDP is relayed verbatim. The server never parses or stores Sdp.
+// SDP is relayed verbatim. The server never parses or stores Sdp, and it
+// neither validates nor could produce Sig: that is the point of signing the
+// fingerprints (PROTOCOL.md §2.12).
 type SDP struct {
 	SessionID string `json:"sessionId"`
 	SDPType   string `json:"sdpType"` // offer | answer | pranswer | rollback
 	SDP       string `json:"sdp"`
 	Restart   bool   `json:"restart,omitempty"`
+	// FP is every a=fingerprint value in SDP, de-duplicated, sorted, joined
+	// with "\n".
+	FP string `json:"fp,omitempty"`
+	// Pubkey is the sender's device key, base64 DER SPKI.
+	Pubkey string `json:"pubkey,omitempty"`
+	// Sig is base64 DER ECDSA-SHA256 over
+	// "skipperdesk/sdp/v1|" SessionID "|" SDPType "|" FP.
+	Sig string `json:"sig,omitempty"`
 }
 
 // ICE is relayed verbatim.

@@ -10,7 +10,9 @@ use rc_identity::pake::{
 };
 use serde_json::json;
 
-use crate::{error_string, into_c_string, optional_str, required_str, ROLE_HOST};
+use crate::{optional_str, required_str, ROLE_HOST};
+
+const PANICKED: &str = "the pake exchange panicked";
 
 pub struct SkipperPake {
     exchange: PakeExchange,
@@ -20,16 +22,7 @@ fn respond<F>(body: F) -> *mut c_char
 where
     F: FnOnce() -> Result<serde_json::Value, String>,
 {
-    let outcome = catch_unwind(AssertUnwindSafe(|| match body() {
-        Ok(mut value) => {
-            if let Some(object) = value.as_object_mut() {
-                object.insert("ok".to_string(), json!(true));
-            }
-            value.to_string()
-        }
-        Err(message) => error_string(&message),
-    }));
-    into_c_string(outcome.unwrap_or_else(|_| error_string("the pake exchange panicked")))
+    crate::respond(PANICKED, body)
 }
 
 fn counter_from_json(raw: Option<&str>) -> Result<GuessCounter, String> {
@@ -50,15 +43,17 @@ pub unsafe extern "C" fn skipper_pake_new(
     access_code: *const c_char,
     device_id: *const c_char,
     session_id: *const c_char,
+    own_pubkey: *const c_char,
 ) -> *mut SkipperPake {
     let built = catch_unwind(AssertUnwindSafe(|| {
         let access_code = unsafe { required_str(access_code, "access_code") }.ok()?;
         let device_id = unsafe { required_str(device_id, "device_id") }.ok()?;
         let session_id = unsafe { required_str(session_id, "session_id") }.ok()?;
+        let own_pubkey = unsafe { required_str(own_pubkey, "own_pubkey") }.ok()?;
         let exchange = if role == ROLE_HOST {
-            PakeExchange::host(access_code, device_id, session_id)
+            PakeExchange::host(access_code, device_id, session_id, own_pubkey)
         } else {
-            PakeExchange::controller(access_code, device_id, session_id)
+            PakeExchange::controller(access_code, device_id, session_id, own_pubkey)
         }
         .ok()?;
         Some(Box::into_raw(Box::new(SkipperPake { exchange })))
@@ -95,7 +90,11 @@ pub unsafe extern "C" fn skipper_pake_step(
         let outgoing = outgoing.map(|message| {
             json!({ "step": message.step, "payload": message.to_base64() })
         });
-        Ok(json!({ "outgoing": outgoing, "complete": pake.exchange.is_complete() }))
+        Ok(json!({
+            "outgoing": outgoing,
+            "complete": pake.exchange.is_complete(),
+            "peerPubkey": pake.exchange.peer_public_key_base64(),
+        }))
     })
 }
 

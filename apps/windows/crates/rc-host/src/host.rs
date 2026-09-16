@@ -241,11 +241,17 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
                         let _ = conn
                             .send(
                                 msg::SDP,
+                                // TODO: sign the fingerprints (PROTOCOL.md §2.12)
+                                // when the parked Windows host resumes; a peer
+                                // that enforces §2.12 refuses this unsigned answer.
                                 &sig::Sdp {
                                     session_id: sdp.session_id,
                                     sdp_type: "answer".into(),
                                     sdp: answer,
                                     restart: false,
+                                    fp: String::new(),
+                                    pubkey: String::new(),
+                                    sig: String::new(),
                                 },
                             )
                             .await;

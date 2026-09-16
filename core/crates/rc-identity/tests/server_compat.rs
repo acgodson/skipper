@@ -59,6 +59,47 @@ fn the_go_server_accepts_rust_identity_material() {
     );
 }
 
+/// The signed SDP fingerprints of PROTOCOL.md §2.12 ride the same two
+/// encodings the Go server has just accepted above: base64 DER SPKI for the key
+/// and base64 ASN.1 DER ECDSA-SHA256 for the signature. Both signatures here
+/// come out of the one `DeviceKey::sign_base64`, so a change that broke the Go
+/// handshake would break this too.
+///
+/// TODO: push the SDP signing message itself through `go run ./cmd/rustcompat`.
+/// Its stdin contract fixes `nonce` at 32 bytes, so widening it is a change in
+/// `server/`.
+#[test]
+fn an_sdp_signature_uses_the_encodings_the_go_server_accepts() {
+    const SDP: &str = "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+a=fingerprint:sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A\r\n";
+    const SESSION: &str = "8c7f1a2b3c4d5e6f708192a3b4c5d6e7";
+
+    let key = DeviceKey::generate();
+    let pubkey = key.public_key_spki_base64();
+    let (fingerprints, message) = rc_identity::sdp::signing_material(SESSION, "offer", SDP).unwrap();
+    let signature = key.sign_base64(&B64.decode(&message).unwrap());
+
+    rc_identity::sdp::verify(
+        SESSION,
+        "offer",
+        SDP,
+        &fingerprints,
+        &pubkey,
+        &signature,
+        Some(&pubkey),
+    )
+    .unwrap();
+
+    let nonce: Vec<u8> = (0u8..32).collect();
+    let handshake_signature = key.sign_nonce_base64(&nonce);
+    assert_eq!(B64.decode(&pubkey).unwrap().len(), 91, "P-256 DER SPKI");
+    for sig in [&signature, &handshake_signature] {
+        let der = B64.decode(sig).unwrap();
+        assert_eq!(der.first(), Some(&0x30), "ASN.1 DER SEQUENCE");
+        assert_eq!(der.len(), der[1] as usize + 2, "DER length covers the body");
+    }
+}
+
 #[test]
 fn access_codes_have_the_documented_shape() {
     for _ in 0..50 {

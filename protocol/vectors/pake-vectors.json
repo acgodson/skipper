@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "SPAKE2 access-code exchange, PROTOCOL.md 2.17. Ephemeral scalars come from a test-only SHA-256 counter stream seeded with controllerSeed / hostSeed; production uses the OS CSPRNG.",
+  "note": "SPAKE2 access-code exchange, PROTOCOL.md 2.17. Ephemeral scalars come from a test-only SHA-256 counter stream seeded with controllerSeed / hostSeed; production uses the OS CSPRNG. step1 and step2 carry the sender's device pubkey as a len32-prefixed DER SPKI blob, and both pubkeys are in the transcript.",
   "cases": [
     {
       "name": "typical",
@@ -9,10 +9,12 @@
       "sessionId": "sess-0001",
       "controllerSeed": 1,
       "hostSeed": 2,
-      "step1": "U7Y9TWqQKf9trcpA0PlDmO/yx3vge+SMCDJVEicqrVwC",
-      "step2": "U+/cSNitmxdwTmB9XxUzqw7JU8IlrnQ+dZ8QH9bRTCChaWcNz3csc2O5W40A51GdYUo3vrgsyJfCzW/hHkMxF8g=",
-      "step3": "TVchF5jFT+9HqSjRvr+2xKXZyrKEjjefV9ttz3tvrNQ=",
-      "sessionKey": "zAQKC8fIjvQWnk9+MweEIVPScx5L8tgpCoPQNVFDgeo="
+      "controllerPubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEb/A7lJJBzh2t1DUZ5pYOCoW0GmmgXDKBA6orzhWUyhY8T3U6Vb8B3FP2wLDH7ueLQMb/fSWpbiKCuYnO9xwUSg==",
+      "hostPubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuBGGi2DgfaFZytt5/esidQP3Qd3pzdIUC2MN8/OzOl+mubtCml0DONiJGrtUrhqnO7XcFGUDx/gNpT3TdtsLuA==",
+      "step1": "AAAAWzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABG/wO5SSQc4drdQ1GeaWDgqFtBppoFwygQOqK84VlMoWPE91OlW/AdxT9sCwx+7ni0DG/30lqW4igrmJzvccFEpTtj1NapAp/22tykDQ+UOY7/LHe+B75IwIMlUSJyqtXAI=",
+      "step2": "AAAAWzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABLgRhotg4H2hWcrbef3rInUD90Hd6c3SFAtjDfPzszpfprm7QppdAzjYiRq7VK4apzu13BRlA8f4DaU903bbC7hT79xI2K2bF3BOYH1fFTOrDslTwiWudD51nxAf1tFMIKFK5BtwNe7D0y5E7h6VD24S41qhN0mugnH85sV3jb+r2g==",
+      "step3": "JUkYZsi8ZhXzXB9Ac3t9RhmxLLd42SiBTC2LVK5DnYA=",
+      "sessionKey": "8ucL3B0a37eJsX8PI7EJflS/dxuPK/uzFMmEYmtXcmA="
     },
     {
       "name": "other-session",
@@ -21,10 +23,12 @@
       "sessionId": "sess-0002",
       "controllerSeed": 3,
       "hostSeed": 4,
-      "step1": "U0cEPrwdzwRS9DvP80U6UYBbjR/w3/rh6ySHg6u/PDhh",
-      "step2": "U9TLKLzpTnZp9dLfOWpRMNyeBqD19uxmeW9iDOAARSUew9JPhtEnr9izndQjrHCJKrk+k3n1WEE3B14iGHx4VK8=",
-      "step3": "g8RVcTDF69hKl+n7g58RR5Nsi7P95OvUcNSXcmgS5AQ=",
-      "sessionKey": "4gcTyKlJZD4o6d54iYGx8ZBE2baWIvJgTkmOYnli6gg="
+      "controllerPubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAES18CvGkY8hYaZgqNOob+GNKCXFluRomAP+iU1WJ9xd48H593rUNh+3smGKFRZ9uQuRDVYb8hgv9NE7ETU7ISoQ==",
+      "hostPubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwgtIcBrX72ARBAbbXYxuLjIMz2QhchCNSd/X0gZ1tUteRc0NsZVelNC23+T1Mdc4ptYKkAmt4pSvtDuabI2IyQ==",
+      "step1": "AAAAWzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABEtfArxpGPIWGmYKjTqG/hjSglxZbkaJgD/olNVifcXePB+fd61DYft7JhihUWfbkLkQ1WG/IYL/TROxE1OyEqFTRwQ+vB3PBFL0O8/zRTpRgFuNH/Df+uHrJIeDq788OGE=",
+      "step2": "AAAAWzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABMILSHAa1+9gEQQG212Mbi4yDM9kIXIQjUnf19IGdbVLXkXNDbGVXpTQtt/k9THXOKbWCpAJreKUr7Q7mmyNiMlT1MsovOlOdmn10t85alEw3J4GoPX27GZ5b2IM4ABFJR7NpWnlCeJrA0JmbVE+B+SP0BqyhXFXmNEvVrqLAOkOPg==",
+      "step3": "LP3xIkMR0ckva0736L0vUUxnKAyUgQnO7z39jtxQ2Mw=",
+      "sessionKey": "tu2vm7h5SPBVaUDSloqT97PocbehNe8z9UUPsxllhdo="
     },
     {
       "name": "all-zero-code",
@@ -33,10 +37,12 @@
       "sessionId": "s",
       "controllerSeed": 5,
       "hostSeed": 6,
-      "step1": "U6WKMncbL0JiT4OFHn8WBHfdDzKq9YYAHSOdORQCxUEn",
-      "step2": "UzdsedIWFc5cRUPT9c7EJAv1VV7ZGc+33Kl9dtZFEoy5teNzZONTtFaHEPfuHpmDpcaY1Bkysh0QXWv1+TlCGvY=",
-      "step3": "sRpJ9W7HPUAucAWHqmbDf9WdZsajk4yz85kbzHgsTc8=",
-      "sessionKey": "taiFMZVXblfWPAijkJwjjq3ESTx7cqGJzB5yn5BvYBA="
+      "controllerPubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE4JH8Z/KplUtan9GQT94dS1HsP/OnY9NY0BLxB/YDIxKHHsMi0XmpUank+IeomV5skf9uX0xiJ7mHbl/4BY+puA==",
+      "hostPubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgWl0a1GhKIuL95p384di54u0N7MVehtSNQliM0Bx8lSEy/mBSIJaMKcszlwg0ITgYa1VXFn+p/BjQPOVibHk1g==",
+      "step1": "AAAAWzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABOCR/GfyqZVLWp/RkE/eHUtR7D/zp2PTWNAS8Qf2AyMShx7DItF5qVGp5PiHqJlebJH/bl9MYie5h25f+AWPqbhTpYoydxsvQmJPg4UefxYEd90PMqr1hgAdI505FALFQSc=",
+      "step2": "AAAAWzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABIFpdGtRoSiLi/ead/OHYueLtDezFXobUjUJYjNAcfJUhMv5gUiCWjCnLM5cINCE4GGtVVxZ/qfwY0DzlYmx5NZTN2x50hYVzlxFQ9P1zsQkC/VVXtkZz7fcqX121kUSjLl2uiTNOee6rC+2tHaThAjNQqHH6trxLahppJEmexyh+w==",
+      "step3": "0jDimqXkFn+pqfTE39EirdGQYvJcY5RZ0uq7TRKBHwk=",
+      "sessionKey": "8toudISjIcI5MTBxqJX8u/4WnBjaOIyQYwrdaVPsebM="
     }
   ]
 }

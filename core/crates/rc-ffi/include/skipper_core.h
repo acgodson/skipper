@@ -161,7 +161,9 @@ char *skipper_session_set_remembered_access_code(SkipperSession *session,
  *
  *   skipper_pake_step            { "ok":true,
  *                                  "outgoing": { "step":N, "payload":S } | null,
- *                                  "complete": B }
+ *                                  "complete": B,
+ *                                  "peerPubkey": S }   ("" until the peer's
+ *                                                       first frame arrives)
  *   skipper_pake_session_key     { "ok":true, "sessionKey": S }   (base64, 32 bytes)
  *   skipper_pake_guess_policy_*  { "ok":true, "allowed":B, "retryAfterMs":N,
  *                                  "counter": { "failures":N,
@@ -177,11 +179,17 @@ char *skipper_session_set_remembered_access_code(SkipperSession *session,
 typedef struct SkipperPake SkipperPake;
 
 /* NULL when an argument is not usable: null, not UTF-8, an access code that is
- * empty once normalised, or an empty device_id / session_id. */
+ * empty once normalised, an empty device_id / session_id, or an own_pubkey that
+ * is not base64 of a DER SPKI key.
+ *
+ * own_pubkey is THIS device's `pubkey`. It travels in this side's first frame
+ * and is bound into the SPAKE2 transcript, so when the exchange completes each
+ * side knows which device key must sign the peer's `sdp` fingerprints. */
 SkipperPake *skipper_pake_new(int32_t role,
                               const char *access_code,
                               const char *device_id,
-                              const char *session_id);
+                              const char *session_id,
+                              const char *own_pubkey);
 
 void skipper_pake_free(SkipperPake *pake);
 
@@ -206,6 +214,49 @@ char *skipper_pake_guess_policy_record_success(const char *counter_json);
 
 /* Twelve Crockford base32 symbols, 60 bits, from the OS CSPRNG. */
 char *skipper_access_code_generate(void);
+
+/*
+ * Signed SDP fingerprints (PROTOCOL.md §2.12).
+ *
+ * A compromised signaling server relays `sdp`, so it could swap the DTLS
+ * fingerprint for one of its own and terminate DTLS on both sides. Every `sdp`
+ * therefore carries `fp`, `pubkey` and `sig`, and a receiver checks all three
+ * before setRemoteDescription.
+ *
+ * Signing is NOT here: a Secure Enclave key can only be used by the platform.
+ * The core builds the bytes and verifies what comes back. Results follow the
+ * conventions above:
+ *
+ *   skipper_sdp_fingerprints     { "ok":true, "fp": S }
+ *   skipper_sdp_signing_message  { "ok":true, "fp": S, "message": S }
+ *                                  message is base64 of the bytes to sign with
+ *                                  the device key (ECDSA-P256/SHA-256, DER).
+ *   skipper_sdp_verify           { "ok":true, "verified": true }
+ *                                  or { "ok":false, "error": ... } naming the
+ *                                  check that failed.
+ */
+
+/* Every a=fingerprint value in the SDP, de-duplicated, sorted, joined with
+ * "\n" — the wire `fp` field. */
+char *skipper_sdp_fingerprints(const char *sdp);
+
+/* `fp` plus the bytes to sign:
+ * "skipperdesk/sdp/v1|" session_id "|" sdp_type "|" fp. */
+char *skipper_sdp_signing_message(const char *session_id,
+                                  const char *sdp_type,
+                                  const char *sdp);
+
+/* Checks, in order: `fp` is the fingerprint set actually in `sdp`, `pubkey` is
+ * the expected peer (when expected_pubkey is given), and `sig` verifies. A NULL
+ * or empty expected_pubkey means this side has not learned the peer's key yet,
+ * and only the other two checks are made. */
+char *skipper_sdp_verify(const char *session_id,
+                         const char *sdp_type,
+                         const char *sdp,
+                         const char *fp,
+                         const char *pubkey,
+                         const char *sig,
+                         const char *expected_pubkey);
 
 #ifdef __cplusplus
 }

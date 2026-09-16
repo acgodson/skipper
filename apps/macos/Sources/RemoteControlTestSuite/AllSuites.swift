@@ -7,6 +7,7 @@ public let allSuites: [TestSuite] = [
     crockfordSuite,
     accessCodeSuite,
     pakeSuite,
+    sdpAuthSuite,
     secureFileSuite,
     identityFileSuite,
     deviceKeySuite,

@@ -69,6 +69,9 @@ public enum Wire {
         public static let replaced = "replaced"
         public static let shutdown = "shutdown"
         public static let error = "error"
+        /// The peer's signed SDP fingerprints did not verify against the device
+        /// key this side expects (PROTOCOL.md §2.12).
+        public static let peerAuthFailed = "peer_auth_failed"
     }
 
     /// Owned by the shared core, so the state machine and the wire agree by
@@ -343,11 +346,16 @@ public struct SessionGrantPayload: Codable, Equatable, CustomStringConvertible {
     public var ttlSec: Int
     public var hostDeviceId: String
     public var controllerDeviceId: String
+    /// The host's registered `pubkey`, base64 DER SPKI: the key the controller
+    /// requires on the host's signed `sdp` (PROTOCOL.md §2.12). Absent from a
+    /// server that does not speak this part of v2 yet.
+    public var hostPubkey: String?
     public init(sessionId: String, sessionToken: String, expiresAt: Int64, ttlSec: Int,
-                hostDeviceId: String, controllerDeviceId: String) {
+                hostDeviceId: String, controllerDeviceId: String, hostPubkey: String? = nil) {
         self.sessionId = sessionId; self.sessionToken = sessionToken
         self.expiresAt = expiresAt; self.ttlSec = ttlSec
         self.hostDeviceId = hostDeviceId; self.controllerDeviceId = controllerDeviceId
+        self.hostPubkey = hostPubkey
     }
     public var description: String {
         "session(\(sessionId), host: \(hostDeviceId), controller: \(controllerDeviceId), token: <redacted>)"
@@ -399,13 +407,29 @@ public struct PeerStatePayload: Codable, Equatable {
     public init(sessionId: String, attached: Bool) { self.sessionId = sessionId; self.attached = attached }
 }
 
+/// PROTOCOL.md §2.12. `fp`, `pubkey` and `sig` are the signed DTLS
+/// fingerprints; the server relays them unchanged and never checks `sig`.
 public struct SDPPayload: Codable, Equatable {
     public var sessionId: String
     public var sdpType: String
     public var sdp: String
     public var restart: Bool?
-    public init(sessionId: String, sdpType: String, sdp: String, restart: Bool? = nil) {
+    public var fp: String?
+    public var pubkey: String?
+    public var sig: String?
+    public init(sessionId: String, sdpType: String, sdp: String, restart: Bool? = nil,
+                fp: String? = nil, pubkey: String? = nil, sig: String? = nil) {
         self.sessionId = sessionId; self.sdpType = sdpType; self.sdp = sdp; self.restart = restart
+        self.fp = fp; self.pubkey = pubkey; self.sig = sig
+    }
+
+    /// The three signature fields, when all three are present. A frame missing
+    /// any of them cannot be verified and must not be applied.
+    public var signature: SdpSignature? {
+        guard let fp, let pubkey, let sig, !fp.isEmpty, !pubkey.isEmpty, !sig.isEmpty else {
+            return nil
+        }
+        return SdpSignature(fingerprints: fp, pubkey: pubkey, signature: sig)
     }
 }
 

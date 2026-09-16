@@ -242,6 +242,15 @@ pub struct ConnectOk {
     pub host_device_id: String,
     #[serde(rename = "controllerDeviceId")]
     pub controller_device_id: String,
+    /// The host's registered `pubkey`, base64 DER SPKI — the key the controller
+    /// requires on the host's signed `sdp` (§2.12). Public material; the server
+    /// has had it since `register`.
+    #[serde(
+        rename = "hostPubkey",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub host_pubkey: String,
 }
 
 /// §2.9. Pushed to the host when a controller connects. Same shape as `connect_ok`.
@@ -292,7 +301,9 @@ pub struct PeerState {
     pub attached: bool,
 }
 
-/// §2.12. Relayed verbatim; the server never parses or stores `sdp`.
+/// §2.12. Relayed verbatim; the server never parses or stores `sdp`, and it
+/// neither checks nor could produce `sig` — which is exactly why the
+/// fingerprints are signed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sdp {
     #[serde(rename = "sessionId")]
@@ -303,6 +314,17 @@ pub struct Sdp {
     pub sdp: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub restart: bool,
+    /// Every `a=fingerprint` value in `sdp`, de-duplicated, sorted, joined
+    /// with `\n`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fp: String,
+    /// The sender's device key, base64 DER SPKI.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pubkey: String,
+    /// base64 DER ECDSA-SHA256 over
+    /// `"skipperdesk/sdp/v1|" session_id "|" sdp_type "|" fp`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sig: String,
 }
 
 fn is_false(v: &bool) -> bool {

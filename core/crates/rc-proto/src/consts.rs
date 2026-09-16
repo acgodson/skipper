@@ -125,6 +125,9 @@ pub mod bye {
     pub const REPLACED: &str = "replaced";
     pub const SHUTDOWN: &str = "shutdown";
     pub const ERROR: &str = "error";
+    /// The peer's signed SDP fingerprints did not verify against the device key
+    /// this side expects. PROTOCOL.md §2.12.
+    pub const PEER_AUTH_FAILED: &str = "peer_auth_failed";
 }
 
 /// Server-side session states. PROTOCOL.md §4.2.

@@ -22,6 +22,7 @@
 //!
 //! ```text
 //! transcript = len32("skipperdesk/pake/v1") ‖ len32(deviceId) ‖ len32(sessionId)
+//!              ‖ len32(controllerPubkey) ‖ len32(hostPubkey)
 //!              ‖ len32(controllerMessage) ‖ len32(hostMessage)
 //! prk        = HKDF-SHA256-Extract(salt = transcript, ikm = sharedKey)
 //! sessionKey = Expand(prk, "skipperdesk/pake/v1 session-key", 32)
@@ -31,13 +32,21 @@
 //! confirmH   = HMAC-SHA256(kcH, transcript)
 //! ```
 //!
-//! On the wire (`pake.step`, payloads base64, ≤ 4096 characters):
+//! On the wire (`pake.step`, payloads base64, ≤ 4096 characters), where
+//! `len32(x)` is a big-endian 4-byte length prefix:
 //!
 //! | step | from | payload |
 //! |---|---|---|
-//! | 1 | controller | controller SPAKE2 message |
-//! | 2 | host | host SPAKE2 message ‖ `confirmH` |
+//! | 1 | controller | `len32(controllerPubkey)` ‖ controllerPubkey ‖ controller SPAKE2 message |
+//! | 2 | host | `len32(hostPubkey)` ‖ hostPubkey ‖ host SPAKE2 message ‖ `confirmH` |
 //! | 3 | controller | `confirmC` |
+//!
+//! The pubkeys are the two DER SPKI device keys, and they are in the transcript
+//! above, so a relay that swaps one for its own breaks the confirmation it
+//! cannot compute. That is what makes the key each side learns here safe to use
+//! as the expected signer of the peer's `sdp` fingerprints (§2.12): without the
+//! binding, a server that relayed a genuine exchange untouched could still have
+//! handed each side its own key and sat in the middle of the DTLS handshake.
 //!
 //! A wrong code produces different keys on the two sides, so step 2 fails for
 //! the controller and step 3 fails for the **host** — which is what matters:
@@ -60,6 +69,10 @@ pub const MAX_PAYLOAD_BASE64: usize = 4096;
 pub const SESSION_KEY_LEN: usize = 32;
 pub const CONFIRM_LEN: usize = 32;
 
+/// A DER SPKI P-256 key is 91 bytes; the cap exists only so a malformed length
+/// prefix cannot make a receiver allocate.
+pub const MAX_PUBLIC_KEY_LEN: usize = 256;
+
 const CONTEXT_LABEL: &str = "skipperdesk/pake/v1";
 const CONTROLLER_IDENTITY: &str = "skipperdesk-controller";
 const HOST_IDENTITY: &str = "skipperdesk-host";
@@ -76,7 +89,7 @@ pub enum PakeRole {
 pub enum PakeError {
     #[error("access code is empty after normalisation")]
     EmptyCode,
-    #[error("deviceId and sessionId are required")]
+    #[error("deviceId, sessionId and the device public key are required")]
     MissingContext,
     #[error("payload is not valid base64")]
     BadBase64,
@@ -153,6 +166,8 @@ pub struct PakeExchange {
     identity: Vec<u8>,
     device_id: String,
     session_id: String,
+    own_public_key: Vec<u8>,
+    peer_public_key: Vec<u8>,
     stage: Stage,
     state: Option<Spake2<Ed25519Group>>,
     own_message: Vec<u8>,
@@ -168,16 +183,38 @@ impl Drop for PakeExchange {
 }
 
 impl PakeExchange {
+    /// `own_public_key_base64` is this device's own `pubkey` (base64 DER SPKI).
+    /// It travels in this side's first frame and is bound into the transcript,
+    /// so the peer ends the exchange knowing which key must sign the `sdp`
+    /// fingerprints it will accept.
     pub fn controller(
         access_code: &str,
         device_id: &str,
         session_id: &str,
+        own_public_key_base64: &str,
     ) -> Result<Self, PakeError> {
-        Self::new(PakeRole::Controller, access_code, device_id, session_id)
+        Self::new(
+            PakeRole::Controller,
+            access_code,
+            device_id,
+            session_id,
+            own_public_key_base64,
+        )
     }
 
-    pub fn host(access_code: &str, device_id: &str, session_id: &str) -> Result<Self, PakeError> {
-        Self::new(PakeRole::Host, access_code, device_id, session_id)
+    pub fn host(
+        access_code: &str,
+        device_id: &str,
+        session_id: &str,
+        own_public_key_base64: &str,
+    ) -> Result<Self, PakeError> {
+        Self::new(
+            PakeRole::Host,
+            access_code,
+            device_id,
+            session_id,
+            own_public_key_base64,
+        )
     }
 
     fn new(
@@ -185,6 +222,7 @@ impl PakeExchange {
         access_code: &str,
         device_id: &str,
         session_id: &str,
+        own_public_key_base64: &str,
     ) -> Result<Self, PakeError> {
         let password = crate::access_code::normalize(access_code);
         if password.is_empty() {
@@ -193,12 +231,20 @@ impl PakeExchange {
         if device_id.is_empty() || session_id.is_empty() {
             return Err(PakeError::MissingContext);
         }
+        let own_public_key = B64
+            .decode(own_public_key_base64.as_bytes())
+            .map_err(|_| PakeError::MissingContext)?;
+        if own_public_key.is_empty() || own_public_key.len() > MAX_PUBLIC_KEY_LEN {
+            return Err(PakeError::MissingContext);
+        }
         Ok(Self {
             role,
             password: password.into_bytes(),
             identity: format!("{CONTEXT_LABEL}|{device_id}|{session_id}").into_bytes(),
             device_id: device_id.to_string(),
             session_id: session_id.to_string(),
+            own_public_key,
+            peer_public_key: Vec::new(),
             stage: Stage::Fresh,
             state: None,
             own_message: Vec::new(),
@@ -214,6 +260,17 @@ impl PakeExchange {
 
     pub fn is_complete(&self) -> bool {
         self.stage == Stage::Complete
+    }
+
+    /// The peer's device `pubkey`, base64 DER SPKI, once its first frame has
+    /// arrived: the host learns it at step 1, the controller at step 2. Empty
+    /// before that.
+    pub fn peer_public_key_base64(&self) -> String {
+        if self.peer_public_key.is_empty() {
+            String::new()
+        } else {
+            B64.encode(&self.peer_public_key)
+        }
     }
 
     pub fn session_key(&self) -> Result<[u8; SESSION_KEY_LEN], PakeError> {
@@ -277,14 +334,19 @@ impl PakeExchange {
         self.state = Some(state);
         self.own_message = message.clone();
         self.stage = Stage::ControllerAwaitingReply;
-        PakeMessage { step: STEP_CONTROLLER_START, payload: message }
+        PakeMessage {
+            step: STEP_CONTROLLER_START,
+            payload: prefix_public_key(&self.own_public_key, &message),
+        }
     }
 
     fn controller_finish(&mut self, payload: &[u8]) -> Result<PakeMessage, PakeError> {
-        if payload.len() <= CONFIRM_LEN {
+        let (host_public_key, rest) = split_public_key(payload)?;
+        if rest.len() <= CONFIRM_LEN {
             return Err(PakeError::BadPayload);
         }
-        let (host_message, host_confirm) = payload.split_at(payload.len() - CONFIRM_LEN);
+        self.peer_public_key = host_public_key.to_vec();
+        let (host_message, host_confirm) = rest.split_at(rest.len() - CONFIRM_LEN);
         if host_message == self.own_message.as_slice() {
             return Err(PakeError::BadPeerMessage);
         }
@@ -298,7 +360,12 @@ impl PakeExchange {
         Ok(PakeMessage { step: STEP_CONTROLLER_CONFIRM, payload: controller_confirm })
     }
 
-    fn host_reply(&mut self, controller_message: &[u8]) -> Result<PakeMessage, PakeError> {
+    fn host_reply(&mut self, payload: &[u8]) -> Result<PakeMessage, PakeError> {
+        let (controller_public_key, controller_message) = split_public_key(payload)?;
+        if controller_message.is_empty() {
+            return Err(PakeError::BadPayload);
+        }
+        self.peer_public_key = controller_public_key.to_vec();
         let (state, message) = self.begin();
         self.state = Some(state);
         self.own_message = message.clone();
@@ -308,7 +375,7 @@ impl PakeExchange {
         let shared = self.finish_spake2(controller_message)?;
         let transcript = self.transcript(controller_message, &self.own_message);
         let keys = derive(&shared, &transcript);
-        let mut payload = message;
+        let mut payload = prefix_public_key(&self.own_public_key, &message);
         payload.extend_from_slice(&keys.host_confirm);
         self.keys = Some(keys);
         self.stage = Stage::HostAwaitingConfirm;
@@ -343,11 +410,17 @@ impl PakeExchange {
     }
 
     fn transcript(&self, controller_message: &[u8], host_message: &[u8]) -> Vec<u8> {
+        let (controller_public_key, host_public_key) = match self.role {
+            PakeRole::Controller => (&self.own_public_key, &self.peer_public_key),
+            PakeRole::Host => (&self.peer_public_key, &self.own_public_key),
+        };
         let mut out = Vec::new();
         for field in [
             CONTEXT_LABEL.as_bytes(),
             self.device_id.as_bytes(),
             self.session_id.as_bytes(),
+            controller_public_key,
+            host_public_key,
             controller_message,
             host_message,
         ] {
@@ -356,6 +429,26 @@ impl PakeExchange {
         }
         out
     }
+}
+
+fn prefix_public_key(public_key: &[u8], body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + public_key.len() + body.len());
+    out.extend_from_slice(&(public_key.len() as u32).to_be_bytes());
+    out.extend_from_slice(public_key);
+    out.extend_from_slice(body);
+    out
+}
+
+fn split_public_key(payload: &[u8]) -> Result<(&[u8], &[u8]), PakeError> {
+    if payload.len() < 4 {
+        return Err(PakeError::BadPayload);
+    }
+    let (length, rest) = payload.split_at(4);
+    let length = u32::from_be_bytes([length[0], length[1], length[2], length[3]]) as usize;
+    if length == 0 || length > MAX_PUBLIC_KEY_LEN || length > rest.len() {
+        return Err(PakeError::BadPayload);
+    }
+    Ok(rest.split_at(length))
 }
 
 fn expected_step(role: PakeRole, stage: Stage) -> u32 {

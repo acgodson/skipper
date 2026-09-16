@@ -82,6 +82,8 @@ final class Node {
             emit("ice_restart", [:])
         case .remoteDescription(let type, let restart):
             emit("remote_sdp", ["sdpType": type, "restart": restart])
+        case .peerAuthFailed(let reason):
+            emit("peer_auth_failed", ["reason": reason])
         case .captureState(let state):
             switch state {
             case .idle: emit("capture", ["state": "idle"])
