@@ -200,8 +200,39 @@ else
 fi
 
 # ---- Entitlements + signing -------------------------------------------------
+#
+# The Secure Enclave is entitlement-gated. `SecureEnclave.P256.Signing.PrivateKey`
+# fails with errSecMissingEntitlement (-34018) unless the binary carries
+# com.apple.application-identifier, and that entitlement is only honoured under a
+# Developer ID signature. Team ID comes from SKIPPER_TEAM_ID or from the selected
+# identity's own "Developer ID Application: NAME (TEAMID)" suffix. Without one the
+# build still succeeds; the app falls back to a Keychain key at runtime.
+KEYCHAIN_APP_IDENTIFIER="app.skipperdesk.desktop"
+TEAM_ID="${SKIPPER_TEAM_ID:-}"
+if [[ -z "${TEAM_ID}" && "${SIGN_IDENTITY}" == "Developer ID Application:"* ]]; then
+    TEAM_ID="$(printf '%s' "${SIGN_IDENTITY}" | sed -n 's/.*(\([A-Z0-9]\{6,\}\))[[:space:]]*$/\1/p')"
+fi
+
+if [[ -n "${TEAM_ID}" ]]; then
+    KEYCHAIN_ENTITLEMENTS="$(cat <<KC_ENTS
+    <key>com.apple.application-identifier</key>
+    <string>${TEAM_ID}.${KEYCHAIN_APP_IDENTIFIER}</string>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>${TEAM_ID}.${KEYCHAIN_APP_IDENTIFIER}</string>
+    </array>
+KC_ENTS
+)"
+    echo "==> Secure Enclave entitlements for team ${TEAM_ID} (${TEAM_ID}.${KEYCHAIN_APP_IDENTIFIER})"
+else
+    KEYCHAIN_ENTITLEMENTS=""
+    echo "No Developer ID identity; Secure Enclave unavailable in this build"
+    echo "    The app falls back to a Keychain-held software key at runtime."
+    echo "    Set SKIPPER_TEAM_ID, or sign with a Developer ID Application identity, to enable it."
+fi
+
 ENTITLEMENTS="$(mktemp -t rc-entitlements).plist"
-cat > "${ENTITLEMENTS}" <<'ENTS'
+cat > "${ENTITLEMENTS}" <<ENTS
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -215,6 +246,7 @@ cat > "${ENTITLEMENTS}" <<'ENTS'
     <key>com.apple.security.device.microphone</key>      <false/>
     <!-- Phase 3 adds libwebrtc, which is loaded as a signed xcframework. -->
     <key>com.apple.security.cs.disable-library-validation</key> <true/>
+${KEYCHAIN_ENTITLEMENTS}
 </dict>
 </plist>
 ENTS
@@ -279,13 +311,14 @@ fi
 # SIGN_IDENTITY stays "-" and the .app runs only on machines that are told to
 # trust it.
 #
-# NOTE: the app no longer uses the Keychain or the Secure Enclave at all. Its
-# identity lives in ~/Library/Application Support/RemoteControl/identity.json at
-# mode 0600 (see Sources/RemoteControlCore/Identity/SecureFile.swift). The old
-# note here about needing a provisioning profile for Secure Enclave keys, and
-# about ad-hoc builds getting errSecMissingEntitlement (-34018), no longer
-# applies — that whole code path is gone. A stable signing identity is now a
-# distribution concern only, not a functional one.
+# NOTE: as of Phase 2.2 the signing identity is functional, not only a
+# distribution concern. The device private key goes to the Secure Enclave when
+# the entitlements above are present, to the Keychain otherwise, and to
+# identity.json only under SKIPPER_DEV_FILE_IDENTITY=1 or an overridden
+# RC_IDENTITY_DIR. A Developer ID therefore upgrades new identities from a
+# software key to a hardware one; existing identities keep their Device ID and
+# stay on their (Keychain-held) software key, because an SE key cannot be
+# imported.
 # -----------------------------------------------------------------------------
 
 # The designated requirement IS the TCC identity. Printing it makes "why did my

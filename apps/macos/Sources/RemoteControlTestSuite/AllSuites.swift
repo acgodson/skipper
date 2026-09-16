@@ -9,6 +9,7 @@ public let allSuites: [TestSuite] = [
     secureFileSuite,
     identityFileSuite,
     deviceKeySuite,
+    deviceKeyStorageSuite,
     identitySuite,
     settingsSuite,
     observationSuite,
