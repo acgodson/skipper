@@ -1,5 +1,6 @@
 import Foundation
 import CoreVideo
+import SkipperCore
 import WebRTC
 
 /// Everything the rest of the app needs to know about the media path, with no

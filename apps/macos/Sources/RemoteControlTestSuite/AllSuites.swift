@@ -13,7 +13,6 @@ public let allSuites: [TestSuite] = [
     settingsSuite,
     observationSuite,
     cursorSuite,
-    staleSessionSuite,
     backoffSuite,
     pinningSuite,
     configSuite,

@@ -1,0 +1,4 @@
+module CSkipperCore {
+    header "../../../../core/crates/rc-ffi/include/skipper_core.h"
+    export *
+}

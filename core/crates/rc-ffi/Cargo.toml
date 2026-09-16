@@ -1,0 +1,14 @@
+[package]
+name = "rc-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "C ABI over rc-session, so the Mac app drives the one session state machine."
+
+[lib]
+name = "rc_ffi"
+crate-type = ["staticlib"]
+
+[dependencies]
+rc-session = { path = "../rc-session" }
+serde_json.workspace = true

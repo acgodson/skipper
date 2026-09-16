@@ -1,4 +1,5 @@
 import Foundation
+import SkipperCore
 import WebRTC
 
 /// Errors the Connect flow shows the user, mapped from PROTOCOL.md §7 codes so
@@ -192,7 +193,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         didSet { clipboard?.isEnabled = clipboardSyncEnabled }
     }
     private var clipboard: ClipboardMonitor?
-    private var machine: SessionStateMachine
+    private let machine: SessionStateMachine
     private let identity: IdentityStore
     private let config: RCConfig
     private var ticker: Task<Void, Never>?

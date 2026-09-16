@@ -1,4 +1,5 @@
 import Foundation
+@_exported import SkipperCore
 
 /// The Swift side of the wire contract. `protocol/PROTOCOL.md` is normative and
 /// `protocol/protocol.go` is its Go mirror; every name, JSON key and constant
@@ -70,12 +71,9 @@ public enum Wire {
         public static let error = "error"
     }
 
-    public enum Role: String, Codable {
-        case host
-        case controller
-
-        public var opposite: Role { self == .host ? .controller : .host }
-    }
+    /// Owned by the shared core, so the state machine and the wire agree by
+    /// construction rather than by convention.
+    public typealias Role = SessionRole
 }
 
 // MARK: - Envelope
@@ -390,6 +388,10 @@ public struct RenewOKPayload: Codable, Equatable {
         self.expiresAt = expiresAt; self.ttlSec = ttlSec
     }
 }
+
+extension SessionGrantPayload: SessionGrantLike {}
+extension ResumeOKPayload: SessionTokenLike {}
+extension RenewOKPayload: SessionTokenLike {}
 
 public struct PeerStatePayload: Codable, Equatable {
     public var sessionId: String

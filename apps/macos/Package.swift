@@ -1,5 +1,32 @@
 // swift-tools-version:5.9
+import Foundation
 import PackageDescription
+
+// The shared Rust core, built by scripts/build-core.sh. The path is derived from
+// this manifest rather than from the working directory so `swift build` works
+// from anywhere, and a missing library is reported here instead of as a wall of
+// undefined _skipper_session_* symbols from the linker.
+let repoRoot = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+let coreLibraryDirectory = repoRoot.appendingPathComponent("core/target/release").path
+if !FileManager.default.fileExists(atPath: coreLibraryDirectory + "/librc_ffi.a") {
+    fatalError("""
+
+        The shared Rust core is not built.
+
+        \(coreLibraryDirectory)/librc_ffi.a is missing, and SkipperCore — which
+        owns the session state machine — cannot link without it.
+
+        Run this first, from the repository root:
+
+            ./scripts/build-core.sh
+
+        (./scripts/build.sh does it for you.)
+
+        """)
+}
 
 let package = Package(
     name: "RemoteControl",
@@ -30,9 +57,25 @@ let package = Package(
             path: "Sources/RCCrypto",
             swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]
         ),
+        // The C ABI of the shared Rust core. Nothing but the module map lives
+        // here; the header itself stays next to the crate that implements it.
+        .systemLibrary(name: "CSkipperCore", path: "Sources/CSkipperCore"),
+
+        // The shared core, as Swift sees it: the ONE session state machine,
+        // plus the types its actions are made of. The implementation is
+        // core/crates/rc-session; this target only marshals.
+        .target(
+            name: "SkipperCore",
+            dependencies: ["CSkipperCore"],
+            path: "Sources/SkipperCore",
+            linkerSettings: [
+                .unsafeFlags(["-L", coreLibraryDirectory]),
+                .linkedLibrary("rc_ffi"),
+            ]
+        ),
         .target(
             name: "RemoteControlCore",
-            dependencies: ["RCCrypto", .product(name: "WebRTC", package: "WebRTC")],
+            dependencies: ["RCCrypto", "SkipperCore", .product(name: "WebRTC", package: "WebRTC")],
             path: "Sources/RemoteControlCore"
         ),
 

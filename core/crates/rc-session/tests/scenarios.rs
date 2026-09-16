@@ -1,10 +1,10 @@
 //! Executes the shared conformance scenarios in
 //! `protocol/vectors/session-scenarios.json`.
 //!
-//! The same file is executed by the Swift suite against the original
-//! `SessionStateMachine.swift`. Both machines green on the same 200+ steps is
-//! the definition of "the Rust port behaves like the Mac app" — see the
-//! generator's header for why the vectors, not this port, are the authority.
+//! The same file is executed by the Mac app's suite, which reaches this very
+//! machine through `rc-ffi`. This suite therefore tests the rules alone: if it
+//! is green and the Swift one is red, the fault is at the FFI boundary rather
+//! than in PROTOCOL.md §4.
 
 use rc_session::{
     IceLinkState, ResumeOk, Role, SessionAction, SessionGrant, SessionPhase, SessionStateMachine,

@@ -5,15 +5,15 @@ import RemoteControlCore
 /// Executes the shared conformance scenarios in
 /// `protocol/vectors/session-scenarios.json`.
 ///
-/// The same file is executed by the Rust suite (`win/crates/rc-session/tests/
-/// scenarios.rs`) against the Windows host's port of this state machine. Both
-/// machines green on the same steps is the definition of "the Windows host
-/// behaves like this app" — a falsifiable claim, unlike two ports that each
-/// pass their own hand-written tests.
+/// There is only one session state machine now — `core/crates/rc-session` —
+/// and this suite drives it the way the app does: through `SkipperCore`, over
+/// the C ABI in `core/crates/rc-ffi/include/skipper_core.h`. So a green run
+/// proves two things at once: the rules of PROTOCOL.md §4, and that the whole
+/// marshalling path the coordinator depends on carries them faithfully.
 ///
-/// This suite is NOT redundant with `StateMachineTests.swift`: that one pins
-/// the Swift machine to PROTOCOL.md §4, this one pins the *vector file* to the
-/// Swift machine, so the file is trustworthy as the cross-language authority.
+/// `core/crates/rc-session/tests/scenarios.rs` runs the same file directly
+/// against the Rust machine. The two together separate a rule bug from an FFI
+/// bug: if that suite is green and this one is red, the boundary is at fault.
 
 private struct Scenarios: Decodable {
     let version: Int
@@ -125,9 +125,9 @@ private func phaseMatches(_ phase: SessionPhase, _ expected: String) -> Bool {
     }
 }
 
-public let scenarioSuite = TestSuite("Shared state-machine scenarios (Swift ⇄ Rust conformance)", [
+public let scenarioSuite = TestSuite("Shared state-machine scenarios (through the Rust core FFI)", [
 
-    TestCase("every shared scenario passes against the Swift machine") {
+    TestCase("every shared scenario passes through the FFI-backed machine") {
         let data = try Data(contentsOf: scenariosURL())
         let file = try JSONDecoder().decode(Scenarios.self, from: data)
         try expectGreaterThanOrEqual(file.scenarios.count, 30, "scenario file looks truncated")
@@ -135,7 +135,7 @@ public let scenarioSuite = TestSuite("Shared state-machine scenarios (Swift ⇄ 
 
         for scenario in file.scenarios {
             let role: Wire.Role = scenario.role == "host" ? .host : .controller
-            var machine = SessionStateMachine(role: role)
+            let machine = SessionStateMachine(role: role)
 
             for (i, step) in scenario.steps.enumerated() {
                 let ctx = "scenario \(scenario.name) step \(i) (at \(step.at)s)"

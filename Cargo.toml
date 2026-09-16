@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core/crates/rc-proto", "core/crates/rc-session", "core/crates/rc-identity", "apps/windows/crates/rc-input", "apps/windows/crates/rc-signal-client", "apps/windows/crates/rc-transport", "apps/windows/crates/rc-host"]
+members = ["core/crates/rc-proto", "core/crates/rc-session", "core/crates/rc-ffi", "core/crates/rc-identity", "apps/windows/crates/rc-input", "apps/windows/crates/rc-signal-client", "apps/windows/crates/rc-transport", "apps/windows/crates/rc-host"]
 
 [workspace.package]
 version = "0.1.0"

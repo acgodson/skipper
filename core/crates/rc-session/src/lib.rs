@@ -1,11 +1,12 @@
-//! PROTOCOL.md §4 as executable code — the Rust port of
-//! `app/Sources/RemoteControlCore/Signaling/SessionStateMachine.swift`.
+//! PROTOCOL.md §4 as executable code — the ONE session state machine.
 //!
-//! That file is the proven implementation: it carries the fixes that were paid
-//! for in the field (the stale-session dead end, the busy-retry-once guard, the
-//! flutter rules). This port is held equal to it not by review but by
-//! `protocol/vectors/session-scenarios.json`, which both test suites execute.
-//! If the two machines ever disagree on a scenario, one suite goes red.
+//! It began as a port of the Mac app's `SessionStateMachine.swift`, which is
+//! where the fixes that were paid for in the field were made (the stale-session
+//! dead end, the busy-retry-once guard, the flutter rules). That file is gone:
+//! the app now drives this crate through `rc-ffi`, so there is nothing left to
+//! hold equal. `protocol/vectors/session-scenarios.json` is executed twice all
+//! the same — here, and from Swift through the FFI — which is what separates a
+//! rule bug from a marshalling bug.
 //!
 //! Like the original it performs no I/O and holds no timers: every method
 //! returns the [`SessionAction`]s the owner must perform, and the owner calls

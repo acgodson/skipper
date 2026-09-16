@@ -66,6 +66,10 @@ fi
 BUNDLE="${DIST_DIR}/${APP_NAME}.app"
 CONTENTS="${BUNDLE}/Contents"
 
+# The session state machine lives in Rust and the app links it statically, so
+# the core is built first or there is nothing for SwiftPM to link against.
+"${REPO_ROOT}/scripts/build-core.sh"
+
 echo "==> Building ${APP_NAME} (${CONFIG}, ${ARCH})"
 cd "${APP_DIR}"
 swift build -c "${CONFIG}" --arch "${ARCH}"

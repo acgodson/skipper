@@ -1304,6 +1304,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rc-ffi"
+version = "0.1.0"
+dependencies = [
+ "rc-session",
+ "serde_json",
+]
+
+[[package]]
 name = "rc-host"
 version = "0.1.0"
 dependencies = [
