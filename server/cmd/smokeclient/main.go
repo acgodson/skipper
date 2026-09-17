@@ -49,6 +49,7 @@ type client struct {
 	priv     *ecdsa.PrivateKey
 	pub      string
 	deviceID string
+	idCert   string
 	token    string
 	session  string
 
@@ -100,6 +101,23 @@ func (c *client) dial() {
 		}
 	}()
 	c.nonce = c.mustGet(protocol.TypeChallenge).nonce()
+}
+
+// closedWithin waits for the server to close the socket and returns how long it took, or limit.
+func (c *client) closedWithin(limit time.Duration) time.Duration {
+	started := time.Now()
+	deadline := time.After(limit)
+	for {
+		select {
+		case _, open := <-c.in:
+			if !open {
+				return time.Since(started)
+			}
+		case <-deadline:
+			c.hangUp()
+			return limit
+		}
+	}
 }
 
 func (c *client) hangUp() {
@@ -209,22 +227,73 @@ const (
 )
 
 func (c *client) register(label string) string {
+	return c.registerAs(label, "", "").DeviceID
+}
+
+func (c *client) registerAs(label, preferred, cert string) protocol.RegisterOK {
 	c.send(protocol.TypeRegister, protocol.Register{
-		Pubkey: c.pub, Sig: c.sig(protocol.PurposeRegister), Label: label})
-	ok := decode[protocol.RegisterOK](c.mustGet(protocol.TypeRegisterOK))
-	c.deviceID = ok.DeviceID
+		Pubkey: c.pub, Sig: c.sig(protocol.PurposeRegister), Label: label,
+		PreferredDeviceID: preferred, IDCert: cert})
+	e, ok := c.wait(protocol.TypeRegisterOK, protocol.TypeError)
+	if !ok || e.Type != protocol.TypeRegisterOK {
+		fatal("%s: register failed: %s %+v", c.name, e.Type, decode[protocol.Error](e))
+	}
+	reg := decode[protocol.RegisterOK](e)
+	c.deviceID, c.idCert = reg.DeviceID, reg.IDCert
 	c.mustGet(protocol.TypeChallenge)
-	return ok.DeviceID
+	return reg
+}
+
+func (c *client) tryHello(deviceID, role string) env {
+	c.send(protocol.TypeHello, protocol.Hello{
+		DeviceID: deviceID, Pubkey: c.pub, Sig: c.sig(protocol.PurposeHello), Role: role})
+	e, ok := c.wait(protocol.TypeHelloOK, protocol.TypeError)
+	if !ok {
+		fatal("%s: no answer to hello", c.name)
+	}
+	if e.Type == protocol.TypeError {
+		c.mustGet(protocol.TypeChallenge)
+	}
+	return e
 }
 
 func (c *client) hello(role string) protocol.HelloOK {
-	c.send(protocol.TypeHello, protocol.Hello{
-		DeviceID: c.deviceID, Pubkey: c.pub, Sig: c.sig(protocol.PurposeHello), Role: role})
-	e, ok := c.wait(protocol.TypeHelloOK, protocol.TypeError)
-	if !ok || e.Type == protocol.TypeError {
-		fatal("%s: hello failed: %v", c.name, e.Type)
+	e := c.tryHello(c.deviceID, role)
+	if e.Type == protocol.TypeError {
+		fatal("%s: hello failed: %+v", c.name, decode[protocol.Error](e))
 	}
 	return decode[protocol.HelloOK](e)
+}
+
+func (c *client) request(typ string, payload any, want string) (env, protocol.Error) {
+	c.send(typ, payload)
+	e, ok := c.wait(want, protocol.TypeError)
+	if !ok {
+		fatal("%s: no answer to %s", c.name, typ)
+	}
+	var er protocol.Error
+	if e.Type == protocol.TypeError {
+		er = decode[protocol.Error](e)
+	}
+	return e, er
+}
+
+func sessionTURN(servers []protocol.ICEServer, sessionID string) bool {
+	for _, s := range servers {
+		if s.Credential != "" && strings.HasSuffix(s.Username, ":"+sessionID) {
+			return true
+		}
+	}
+	return false
+}
+
+func anyCredential(servers []protocol.ICEServer) bool {
+	for _, s := range servers {
+		if s.Credential != "" || s.Username != "" {
+			return true
+		}
+	}
+	return false
 }
 
 var insecureTLS bool
@@ -252,19 +321,37 @@ func main() {
 	check("register controller device",
 		protocol.ValidDeviceID(ctrlID) && ctrlID != hostID,
 		fmt.Sprintf("controller id %q vs host id %q", ctrlID, hostID))
+	check("register_ok carries a device-id certificate", host.idCert != "" && ctrl.idCert != "",
+		fmt.Sprintf("host=%q ctrl=%q", host.idCert, ctrl.idCert))
+
+	e, er := host.request(protocol.TypeRegister, protocol.Register{
+		Pubkey: host.pub, Sig: host.sig(protocol.PurposeRegister)}, protocol.TypeRegisterOK)
+	check("a second register on one connection is refused",
+		e.Type == protocol.TypeError && er.Code == protocol.ErrBadRequest, fmt.Sprintf("got %s %+v", e.Type, er))
 
 	hok := host.hello(protocol.RoleHost)
 	cok := ctrl.hello(protocol.RoleController)
-	check("host hello_ok", hok.DeviceID == hostID && hok.HeartbeatSec == 15 && hok.OfflineAfterSec == 40,
+	check("host hello_ok", hok.DeviceID == hostID && hok.HeartbeatSec == 15 && hok.OfflineAfterSec == 40 && hok.IDCert != "",
 		fmt.Sprintf("%+v", hok))
-	turnOK := false
-	for _, s := range cok.ICEServers {
-		if s.Username != "" && s.Credential != "" {
-			turnOK = true
-		}
-	}
-	check("hello_ok carries ephemeral TURN credentials", turnOK,
+	check("hello_ok carries no TURN credentials", len(cok.ICEServers) > 0 && !anyCredential(cok.ICEServers),
 		fmt.Sprintf("iceServers = %+v", cok.ICEServers))
+
+	prober := newClient("prober", url)
+	prober.dial()
+	takenAns := prober.tryHello(hostID, protocol.RoleHost)
+	freeAns := prober.tryHello("123456789", protocol.RoleHost)
+	check("hello answers a taken id and a free id identically",
+		takenAns.Type == protocol.TypeError && decode[protocol.Error](takenAns) == decode[protocol.Error](freeAns) &&
+			decode[protocol.Error](takenAns).Code == protocol.ErrUnknownDevice,
+		fmt.Sprintf("taken=%+v free=%+v", decode[protocol.Error](takenAns), decode[protocol.Error](freeAns)))
+	squat := prober.registerAs("Smoke Squatter", hostID, host.idCert)
+	check("another key's certificate does not claim an id", squat.DeviceID != hostID && !squat.Existing,
+		fmt.Sprintf("got %+v", squat))
+	prober.hangUp()
+
+	e, er = host.request(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: ctrlID}, protocol.TypeConnectOK)
+	check("connect_req from a host connection is forbidden",
+		e.Type == protocol.TypeError && er.Code == protocol.ErrForbidden, fmt.Sprintf("got %s %+v", e.Type, er))
 
 	host.send(protocol.TypeHeartbeat, protocol.Heartbeat{})
 	hb := decode[protocol.HeartbeatOK](host.mustGet(protocol.TypeHeartbeatOK))
@@ -277,7 +364,7 @@ func main() {
 		fmt.Sprintf("watch_ok=%+v presence=%+v", wok, pres))
 
 	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: hostID, AccessCode: legacyCode})
-	e, _ := ctrl.wait(protocol.TypeConnectOK, protocol.TypeError)
+	e, _ = ctrl.wait(protocol.TypeConnectOK, protocol.TypeError)
 	errp := decode[protocol.Error](e)
 	check("connect_req carrying an access code is rejected with bad_request",
 		e.Type == protocol.TypeError && errp.Code == protocol.ErrBadRequest,
@@ -304,6 +391,15 @@ func main() {
 	check("the host is told the controller's key, which its guess policy is keyed on",
 		start.ControllerPubkey == ctrl.pub,
 		fmt.Sprintf("session_start controllerPubkey=%q", start.ControllerPubkey))
+	check("connect_ok and session_start carry TURN credentials scoped to the session",
+		sessionTURN(conn.ICEServers, conn.SessionID) && sessionTURN(start.ICEServers, conn.SessionID),
+		fmt.Sprintf("connect_ok=%+v session_start=%+v", conn.ICEServers, start.ICEServers))
+
+	e, er = ctrl.request(protocol.TypeBye, protocol.Bye{SessionID: ctrl.session, Reason: strings.Repeat("A", 70*1024)}, protocol.TypeBye)
+	_, hostSawBye := host.buffered(protocol.TypeBye)
+	check("a bye with an undefined reason is refused and not relayed",
+		e.Type == protocol.TypeError && er.Code == protocol.ErrBadRequest && !hostSawBye,
+		fmt.Sprintf("got %s %+v host bye=%v", e.Type, er, hostSawBye))
 
 	third := newClient("ctrl2", url)
 	third.dial()
@@ -414,6 +510,16 @@ func main() {
 	check("ICE-restart offer relays after resume",
 		rst.SDP == offerSDP && rst.Restart, fmt.Sprintf("got %+v", rst))
 
+	e, er = live.request(protocol.TypeRenew, protocol.Renew{SessionID: live.session, SessionToken: live.token}, protocol.TypeRenewOK)
+	if e.Type == protocol.TypeRenewOK {
+		renewed := decode[protocol.RenewOK](e)
+		live.token = renewed.SessionToken
+		check("renew_ok carries fresh session TURN credentials", sessionTURN(renewed.ICEServers, live.session),
+			fmt.Sprintf("iceServers = %+v", renewed.ICEServers))
+	} else {
+		check("renew_ok carries fresh session TURN credentials", false, fmt.Sprintf("got %+v", er))
+	}
+
 	host.send(protocol.TypeRefreshCode, map[string]any{})
 	rc := decode[protocol.RefreshCodeOK](host.mustGet(protocol.TypeRefreshCodeOK))
 	check("refresh_code acknowledged with an empty payload", rc.DeviceID == hostID, fmt.Sprintf("%+v", rc))
@@ -476,6 +582,36 @@ func main() {
 		check("no duplicate presence pushes", false, "more than one presence event for a single change")
 	}
 	live.hangUp()
+
+	back := newClient("host-again", url)
+	back.priv, back.pub = host.priv, host.pub
+	back.dial()
+	again := back.registerAs("Smoke Host", hostID, host.idCert)
+	check("re-register with its own certificate keeps the id",
+		again.DeviceID == hostID && again.Existing && again.IDCert != "", fmt.Sprintf("got %+v", again))
+	back.hangUp()
+
+	burst := newClient("burst", url)
+	burst.dial()
+	burst.register("Smoke Burst")
+	burst.hello(protocol.RoleController)
+	var limited protocol.Error
+	for i := 0; i <= protocol.ConnectPerControllerPerMin && limited.Code == ""; i++ {
+		if _, er := burst.request(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: "123456789"}, protocol.TypeConnectOK); er.Code == protocol.ErrRateLimited {
+			limited = er
+		}
+	}
+	check("connect_req bursts are refused with rate_limited and retryAfterSec",
+		limited.Code == protocol.ErrRateLimited && limited.RetryAfterSec > 0, fmt.Sprintf("got %+v", limited))
+	burst.hangUp()
+
+	idle := newClient("idle", url)
+	idle.dial()
+	started := time.Now()
+	closedAfter := idle.closedWithin(protocol.AuthTimeoutSec*time.Second + 10*time.Second)
+	check("an unauthenticated socket is closed after the auth timeout",
+		closedAfter >= protocol.AuthTimeoutSec*time.Second && closedAfter <= protocol.AuthTimeoutSec*time.Second+7*time.Second,
+		fmt.Sprintf("closed after %s (started %s)", closedAfter, started.Format(time.TimeOnly)))
 
 	fmt.Printf("\n%d/%d steps passed\n", steps-failures, steps)
 	if failures > 0 {

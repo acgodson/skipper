@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # End-to-end smoke test for rc-signal.
 #
-# Boots the server in local plain-HTTP mode on a scratch database, drives two
-# real WebSocket clients through the entire flow (register, presence, wrong
-# code, right code, SDP/ICE relay, socket kill + resume, code refresh, rate
-# limiting), prints PASS/FAIL per step and exits non-zero on any failure.
+# Boots the server in local plain-HTTP static mode on a scratch database with a
+# throwaway device-id certificate key, drives real WebSocket clients through the
+# v4 flow (register and certificates, presence, session TURN, SDP/ICE relay, resume,
+# renew, code refresh, roles, bye reasons, rate limits, auth timeout), prints
+# PASS/FAIL per step and exits non-zero on any failure.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,12 +30,21 @@ if ! (cd "$SERVER_DIR" && go build -o "$WORK/rc-signal" ./cmd/rc-signal && go bu
   exit 1
 fi
 
+echo "== generating a throwaway device-id certificate key and TURN secret"
+if ! (umask 077; openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$WORK/id-cert-key.pem" 2>/dev/null); then
+  echo "FAIL  openssl could not generate the device-id certificate key"
+  exit 1
+fi
+(umask 077; printf 'smoke-turn-secret\n' > "$WORK/turn-secret")
+
 echo "== starting rc-signal on $ADDR (plain HTTP, local only)"
 "$WORK/rc-signal" \
   -insecure-http \
   -listen "$ADDR" \
+  -entitlement static \
   -db "$WORK/smoke.db" \
-  -turn-secret "smoke-turn-secret" \
+  -id-cert-key-file "$WORK/id-cert-key.pem" \
+  -turn-secret-file "$WORK/turn-secret" \
   -turn-urls "turn:198.51.100.7:3478?transport=udp" \
   -log-level warn \
   > "$WORK/server.log" 2>&1 &

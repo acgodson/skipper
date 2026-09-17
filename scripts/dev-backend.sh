@@ -42,10 +42,20 @@ else
 fi
 port_free "$API_PORT" || { echo "FAIL  the rc-api port $API_PORT is already in use (set RC_DEV_API_PORT)"; exit 1; }
 
+pick_port() {
+  local wanted="$1"
+  if port_free "$wanted"; then echo "$wanted"; else any_free_port; fi
+}
+API_INTERNAL_PORT="${RC_DEV_API_INTERNAL_PORT:-$(pick_port 18081)}"
+SIGNAL_INTERNAL_PORT="${RC_DEV_SIGNAL_INTERNAL_PORT:-$(pick_port 18444)}"
+
 API_URL="http://127.0.0.1:$API_PORT"
+API_INTERNAL_URL="http://127.0.0.1:$API_INTERNAL_PORT"
 SIGNAL_URL="http://127.0.0.1:$SIGNAL_PORT"
+SIGNAL_INTERNAL_URL="http://127.0.0.1:$SIGNAL_INTERNAL_PORT"
 
 mkdir -p "$BIN"
+KEYS="$(mktemp -d)"
 
 secret() {
   local file="$DATA/$1"
@@ -62,6 +72,7 @@ stop_all() {
   for pid in "${PIDS[@]:-}"; do
     [[ -n "$pid" ]] && wait "$pid" 2>/dev/null
   done
+  rm -rf "$KEYS"
 }
 trap 'echo; echo "== stopping"; stop_all; exit 0' INT TERM
 trap stop_all EXIT
@@ -87,16 +98,32 @@ fi
 INTERNAL_TOKEN="$(secret internal-token)"
 HARDWARE_SALT="$(secret hardware-salt)"
 
-echo "== starting rc-api on $API_URL (dev identity provider)"
+echo "== generating a throwaway device-id certificate key and TURN secret in $KEYS"
+if ! (umask 077; openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$KEYS/id-cert-key.pem" 2>/dev/null); then
+  echo "FAIL  openssl could not generate the device-id certificate key"
+  exit 1
+fi
+if [[ -n "${RC_TURN_SECRET_FILE:-}" ]]; then
+  TURN_SECRET_FILE="$RC_TURN_SECRET_FILE"
+else
+  TURN_SECRET_FILE="$KEYS/turn-secret"
+  (umask 077; printf 'dev-turn-secret\n' > "$TURN_SECRET_FILE")
+fi
+
+echo "== starting rc-api on $API_URL (dev identity provider; internal surface on $API_INTERNAL_URL)"
 "$BIN/rc-api" \
   -insecure-http \
   -listen "127.0.0.1:$API_PORT" \
+  -internal-listen "127.0.0.1:$API_INTERNAL_PORT" \
   -db "$DATA/rc-api.db" \
   -idp dev \
   -internal-token "$INTERNAL_TOKEN" \
+  -id-cert-key-file "$KEYS/id-cert-key.pem" \
   -hardware-salt "$HARDWARE_SALT" \
   -web-base-url "${RC_DEV_WEB_BASE_URL:-$API_URL}" \
   -signal-upstream "$SIGNAL_URL" \
+  -signal-internal-url "$SIGNAL_INTERNAL_URL" \
+  -trusted-proxies "${RC_DEV_TRUSTED_PROXIES:-}" \
   -log-level "${RC_DEV_LOG_LEVEL:-info}" \
   >> "$DATA/rc-api.log" 2>&1 &
 PIDS+=("$!")
@@ -106,10 +133,13 @@ echo "== starting rc-signal on $SIGNAL_URL (device registry and entitlement from
 "$BIN/rc-signal" \
   -insecure-http \
   -listen "127.0.0.1:$SIGNAL_PORT" \
+  -internal-listen "127.0.0.1:$SIGNAL_INTERNAL_PORT" \
   -entitlement http \
-  -api-internal-url "$API_URL" \
+  -api-internal-url "$API_INTERNAL_URL" \
   -internal-token "$INTERNAL_TOKEN" \
-  -turn-secret "${RC_TURN_SECRET:-dev-turn-secret}" \
+  -trusted-proxies "127.0.0.1/32" \
+  -register-per-ip-hour "${RC_DEV_REGISTER_PER_IP_HOUR:-1000}" \
+  -turn-secret-file "$TURN_SECRET_FILE" \
   -turn-urls "${RC_TURN_URLS:-turn:198.51.100.7:3478?transport=udp}" \
   -log-level "${RC_DEV_LOG_LEVEL:-info}" \
   >> "$DATA/rc-signal.log" 2>&1 &
@@ -125,6 +155,7 @@ Backend is up. Point the app (or scripts/test-*.sh) at it with:
 
 The app derives ws://127.0.0.1:$API_PORT/ws, which rc-api passes through to rc-signal.
 rc-signal:     $SIGNAL_URL (device registry and entitlement live in rc-api)
+Internal:      rc-api $API_INTERNAL_URL, rc-signal $SIGNAL_INTERNAL_URL (loopback only)
 Data and logs: $DATA
 Dev top-up:    curl -X POST $API_URL/v1/credits/dev-topup -H 'Authorization: Bearer dev:<email>' \\
                  -H "Idempotency-Key: \$(uuidgen)" -d '{"amountCents":500}'
