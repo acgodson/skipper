@@ -9,7 +9,8 @@
  * with skipper_string_free (NULL = allocation failed):
  *   { "ok": true, "actions": [{"action":"<name>",...fields}], "state": {
  *     "role":S, "phase":S, "closedReason":S|null, "hasSession":B,
- *     "signalingUp":B, "resumeInFlight":B, "isOfferer":B, "iceState":S,
+ *     "signalingUp":B, "resumeInFlight":B, "relayOnly":B, "isOfferer":B,
+ *     "iceState":S,
  *     "sessionId":S|null, "sessionToken":S|null, "peerDeviceId":S|null,
  *     "rememberedAccessCode":S|null, "serverAdvertisedSessionId":S|null } }
  * or, rejected: { "ok": false, "error": "<message>" }. Actions match
@@ -92,6 +93,12 @@ char *skipper_session_tick(SkipperSession *session, int64_t now_ms);
 char *skipper_session_close_locally(SkipperSession *session, const char *reason);
 
 char *skipper_session_user_ended(SkipperSession *session, const char *reason);
+
+/*
+ * A session that already runs on TURN relay only. The state machine never
+ * asks for a relay-only ICE restart while this is true.
+ */
+char *skipper_session_set_relay_only(SkipperSession *session, bool relay_only);
 
 /* NULL forgets the remembered access code. */
 char *skipper_session_set_remembered_access_code(SkipperSession *session,

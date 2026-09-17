@@ -33,8 +33,9 @@ macOS but crashed on real Windows and has never been debugged on a Windows machi
 current goal. Still v1: it predates protocol v2.
 
 ### Known gaps
-- No **automatic relay-only retry**: TURN servers are in the normal ICE config, but a session
-  whose ICE fails closes (`bye: failed`) rather than retrying with `RC_ICE_POLICY=relay`.
+- The **automatic relay-only retry** (first ICE `failed` → one ICE restart with a relay-only
+  transport policy, then the 45 s grace) is proven locally only up to the restart; a relay path
+  actually carrying the session needs a backend with TURN (Phase 5).
 - Local cursor is always an arrow (I-beam/resize shapes not sent over `ctrl`).
 - Main display only · text-only clipboard (≤ 192 KiB) · arm64 only.
 - No Developer ID build has been verified yet.

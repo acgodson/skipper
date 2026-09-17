@@ -56,7 +56,9 @@ pub enum SessionAction {
     StartPeerConnection {
         offerer: bool,
     },
-    RestartIce,
+    RestartIce {
+        relay_only: bool,
+    },
     ReissueWatches,
     TeardownPeerConnection,
     ClearStoredSession,
@@ -106,6 +108,7 @@ pub struct SessionStateMachine {
     disconnected_since: Option<i64>,
     failed_since: Option<i64>,
     ice_restart_requested: bool,
+    relay_only: bool,
     last_renew: Option<i64>,
     resume_wanted: bool,
 
@@ -132,6 +135,7 @@ impl SessionStateMachine {
             disconnected_since: None,
             failed_since: None,
             ice_restart_requested: false,
+            relay_only: false,
             last_renew: None,
             resume_wanted: false,
             server_advertised_session_id: None,
@@ -162,6 +166,12 @@ impl SessionStateMachine {
     }
     pub fn resume_in_flight(&self) -> bool {
         self.resume_in_flight
+    }
+    pub fn relay_only(&self) -> bool {
+        self.relay_only
+    }
+    pub fn set_relay_only(&mut self, relay_only: bool) {
+        self.relay_only = relay_only;
     }
 
     pub fn is_offerer(&self) -> bool {
@@ -339,7 +349,9 @@ impl SessionStateMachine {
             self.phase = SessionPhase::Reconnecting;
             if self.is_offerer() {
                 self.ice_restart_requested = true;
-                actions.push(SessionAction::RestartIce);
+                actions.push(SessionAction::RestartIce {
+                    relay_only: self.relay_only,
+                });
             }
         } else {
             self.phase = SessionPhase::Live;
@@ -435,7 +447,14 @@ impl SessionStateMachine {
                     self.failed_since = Some(now_ms);
                 }
                 self.phase = SessionPhase::Reconnecting;
-                vec![SessionAction::SendInputReset]
+                let mut actions = vec![SessionAction::SendInputReset];
+                if !self.relay_only && self.is_offerer() {
+                    self.relay_only = true;
+                    self.ice_restart_requested = true;
+                    self.disconnected_since = None;
+                    actions.push(SessionAction::RestartIce { relay_only: true });
+                }
+                actions
             }
             IceLinkState::Closed | IceLinkState::New | IceLinkState::Checking => vec![],
         }
@@ -451,7 +470,9 @@ impl SessionStateMachine {
             if !self.ice_restart_requested && now_ms - since >= self.ice_restart_delay_ms {
                 self.ice_restart_requested = true;
                 if self.is_offerer() {
-                    actions.push(SessionAction::RestartIce);
+                    actions.push(SessionAction::RestartIce {
+                        relay_only: self.relay_only,
+                    });
                 }
             }
         }
@@ -516,6 +537,7 @@ impl SessionStateMachine {
         self.disconnected_since = None;
         self.failed_since = None;
         self.ice_restart_requested = false;
+        self.relay_only = false;
         self.ice_state = IceLinkState::Closed;
         self.phase = SessionPhase::Closed {
             reason: reason.to_string(),

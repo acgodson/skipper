@@ -18,6 +18,7 @@ Conventions:
   at            seconds since scenario start (mapped to each language's clock)
   expectActions the EXACT ordered action list the event must return
   expectPhase   idle | connecting | live | reconnecting | closed:<reason>
+  expectRelayOnly whether the session has fallen back to a TURN-relay-only path
 """
 import json, sys
 
@@ -46,7 +47,8 @@ def a_bye(sess, reason):
 
 A_RESET = {"action": "sendInputReset"}
 A_WATCHES = {"action": "reissueWatches"}
-A_RESTART = {"action": "restartICE"}
+A_RESTART = {"action": "restartICE", "relayOnly": False}
+A_RESTART_RELAY = {"action": "restartICE", "relayOnly": True}
 A_TEARDOWN = {"action": "teardownPeerConnection"}
 A_CLEAR = {"action": "clearStoredSession"}
 CLOSE_SET = [A_RESET, A_TEARDOWN, A_CLEAR]
@@ -296,16 +298,72 @@ scen("a_link_that_recovers_before_3s_never_restarts", [
 
 scen("failed_alone_does_not_close_but_failed_plus_45s_does", [
     *live_controller(),
-    step(10, ice("failed"), [A_RESET], "reconnecting", expectHasSession=True),
+    step(10, ice("failed"), [A_RESET, A_RESTART_RELAY], "reconnecting",
+         expectHasSession=True),
     step(54, {"event": "tick"}, [], "reconnecting"),
     step(55, {"event": "tick"},
          [*CLOSE_SET, a_bye(SESS, "failed")], "closed:failed",
          expectHasSession=False),
 ])
 
+scen("a_first_ice_failure_retries_on_relay_immediately_instead_of_waiting", [
+    *live_controller(),
+    step(10, ice("failed"), [A_RESET, A_RESTART_RELAY], "reconnecting",
+         expectHasSession=True, expectRelayOnly=True),
+    step(11, {"event": "tick"}, [], "reconnecting"),
+    step(54, {"event": "tick"}, [], "reconnecting", expectHasSession=True),
+    step(55, {"event": "tick"},
+         [*CLOSE_SET, a_bye(SESS, "failed")], "closed:failed",
+         expectHasSession=False, expectRelayOnly=False),
+], note="the 45s grace now covers the relay attempt, not a hopeless wait on the failed path")
+
+scen("the_relay_retry_is_offered_at_most_once_per_session", [
+    *live_controller(),
+    step(10, ice("failed"), [A_RESET, A_RESTART_RELAY], "reconnecting"),
+    step(20, ice("connected"), [A_RESET], "live", expectRelayOnly=True),
+    step(30, ice("failed"), [A_RESET], "reconnecting", expectRelayOnly=True),
+], note="relay is the last resort; failing on relay too must not loop")
+
+scen("a_session_that_is_already_relay_only_never_asks_for_a_relay_retry", [
+    step(0, auth(), [], "idle"),
+    step(0, {"event": "setRelayOnly", "relayOnly": True}, [], "idle",
+         expectRelayOnly=True),
+    step(0, {"event": "connectRequested", "deviceId": HOSTID,
+             "accessCode": CODE, "remember": False}, [a_connect()], "connecting"),
+    step(0, grant(), [offer(True)], "connecting"),
+    step(0, ice("connected"), [A_RESET], "live"),
+    step(10, ice("failed"), [A_RESET], "reconnecting", expectRelayOnly=True),
+], note="RC_ICE_POLICY=relay already: there is nothing left to fall back to")
+
+scen("a_host_never_offers_the_relay_retry", [
+    step(0, auth(), [], "idle"),
+    step(0, grant(), [offer(False)], "connecting"),
+    step(1, ice("connected"), [A_RESET], "live"),
+    step(10, ice("failed"), [A_RESET], "reconnecting", expectRelayOnly=False),
+    step(55, {"event": "tick"},
+         [*CLOSE_SET, a_bye(SESS, "failed")], "closed:failed"),
+], role="host", note="only the offerer restarts ICE (§4.3 step 4)")
+
+scen("after_the_relay_retry_a_later_disconnect_restarts_on_relay_too", [
+    *live_controller(),
+    step(10, ice("failed"), [A_RESET, A_RESTART_RELAY], "reconnecting"),
+    step(20, ice("connected"), [A_RESET], "live"),
+    step(30, ice("disconnected"), [A_RESET], "reconnecting"),
+    step(33, {"event": "tick"}, [A_RESTART_RELAY], "reconnecting"),
+], note="the policy sticks for the rest of the session")
+
+scen("a_resume_while_relay_only_restarts_on_relay", [
+    *live_controller(),
+    step(10, ice("failed"), [A_RESET, A_RESTART_RELAY], "reconnecting"),
+    step(12, {"event": "signalingLost"}, []),
+    step(15, auth(SESS), [a_resume()]),
+    step(15, {"event": "resumeSucceeded", "sessionId": SESS, "sessionToken": TOK2},
+         [A_WATCHES, A_RESET, A_RESTART_RELAY], "reconnecting"),
+])
+
 scen("recovering_inside_the_grace_window_keeps_the_session", [
     *live_controller(),
-    step(10, ice("failed"), [A_RESET], "reconnecting"),
+    step(10, ice("failed"), [A_RESET, A_RESTART_RELAY], "reconnecting"),
     step(40, ice("connected"), [A_RESET], "live"),
     step(60, {"event": "tick"}, [], "live", expectHasSession=True),
 ])

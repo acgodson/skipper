@@ -57,7 +57,9 @@ fn action_from_json(v: &Value) -> SessionAction {
         "startPeerConnection" => SessionAction::StartPeerConnection {
             offerer: v["offerer"].as_bool().expect("offerer"),
         },
-        "restartICE" => SessionAction::RestartIce,
+        "restartICE" => SessionAction::RestartIce {
+            relay_only: v["relayOnly"].as_bool().expect("relayOnly"),
+        },
         "reissueWatches" => SessionAction::ReissueWatches,
         "teardownPeerConnection" => SessionAction::TeardownPeerConnection,
         "clearStoredSession" => SessionAction::ClearStoredSession,
@@ -145,6 +147,10 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
                     None
                 }
                 "renewFailed" => Some(machine.renew_failed(e["code"].as_str().unwrap())),
+                "setRelayOnly" => {
+                    machine.set_relay_only(e["relayOnly"].as_bool().unwrap());
+                    Some(vec![])
+                }
                 "closeLocally" => Some(machine.close_locally(e["reason"].as_str().unwrap())),
                 "userEnded" => Some(machine.user_ended(e["reason"].as_str().unwrap())),
                 other => panic!("{}: unknown event {other:?}", ctx()),
@@ -180,6 +186,9 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
             }
             if let Some(v) = step.get("expectResumeInFlight").and_then(Value::as_bool) {
                 assert_eq!(machine.resume_in_flight(), v, "{}: resumeInFlight", ctx());
+            }
+            if let Some(v) = step.get("expectRelayOnly").and_then(Value::as_bool) {
+                assert_eq!(machine.relay_only(), v, "{}: relayOnly", ctx());
             }
             steps_run += 1;
         }

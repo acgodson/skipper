@@ -87,7 +87,7 @@ public enum CoordinatorEvent {
     case connectFailed(ConnectFailure)
     case bye(reason: String)
     case accessCodeRequired(reason: String)
-    case iceRestartStarted
+    case iceRestartStarted(relayOnly: Bool)
     case remoteDescription(type: String, restart: Bool)
     case peerAuthFailed(reason: String)
     case pake(step: Int, outgoing: Bool)
@@ -138,6 +138,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     }
 
     public var sessionID: String? { machine.sessionID }
+    public var isRelayOnly: Bool { peer?.isRelayOnly ?? machine.relayOnly }
     public var peerDeviceID: String? { machine.peerDeviceID }
 
     // MARK: Collaborators
@@ -193,6 +194,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             iceRestartDelay: config.iceRestartDelay,
             iceFailureGrace: config.iceFailureGrace,
             renewInterval: config.renewInterval)
+        self.machine.setRelayOnly(config.forceTURNRelay)
         let sink = CGEventSink()
         self.eventSink = sink
         self.signaling = SignalingClient(config: config, identity: identity, role: role)
@@ -288,7 +290,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     public func dropSignalingSocket() { signaling.simulateSocketLoss() }
 
     public func forceICERestart() {
-        emit(.iceRestartStarted)
+        emit(.iceRestartStarted(relayOnly: machine.relayOnly))
         Task { await renegotiate(restart: true) }
     }
 
@@ -363,8 +365,9 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             }
             startPeer(offerer: offerer)
 
-        case .restartICE:
-            emit(.iceRestartStarted)
+        case .restartICE(let relayOnly):
+            if relayOnly { peer?.switchToRelayOnly() }
+            emit(.iceRestartStarted(relayOnly: peer?.isRelayOnly ?? relayOnly))
             await renegotiate(restart: true)
 
         case .reissueWatches:
