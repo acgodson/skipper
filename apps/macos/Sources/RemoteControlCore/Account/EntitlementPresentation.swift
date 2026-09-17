@@ -18,7 +18,7 @@ public enum EntitlementPresentation {
         case .exhausted:
             return "No balance \u{2014} top up at skipperdesk.app"
         case .unlinked:
-            return "Not linked"
+            return "Not signed in"
         }
     }
 
@@ -55,7 +55,7 @@ public enum EntitlementPresentation {
 
     public static func entitlementSentence(reason: String?, fallback: String) -> String {
         switch reason {
-        case "unlinked": return "That Mac isn't linked to a SkipperDesk account yet."
+        case "unlinked": return "That Mac isn't signed in to SkipperDesk yet."
         case "trial_expired": return "That Mac's trial has ended."
         case "no_balance": return "That Mac's account has no balance."
         case "concurrency": return "That account is already in a session on another Mac."
@@ -65,7 +65,8 @@ public enum EntitlementPresentation {
     }
 
     public static func rateLimitedSentence(retryAfterSec: Int) -> String {
-        let minutes = max(1, Int((Double(retryAfterSec) / 60).rounded(.up)))
+        guard retryAfterSec >= 60 else { return "Too many attempts. Try again in a few seconds." }
+        let minutes = Int((Double(retryAfterSec) / 60).rounded(.up))
         return "Too many attempts. Try again in \(minutes) min."
     }
 

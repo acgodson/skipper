@@ -19,7 +19,7 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
     TestCase("each closed-set reason renders its own sentence, never the fallback") {
         try expectEqual(
             EntitlementPresentation.entitlementSentence(reason: "unlinked", fallback: "fallback"),
-            "That Mac isn't linked to a SkipperDesk account yet.")
+            "That Mac isn't signed in to SkipperDesk yet.")
         try expectEqual(
             EntitlementPresentation.entitlementSentence(reason: "trial_expired", fallback: "fallback"),
             "That Mac's trial has ended.")
@@ -70,7 +70,7 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
         try expectEqual(
             EntitlementPresentation.connectFailureSentence(
                 code: "rate_limited", reason: nil, retryAfterSec: 30, fallback: "old wording"),
-            "Too many attempts. Try again in 1 min.")
+            "Too many attempts. Try again in a few seconds.")
         try expectEqual(
             EntitlementPresentation.connectFailureSentence(
                 code: "rate_limited", reason: nil, retryAfterSec: nil, fallback: "old wording"),

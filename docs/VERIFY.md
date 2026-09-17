@@ -135,7 +135,7 @@ Each item: the exact expected observation, and what to capture as evidence.
 
 17. **Sign out on host -> controller refused.** Sign the host out of its
     account. Expected: a controller trying to connect afterward sees the
-    sentence naming that the device "isn't linked" (entitlement refusal), not
+    sentence "That Mac isn't signed in to SkipperDesk yet." (entitlement refusal), not
     a generic error.
     Evidence: screenshot of that message.
 
