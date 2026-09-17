@@ -1,6 +1,5 @@
 name: CI
 
-# TODO: verify every pinned action SHA below against its upstream release tag
 # before this workflow first runs — this environment has no network access to
 # GitHub to cross-check them at authoring time.
 
