@@ -13,7 +13,8 @@ import (
 
 func open(t *testing.T) *DB {
 	t.Helper()
-	d, err := Open(filepath.Join(t.TempDir(), "api.db"))
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "api.db"), filepath.Join(dir, "api-claims.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,27 +31,55 @@ func register(t *testing.T, d *DB, pubkey, certified string) (*Device, deviceid.
 	return dev, result
 }
 
-func TestACertifiedRestoreDisplacesTheSquatterAndRevokesItsTokens(t *testing.T) {
+func TestACertifiedRestoreNeverTakesAnIDClaimedByAnotherKey(t *testing.T) {
 	d := open(t)
-	squatter, _ := register(t, d, "PK-SQUAT", "")
-	if err := d.PutToken(DeviceToken{TokenHash: "h1", DeviceID: squatter.DeviceID, AccountID: "acct", ExpiresAt: 99}); err != nil {
+	holder, _ := register(t, d, "PK-HOLDER", "")
+	other, res := register(t, d, "PK-OTHER", holder.DeviceID)
+	if other.DeviceID == holder.DeviceID || res.Existing || res.Displaced || !protocol.ValidDeviceID(other.DeviceID) {
+		t.Fatalf("a restore of another key's claimed id = %+v %+v", other, res)
+	}
+	if dev, res := register(t, d, "PK-HOLDER", "222222222"); !res.Existing || dev.DeviceID != holder.DeviceID {
+		t.Fatalf("a key that holds an id keeps it: %+v %+v", dev, res)
+	}
+}
+
+func TestARestoreToTheClaimantDisplacesAStaleRowAndRevokesItsTokens(t *testing.T) {
+	d := open(t)
+	const id = "481930275"
+	if _, err := d.claims.Exec(`INSERT INTO device_id_claims (device_id, pubkey) VALUES (?, 'PK-OWNER')`, id); err != nil {
 		t.Fatal(err)
 	}
-	owner, res := register(t, d, "PK-OWNER", squatter.DeviceID)
-	if owner.DeviceID != squatter.DeviceID || owner.Pubkey != "PK-OWNER" || res.Existing || !res.Displaced {
+	if _, err := d.db.Exec(`INSERT INTO devices (device_id, pubkey, created_at) VALUES (?, 'PK-STALE', 1)`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.PutToken(DeviceToken{TokenHash: "h1", DeviceID: id, AccountID: "acct", ExpiresAt: 99}); err != nil {
+		t.Fatal(err)
+	}
+	owner, res := register(t, d, "PK-OWNER", id)
+	if owner.DeviceID != id || owner.Pubkey != "PK-OWNER" || res.Existing || !res.Displaced {
 		t.Fatalf("restore = %+v %+v", owner, res)
 	}
 	if tok, err := d.TokenByHash("h1"); err != nil || !tok.Revoked {
-		t.Fatalf("the squatter's token survived: %+v %v", tok, err)
+		t.Fatalf("the stale row's token survived: %+v %v", tok, err)
 	}
-	if _, err := d.DeviceByPubkey("PK-SQUAT"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("the squatter's record survived: %v", err)
+	if _, err := d.DeviceByPubkey("PK-STALE"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the stale record survived: %v", err)
 	}
-	if dev, res := register(t, d, "PK-OWNER", "222222222"); !res.Existing || dev.DeviceID != owner.DeviceID {
-		t.Fatalf("a key that holds an id keeps it: %+v %+v", dev, res)
+}
+
+func TestAPairIsKnownOnceItHadAMeteredSession(t *testing.T) {
+	d := open(t)
+	if known, err := d.PairKnown("111111111", "222222222"); err != nil || known {
+		t.Fatalf("an unseen pair: %v %v", known, err)
 	}
-	if dev, res := register(t, d, "PK-OTHER", ""); res.Existing || dev.DeviceID == owner.DeviceID || !protocol.ValidDeviceID(dev.DeviceID) {
-		t.Fatalf("a new key without a certificate = %+v %+v", dev, res)
+	if err := d.StartSession(Session{SessionID: "s1", HostDeviceID: "111111111", ControllerDeviceID: "222222222", StartedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if known, err := d.PairKnown("111111111", "222222222"); err != nil || !known {
+		t.Fatalf("a metered pair: %v %v", known, err)
+	}
+	if known, _ := d.PairKnown("222222222", "111111111"); known {
+		t.Fatal("the reverse direction is not the same pair")
 	}
 }
 
@@ -132,7 +161,7 @@ func TestMigrationDropsStoredCredentialsFromIdempotency(t *testing.T) {
 	}
 	raw.Close()
 
-	d, err := Open(path)
+	d, err := Open(path, filepath.Join(filepath.Dir(path), "claims.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

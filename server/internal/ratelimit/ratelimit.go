@@ -46,6 +46,15 @@ func New() *Limiter { return &Limiter{buckets: map[string]*bucket{}} }
 // Take spends one token from every bucket only if every bucket has one;
 // otherwise it spends nothing and returns the longest wait in whole seconds.
 func (l *Limiter) Take(now time.Time, charges ...Charge) (bool, int) {
+	return l.check(now, true, charges)
+}
+
+// Room answers what Take would, without spending anything.
+func (l *Limiter) Room(now time.Time, charges ...Charge) (bool, int) {
+	return l.check(now, false, charges)
+}
+
+func (l *Limiter) check(now time.Time, spend bool, charges []Charge) (bool, int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.evictIdleLocked(now)
@@ -59,8 +68,8 @@ func (l *Limiter) Take(now time.Time, charges ...Charge) (bool, int) {
 			wait = max(wait, max(sec, 1))
 		}
 	}
-	if wait > 0 {
-		return false, wait
+	if wait > 0 || !spend {
+		return wait == 0, wait
 	}
 	for _, b := range buckets {
 		b.tokens--

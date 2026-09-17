@@ -51,6 +51,26 @@ func TestTheSlowestBucketSetsTheWait(t *testing.T) {
 	}
 }
 
+func TestRoomAnswersLikeTakeWithoutSpending(t *testing.T) {
+	l := New()
+	now := time.Unix(1_800_000_000, 0)
+	for i := 0; i < 100; i++ {
+		if ok, _ := l.Room(now, Charge{perMinute, "a"}); !ok {
+			t.Fatalf("Room refused on call %d although nothing was spent", i)
+		}
+	}
+	for {
+		if ok, _ := l.Take(now, Charge{perMinute, "a"}); !ok {
+			break
+		}
+	}
+	take, takeWait := l.Take(now, Charge{perMinute, "a"})
+	room, roomWait := l.Room(now, Charge{perMinute, "a"})
+	if take || room || takeWait != roomWait || roomWait < 1 {
+		t.Fatalf("empty bucket: Take=%v/%d Room=%v/%d", take, takeWait, room, roomWait)
+	}
+}
+
 func TestIdleBucketsAreEvicted(t *testing.T) {
 	l := New()
 	now := time.Unix(1_800_000_000, 0)

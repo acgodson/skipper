@@ -33,10 +33,16 @@ var (
 	ruleConnectCtrlHour = ratelimit.Rule{Name: "connect_ctrl_hour", Limit: protocol.ConnectPerControllerPerHour, Window: time.Hour}
 	ruleConnectHostMin  = ratelimit.Rule{Name: "connect_host_min", Limit: protocol.ConnectPerHostPerMin, Window: time.Minute}
 	ruleConnectHostHour = ratelimit.Rule{Name: "connect_host_hour", Limit: protocol.ConnectPerHostPerHour, Window: time.Hour}
+	ruleConnectPairMin  = ratelimit.Rule{Name: "connect_pair_min", Limit: protocol.ConnectPerPairPerMin, Window: time.Minute}
+	ruleConnectPairHour = ratelimit.Rule{Name: "connect_pair_hour", Limit: protocol.ConnectPerPairPerHour, Window: time.Hour}
 )
 
-// Options.RegistersPerIPPerHour defaults to protocol.RegistersPerIPPerHour; local
-// test rigs that register many devices from one address raise it.
+// KnownPairsMax bounds the in-memory cache of pairs that had a metered session; the durable
+// record is the entitlement backend's.
+const KnownPairsMax = 100000
+
+// Options.RegistersPerIPPerHour and ConnectsPerIPPerMin default to the protocol limits;
+// local test rigs that drive many devices from one address raise them.
 type Options struct {
 	Registry              registry.Registry
 	Entitlement           entitlement.Entitlement
@@ -48,6 +54,7 @@ type Options struct {
 	StunURLs              []string
 	Reports               reports.Options
 	RegistersPerIPPerHour int
+	ConnectsPerIPPerMin   int
 }
 
 type Hub struct {
@@ -58,14 +65,16 @@ type Hub struct {
 	nextID       uint64
 	limiter      *ratelimit.Limiter
 	registerRule ratelimit.Rule
+	connectRule  ratelimit.Rule
 	reports      *reports.Queue
 
-	clients  map[uint64]*Client
-	byDevice map[string]*Client
-	presence map[string]*presenceState
-	watchers map[string]map[uint64]*Client
-	sessions map[string]*Session
-	devSess  map[string]string
+	clients    map[uint64]*Client
+	byDevice   map[string]*Client
+	presence   map[string]*presenceState
+	watchers   map[string]map[uint64]*Client
+	sessions   map[string]*Session
+	devSess    map[string]string
+	knownPairs map[string]struct{}
 }
 
 type presenceState struct {
@@ -108,18 +117,23 @@ func New(o Options) *Hub {
 	if o.RegistersPerIPPerHour <= 0 {
 		o.RegistersPerIPPerHour = protocol.RegistersPerIPPerHour
 	}
+	if o.ConnectsPerIPPerMin <= 0 {
+		o.ConnectsPerIPPerMin = protocol.ConnectPerIPPerMin
+	}
 	h := &Hub{
 		opt:          o,
 		clock:        o.Clock,
 		log:          o.Logger,
 		limiter:      ratelimit.New(),
 		registerRule: ratelimit.Rule{Name: "register_ip", Limit: float64(o.RegistersPerIPPerHour), Window: time.Hour},
+		connectRule:  ratelimit.Rule{Name: "connect_ip_min", Limit: float64(o.ConnectsPerIPPerMin), Window: time.Minute},
 		clients:      map[uint64]*Client{},
 		byDevice:     map[string]*Client{},
 		presence:     map[string]*presenceState{},
 		watchers:     map[string]map[uint64]*Client{},
 		sessions:     map[string]*Session{},
 		devSess:      map[string]string{},
+		knownPairs:   map[string]struct{}{},
 	}
 	if o.Entitlement != nil {
 		ro := o.Reports
@@ -369,9 +383,52 @@ func (h *Hub) sendEntitlementErrLocked(c *Client, re, reason, msg string) {
 
 // takeLocked charges the limiter and answers error{rate_limited} when it refuses.
 func (h *Hub) takeLocked(c *Client, re string, charges ...ratelimit.Charge) bool {
-	ok, wait := h.limiter.Take(h.clock.Now(), charges...)
+	return h.limitedLocked(c, re, h.limiter.Take, charges)
+}
+
+// roomLocked is takeLocked without the charge.
+func (h *Hub) roomLocked(c *Client, re string, charges ...ratelimit.Charge) bool {
+	return h.limitedLocked(c, re, h.limiter.Room, charges)
+}
+
+func (h *Hub) limitedLocked(c *Client, re string, check func(time.Time, ...ratelimit.Charge) (bool, int), charges []ratelimit.Charge) bool {
+	ok, wait := check(h.clock.Now(), charges...)
 	if !ok {
 		h.sendErrLocked(c, re, protocol.ErrRateLimited, "too many attempts; retry later", wait)
 	}
 	return ok
+}
+
+func pairKey(hostDeviceID, controllerDeviceID string) string {
+	return hostDeviceID + "|" + controllerDeviceID
+}
+
+func (h *Hub) rememberPairLocked(hostDeviceID, controllerDeviceID string) {
+	if len(h.knownPairs) >= KnownPairsMax {
+		h.knownPairs = map[string]struct{}{}
+	}
+	h.knownPairs[pairKey(hostDeviceID, controllerDeviceID)] = struct{}{}
+}
+
+// knownPair consults the in-memory cache, then the durable record; a failed lookup counts as unknown.
+func (h *Hub) knownPair(hostDeviceID, controllerDeviceID string) bool {
+	h.mu.Lock()
+	_, cached := h.knownPairs[pairKey(hostDeviceID, controllerDeviceID)]
+	h.mu.Unlock()
+	if cached {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), entitlement.CheckTimeout)
+	defer cancel()
+	known, err := h.opt.Entitlement.KnownPair(ctx, hostDeviceID, controllerDeviceID)
+	if err != nil {
+		h.log.Warn("known-pair lookup failed; charging the host budget", "host", hostDeviceID, "err", err)
+		return false
+	}
+	if known {
+		h.mu.Lock()
+		h.rememberPairLocked(hostDeviceID, controllerDeviceID)
+		h.mu.Unlock()
+	}
+	return known
 }

@@ -232,13 +232,23 @@ pub struct ConnectOk {
         skip_serializing_if = "String::is_empty"
     )]
     pub host_pubkey: String,
-    /// This session's complete ICE list; TURN credentials are scoped to the session.
+    /// v5: STUN only; TURN for the session arrives in [`IceServers`] once it is metered.
     #[serde(
         rename = "iceServers",
         default,
         deserialize_with = "null_as_default",
         skip_serializing_if = "Vec::is_empty"
     )]
+    pub ice_servers: Vec<IceServer>,
+}
+
+/// v5 push `ice_servers`, sent to both peers when the host's first `sdp` starts metering:
+/// the session's complete ICE list, TURN included. Drop it when the session ends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IceServers {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    #[serde(rename = "iceServers", deserialize_with = "null_as_default")]
     pub ice_servers: Vec<IceServer>,
 }
 
@@ -290,7 +300,7 @@ pub struct RenewOk {
     pub expires_at: i64,
     #[serde(rename = "ttlSec")]
     pub ttl_sec: i32,
-    /// Fresh session-scoped ICE list; replaces the one from `connect_ok`/`session_start`.
+    /// v5: present only for a metered session, with fresh TURN credentials; replaces the `ice_servers` list.
     #[serde(
         rename = "iceServers",
         default,
@@ -308,6 +318,7 @@ pub struct PeerState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Sdp {
     #[serde(rename = "sessionId")]
     pub session_id: String,
@@ -335,6 +346,9 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
+/// A lenient view of `ice` in which an absent `sdpMLineIndex` reads as 0; the v5 wire type is
+/// [`crate::relay::Ice`].
+/// TODO: move the parked Windows port to `relay::Ice` and delete this type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ice {
     #[serde(rename = "sessionId")]
@@ -368,9 +382,10 @@ pub struct RefreshCodeOk {
     pub updated_at: i64,
 }
 
-/// Relayed by the server exactly as `sdp` and `ice`: validated for
-/// attachment, routed verbatim, never parsed, stored or logged.
+/// v5: decoded strictly and re-encoded by the server like `sdp` and `ice`; the payload is
+/// never parsed, stored or logged. `step` is 1..=3 and anything else is refused at decode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Pake {
     #[serde(rename = "sessionId")]
     pub session_id: String,

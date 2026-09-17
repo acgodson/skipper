@@ -12,7 +12,7 @@ import (
 )
 
 // Version is the only protocol version this build speaks.
-const Version = 4
+const Version = 5
 
 const (
 	HeartbeatSec       = 15
@@ -23,7 +23,7 @@ const (
 	AuthTimeoutSec     = 20
 	NonceTTLSec        = 20
 	MaxWatches         = 8
-	TurnCredTTLSec     = 2 * 60 * 60
+	TurnCredTTLSec     = 10 * 60
 )
 
 // Signaling rate limits (PROTOCOL.md §3.3); exceeding one answers error{rate_limited, retryAfterSec}.
@@ -32,6 +32,9 @@ const (
 	ConnectPerControllerPerHour = 60
 	ConnectPerHostPerMin        = 30
 	ConnectPerHostPerHour       = 300
+	ConnectPerPairPerMin        = 6
+	ConnectPerPairPerHour       = 60
+	ConnectPerIPPerMin          = 30
 	RegistersPerSocket          = 1
 	RegistersPerIPPerHour       = 20
 )
@@ -73,11 +76,9 @@ const (
 	TypeRefreshCode   = "refresh_code"
 	TypeRefreshCodeOK = "refresh_code_ok"
 	TypePake          = "pake"
+	TypeICEServers    = "ice_servers"
 	TypeError         = "error"
 )
-
-// MaxPakePayloadBytes caps the base64 text of a single Pake.Payload.
-const MaxPakePayloadBytes = 4096
 
 const (
 	RoleHost       = "host"
@@ -226,7 +227,7 @@ type ICEServer struct {
 	ExpiresAt  int64    `json:"expiresAt,omitempty"` // unix ms
 }
 
-// HelloOK.ICEServers never carries credentials; TURN arrives per session in connect_ok, session_start and renew_ok.
+// HelloOK.ICEServers never carries credentials; TURN arrives per metered session in ice_servers and renew_ok.
 type HelloOK struct {
 	DeviceID           string      `json:"deviceId"`
 	ServerTime         int64       `json:"serverTime"`
@@ -280,7 +281,7 @@ type ConnectOK struct {
 	ControllerDeviceID string `json:"controllerDeviceId"`
 	// HostPubkey is the host's registered pubkey, base64 DER SPKI; it is public material, not a secret.
 	HostPubkey string `json:"hostPubkey,omitempty"`
-	// ICEServers is the complete list for this session, including TURN credentials scoped to it.
+	// ICEServers is STUN only; TURN for the session arrives in ice_servers once it is metered.
 	ICEServers []ICEServer `json:"iceServers,omitempty"`
 }
 
@@ -308,6 +309,7 @@ type Renew struct {
 	SessionToken string `json:"sessionToken"`
 }
 
+// RenewOK.ICEServers is present only for a metered session and then carries fresh TURN credentials.
 type RenewOK struct {
 	SessionID    string      `json:"sessionId"`
 	SessionToken string      `json:"sessionToken"`
@@ -316,33 +318,15 @@ type RenewOK struct {
 	ICEServers   []ICEServer `json:"iceServers,omitempty"`
 }
 
+// ICEServers is pushed to both peers when a session becomes metered: the complete list, TURN included.
+type ICEServers struct {
+	SessionID  string      `json:"sessionId"`
+	ICEServers []ICEServer `json:"iceServers"`
+}
+
 type PeerState struct {
 	SessionID string `json:"sessionId"`
 	Attached  bool   `json:"attached"`
-}
-
-// SDP is relayed verbatim; the server never parses or stores it.
-type SDP struct {
-	SessionID string `json:"sessionId"`
-	SDPType   string `json:"sdpType"` // offer | answer | pranswer | rollback
-	SDP       string `json:"sdp"`
-	Restart   bool   `json:"restart,omitempty"`
-	// FP is every a=fingerprint value in SDP, de-duplicated, sorted, joined with "\n".
-	FP string `json:"fp,omitempty"`
-	// Pubkey is the sender's device key, base64 DER SPKI.
-	Pubkey string `json:"pubkey,omitempty"`
-	// Sig is base64 DER ECDSA-SHA256 over SigningMessage(PurposeSDP, SessionID+"|"+SDPType+"|"+FP).
-	Sig string `json:"sig,omitempty"`
-	// MAC (v3) is base64 HMAC-SHA256 over the same bytes, keyed by the PAKE-derived sdpMacKey.
-	MAC string `json:"mac,omitempty"`
-}
-
-// ICE is relayed verbatim.
-type ICE struct {
-	SessionID     string `json:"sessionId"`
-	Candidate     string `json:"candidate"` // "" = end of candidates
-	SDPMid        string `json:"sdpMid,omitempty"`
-	SDPMLineIndex int    `json:"sdpMLineIndex,omitempty"`
 }
 
 type Bye struct {
@@ -356,13 +340,6 @@ type RefreshCode CodeVerifier
 type RefreshCodeOK struct {
 	DeviceID  string `json:"deviceId"`
 	UpdatedAt int64  `json:"updatedAt"`
-}
-
-// Pake.Payload is base64 of the opaque SPAKE2 message; the server never parses, stores or logs it.
-type Pake struct {
-	SessionID string `json:"sessionId"`
-	Step      int    `json:"step"`
-	Payload   string `json:"payload"`
 }
 
 type Error struct {

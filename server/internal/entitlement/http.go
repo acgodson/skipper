@@ -66,6 +66,24 @@ func decideFrom(ent protocol.Entitlement) Decision {
 	}
 }
 
+func (h *HTTP) KnownPair(ctx context.Context, hostDeviceID, controllerDeviceID string) (bool, error) {
+	if !protocol.ValidDeviceID(hostDeviceID) || !protocol.ValidDeviceID(controllerDeviceID) {
+		return false, errors.New("device ids must be 9 digits")
+	}
+	resp, err := h.api.Do(ctx, http.MethodGet, protocol.InternalPairPath(hostDeviceID, controllerDeviceID), nil)
+	if err != nil {
+		return false, err
+	}
+	if !resp.OK() {
+		return false, fmt.Errorf("internal pair: unexpected status %d", resp.Status)
+	}
+	var pair protocol.InternalPair
+	if err := resp.Decode(&pair); err != nil {
+		return false, err
+	}
+	return pair.Known, nil
+}
+
 func (h *HTTP) SessionStarted(ctx context.Context, r protocol.SessionStartReport) error {
 	return h.post(ctx, protocol.PathInternalSessionStart, r)
 }

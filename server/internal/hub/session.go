@@ -9,18 +9,21 @@ import (
 	"rcprotocol"
 )
 
+// side.unmeteredICE and unmeteredSDP count what this side had relayed before metering began.
 type side struct {
-	deviceID string
-	pubkey   string
-	conn     *Client
-	nonce    string
-	expiry   time.Time
-	epoch    int64
+	deviceID     string
+	pubkey       string
+	conn         *Client
+	nonce        string
+	expiry       time.Time
+	epoch        int64
+	unmeteredICE int
+	unmeteredSDP int
 }
 
 // Session.metered turns true when the host relays its first sdp, which it sends
 // only after the access code was proved and the owner consented; only then is
-// the session reported to rc-api and billed.
+// the session reported to rc-api and billed, and only then does it get TURN.
 type Session struct {
 	ID        string
 	State     string
@@ -29,6 +32,7 @@ type Session struct {
 	CreatedAt time.Time
 	metered   bool
 	meteredAt time.Time
+	pakeSent  [protocol.PakeStepLast + 1]bool
 }
 
 func newSessionID() (string, error) {
@@ -57,6 +61,45 @@ func (s *Session) peerOf(deviceID string) *side {
 		return &s.Host
 	}
 	return nil
+}
+
+// refuseRelay names why the session may not relay msg from sender now, or returns "".
+// Steps 1 and 3 of pake are the controller's and step 2 the host's, each once and in order.
+func (s *Session) refuseRelay(msg protocol.Relay, sender *side) string {
+	fromHost := sender == &s.Host
+	switch m := msg.(type) {
+	case protocol.Pake:
+		switch {
+		case fromHost != (m.Step == 2):
+			return "this pake step belongs to the other side"
+		case s.pakeSent[m.Step] || m.Step > protocol.PakeStepFirst && !s.pakeSent[m.Step-1]:
+			return "pake steps are relayed once each, in order"
+		}
+	case protocol.ICE:
+		if !s.metered && sender.unmeteredICE >= protocol.MaxUnmeteredICEPerSide {
+			return "too many candidates before the session is metered"
+		}
+	case protocol.SDP:
+		if !s.metered && !fromHost && sender.unmeteredSDP >= protocol.MaxUnmeteredSDPFromCtrl {
+			return "too many descriptions before the session is metered"
+		}
+	}
+	return ""
+}
+
+func (s *Session) recordRelay(msg protocol.Relay, sender *side) {
+	switch m := msg.(type) {
+	case protocol.Pake:
+		s.pakeSent[m.Step] = true
+	case protocol.ICE:
+		if !s.metered {
+			sender.unmeteredICE++
+		}
+	case protocol.SDP:
+		if !s.metered {
+			sender.unmeteredSDP++
+		}
+	}
 }
 
 func (s *Session) roleOf(deviceID string) string {

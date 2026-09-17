@@ -1,4 +1,4 @@
-use rc_proto::{ctrl, envelope::Envelope, signaling as sig};
+use rc_proto::{ctrl, envelope::Envelope, relay, signaling as sig};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -10,6 +10,31 @@ struct VectorFile {
     #[serde(rename = "invalidByeReasons", default)]
     invalid_bye_reasons: Vec<String>,
     cases: Vec<Case>,
+    #[serde(default)]
+    relay: RelayVectors,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct RelayVectors {
+    accepted: Vec<RelayAccepted>,
+    rejected: Vec<RelayRejected>,
+}
+
+#[derive(serde::Deserialize)]
+struct RelayAccepted {
+    name: String,
+    #[serde(rename = "type")]
+    msg_type: String,
+    input: String,
+    output: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RelayRejected {
+    name: String,
+    #[serde(rename = "type")]
+    msg_type: String,
+    input: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -131,7 +156,8 @@ fn every_go_vector_round_trips_through_the_rust_types() {
             m::RENEW_OK => roundtrip::<sig::RenewOk>(case, &env),
             m::PEER_STATE => roundtrip::<sig::PeerState>(case, &env),
             m::SDP => roundtrip::<sig::Sdp>(case, &env),
-            m::ICE => roundtrip::<sig::Ice>(case, &env),
+            m::ICE => roundtrip::<relay::Ice>(case, &env),
+            m::ICE_SERVERS => roundtrip::<sig::IceServers>(case, &env),
             m::BYE => roundtrip::<sig::Bye>(case, &env),
             m::REFRESH_CODE => roundtrip::<sig::CodeVerifier>(case, &env),
             m::REFRESH_CODE_OK => roundtrip::<sig::RefreshCodeOk>(case, &env),
@@ -171,6 +197,8 @@ fn every_go_vector_round_trips_through_the_rust_types() {
         "signaling/error",
         "signaling/ice",
         "signaling/sdp",
+        "signaling/ice_servers",
+        "signaling/pake",
         "ctrl/key_down",
         "ctrl/scroll",
         "ctrl/gesture",
@@ -224,30 +252,114 @@ fn session_ids_are_32_lowercase_hex() {
 }
 
 #[test]
-fn v4_session_messages_carry_session_scoped_ice_servers() {
+fn v5_turn_arrives_only_in_ice_servers_and_metered_renewals() {
     let file: VectorFile = serde_json::from_str(VECTORS).unwrap();
     let find = |name: &str| {
         let case = file.cases.iter().find(|c| c.name == name).unwrap();
         Envelope::decode(&serde_json::to_vec(&case.frame).unwrap()).unwrap()
     };
+    let no_credentials = |servers: &[sig::IceServer]| {
+        servers
+            .iter()
+            .all(|s| s.credential.is_empty() && s.username.is_empty())
+    };
     let ok: sig::ConnectOk = find("connect_ok_with_ice_servers").payload_as().unwrap();
-    let turn = ok
+    assert!(!ok.ice_servers.is_empty() && no_credentials(&ok.ice_servers));
+    let start: sig::SessionStart = find("session_start").payload_as().unwrap();
+    assert!(no_credentials(&start.session.ice_servers));
+
+    let env = find("ice_servers");
+    let push: sig::IceServers = env.payload_as().unwrap();
+    let turn = push
         .ice_servers
         .iter()
         .find(|s| !s.credential.is_empty())
         .unwrap();
-    assert!(turn.username.ends_with(&format!(":{}", ok.session_id)));
-    let start: sig::SessionStart = find("session_start").payload_as().unwrap();
-    assert_eq!(start.session.ice_servers, ok.ice_servers);
+    assert!(turn.username.ends_with(&format!(":{}", push.session_id)));
+    assert_eq!(
+        turn.expires_at - env.ts,
+        i64::from(rc_proto::consts::tunable::TURN_CRED_TTL_SEC) * 1000
+    );
     let renew: sig::RenewOk = find("renew_ok").payload_as().unwrap();
-    assert!(!renew.ice_servers.is_empty());
+    assert_eq!(renew.ice_servers, push.ice_servers);
+    let unmetered: sig::RenewOk = find("renew_ok_no_ice_servers").payload_as().unwrap();
+    assert!(unmetered.ice_servers.is_empty());
+
     let hello: sig::HelloOk = find("hello_ok_with_active_session").payload_as().unwrap();
-    assert!(hello.ice_servers.iter().all(|s| s.credential.is_empty()));
+    assert!(no_credentials(&hello.ice_servers));
     assert!(!hello.id_cert.is_empty());
     let registered: sig::RegisterOk = find("register_ok_existing").payload_as().unwrap();
     assert!(!registered.id_cert.is_empty());
     let register: sig::Register = find("register_with_id_cert").payload_as().unwrap();
     assert!(!register.id_cert.is_empty() && !register.preferred_device_id.is_empty());
+}
+
+#[test]
+fn relay_vectors_decode_strictly_and_reencode_exactly_as_go() {
+    let file: VectorFile = serde_json::from_str(VECTORS).unwrap();
+    assert!(!file.relay.accepted.is_empty() && file.relay.rejected.len() >= 30);
+    for case in &file.relay.accepted {
+        let decoded = relay::decode(&case.msg_type, &case.input)
+            .unwrap_or_else(|e| panic!("{}: refused: {e}", case.name));
+        assert_eq!(decoded.encode(), case.output, "{}", case.name);
+    }
+    for case in &file.relay.rejected {
+        assert!(
+            relay::decode(&case.msg_type, &case.input).is_err(),
+            "{}: accepted {:.80}",
+            case.name,
+            case.input
+        );
+    }
+    use rc_proto::consts::msg as m;
+    let mut relayed = 0;
+    for case in &file.cases {
+        if ![m::SDP, m::ICE, m::PAKE].contains(&case.msg_type.as_str()) {
+            continue;
+        }
+        relayed += 1;
+        let payload = serde_json::to_string(&case.frame["payload"]).unwrap();
+        let decoded = relay::decode(&case.msg_type, &payload)
+            .unwrap_or_else(|e| panic!("{}: refused: {e}", case.name));
+        let reencoded: Value = serde_json::from_str(&decoded.encode()).unwrap();
+        assert_eq!(reencoded, case.frame["payload"], "{}", case.name);
+    }
+    assert!(relayed >= 8);
+}
+
+#[test]
+fn ice_candidate_grammar_matches_go() {
+    for ok in [
+        "candidate:1 1 udp 2130706431 192.0.2.1 54321 typ host",
+        "candidate:a+/Z 256 UDP 0 ::1 0 typ relay raddr 198.51.100.1 rport 3478",
+        "candidate:1 1 tcp 1 3F1C6E0A-9B2D-4C5E-8F7A-1D2E3F4A5B6C.local 9 typ host tcptype passive",
+    ] {
+        assert!(relay::valid_ice_candidate(ok), "{ok}");
+    }
+    let too_many = format!(
+        "candidate:1 1 udp 1 192.0.2.1 1 typ host{}",
+        " a b".repeat(rc_proto::consts::relay::MAX_CANDIDATE_EXTENSIONS + 1)
+    );
+    let long_foundation = format!("candidate:{} 1 udp 1 192.0.2.1 1 typ host", "a".repeat(33));
+    for bad in [
+        "",
+        "candidate:",
+        "candidate:1 0 udp 1 192.0.2.1 1 typ host",
+        "candidate:1 257 udp 1 192.0.2.1 1 typ host",
+        "candidate:1 1 sctp 1 192.0.2.1 1 typ host",
+        "candidate:1 1 udp 4294967296 192.0.2.1 1 typ host",
+        "candidate:1 1 udp 1 192.0.2.1 65536 typ host",
+        "candidate:1 1 udp 1 192.0.2.1 1 type host",
+        "candidate:1 1 udp 1 fe80::1%en0 1 typ host",
+        "candidate:1 1 udp 1 01.2.3.4 1 typ host",
+        "candidate:1 1 udp 1 3f1c6e0a9b2d4c5e8f7a1d2e3f4a5b6c0000.local 1 typ host",
+        "candidate:1 1 udp 1 192.0.2.1 1 typ host Generation 0",
+        "candidate:1 1 udp 1 192.0.2.1 1 typ host ufrag a\tb",
+        long_foundation.as_str(),
+        too_many.as_str(),
+    ] {
+        assert!(!relay::valid_ice_candidate(bad), "{bad:?}");
+    }
 }
 
 #[test]

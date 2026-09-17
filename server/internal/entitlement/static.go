@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	protocol "rcprotocol"
 )
@@ -12,17 +13,25 @@ const DevDenyLabel = "entitlement-denied"
 
 type LabelFunc func(deviceID string) string
 
+// PairLedger is the durable record of pairs that had a metered session.
+type PairLedger interface {
+	RecordPair(hostDeviceID, controllerDeviceID string, at time.Time) error
+	KnownPair(hostDeviceID, controllerDeviceID string) (bool, error)
+}
+
 type Static struct {
 	denyIDs    map[string]string
 	denyLabels map[string]string
 	labelOf    LabelFunc
+	pairs      PairLedger
 }
 
-func NewStatic(spec string, labelOf LabelFunc) (*Static, error) {
+func NewStatic(spec string, labelOf LabelFunc, pairs PairLedger) (*Static, error) {
 	s := &Static{
 		denyIDs:    map[string]string{},
 		denyLabels: map[string]string{},
 		labelOf:    labelOf,
+		pairs:      pairs,
 	}
 	if strings.TrimSpace(spec) == "" {
 		s.denyLabels[DevDenyLabel] = protocol.EntitlementTrialExpired
@@ -67,6 +76,12 @@ func (s *Static) Check(_ context.Context, hostDeviceID string) (Decision, error)
 	return Allowed, nil
 }
 
-func (s *Static) SessionStarted(context.Context, protocol.SessionStartReport) error { return nil }
+func (s *Static) KnownPair(_ context.Context, hostDeviceID, controllerDeviceID string) (bool, error) {
+	return s.pairs.KnownPair(hostDeviceID, controllerDeviceID)
+}
+
+func (s *Static) SessionStarted(_ context.Context, r protocol.SessionStartReport) error {
+	return s.pairs.RecordPair(r.HostDeviceID, r.ControllerDeviceID, time.UnixMilli(r.StartedAt))
+}
 
 func (s *Static) SessionStopped(context.Context, protocol.SessionStopReport) error { return nil }

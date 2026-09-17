@@ -130,9 +130,17 @@ func (c *client) send(typ string, payload any) {
 	if err != nil {
 		fatal("%s: encode %s: %v", c.name, typ, err)
 	}
-	if err := c.ws.WriteMessage(websocket.TextMessage, b); err != nil {
-		fatal("%s: write %s: %v", c.name, typ, err)
+	c.sendRaw(string(b))
+}
+
+func (c *client) sendRaw(frame string) {
+	if err := c.ws.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+		fatal("%s: write: %v", c.name, err)
 	}
+}
+
+func relayFrame(msgType, payload string) string {
+	return fmt.Sprintf(`{"v":%d,"type":%q,"id":"raw","payload":%s}`, protocol.Version, msgType, payload)
 }
 
 type env struct{ protocol.Envelope }
@@ -391,9 +399,25 @@ func main() {
 	check("the host is told the controller's key, which its guess policy is keyed on",
 		start.ControllerPubkey == ctrl.pub,
 		fmt.Sprintf("session_start controllerPubkey=%q", start.ControllerPubkey))
-	check("connect_ok and session_start carry TURN credentials scoped to the session",
-		sessionTURN(conn.ICEServers, conn.SessionID) && sessionTURN(start.ICEServers, conn.SessionID),
+	check("connect_ok and session_start carry STUN only, no TURN before metering",
+		len(conn.ICEServers) > 0 && !anyCredential(conn.ICEServers) && !anyCredential(start.ICEServers),
 		fmt.Sprintf("connect_ok=%+v session_start=%+v", conn.ICEServers, start.ICEServers))
+
+	ctrl.sendRaw(relayFrame(protocol.TypeICE, `{"sessionId":"ffffffffffffffffffffffffffffffff","SESSIONID":"`+ctrl.session+`","candidate":""}`))
+	e, _ = ctrl.wait(protocol.TypeError)
+	caseVariant := decode[protocol.Error](e)
+	ctrl.sendRaw(relayFrame(protocol.TypeICE, `{"sessionId":"`+ctrl.session+`","candidate":"","sdp":"v=0 smuggled","sdpType":"offer"}`))
+	e, _ = ctrl.wait(protocol.TypeError)
+	smuggled := decode[protocol.Error](e)
+	ctrl.sendRaw(relayFrame(protocol.TypePake, `{"sessionId":"`+ctrl.session+`","step":4294967296,"payload":"cA=="}`))
+	e, _ = ctrl.wait(protocol.TypeError)
+	hugeStep := decode[protocol.Error](e)
+	_, hostSawICE := host.buffered(protocol.TypeICE)
+	_, hostSawPake := host.buffered(protocol.TypePake)
+	check("relayed payloads outside their exact schema are refused and never relayed",
+		caseVariant.Code == protocol.ErrBadRequest && smuggled.Code == protocol.ErrBadRequest &&
+			hugeStep.Code == protocol.ErrBadRequest && !hostSawICE && !hostSawPake,
+		fmt.Sprintf("case=%+v smuggled=%+v step=%+v relayedICE=%v relayedPake=%v", caseVariant, smuggled, hugeStep, hostSawICE, hostSawPake))
 
 	e, er = ctrl.request(protocol.TypeBye, protocol.Bye{SessionID: ctrl.session, Reason: strings.Repeat("A", 70*1024)}, protocol.TypeBye)
 	_, hostSawBye := host.buffered(protocol.TypeBye)
@@ -422,10 +446,16 @@ func main() {
 
 	const answerSDP = offerSDP + "a=recvonly\r\n"
 	host.send(protocol.TypeSDP, protocol.SDP{SessionID: host.session, SDPType: "answer", SDP: answerSDP})
+	ctrlTURN := decode[protocol.ICEServers](ctrl.mustGet(protocol.TypeICEServers))
 	ans := decode[protocol.SDP](ctrl.mustGet(protocol.TypeSDP))
 	check("SDP answer relayed to the controller verbatim",
 		ans.SDP == answerSDP && ans.SDPType == "answer",
 		fmt.Sprintf("got %+v", ans))
+	hostTURN := decode[protocol.ICEServers](host.mustGet(protocol.TypeICEServers))
+	check("the host's first sdp pushes session TURN (ice_servers) to both peers",
+		ctrlTURN.SessionID == ctrl.session && sessionTURN(ctrlTURN.ICEServers, ctrl.session) &&
+			sessionTURN(hostTURN.ICEServers, ctrl.session),
+		fmt.Sprintf("controller=%+v host=%+v", ctrlTURN, hostTURN))
 
 	cand := "candidate:1 1 udp 2113937151 192.0.2.1 54321 typ host"
 	ctrl.send(protocol.TypeICE, protocol.ICE{SessionID: ctrl.session, Candidate: cand, SDPMid: "0"})
@@ -596,12 +626,12 @@ func main() {
 	burst.register("Smoke Burst")
 	burst.hello(protocol.RoleController)
 	var limited protocol.Error
-	for i := 0; i <= protocol.ConnectPerControllerPerMin && limited.Code == ""; i++ {
+	for i := 0; i <= protocol.ConnectPerIPPerMin && limited.Code == ""; i++ {
 		if _, er := burst.request(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: "123456789"}, protocol.TypeConnectOK); er.Code == protocol.ErrRateLimited {
 			limited = er
 		}
 	}
-	check("connect_req bursts are refused with rate_limited and retryAfterSec",
+	check("connect_req bursts from one address are refused with rate_limited and retryAfterSec",
 		limited.Code == protocol.ErrRateLimited && limited.RetryAfterSec > 0, fmt.Sprintf("got %+v", limited))
 	burst.hangUp()
 

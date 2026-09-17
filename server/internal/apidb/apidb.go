@@ -2,7 +2,7 @@
 // device tokens, session accounting, the append-only credit ledger, gifts and
 // the app release table the updater reads.
 // It holds no raw hardware id, no plaintext device token or link code (only their
-// SHA-256), and no session content.
+// SHA-256), and no session content. Device-id claims live in a separate database file.
 package apidb
 
 import (
@@ -11,13 +11,11 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"rc-signal/internal/deviceid"
+	"rc-signal/internal/sqlitex"
 	protocol "rcprotocol"
 )
 
@@ -140,7 +138,8 @@ type Idempotent struct {
 }
 
 type DB struct {
-	db *sql.DB
+	db     *sql.DB
+	claims *sql.DB
 }
 
 const schema = `
@@ -209,6 +208,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_host ON sessions(host_device_id);
 CREATE INDEX IF NOT EXISTS sessions_controller ON sessions(controller_device_id);
+CREATE INDEX IF NOT EXISTS sessions_pair ON sessions(host_device_id, controller_device_id);
 CREATE TABLE IF NOT EXISTS ledger (
   entry_id            TEXT PRIMARY KEY,
   account_id          TEXT NOT NULL,
@@ -262,35 +262,23 @@ CREATE TABLE IF NOT EXISTS releases (
 );
 CREATE INDEX IF NOT EXISTS releases_latest ON releases(platform, arch, channel, published_at);`
 
-func Open(path string) (*DB, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
+// Open opens the API database at path and the device-id claims at claimsPath, which the
+// operator keeps and backs up separately and never resets together with path (API.md §6.1).
+func Open(path, claimsPath string) (*DB, error) {
+	db, err := sqlitex.Open(path, schema)
 	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	for _, p := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA foreign_keys=ON",
-	} {
-		if _, err := db.Exec(p); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("%s: %w", p, err)
-		}
-	}
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
 		return nil, err
 	}
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}
-	if _, err := db.Exec(deviceid.ClaimsSchema); err != nil {
+	claims, err := deviceid.OpenClaims(claimsPath, db)
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	return &DB{db: db}, nil
+	return &DB{db: db, claims: claims}, nil
 }
 
 // credentialScopes are the idempotency scopes whose stored answers once held a
@@ -327,7 +315,7 @@ func addColumnIfMissing(db *sql.DB, table, column, decl string) (bool, error) {
 	return err == nil, err
 }
 
-func (d *DB) Close() error { return d.db.Close() }
+func (d *DB) Close() error { return errors.Join(d.db.Close(), d.claims.Close()) }
 
 func NewID(prefix string) string {
 	b := make([]byte, 16)
@@ -437,7 +425,7 @@ func (d *DB) RegisterDevice(dev Device, certifiedID string) (*Device, deviceid.R
 		return nil, deviceid.Result{}, errors.New("a device needs a public key")
 	}
 	ledger := deviceid.SQL{
-		DB: d.db,
+		DB: d.db, Claims: d.claims,
 		Insert: func(tx *sql.Tx, id string) error {
 			_, err := tx.Exec(`INSERT INTO devices
  (device_id, account_id, label, platform, pubkey, hardware_hash, created_at, linked_at, last_seen, trial_ends_at, unlinked)
@@ -722,6 +710,12 @@ func (d *DB) StopSession(id string, endedAt int64, relayUsed bool, bytesRelayed 
 		return ErrNotFound
 	}
 	return nil
+}
+
+// PairKnown reports whether the controller has had a metered session with the host.
+func (d *DB) PairKnown(hostDeviceID, controllerDeviceID string) (bool, error) {
+	return d.exists(`SELECT COUNT(1) FROM (SELECT 1 FROM sessions WHERE host_device_id=? AND controller_device_id=? LIMIT 1)`,
+		hostDeviceID, controllerDeviceID)
 }
 
 // OpenSessionsForAccount counts live sessions the account holds through any host

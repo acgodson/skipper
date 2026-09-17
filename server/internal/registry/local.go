@@ -22,12 +22,15 @@ func NewLocal(st *store.Store, clock clockx.Clock, authority *idcert.Authority) 
 	return &Local{store: st, clock: clock, authority: authority}
 }
 
+func device(d *store.Device) Device {
+	return Device{DeviceID: d.DeviceID, Pubkey: d.Pubkey, CodeEpoch: d.CodeEpoch}
+}
+
 func (l *Local) certified(d *store.Device) (Device, error) {
+	dev := device(d)
 	cert, err := l.authority.Issue(d.DeviceID, d.Pubkey)
-	if err != nil {
-		return Device{}, err
-	}
-	return Device{DeviceID: d.DeviceID, Pubkey: d.Pubkey, CodeEpoch: d.CodeEpoch, IDCert: cert}, nil
+	dev.IDCert = cert
+	return dev, err
 }
 
 func mapStoreErr(err error) error {
@@ -51,6 +54,17 @@ func (l *Local) Lookup(_ context.Context, deviceID string) (Device, error) {
 	d, err := l.store.GetDevice(deviceID)
 	if err != nil {
 		return Device{}, mapStoreErr(err)
+	}
+	return device(d), nil
+}
+
+func (l *Local) Certify(_ context.Context, deviceID, pubkey string) (Device, error) {
+	d, err := l.store.GetDevice(deviceID)
+	if err != nil {
+		return Device{}, mapStoreErr(err)
+	}
+	if d.Pubkey != pubkey {
+		return Device{}, ErrNotFound
 	}
 	return l.certified(d)
 }

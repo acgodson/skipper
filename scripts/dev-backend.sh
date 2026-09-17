@@ -120,6 +120,7 @@ echo "== starting rc-api on $API_URL (dev identity provider; internal surface on
   -listen "127.0.0.1:$API_PORT" \
   -internal-listen "127.0.0.1:$API_INTERNAL_PORT" \
   -db "$DATA/rc-api.db" \
+  -claims-db "$DATA/rc-api-claims.db" \
   -idp dev \
   -internal-token "$INTERNAL_TOKEN" \
   -id-cert-key-file "$ID_CERT_KEY" \
@@ -143,6 +144,7 @@ echo "== starting rc-signal on $SIGNAL_URL (device registry and entitlement from
   -internal-token "$INTERNAL_TOKEN" \
   -trusted-proxies "127.0.0.1/32" \
   -register-per-ip-hour "${RC_DEV_REGISTER_PER_IP_HOUR:-1000}" \
+  -connect-per-ip-min "${RC_DEV_CONNECT_PER_IP_MIN:-1000}" \
   -turn-secret-file "$TURN_SECRET_FILE" \
   -turn-urls "${RC_TURN_URLS:-turn:198.51.100.7:3478?transport=udp}" \
   -log-level "${RC_DEV_LOG_LEVEL:-info}" \
@@ -160,7 +162,7 @@ Backend is up. Point the app (or scripts/test-*.sh) at it with:
 The app derives ws://127.0.0.1:$API_PORT/ws, which rc-api passes through to rc-signal.
 rc-signal:     $SIGNAL_URL (device registry and entitlement live in rc-api)
 Internal:      rc-api $API_INTERNAL_URL, rc-signal $SIGNAL_INTERNAL_URL (loopback only)
-Data and logs: $DATA
+Data and logs: $DATA (rc-api-claims.db holds the device-id claims; keep it when resetting rc-api.db)
 Dev top-up:    curl -X POST $API_URL/v1/credits/dev-topup -H 'Authorization: Bearer dev:<email>' \\
                  -H "Idempotency-Key: \$(uuidgen)" -d '{"amountCents":500}'
 Dev sign-in:   RC_ROLE=host apps/macos/.build/debug/rc-node --dev-sign-in <email>

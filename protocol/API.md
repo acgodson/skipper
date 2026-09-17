@@ -462,11 +462,13 @@ rc-api's internal listener:
 | Call | Body | Effect |
 |---|---|---|
 | `POST /internal/devices/register` | `pubkey` (canonical, else `400`), optional `label`, optional `platform`, optional `preferredDeviceId` (9 digits, else `400`), optional `idCert` | The device registry. Answers `{deviceId, existing, idCert}` — `201` for a new key, `200` for a known one. Idempotent by `pubkey`: a known key always gets its existing `deviceId`. A new key gets `preferredDeviceId` only when `idCert` certifies it for this `pubkey` (§6.1); otherwise a fresh id. |
-| `GET /internal/devices/{deviceId}` | — | `{deviceId, pubkey, codeEpoch, idCert}`, used to verify `hello` (PROTOCOL.md §2.4), to issue `hello_ok.idCert`, and to pin both keys at `connect_req`. Unknown id is `404 not_found`. |
-| `POST /internal/devices/{deviceId}/epoch` | `{}` | Bumps `codeEpoch` (PROTOCOL.md §2.15 `refresh_code`, §3.2 session-token epoch). Answers the updated `{deviceId, pubkey, codeEpoch, idCert}`; unknown id is `404`. |
+| `GET /internal/devices/{deviceId}` | — | `{deviceId, pubkey, codeEpoch}`, used to pin both keys at `connect_req`. No `idCert`: a lookup never signs (v5). Unknown id is `404 not_found`. |
+| `POST /internal/devices/{deviceId}/cert` | `{pubkey}` | *v5.* The only lookup that signs: called by signaling after a `hello` signature verified (PROTOCOL.md §2.4). `200 {deviceId, pubkey, codeEpoch, idCert}` when `pubkey` owns `deviceId`; `404 not_found`, with no signature made, when the id is unknown or bound to another key. |
+| `POST /internal/devices/{deviceId}/epoch` | `{}` | Bumps `codeEpoch` (PROTOCOL.md §2.15 `refresh_code`, §3.2 session-token epoch). Answers the updated `{deviceId, pubkey, codeEpoch}`; unknown id is `404`. |
 | `POST /internal/sessions/start` | `sessionId` (32 hex), `hostDeviceId`, `controllerDeviceId`, `startedAt` | Opens the accounting record and claims the host's concurrency slot. Sent when the host's first `sdp` is relayed (PROTOCOL.md §3.4), not at `connect_ok`. `402 entitlement` when the account's slot is already taken; signaling then ends the session. |
 | `POST /internal/sessions/stop` | `sessionId` (32 hex), `endedAt`, `relayUsed`, `bytesRelayed`, `reason` (a PROTOCOL.md §2.14 reason, else `400`) | Closes the record, settles the charge against the balance (§5.2), frees the slot. A stop for a record that is already closed is `204` and charges nothing. |
 | `GET /internal/entitlement/{deviceId}` | — | Gates `connect_req`. `200` with the §4.1 body when the host may open a session; otherwise `402 entitlement` with the §4.3 `reason`. An id the registry does not hold, or a registered device that is not linked, is `unlinked`. This call never creates a record. |
+| `GET /internal/pairs/{hostDeviceId}/{controllerDeviceId}` | — | *v5.* `{known: bool}`: whether this controller has had a metered session with this host — a session row exists (`POST /internal/sessions/start`). Signaling asks it for a `connect_req` that is about to be delivered, so a known pair spends its own rate-limit bucket instead of the host's (PROTOCOL.md §3.3). Durable: it is the session table, so it survives restarts of either service. Malformed ids are `400`. |
 | `GET /healthz` | — | `200 ok`, no bearer needed. |
 
 rc-signal's internal listener:
@@ -488,18 +490,39 @@ cache `GET /internal/devices/{deviceId}` answers briefly, dropping a device's en
 bumps that device's epoch or registers a key under that id.
 
 The registry holds a P-256 **device-ID certificate key** (`RC_API_ID_CERT_KEY_FILE`, PEM
-PKCS#8; `TODO:` AWS KMS in Phase 5) and signs every binding it hands out (PROTOCOL.md §3.1.1).
-`preferredDeviceId` is honoured only together with an `idCert` that verifies for exactly that
-id and the registering `pubkey`, and then it is honoured even if another key holds the id: that
-key's device record is removed and its device tokens are revoked. Without a valid certificate a
-new key always gets a fresh id, whether or not the preferred one is free, so the call reveals
-nothing about which ids exist. The ids this database has assigned are remembered with their
-keys even after a record is removed, so a fresh id never repeats one of them; that memory is in
-the same database and is lost with it, which is exactly why the certificate — held by the
-device, verified with a key that is not in the database — is what lets devices keep their ids
-when this registry starts from an empty database (a reset or a move to a new account). The
-process refuses to start without the key file unless it runs in local `-insecure-http` mode,
-where it makes a throwaway key.
+PKCS#8; `TODO:` AWS KMS in Phase 5) and signs a binding only on register and on
+`POST /internal/devices/{deviceId}/cert` (PROTOCOL.md §3.1.1). `preferredDeviceId` is honoured
+only together with an `idCert` that verifies for exactly that id and the registering `pubkey`,
+and only when the claims database (below) names that key for the id or names nobody. Should a
+device record for the id under another key exist anyway, that record is removed and its device
+tokens are revoked. Without a valid certificate a new key always gets a fresh id, whether or not
+the preferred one is free, so the call reveals nothing about which ids exist. The process refuses
+to start without the key file unless it runs in local `-insecure-http` mode, where it makes a
+throwaway key.
+
+**The claims database — operator rules.** Every id the registry ever assigned is recorded with
+the key it was given to in `device_id_claims`, which lives in its **own SQLite file**:
+`RC_API_CLAIMS_DB` (`-claims-db`), default `<RC_API_DB without extension>-claims<extension>`,
+e.g. `rc-api.db` → `rc-api-claims.db` (rc-signal's stand-alone mode: `RC_CLAIMS_DB`, default
+`rc-signal-claims.db`). It is what guarantees that no id is ever given to two keys, so:
+
+- **Never delete, reset or recreate it together with the main database.** Resetting
+  `RC_API_DB` (a wipe, a restore from an old snapshot, a move to a new account) is safe only if
+  the claims file is kept; devices then re-register with their certificates and get their own
+  ids back, and nobody else can obtain them.
+- **Back it up on its own schedule** and restore the newest copy. It only grows (one small row
+  per id ever assigned; rows are never changed or removed), so a newer copy is always a
+  superset.
+- Keep it on durable storage next to, but not inside, anything that is routinely wiped (a data
+  volume that a redeploy recreates, a `rm rc-api.db*` in a script).
+- If it is lost anyway, the first certified key to come back for an id keeps it; a second key
+  holding a certificate for the same id (possible only because an earlier loss let the id be
+  reissued) gets a fresh id instead, so ids never flip between keys.
+- On first start a build that finds the table in the main database (an older build kept it
+  there) copies it, adds a claim for every device row, and drops the old table. Every start
+  adds a claim for any device row that lacks one; an existing claim is never changed.
+- `TODO:` Phase 5 moves the claims into a DynamoDB table with point-in-time recovery and
+  deletion protection, separate from the registry table.
 
 When this API cannot be reached or answers `5xx`, the signaling server refuses `register`,
 `hello`, `refresh_code` and `connect_req` with `error{code:"unavailable", retryAfterSec}`. It never
@@ -507,9 +530,10 @@ falls back to minting or trusting an id of its own. A client treats `unavailable
 back off and retry, keeping any live peer-to-peer session running.
 
 The signaling server's stand-alone mode (`RC_ENTITLEMENT=static`, local development and the
-smoke test only) keeps an equivalent registry in its own database, signs certificates with its
-own key file (`RC_ID_CERT_KEY_FILE`), has no link to this API, and does not start its internal
-listener.
+smoke test only) keeps an equivalent registry in its own database (`RC_DB`) with its claims in
+`RC_CLAIMS_DB` under the same rules, records known pairs in its own database when a session is
+metered, signs certificates with its own key file (`RC_ID_CERT_KEY_FILE`), has no link to this
+API, and does not start its internal listener.
 
 ### 6.2 Reconciliation
 

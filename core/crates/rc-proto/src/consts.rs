@@ -1,4 +1,4 @@
-pub const VERSION: i32 = 4;
+pub const VERSION: i32 = 5;
 
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 
@@ -10,7 +10,7 @@ pub mod tunable {
     pub const AUTH_TIMEOUT_SEC: i32 = 20;
     pub const NONCE_TTL_SEC: i32 = 20;
     pub const MAX_WATCHES: usize = 8;
-    pub const TURN_CRED_TTL_SEC: i32 = 2 * 60 * 60;
+    pub const TURN_CRED_TTL_SEC: i32 = 10 * 60;
 }
 
 pub mod msg {
@@ -40,6 +40,7 @@ pub mod msg {
     pub const REFRESH_CODE: &str = "refresh_code";
     pub const REFRESH_CODE_OK: &str = "refresh_code_ok";
     pub const PAKE: &str = "pake";
+    pub const ICE_SERVERS: &str = "ice_servers";
     pub const ERROR: &str = "error";
 }
 
@@ -142,6 +143,10 @@ pub mod limits {
     pub const CONNECT_PER_CONTROLLER_PER_HOUR: u32 = 60;
     pub const CONNECT_PER_HOST_PER_MIN: u32 = 30;
     pub const CONNECT_PER_HOST_PER_HOUR: u32 = 300;
+    /// A controller that had a metered session with the host spends this instead of the host's budget.
+    pub const CONNECT_PER_PAIR_PER_MIN: u32 = 6;
+    pub const CONNECT_PER_PAIR_PER_HOUR: u32 = 60;
+    pub const CONNECT_PER_IP_PER_MIN: u32 = 30;
     pub const REGISTERS_PER_SOCKET: u32 = 1;
     pub const REGISTERS_PER_IP_PER_HOUR: u32 = 20;
 }
@@ -155,5 +160,26 @@ pub mod session_state {
 }
 
 pub const MAX_PAKE_PAYLOAD_BYTES: usize = 4096;
+
+/// v5 limits of the relayed messages; see [`crate::relay`].
+pub mod relay {
+    pub const MAX_SDP_BYTES: usize = 64 * 1024;
+    pub const MAX_CANDIDATE_BYTES: usize = 1024;
+    pub const MAX_CANDIDATE_EXTENSIONS: usize = 16;
+    pub const MAX_FINGERPRINT_BYTES: usize = 1024;
+    pub const MAX_PUBKEY_CHARS: usize = 256;
+    pub const MAX_SIG_CHARS: usize = 256;
+    pub const MAX_MAC_CHARS: usize = 128;
+    pub const MAX_SDP_MID_BYTES: usize = 32;
+    pub const PAKE_STEP_FIRST: i32 = 1;
+    pub const PAKE_STEP_LAST: i32 = 3;
+    pub const SDP_VERSION_PREFIX: &str = "v=0";
+    pub const CANDIDATE_PREFIX: &str = "candidate:";
+    pub const SDP_TYPES: [&str; 4] = ["offer", "answer", "pranswer", "rollback"];
+    pub const CANDIDATE_TYPES: [&str; 4] = ["host", "srflx", "prflx", "relay"];
+    /// Before a session is metered a server relays at most this much of it.
+    pub const MAX_UNMETERED_ICE_PER_SIDE: usize = 64;
+    pub const MAX_UNMETERED_SDP_FROM_CONTROLLER: usize = 4;
+}
 
 pub const ALG_ARGON2ID: &str = "argon2id";

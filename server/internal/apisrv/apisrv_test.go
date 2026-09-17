@@ -54,6 +54,7 @@ type harness struct {
 	api         *Server
 	db          *apidb.DB
 	dbPath      string
+	authority   *idcert.Authority
 }
 
 func newHarness(t *testing.T) *harness {
@@ -63,7 +64,7 @@ func newHarness(t *testing.T) *harness {
 func newHarnessWith(t *testing.T, proxies clientip.Resolver) *harness {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "api.db")
-	db, err := apidb.Open(path)
+	db, err := apidb.Open(path, filepath.Join(filepath.Dir(path), "api-claims.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func newHarnessWith(t *testing.T, proxies clientip.Resolver) *harness {
 	t.Cleanup(srv.Close)
 	internal := httptest.NewServer(api.InternalHandler())
 	t.Cleanup(internal.Close)
-	return &harness{t: t, url: srv.URL, internalURL: internal.URL, clock: c, api: api, db: db, dbPath: path}
+	return &harness{t: t, url: srv.URL, internalURL: internal.URL, clock: c, api: api, db: db, dbPath: path, authority: authority}
 }
 
 type reply struct {

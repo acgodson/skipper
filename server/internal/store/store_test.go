@@ -11,7 +11,7 @@ import (
 )
 
 func TestRegisterAndLookup(t *testing.T) {
-	s, err := Open(":memory:")
+	s, err := Open(":memory:", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestRegisterAndLookup(t *testing.T) {
 }
 
 func TestBumpEpoch(t *testing.T) {
-	s, err := Open(":memory:")
+	s, err := Open(":memory:", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestMigrationDropsV1VerifierColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, filepath.Join(filepath.Dir(path), "claims.db"))
 	if err != nil {
 		t.Fatalf("opening a v1 database: %v", err)
 	}
@@ -169,40 +169,74 @@ func TestMigrationDropsV1VerifierColumns(t *testing.T) {
 	}
 }
 
-func TestRegisterCertifiedDeviceIDRestoresOverASquatter(t *testing.T) {
-	s, err := Open(":memory:")
+func TestAClaimedDeviceIDSurvivesARegistryResetAndIsNeverHandedToAnotherKey(t *testing.T) {
+	dir := t.TempDir()
+	claims := filepath.Join(dir, "claims.db")
+	now := time.Unix(1_755_600_000, 0)
+	before, err := Open(filepath.Join(dir, "one.db"), claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := before.Register("PK-OWNER", "", "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before.Close()
+
+	s, err := Open(filepath.Join(dir, "two.db"), claims)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	now := time.Unix(1_755_600_000, 0)
+	squat, res, err := s.Register("PK-SQUAT", "", owner.DeviceID, now)
+	if err != nil || res.Displaced || squat.DeviceID == owner.DeviceID {
+		t.Fatalf("a claimed id went to another key after the reset: %+v %+v err=%v", squat, res, err)
+	}
+	restored, res, err := s.Register("PK-OWNER", "", owner.DeviceID, now)
+	if err != nil || res.Existing || restored.DeviceID != owner.DeviceID || restored.Pubkey != "PK-OWNER" {
+		t.Fatalf("the claimant's certified restore = %+v %+v err=%v", restored, res, err)
+	}
+	known, res, err := s.Register("PK-OWNER", "", "222222222", now)
+	if err != nil || !res.Existing || known.DeviceID != owner.DeviceID {
+		t.Fatalf("a key that holds an id keeps it = %+v %+v err=%v", known, res, err)
+	}
+	again, res, err := s.Register("PK-SQUAT", "", owner.DeviceID, now)
+	if err != nil || !res.Existing || again.DeviceID != squat.DeviceID {
+		t.Fatalf("the other key re-registering = %+v %+v err=%v", again, res, err)
+	}
+}
 
-	squatter, _, err := s.Register("PK-SQUAT", "", "", now)
+func TestKnownPairsAreDurable(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir+"/rc.db", dir+"/claims.db")
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, res, err := s.Register("PK-OWNER", "", squatter.DeviceID, now)
-	if err != nil || res.Existing || !res.Displaced || restored.DeviceID != squatter.DeviceID || restored.Pubkey != "PK-OWNER" {
-		t.Fatalf("certified restore = %+v %+v err=%v", restored, res, err)
+	if known, err := s.KnownPair("111111111", "222222222"); err != nil || known {
+		t.Fatalf("an unseen pair is known: %v %v", known, err)
 	}
-	if _, err := s.GetByPubkey("PK-SQUAT"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("the squatter's record survived the restore: %v", err)
+	for i := 0; i < 2; i++ {
+		if err := s.RecordPair("111111111", "222222222", time.Unix(1_755_600_000, 0)); err != nil {
+			t.Fatal(err)
+		}
 	}
-
-	known, res, err := s.Register("PK-OWNER", "", "222222222", now)
-	if err != nil || !res.Existing || known.DeviceID != squatter.DeviceID {
-		t.Fatalf("a key that holds an id keeps it = %+v %+v err=%v", known, res, err)
+	s.Close()
+	s, err = Open(dir+"/rc.db", dir+"/claims.db")
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	moved, res, err := s.Register("PK-SQUAT", "", "", now)
-	if err != nil || res.Existing || moved.DeviceID == squatter.DeviceID || !protocol.ValidDeviceID(moved.DeviceID) {
-		t.Fatalf("the displaced key re-registering without a certificate = %+v %+v err=%v", moved, res, err)
+	defer s.Close()
+	if known, err := s.KnownPair("111111111", "222222222"); err != nil || !known {
+		t.Fatalf("a recorded pair was forgotten: %v %v", known, err)
+	}
+	if known, _ := s.KnownPair("222222222", "111111111"); known {
+		t.Fatal("a pair is directional: host and controller are not interchangeable")
 	}
 }
 
 func TestWALModeEnabled(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir + "/rc.db")
+	s, err := Open(dir+"/rc.db", dir+"/claims.db")
 	if err != nil {
 		t.Fatal(err)
 	}

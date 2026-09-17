@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"slices"
@@ -77,6 +78,106 @@ func TestValidSessionID(t *testing.T) {
 	} {
 		if ValidSessionID(bad) {
 			t.Fatalf("%q was accepted", bad)
+		}
+	}
+}
+
+func TestRelayVectorsDecodeStrictlyAndReencodeExactly(t *testing.T) {
+	raw, err := os.ReadFile("vectors/vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Cases []struct {
+			Name  string   `json:"name"`
+			Type  string   `json:"type"`
+			Frame Envelope `json:"frame"`
+		} `json:"cases"`
+		Relay struct {
+			Accepted []struct {
+				Name   string `json:"name"`
+				Type   string `json:"type"`
+				Input  string `json:"input"`
+				Output string `json:"output"`
+			} `json:"accepted"`
+			Rejected []struct {
+				Name  string `json:"name"`
+				Type  string `json:"type"`
+				Input string `json:"input"`
+			} `json:"rejected"`
+		} `json:"relay"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Relay.Accepted) == 0 || len(file.Relay.Rejected) < 30 {
+		t.Fatalf("relay vectors look truncated: %d accepted, %d rejected", len(file.Relay.Accepted), len(file.Relay.Rejected))
+	}
+	for _, c := range file.Relay.Accepted {
+		msg, err := DecodeRelay(c.Type, []byte(c.Input))
+		if err != nil {
+			t.Fatalf("%s: %v", c.Name, err)
+		}
+		out, err := json.Marshal(msg)
+		if err != nil || string(out) != string(c.Output) {
+			t.Fatalf("%s: re-encoded %s, want %s", c.Name, out, c.Output)
+		}
+	}
+	for _, c := range file.Relay.Rejected {
+		if _, err := DecodeRelay(c.Type, []byte(c.Input)); err == nil {
+			t.Fatalf("%s: accepted %.80q", c.Name, c.Input)
+		}
+	}
+	relayed := 0
+	for _, c := range file.Cases {
+		if c.Type != TypeSDP && c.Type != TypeICE && c.Type != TypePake {
+			continue
+		}
+		relayed++
+		msg, err := DecodeRelay(c.Type, c.Frame.Payload)
+		if err != nil {
+			t.Fatalf("%s: %v", c.Name, err)
+		}
+		var want bytes.Buffer
+		if err := json.Compact(&want, c.Frame.Payload); err != nil {
+			t.Fatal(err)
+		}
+		if out, _ := json.Marshal(msg); string(out) != want.String() {
+			t.Fatalf("%s: re-encoded %s, want %s", c.Name, out, c.Frame.Payload)
+		}
+	}
+	if relayed < 8 {
+		t.Fatalf("only %d relayed message cases", relayed)
+	}
+}
+
+func TestICECandidateGrammar(t *testing.T) {
+	for _, ok := range []string{
+		"candidate:1 1 udp 2130706431 192.0.2.1 54321 typ host",
+		"candidate:a+/Z 256 UDP 0 ::1 0 typ relay raddr 198.51.100.1 rport 3478",
+		"candidate:1 1 tcp 1 3F1C6E0A-9B2D-4C5E-8F7A-1D2E3F4A5B6C.local 9 typ host tcptype passive",
+	} {
+		if !ValidICECandidate(ok) {
+			t.Fatalf("refused %q", ok)
+		}
+	}
+	for _, bad := range []string{
+		"", "candidate:", "candidate:1 0 udp 1 192.0.2.1 1 typ host",
+		"candidate:1 257 udp 1 192.0.2.1 1 typ host",
+		"candidate:1 1 sctp 1 192.0.2.1 1 typ host",
+		"candidate:1 1 udp 4294967296 192.0.2.1 1 typ host",
+		"candidate:1 1 udp 1 192.0.2.1 65536 typ host",
+		"candidate:1 1 udp 1 192.0.2.1 1 type host",
+		"candidate:1 1 udp 1 fe80::1%en0 1 typ host",
+		"candidate:1 1 udp 1 01.2.3.4 1 typ host",
+		"candidate:1 1 udp 1 3f1c6e0a9b2d4c5e8f7a1d2e3f4a5b6c0000.local 1 typ host",
+		"candidate:1 1 udp 1 192.0.2.1 1 typ host Generation 0",
+		"candidate:1 1 udp 1 192.0.2.1 1 typ host ufrag a\tb",
+		"candidate:" + strings.Repeat("a", 33) + " 1 udp 1 192.0.2.1 1 typ host",
+		"candidate:1 1 udp 1 192.0.2.1 1 typ host" + strings.Repeat(" a b", MaxCandidateExtensions+1),
+	} {
+		if ValidICECandidate(bad) {
+			t.Fatalf("accepted %q", bad)
 		}
 	}
 }
