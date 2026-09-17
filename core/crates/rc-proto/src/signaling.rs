@@ -79,7 +79,11 @@ pub struct Register {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
     /// The id this key held before the registry lost its record; honoured only with `id_cert`.
-    #[serde(rename = "preferredDeviceId", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "preferredDeviceId",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub preferred_device_id: String,
     /// The registry's certificate for `preferred_device_id` and this key, as last received; opaque.
     #[serde(rename = "idCert", default, skip_serializing_if = "String::is_empty")]

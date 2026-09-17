@@ -210,7 +210,9 @@ fn bye_reasons_are_the_same_closed_set_as_go() {
 
 #[test]
 fn session_ids_are_32_lowercase_hex() {
-    assert!(rc_proto::valid_session_id("8c7f1a2b3c4d5e6f708192a3b4c5d6e7"));
+    assert!(rc_proto::valid_session_id(
+        "8c7f1a2b3c4d5e6f708192a3b4c5d6e7"
+    ));
     for bad in [
         "",
         "8C7F1A2B3C4D5E6F708192A3B4C5D6E7",
@@ -229,7 +231,11 @@ fn v4_session_messages_carry_session_scoped_ice_servers() {
         Envelope::decode(&serde_json::to_vec(&case.frame).unwrap()).unwrap()
     };
     let ok: sig::ConnectOk = find("connect_ok_with_ice_servers").payload_as().unwrap();
-    let turn = ok.ice_servers.iter().find(|s| !s.credential.is_empty()).unwrap();
+    let turn = ok
+        .ice_servers
+        .iter()
+        .find(|s| !s.credential.is_empty())
+        .unwrap();
     assert!(turn.username.ends_with(&format!(":{}", ok.session_id)));
     let start: sig::SessionStart = find("session_start").payload_as().unwrap();
     assert_eq!(start.session.ice_servers, ok.ice_servers);
