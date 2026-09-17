@@ -215,13 +215,23 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 				"the signature over the challenge nonce did not verify")
 			return
 		}
+		registered, err := s.opt.DB.DeviceByPubkey(req.Pubkey)
+		if errors.Is(err, apidb.ErrNotFound) {
+			s.fail(w, r, http.StatusBadRequest, protocol.APIErrBadRequest,
+				"this device key has not registered with signaling yet", withReason(protocol.ReasonUnregistered))
+			return
+		}
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
 		if err := s.opt.DB.UseLinkCode(req.Code); err != nil {
 			s.fail(w, r, http.StatusUnauthorized, protocol.APIErrUnauthenticated, "that sign-in code is not usable")
 			return
 		}
 		hardwareHash := s.hardwareHash(req.HardwareID)
 		req.HardwareID = ""
-		device, err := s.linkDevice(pending, req, hardwareHash)
+		device, err := s.linkDevice(registered, pending, req, hardwareHash)
 		if err != nil {
 			s.internalError(w, r, err)
 			return
@@ -235,35 +245,29 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) linkDevice(pending *apidb.LinkCode, req protocol.DeviceTokenRequest, hardwareHash string) (*apidb.Device, error) {
-	now := s.nowMS()
+// linkDevice attaches a registered device to the account; the trial starts at its first link.
+func (s *Server) linkDevice(device *apidb.Device, pending *apidb.LinkCode, req protocol.DeviceTokenRequest, hardwareHash string) (*apidb.Device, error) {
 	label := trimmedLabel(req.Label)
 	if label == "" {
 		label = pending.Label
 	}
-	existing, err := s.opt.DB.DeviceByPubkey(req.Pubkey)
-	if err != nil && !errors.Is(err, apidb.ErrNotFound) {
-		return nil, err
-	}
-	if err == nil {
-		if updateErr := s.opt.DB.UpdateDeviceLink(existing.DeviceID, pending.AccountID, label,
-			req.Platform, hardwareHash, existing.TrialEndsAt, now); updateErr != nil {
-			return nil, updateErr
-		}
-		return s.opt.DB.DeviceByID(existing.DeviceID)
+	if label == "" {
+		label = device.Label
 	}
 	hardwareSeen, err := s.opt.DB.HardwareSeen(hardwareHash)
 	if err != nil {
 		return nil, err
 	}
+	linkedBefore := device.LinkedAt != 0
 	trialEndsAt := int64(0)
-	if policy.GrantsTrial(false, hardwareSeen) {
+	if policy.GrantsTrial(linkedBefore, hardwareSeen) {
 		trialEndsAt = policy.TrialEndsAt(s.now())
 	}
-	return s.opt.DB.NewDevice(apidb.Device{
-		AccountID: pending.AccountID, Label: label, Platform: req.Platform, Pubkey: req.Pubkey,
-		HardwareHash: hardwareHash, CreatedAt: now, LinkedAt: now, LastSeen: now, TrialEndsAt: trialEndsAt,
-	})
+	if err := s.opt.DB.UpdateDeviceLink(device.DeviceID, pending.AccountID, label,
+		req.Platform, hardwareHash, trialEndsAt, s.nowMS()); err != nil {
+		return nil, err
+	}
+	return s.opt.DB.DeviceByID(device.DeviceID)
 }
 
 func (s *Server) authRefresh(w http.ResponseWriter, r *http.Request) {

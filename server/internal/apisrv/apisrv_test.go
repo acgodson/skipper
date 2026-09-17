@@ -164,7 +164,29 @@ func (d device) sign(t *testing.T, nonceB64 string) string {
 	return base64.StdEncoding.EncodeToString(sig)
 }
 
+func (h *harness) register(d device) protocol.InternalRegisterResponse {
+	h.t.Helper()
+	r := h.call("POST", protocol.PathInternalRegister, internalToken, "",
+		protocol.InternalRegisterRequest{Pubkey: d.pubkey, Label: "signaling label"})
+	if r.status != http.StatusCreated && r.status != http.StatusOK {
+		h.t.Fatalf("internal register: %d %s", r.status, r.body)
+	}
+	var out protocol.InternalRegisterResponse
+	r.decode(h.t, &out)
+	return out
+}
+
 func (h *harness) link(email string, d device, hardwareID string) protocol.DeviceTokenResponse {
+	h.t.Helper()
+	registered := h.register(d)
+	grant := h.redeem(email, d, hardwareID)
+	if grant.DeviceID != registered.DeviceID {
+		h.t.Fatalf("token deviceId %s, want the signaling id %s", grant.DeviceID, registered.DeviceID)
+	}
+	return grant
+}
+
+func (h *harness) mintCode(email string, d device) (code, nonce string) {
 	h.t.Helper()
 	t := h.t
 	r := h.call("POST", protocol.PathAuthLink, "dev:"+email, idem(),
@@ -174,18 +196,28 @@ func (h *harness) link(email string, d device, hardwareID string) protocol.Devic
 	}
 	var link protocol.LinkResponse
 	r.decode(t, &link)
-
 	r = h.call("POST", protocol.PathAuthDeviceChallenge, "", "", protocol.DeviceChallengeRequest{Code: link.Code})
 	if r.status != http.StatusOK {
 		t.Fatalf("challenge: %d %s", r.status, r.body)
 	}
 	var challenge protocol.DeviceChallengeResponse
 	r.decode(t, &challenge)
+	return link.Code, challenge.Nonce
+}
 
-	r = h.call("POST", protocol.PathAuthDeviceToken, "", idem(), protocol.DeviceTokenRequest{
-		Code: link.Code, Pubkey: d.pubkey, Sig: d.sign(t, challenge.Nonce),
+func (h *harness) tokenCall(code, nonce string, d device, hardwareID string) reply {
+	h.t.Helper()
+	return h.call("POST", protocol.PathAuthDeviceToken, "", idem(), protocol.DeviceTokenRequest{
+		Code: code, Pubkey: d.pubkey, Sig: d.sign(h.t, nonce),
 		Platform: protocol.PlatformMacOS, HardwareID: hardwareID, Label: "test mac",
 	})
+}
+
+func (h *harness) redeem(email string, d device, hardwareID string) protocol.DeviceTokenResponse {
+	h.t.Helper()
+	t := h.t
+	code, nonce := h.mintCode(email, d)
+	r := h.tokenCall(code, nonce, d, hardwareID)
 	if r.status != http.StatusOK {
 		t.Fatalf("token: %d %s", r.status, r.body)
 	}
@@ -195,6 +227,21 @@ func (h *harness) link(email string, d device, hardwareID string) protocol.Devic
 	var grant protocol.DeviceTokenResponse
 	r.decode(t, &grant)
 	return grant
+}
+
+func (h *harness) internalEntitlement(deviceID string) (int, string) {
+	h.t.Helper()
+	r := h.call("GET", protocol.PathInternalEntitlement+"/"+deviceID, internalToken, "", nil)
+	if r.status == http.StatusOK {
+		var ent protocol.Entitlement
+		r.decode(h.t, &ent)
+		return r.status, ent.Status
+	}
+	e := r.apiError(h.t)
+	if e.Code != protocol.APIErrEntitlement {
+		h.t.Fatalf("internal entitlement %s: %d %s", deviceID, r.status, r.body)
+	}
+	return r.status, e.Reason
 }
 
 func (h *harness) entitlementFor(token string) protocol.Entitlement {
@@ -371,5 +418,102 @@ func TestIdempotencyReplayAndConflict(t *testing.T) {
 	if r := h.call("POST", protocol.PathAuthLink, session, idem(), unknown); r.status != http.StatusBadRequest ||
 		r.apiError(t).Code != protocol.APIErrBadRequest {
 		t.Fatalf("unknown member: %d %s", r.status, r.body)
+	}
+}
+
+func TestTokenLinksTheDeviceSignalingRegistered(t *testing.T) {
+	h := newHarness(t)
+	mac := newDevice(t)
+
+	code, nonce := h.mintCode("frank@example.com", mac)
+	r := h.tokenCall(code, nonce, mac, "SERIAL-F")
+	if e := r.apiError(t); r.status != http.StatusBadRequest || e.Code != protocol.APIErrBadRequest ||
+		e.Reason != protocol.ReasonUnregistered {
+		t.Fatalf("token for a key signaling never registered: %d %s", r.status, r.body)
+	}
+
+	first := h.register(mac)
+	again := h.register(mac)
+	if !protocol.ValidDeviceID(first.DeviceID) || first.Existing || !again.Existing || again.DeviceID != first.DeviceID {
+		t.Fatalf("register is not idempotent by pubkey: %+v then %+v", first, again)
+	}
+	if status, got := h.internalEntitlement(first.DeviceID); status != http.StatusPaymentRequired ||
+		got != protocol.EntitlementUnlinked {
+		t.Fatalf("registered but never linked: %d %s, want 402 unlinked", status, got)
+	}
+
+	r = h.call("POST", protocol.PathAuthDeviceChallenge, "", "", protocol.DeviceChallengeRequest{Code: code})
+	var challenge protocol.DeviceChallengeResponse
+	r.decode(t, &challenge)
+	r = h.tokenCall(code, challenge.Nonce, mac, "SERIAL-F")
+	var grant protocol.DeviceTokenResponse
+	r.decode(t, &grant)
+	if r.status != http.StatusOK || grant.DeviceID != first.DeviceID {
+		t.Fatalf("token after register: %d %s, want deviceId %s", r.status, r.body, first.DeviceID)
+	}
+	if ent := h.entitlementFor(grant.DeviceToken); ent.Status != protocol.StatusTrial {
+		t.Fatalf("the trial starts at first link: %+v", ent)
+	}
+	if status, got := h.internalEntitlement(first.DeviceID); status != http.StatusOK || got != protocol.StatusTrial {
+		t.Fatalf("linked device: %d %s, want 200 trial", status, got)
+	}
+
+	r = h.call("GET", protocol.InternalDevicePath(first.DeviceID), internalToken, "", nil)
+	var dev protocol.InternalDevice
+	r.decode(t, &dev)
+	if r.status != http.StatusOK || dev.Pubkey != mac.pubkey || dev.CodeEpoch != 1 {
+		t.Fatalf("internal device read: %d %s", r.status, r.body)
+	}
+	r = h.call("POST", protocol.InternalEpochPath(first.DeviceID), internalToken, "", struct{}{})
+	r.decode(t, &dev)
+	if r.status != http.StatusOK || dev.CodeEpoch != 2 {
+		t.Fatalf("epoch bump: %d %s", r.status, r.body)
+	}
+	if r := h.call("GET", protocol.InternalDevicePath(first.DeviceID), grant.DeviceToken, "", nil); r.status != http.StatusUnauthorized {
+		t.Fatalf("internal device read with a device token: %d", r.status)
+	}
+
+	if r := h.call("DELETE", protocol.PathDevices+"/"+first.DeviceID, "dev:frank@example.com", idem(), nil); r.status != http.StatusNoContent {
+		t.Fatalf("unlink: %d %s", r.status, r.body)
+	}
+	if status, got := h.internalEntitlement(first.DeviceID); status != http.StatusPaymentRequired ||
+		got != protocol.EntitlementUnlinked {
+		t.Fatalf("unlinked device: %d %s, want 402 unlinked", status, got)
+	}
+	relinked := h.redeem("frank@example.com", mac, "SERIAL-F")
+	if relinked.DeviceID != first.DeviceID || h.entitlementFor(relinked.DeviceToken).Status != protocol.StatusTrial {
+		t.Fatalf("re-link keeps the id and the original trial: %+v", relinked)
+	}
+}
+
+func TestUnknownDeviceIsUnlinkedAndNeverProvisioned(t *testing.T) {
+	h := newHarness(t)
+	for i := 0; i < 2; i++ {
+		if status, got := h.internalEntitlement("123456789"); status != http.StatusPaymentRequired ||
+			got != protocol.EntitlementUnlinked {
+			t.Fatalf("unknown device: %d %s, want 402 unlinked", status, got)
+		}
+	}
+	r := h.call("GET", protocol.InternalDevicePath("123456789"), internalToken, "", nil)
+	if r.status != http.StatusNotFound {
+		t.Fatalf("an entitlement query created a device record: %d %s", r.status, r.body)
+	}
+	if r := h.call("POST", protocol.InternalEpochPath("123456789"), internalToken, "", struct{}{}); r.status != http.StatusNotFound {
+		t.Fatalf("epoch bump for an unknown device: %d %s", r.status, r.body)
+	}
+}
+
+func TestDevExpireTrialEndsTheAccountsTrial(t *testing.T) {
+	h := newHarness(t)
+	grant := h.link("gina@example.com", newDevice(t), "SERIAL-G")
+	if r := h.call("POST", "/v1/dev/expire-trial", "dev:gina@example.com", "", struct{}{}); r.status != http.StatusNoContent {
+		t.Fatalf("expire-trial: %d %s", r.status, r.body)
+	}
+	if status, got := h.internalEntitlement(grant.DeviceID); status != http.StatusPaymentRequired ||
+		got != protocol.EntitlementTrialExpired {
+		t.Fatalf("after expire-trial: %d %s, want 402 trial_expired", status, got)
+	}
+	if r := h.call("POST", "/v1/dev/expire-trial", grant.DeviceToken, "", struct{}{}); r.status != http.StatusForbidden {
+		t.Fatalf("expire-trial with a device token: %d %s", r.status, r.body)
 	}
 }

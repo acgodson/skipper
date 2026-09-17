@@ -42,6 +42,7 @@ type Device struct {
 	LastSeen     int64
 	TrialEndsAt  int64
 	Unlinked     bool
+	CodeEpoch    int64
 }
 
 func (d Device) Public() protocol.Device {
@@ -153,7 +154,8 @@ CREATE TABLE IF NOT EXISTS devices (
   linked_at     INTEGER NOT NULL DEFAULT 0,
   last_seen     INTEGER NOT NULL DEFAULT 0,
   trial_ends_at INTEGER NOT NULL DEFAULT 0,
-  unlinked      INTEGER NOT NULL DEFAULT 0
+  unlinked      INTEGER NOT NULL DEFAULT 0,
+  code_epoch    INTEGER NOT NULL DEFAULT 1
 );
 CREATE UNIQUE INDEX IF NOT EXISTS devices_pubkey ON devices(pubkey) WHERE pubkey <> '';
 CREATE INDEX IF NOT EXISTS devices_account ON devices(account_id);
@@ -254,7 +256,21 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := addColumnIfMissing(db, "devices", "code_epoch", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &DB{db: db}, nil
+}
+
+func addColumnIfMissing(db *sql.DB, table, column, decl string) error {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info(?) WHERE name=?`, table, column).Scan(&n)
+	if err != nil || n > 0 {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl)
+	return err
 }
 
 func (d *DB) Close() error { return d.db.Close() }
@@ -335,13 +351,13 @@ func (d *DB) EnsureAccount(accountID, email string, now time.Time) (*Account, er
 // --- devices ----------------------------------------------------------------
 
 const deviceCols = `device_id, account_id, label, platform, pubkey, hardware_hash,
- created_at, linked_at, last_seen, trial_ends_at, unlinked`
+ created_at, linked_at, last_seen, trial_ends_at, unlinked, code_epoch`
 
 func scanDevice(row interface{ Scan(...any) error }) (*Device, error) {
 	var dev Device
 	var unlinked int
 	err := row.Scan(&dev.DeviceID, &dev.AccountID, &dev.Label, &dev.Platform, &dev.Pubkey,
-		&dev.HardwareHash, &dev.CreatedAt, &dev.LinkedAt, &dev.LastSeen, &dev.TrialEndsAt, &unlinked)
+		&dev.HardwareHash, &dev.CreatedAt, &dev.LinkedAt, &dev.LastSeen, &dev.TrialEndsAt, &unlinked, &dev.CodeEpoch)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -385,22 +401,52 @@ func (d *DB) InsertDevice(dev Device) error {
 	return err
 }
 
-// NewDevice allocates an unused 9-digit id and stores the record under it.
-func (d *DB) NewDevice(dev Device) (*Device, error) {
+// RegisterDevice is idempotent by pubkey: a known key returns its record and existing=true.
+func (d *DB) RegisterDevice(dev Device) (*Device, bool, error) {
+	if dev.Pubkey == "" {
+		return nil, false, errors.New("a device needs a public key")
+	}
+	if found, err := d.DeviceByPubkey(dev.Pubkey); err == nil {
+		return found, true, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, false, err
+	}
 	for attempt := 0; attempt < 20; attempt++ {
 		id, err := NewDeviceID()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		dev.DeviceID = id
 		if err := d.InsertDevice(dev); err == nil {
-			return d.DeviceByID(id)
+			created, err := d.DeviceByID(id)
+			return created, false, err
 		}
-		if existing, err := d.DeviceByPubkey(dev.Pubkey); err == nil && dev.Pubkey != "" {
-			return existing, nil
+		if found, err := d.DeviceByPubkey(dev.Pubkey); err == nil {
+			return found, true, nil
 		}
 	}
-	return nil, errors.New("could not allocate a unique device id")
+	return nil, false, errors.New("could not allocate a unique device id")
+}
+
+func (d *DB) BumpEpoch(deviceID string) (*Device, error) {
+	res, err := d.db.Exec(`UPDATE devices SET code_epoch=code_epoch+1 WHERE device_id=?`, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return nil, err
+	} else if n == 0 {
+		return nil, ErrNotFound
+	}
+	return d.DeviceByID(deviceID)
+}
+
+// ExpireTrials ends every running trial on the account's devices.
+// TODO: remove with the dev-only /v1/dev/expire-trial endpoint at launch.
+func (d *DB) ExpireTrials(accountID string, now int64) error {
+	_, err := d.db.Exec(`UPDATE devices SET trial_ends_at=? WHERE account_id=? AND trial_ends_at>?`,
+		now-1, accountID, now)
+	return err
 }
 
 func (d *DB) UpdateDeviceLink(deviceID, accountID, label, platform, hardwareHash string, trialEndsAt, now int64) error {

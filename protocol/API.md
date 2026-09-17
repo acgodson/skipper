@@ -187,6 +187,16 @@ simply fail at §1.4.
 Body: `code`, `pubkey`, `sig`, `platform`, `hardwareId`, optional `label`.
 Response `200`: `deviceToken`, `expiresAt`, `ttlSec`, `deviceId`, `accountId`.
 
+This call **never mints a `deviceId`**. The key must already be in the device registry, which
+happens when the app first sends signaling `register` (PROTOCOL.md §2.2, §6 below). The token
+links that existing record to the account, so the `deviceId` returned here is byte-equal to the
+one `register_ok` returned. A key the registry has never seen is `400 bad_request` with
+`reason: unregistered`; the code is not consumed, and the app registers with signaling, requests
+a fresh §1.3 nonce and retries.
+
+The first link of a device starts its trial, subject to §3.2. Re-linking a device — to the same
+or another account — never starts a second trial.
+
 The device token is:
 
 - **Opaque** to the client. Structure is a server implementation detail; clients store and present.
@@ -236,7 +246,7 @@ never asked to forward a device token over the WebSocket.
 
 | Field | Type | Notes |
 |---|---|---|
-| `deviceId` | string | 9 digits, minted by the signaling `register` (PROTOCOL.md §2.2) and carried into the link. |
+| `deviceId` | string | 9 digits, minted once by the device registry this API owns, when signaling `register` (PROTOCOL.md §2.2) first presents the key (§6). The link reuses it. |
 | `label` | string | Human name, ≤ 64 chars. User-editable. Not secret. |
 | `platform` | string | `macos` or `windows`. Open enum — clients render an unknown value verbatim. |
 | `pubkey` | string | base64 DER SPKI P-256. Immutable for the life of the device record. |
@@ -329,9 +339,9 @@ The `reason` on a `402 entitlement` here, and on `error{entitlement}` over signa
 
 | `reason` | Meaning |
 |---|---|
-| `unlinked` | The host device is not linked to any account. |
-| `trial_expired` | The trial ended and no balance remains. |
-| `no_balance` | Balance is zero or below the minimum a session requires. |
+| `unlinked` | The host device is not linked to any account, or no device with that id exists. |
+| `trial_expired` | The device had a trial, it ended, and no balance remains. |
+| `no_balance` | The device never had a trial (§3.2) and the balance is zero or below the minimum a session requires. |
 | `concurrency` | The account's `maxActivePairs` is already in use by another pair. |
 | `suspended` | The account is administratively suspended. |
 
@@ -382,11 +392,42 @@ The signaling server reports session start and stop to this API over a private n
 here only so that the two services are written against one shape, and it carries the same
 metadata as §5.1 — no content.
 
+Every internal call carries `Authorization: Bearer <internal token>`, a secret shared by the two
+services and nothing else. A device token or user session is `401 unauthenticated` here.
+
 | Call | Body | Effect |
 |---|---|---|
+| `POST /internal/devices/register` | `pubkey`, optional `label`, optional `platform` | The device registry. Answers `{deviceId, existing}` — `201` for a new key, `200` for a known one. Idempotent by `pubkey`: a known key always gets its existing `deviceId` and nothing about the record changes. |
+| `GET /internal/devices/{deviceId}` | — | `{deviceId, pubkey, codeEpoch}`, used to verify `hello` (PROTOCOL.md §2.4) and to pin both keys at `connect_req`. Unknown id is `404 not_found`. |
+| `POST /internal/devices/{deviceId}/epoch` | `{}` | Bumps `codeEpoch` (PROTOCOL.md §2.15 `refresh_code`, §3.2 session-token epoch). Answers the updated `{deviceId, pubkey, codeEpoch}`; unknown id is `404`. |
 | `POST /internal/sessions/start` | `sessionId`, `hostDeviceId`, `controllerDeviceId`, `startedAt` | Opens the accounting record and claims the host's concurrency slot. |
 | `POST /internal/sessions/stop` | `sessionId`, `endedAt`, `relayUsed`, `bytesRelayed`, `reason` | Closes the record, settles the charge against the balance, frees the slot. |
-| `GET /internal/entitlement/{deviceId}` | — | The §4.1 answer for a device, used to gate `connect_req`. |
+| `GET /internal/entitlement/{deviceId}` | — | Gates `connect_req`. `200` with the §4.1 body when the host may open a session; otherwise `402 entitlement` with the §4.3 `reason`. An id the registry does not hold, or a registered device that is not linked, is `unlinked`. This call never creates a record. |
+
+### 6.1 One registry
+
+This API is the only place a `deviceId` is minted. The signaling server holds no device records of
+its own in a deployment; it asks the calls above, with bounded timeouts (3 s per call), and may
+cache `GET /internal/devices/{deviceId}` answers briefly, dropping a device's entry whenever it
+bumps that device's epoch.
+
+When this API cannot be reached or answers `5xx`, the signaling server refuses `register`,
+`hello`, `refresh_code` and `connect_req` with `error{code:"unavailable", retryAfterSec}`. It never
+falls back to minting or trusting an id of its own. A client treats `unavailable` like `internal`:
+back off and retry, keeping any live peer-to-peer session running.
+
+The signaling server's stand-alone mode (`RC_ENTITLEMENT=static`, local development and the
+smoke test only) keeps an equivalent registry in its own database and has no link to this API.
+
+### 6.2 Development-only calls
+
+TODO: remove both at launch. They exist only when the API runs with the local development
+identity provider (`Bearer dev:<email>`), and are `404` otherwise.
+
+| Call | Auth | Effect |
+|---|---|---|
+| `POST /v1/credits/dev-topup` | user session, idem | Credits the account with `amountCents`. |
+| `POST /v1/dev/expire-trial` | user session | Body `{}`. Ends every running trial on the account's devices. `204`. |
 
 Clients never call these. They are listed in `protocol/api.go` because both Go services compile
 against the same types.

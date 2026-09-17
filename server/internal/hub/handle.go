@@ -8,7 +8,7 @@ import (
 
 	"rc-signal/internal/auth"
 	"rc-signal/internal/entitlement"
-	"rc-signal/internal/store"
+	"rc-signal/internal/registry"
 	"rcprotocol"
 )
 
@@ -40,8 +40,18 @@ func (h *Hub) Handle(c *Client, raw []byte) {
 		return
 	}
 
-	if e.Type == protocol.TypeConnectReq {
+	switch e.Type {
+	case protocol.TypeConnectReq:
 		h.handleConnectReq(c, e)
+		return
+	case protocol.TypeRegister:
+		h.handleRegister(c, e)
+		return
+	case protocol.TypeHello:
+		h.handleHello(c, e)
+		return
+	case protocol.TypeRefreshCode:
+		h.handleRefresh(c, e)
 		return
 	}
 
@@ -51,26 +61,9 @@ func (h *Hub) Handle(c *Client, raw []byte) {
 }
 
 func (h *Hub) handleLocked(c *Client, e protocol.Envelope) {
-	if c.closed {
+	if !h.acceptAuthedLocked(c, e) {
 		return
 	}
-	if !c.authed {
-		switch e.Type {
-		case protocol.TypeRegister:
-			h.handleRegisterLocked(c, e)
-		case protocol.TypeHello:
-			h.handleHelloLocked(c, e)
-		default:
-			c.badMsgs++
-			h.sendErrLocked(c, e.ID, protocol.ErrUnauthenticated, "authenticate with hello first", 0)
-			if c.badMsgs >= 3 {
-				c.close(1008, "unauthenticated")
-			}
-		}
-		return
-	}
-
-	h.touchLocked(c)
 
 	switch e.Type {
 	case protocol.TypeHeartbeat:
@@ -88,13 +81,53 @@ func (h *Hub) handleLocked(c *Client, e protocol.Envelope) {
 		h.handleRelayLocked(c, e)
 	case protocol.TypeBye:
 		h.handleByeLocked(c, e)
-	case protocol.TypeRefreshCode:
-		h.handleRefreshLocked(c, e)
-	case protocol.TypeRegister, protocol.TypeHello:
-		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "already authenticated", 0)
 	default:
 		h.sendErrLocked(c, e.ID, protocol.ErrUnsupported, "unknown message type", 0)
 	}
+}
+
+func (h *Hub) acceptAuthedLocked(c *Client, e protocol.Envelope) bool {
+	if c.closed {
+		return false
+	}
+	if !c.authed {
+		c.badMsgs++
+		h.sendErrLocked(c, e.ID, protocol.ErrUnauthenticated, "authenticate with hello first", 0)
+		if c.badMsgs >= 3 {
+			c.close(1008, "unauthenticated")
+		}
+		return false
+	}
+	h.touchLocked(c)
+	return true
+}
+
+func (h *Hub) acceptUnauthedLocked(c *Client, e protocol.Envelope) bool {
+	if c.closed {
+		return false
+	}
+	if c.authed {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "already authenticated", 0)
+		return false
+	}
+	return true
+}
+
+func registryContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), registry.CallBudget)
+}
+
+const RegistryRetryAfterSec = 5
+
+func (h *Hub) sendRegistryErrLocked(c *Client, re, what string, err error) {
+	if errors.Is(err, registry.ErrUnavailable) {
+		h.log.Error(what+" failed: device registry unavailable", "err", err)
+		h.sendErrLocked(c, re, protocol.APIErrUnavailable,
+			"the device registry is unavailable; retry shortly", RegistryRetryAfterSec)
+		return
+	}
+	h.log.Error(what+" failed", "err", err)
+	h.sendErrLocked(c, re, protocol.ErrInternal, what+" failed", 0)
 }
 
 func (h *Hub) checkNonceLocked(c *Client, pubkey, sig string) bool {
@@ -107,28 +140,49 @@ func (h *Hub) checkNonceLocked(c *Client, pubkey, sig string) bool {
 	return auth.VerifyDeviceSig(pubkey, sig, nonce) == nil
 }
 
-func (h *Hub) handleRegisterLocked(c *Client, e protocol.Envelope) {
+func (h *Hub) acceptRegisterLocked(c *Client, e protocol.Envelope) (protocol.Register, bool) {
 	var p protocol.Register
+	if !h.acceptUnauthedLocked(c, e) {
+		return p, false
+	}
 	if err := protocol.Unmarshal(e, &p); err != nil || p.Pubkey == "" || p.Sig == "" {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "register requires pubkey and sig", 0)
-		return
+		return p, false
 	}
 	if p.Code != (protocol.CodeVerifier{}) {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "register must not carry a code verifier", 0)
-		return
+		return p, false
 	}
-	if len(p.Label) > 64 {
-		p.Label = p.Label[:64]
+	if len(p.Label) > protocol.MaxLabelLen {
+		p.Label = p.Label[:protocol.MaxLabelLen]
 	}
 	if !h.checkNonceLocked(c, p.Pubkey, p.Sig) {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadSignature, "challenge signature rejected", 0)
 		h.issueChallengeLocked(c)
+		return p, false
+	}
+	return p, true
+}
+
+func (h *Hub) handleRegister(c *Client, e protocol.Envelope) {
+	h.mu.Lock()
+	p, ok := h.acceptRegisterLocked(c, e)
+	h.mu.Unlock()
+	if !ok {
 		return
 	}
-	dev, existing, err := h.opt.Store.Register(p.Pubkey, p.Label, h.clock.Now())
+
+	ctx, cancel := registryContext()
+	dev, existing, err := h.opt.Registry.Register(ctx, p.Pubkey, p.Label)
+	cancel()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if c.closed {
+		return
+	}
 	if err != nil {
-		h.log.Error("register failed", "err", err)
-		h.sendErrLocked(c, e.ID, protocol.ErrInternal, "registration failed", 0)
+		h.sendRegistryErrLocked(c, e.ID, "register", err)
 		h.issueChallengeLocked(c)
 		return
 	}
@@ -139,29 +193,50 @@ func (h *Hub) handleRegisterLocked(c *Client, e protocol.Envelope) {
 	h.issueChallengeLocked(c)
 }
 
-func (h *Hub) handleHelloLocked(c *Client, e protocol.Envelope) {
+func (h *Hub) acceptHelloLocked(c *Client, e protocol.Envelope) (protocol.Hello, bool) {
 	var p protocol.Hello
+	if !h.acceptUnauthedLocked(c, e) {
+		return p, false
+	}
 	if err := protocol.Unmarshal(e, &p); err != nil {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "malformed hello", 0)
-		return
+		return p, false
 	}
 	if !protocol.ValidDeviceID(p.DeviceID) {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "deviceId must be 9 digits", 0)
-		return
+		return p, false
 	}
 	if p.Role != protocol.RoleHost && p.Role != protocol.RoleController {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "role must be host or controller", 0)
+		return p, false
+	}
+	return p, true
+}
+
+func (h *Hub) handleHello(c *Client, e protocol.Envelope) {
+	h.mu.Lock()
+	p, ok := h.acceptHelloLocked(c, e)
+	h.mu.Unlock()
+	if !ok {
 		return
 	}
-	dev, err := h.opt.Store.GetDevice(p.DeviceID)
-	if errors.Is(err, store.ErrNotFound) {
+
+	ctx, cancel := registryContext()
+	dev, err := h.opt.Registry.Lookup(ctx, p.DeviceID)
+	cancel()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.acceptUnauthedLocked(c, e) {
+		return
+	}
+	if errors.Is(err, registry.ErrNotFound) {
 		h.sendErrLocked(c, e.ID, protocol.ErrUnknownDevice, "unknown device", 0)
 		h.issueChallengeLocked(c)
 		return
 	}
 	if err != nil {
-		h.log.Error("device lookup failed", "err", err)
-		h.sendErrLocked(c, e.ID, protocol.ErrInternal, "lookup failed", 0)
+		h.sendRegistryErrLocked(c, e.ID, "device lookup", err)
 		return
 	}
 
@@ -184,7 +259,7 @@ func (h *Hub) handleHelloLocked(c *Client, e protocol.Envelope) {
 	h.byDevice[dev.DeviceID] = c
 	h.touchLocked(c)
 
-	ok := protocol.HelloOK{
+	hello := protocol.HelloOK{
 		DeviceID:           dev.DeviceID,
 		ServerTime:         h.clock.Now().UnixMilli(),
 		ICEServers:         h.iceServersLocked(dev.DeviceID),
@@ -194,12 +269,12 @@ func (h *Hub) handleHelloLocked(c *Client, e protocol.Envelope) {
 	}
 	if sid, live := h.devSess[dev.DeviceID]; live {
 		if s := h.sessions[sid]; s != nil && s.State != protocol.SessionClosed {
-			ok.ActiveSessionID = sid
+			hello.ActiveSessionID = sid
 		}
 	}
-	h.sendLocked(c, protocol.TypeHelloOK, e.ID, ok)
+	h.sendLocked(c, protocol.TypeHelloOK, e.ID, hello)
 	h.log.Info("device authenticated", "deviceId", dev.DeviceID, "role", p.Role,
-		"activeSessionId", ok.ActiveSessionID)
+		"activeSessionId", hello.ActiveSessionID)
 }
 
 func (h *Hub) iceServersLocked(deviceID string) []protocol.ICEServer {
@@ -288,14 +363,23 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 		h.mu.Unlock()
 		return
 	}
-	if _, err := h.opt.Store.GetDevice(p.DeviceID); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			h.sendErrLocked(c, e.ID, protocol.ErrUnknownDevice, "unknown device", 0)
-			h.mu.Unlock()
-			return
-		}
-		h.log.Error("device lookup failed", "err", err)
-		h.sendErrLocked(c, e.ID, protocol.ErrInternal, "lookup failed", 0)
+	ctrlID := c.deviceID
+	h.mu.Unlock()
+
+	host, ctrl, err := h.lookupPair(p.DeviceID, ctrlID)
+
+	h.mu.Lock()
+	if c.closed {
+		h.mu.Unlock()
+		return
+	}
+	if errors.Is(err, registry.ErrNotFound) {
+		h.sendErrLocked(c, e.ID, protocol.ErrUnknownDevice, "unknown device", 0)
+		h.mu.Unlock()
+		return
+	}
+	if err != nil {
+		h.sendRegistryErrLocked(c, e.ID, "device lookup", err)
 		h.mu.Unlock()
 		return
 	}
@@ -315,7 +399,7 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if c.closed {
+	if c.closed || c.deviceID != ctrlID {
 		return
 	}
 	if err != nil {
@@ -351,8 +435,8 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 	}
 	s := &Session{
 		ID: sid, State: protocol.SessionPending, CreatedAt: now,
-		Host: side{deviceID: p.DeviceID, epoch: h.deviceEpochLocked(p.DeviceID)},
-		Ctrl: side{deviceID: c.deviceID, epoch: h.deviceEpochLocked(c.deviceID)},
+		Host: side{deviceID: host.DeviceID, epoch: host.CodeEpoch},
+		Ctrl: side{deviceID: ctrl.DeviceID, epoch: ctrl.CodeEpoch},
 	}
 	h.sessions[sid] = s
 	h.devSess[p.DeviceID] = sid
@@ -373,16 +457,16 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 		SessionID: sid, SessionToken: ctrlTok, ExpiresAt: ctrlExp.UnixMilli(),
 		TTLSec: protocol.SessionTokenTTLSec, HostDeviceID: p.DeviceID,
 		ControllerDeviceID: c.deviceID,
-		HostPubkey:         h.devicePubkeyLocked(p.DeviceID),
+		HostPubkey:         host.Pubkey,
 	})
 	h.sendLocked(hostConn, protocol.TypeSessionStart, "", protocol.SessionStart{
 		ConnectOK: protocol.ConnectOK{
 			SessionID: sid, SessionToken: hostTok, ExpiresAt: hostExp.UnixMilli(),
 			TTLSec: protocol.SessionTokenTTLSec, HostDeviceID: p.DeviceID,
 			ControllerDeviceID: c.deviceID,
-			HostPubkey:         h.devicePubkeyLocked(p.DeviceID),
+			HostPubkey:         host.Pubkey,
 		},
-		ControllerPubkey: h.devicePubkeyLocked(c.deviceID),
+		ControllerPubkey: ctrl.Pubkey,
 	})
 	h.reportSessionStart(protocol.SessionStartReport{
 		SessionID: sid, HostDeviceID: p.DeviceID, ControllerDeviceID: c.deviceID,
@@ -409,20 +493,18 @@ func (h *Hub) hasLiveSessionLocked(deviceID string) bool {
 	return s != nil && s.State != protocol.SessionClosed
 }
 
-func (h *Hub) devicePubkeyLocked(deviceID string) string {
-	d, err := h.opt.Store.GetDevice(deviceID)
+func (h *Hub) lookupPair(hostID, ctrlID string) (host, ctrl registry.Device, err error) {
+	ctx, cancel := registryContext()
+	defer cancel()
+	host, err = h.opt.Registry.Lookup(ctx, hostID)
 	if err != nil {
-		return ""
+		return host, ctrl, err
 	}
-	return d.Pubkey
-}
-
-func (h *Hub) deviceEpochLocked(deviceID string) int64 {
-	d, err := h.opt.Store.GetDevice(deviceID)
-	if err != nil {
-		return 0
+	ctrl, err = h.opt.Registry.Lookup(ctx, ctrlID)
+	if errors.Is(err, registry.ErrNotFound) {
+		err = errors.New("the authenticated controller is missing from the registry")
 	}
-	return d.CodeEpoch
+	return host, ctrl, err
 }
 
 func (h *Hub) handleResumeLocked(c *Client, e protocol.Envelope) {
@@ -536,21 +618,34 @@ func (h *Hub) handleByeLocked(c *Client, e protocol.Envelope) {
 	h.closeSessionLocked(s, reason)
 }
 
-func (h *Hub) handleRefreshLocked(c *Client, e protocol.Envelope) {
-	now := h.clock.Now()
-	if err := h.opt.Store.BumpEpoch(c.deviceID, now); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			h.sendErrLocked(c, e.ID, protocol.ErrUnknownDevice, "unknown device", 0)
-			return
-		}
-		h.log.Error("code refresh failed", "deviceId", c.deviceID, "err", err)
-		h.sendErrLocked(c, e.ID, protocol.ErrInternal, "refresh failed", 0)
+func (h *Hub) handleRefresh(c *Client, e protocol.Envelope) {
+	h.mu.Lock()
+	if !h.acceptAuthedLocked(c, e) {
+		h.mu.Unlock()
 		return
 	}
-	h.closeSessionsForDeviceLocked(c.deviceID, protocol.ByeCodeRefreshed)
+	deviceID := c.deviceID
+	h.mu.Unlock()
+
+	ctx, cancel := registryContext()
+	err := h.opt.Registry.BumpEpoch(ctx, deviceID)
+	cancel()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if errors.Is(err, registry.ErrNotFound) {
+		h.sendErrLocked(c, e.ID, protocol.ErrUnknownDevice, "unknown device", 0)
+		return
+	}
+	if err != nil {
+		h.sendRegistryErrLocked(c, e.ID, "code refresh", err)
+		return
+	}
+	now := h.clock.Now()
+	h.closeSessionsForDeviceLocked(deviceID, protocol.ByeCodeRefreshed)
 	h.sendLocked(c, protocol.TypeRefreshCodeOK, e.ID, protocol.RefreshCodeOK{
-		DeviceID: c.deviceID, UpdatedAt: now.UnixMilli()})
-	h.log.Info("access code refreshed", "deviceId", c.deviceID)
+		DeviceID: deviceID, UpdatedAt: now.UnixMilli()})
+	h.log.Info("access code refreshed", "deviceId", deviceID)
 }
 
 const SweepInterval = 5 * time.Second

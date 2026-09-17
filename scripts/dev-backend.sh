@@ -9,12 +9,41 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVER_DIR="$ROOT/server"
 API_PORT="${RC_DEV_API_PORT:-18080}"
-SIGNAL_PORT="${RC_DEV_SIGNAL_PORT:-18443}"
+DEFAULT_SIGNAL_PORT=18443
 DATA="${RC_DEV_DATA:-${TMPDIR:-/tmp}/skipperdesk-dev-backend}"
 BIN="$DATA/bin"
+PIDS=()
+
+port_free() {
+  python3 - "$1" <<'PY'
+import socket, sys
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+PY
+}
+
+any_free_port() {
+  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+
+if [[ -n "${RC_DEV_SIGNAL_PORT:-}" ]]; then
+  SIGNAL_PORT="$RC_DEV_SIGNAL_PORT"
+  port_free "$SIGNAL_PORT" || { echo "FAIL  RC_DEV_SIGNAL_PORT=$SIGNAL_PORT is already in use"; exit 1; }
+elif port_free "$DEFAULT_SIGNAL_PORT"; then
+  SIGNAL_PORT="$DEFAULT_SIGNAL_PORT"
+else
+  SIGNAL_PORT="$(any_free_port)"
+  echo "== port $DEFAULT_SIGNAL_PORT is taken; rc-signal will listen on $SIGNAL_PORT"
+fi
+port_free "$API_PORT" || { echo "FAIL  the rc-api port $API_PORT is already in use (set RC_DEV_API_PORT)"; exit 1; }
+
 API_URL="http://127.0.0.1:$API_PORT"
 SIGNAL_URL="http://127.0.0.1:$SIGNAL_PORT"
-PIDS=()
 
 mkdir -p "$BIN"
 
@@ -73,11 +102,10 @@ echo "== starting rc-api on $API_URL (dev identity provider)"
 PIDS+=("$!")
 wait_healthy "$API_URL" rc-api "${PIDS[0]}"
 
-echo "== starting rc-signal on $SIGNAL_URL (entitlement from rc-api)"
+echo "== starting rc-signal on $SIGNAL_URL (device registry and entitlement from rc-api)"
 "$BIN/rc-signal" \
   -insecure-http \
   -listen "127.0.0.1:$SIGNAL_PORT" \
-  -db "$DATA/rc-signal.db" \
   -entitlement http \
   -api-internal-url "$API_URL" \
   -internal-token "$INTERNAL_TOKEN" \
@@ -96,9 +124,11 @@ Backend is up. Point the app (or scripts/test-*.sh) at it with:
   export SKIPPER_WEB_BASE_URL=$API_URL
 
 The app derives ws://127.0.0.1:$API_PORT/ws, which rc-api passes through to rc-signal.
+rc-signal:     $SIGNAL_URL (device registry and entitlement live in rc-api)
 Data and logs: $DATA
 Dev top-up:    curl -X POST $API_URL/v1/credits/dev-topup -H 'Authorization: Bearer dev:<email>' \\
                  -H "Idempotency-Key: \$(uuidgen)" -d '{"amountCents":500}'
+Dev sign-in:   RC_ROLE=host apps/macos/.build/debug/rc-node --dev-sign-in <email>
 Press Ctrl-C to stop both.
 EOF
 

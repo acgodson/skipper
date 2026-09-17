@@ -9,10 +9,14 @@ import (
 	protocol "rcprotocol"
 )
 
+// decide answers for a device; nil is a device the registry has never seen.
 func (s *Server) decide(device *apidb.Device) (policy.Decision, error) {
+	if device == nil {
+		return policy.Decide(policy.Facts{}, s.now()), nil
+	}
 	facts := policy.Facts{
 		Known:       true,
-		Unlinked:    device.Unlinked,
+		Unlinked:    device.Unlinked || device.AccountID == "",
 		TrialEndsAt: device.TrialEndsAt,
 	}
 	if device.AccountID != "" {
@@ -54,27 +58,13 @@ func (s *Server) entitlement(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, r, http.StatusOK, decision.Entitlement)
 }
 
-// deviceForSignaling resolves a device the signaling server knows about.
-// TODO: rc-signal and rc-api keep separate device registries locally; in AWS they
-// share one, and this auto-provision of a trial record for a device id that has
-// never been linked goes away (SCOPE §6 and Phase 6 tune the trial grant).
-func (s *Server) deviceForSignaling(deviceID string) (*apidb.Device, error) {
+// signalingDevice resolves a host the signaling server names; an unknown id is nil, never a new record.
+func (s *Server) signalingDevice(deviceID string) (*apidb.Device, error) {
 	device, err := s.opt.DB.DeviceByID(deviceID)
-	if err == nil {
-		return device, nil
+	if errors.Is(err, apidb.ErrNotFound) {
+		return nil, nil
 	}
-	if !errors.Is(err, apidb.ErrNotFound) {
-		return nil, err
-	}
-	now := s.nowMS()
-	fresh := apidb.Device{
-		DeviceID: deviceID, Platform: protocol.PlatformMacOS, CreatedAt: now, LastSeen: now,
-		TrialEndsAt: policy.TrialEndsAt(s.now()),
-	}
-	if err := s.opt.DB.InsertDevice(fresh); err != nil {
-		return nil, err
-	}
-	return s.opt.DB.DeviceByID(deviceID)
+	return device, err
 }
 
 func (s *Server) internalEntitlement(w http.ResponseWriter, r *http.Request) {
@@ -86,7 +76,7 @@ func (s *Server) internalEntitlement(w http.ResponseWriter, r *http.Request) {
 		s.badRequest(w, r, "'deviceId' must be 9 digits")
 		return
 	}
-	device, err := s.deviceForSignaling(deviceID)
+	device, err := s.signalingDevice(deviceID)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -96,13 +86,12 @@ func (s *Server) internalEntitlement(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	switch decision.Reason {
-	case protocol.EntitlementConcurrency, protocol.EntitlementSuspended:
+	if decision.Reason != "" {
 		s.fail(w, r, http.StatusPaymentRequired, protocol.APIErrEntitlement,
-			"this account may not open a session right now", withReason(decision.Reason))
-	default:
-		s.writeJSON(w, r, http.StatusOK, decision.Entitlement)
+			"this host may not open a session right now", withReason(decision.Reason))
+		return
 	}
+	s.writeJSON(w, r, http.StatusOK, decision.Entitlement)
 }
 
 func (s *Server) internalSessionStart(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +111,7 @@ func (s *Server) internalSessionStart(w http.ResponseWriter, r *http.Request) {
 		s.badRequest(w, r, "'sessionId', 'hostDeviceId' and 'controllerDeviceId' are required")
 		return
 	}
-	host, err := s.deviceForSignaling(report.HostDeviceID)
+	host, err := s.signalingDevice(report.HostDeviceID)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -143,13 +132,20 @@ func (s *Server) internalSessionStart(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.opt.DB.StartSession(apidb.Session{
 		SessionID: report.SessionID, HostDeviceID: report.HostDeviceID,
-		ControllerDeviceID: report.ControllerDeviceID, HostAccountID: host.AccountID,
+		ControllerDeviceID: report.ControllerDeviceID, HostAccountID: hostAccount(host),
 		StartedAt: startedAt,
 	}); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func hostAccount(host *apidb.Device) string {
+	if host == nil {
+		return ""
+	}
+	return host.AccountID
 }
 
 func (s *Server) internalSessionStop(w http.ResponseWriter, r *http.Request) {

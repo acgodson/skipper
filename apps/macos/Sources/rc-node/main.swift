@@ -9,12 +9,32 @@ final class Node {
     let role: Wire.Role
     let coordinator: SessionCoordinator
     let identity: IdentityStore
+    private var devSignIn: DevSignIn?
 
-    init(role: Wire.Role) throws {
+    init(role: Wire.Role, devSignInEmail: String?) throws {
         self.role = role
         self.identity = try IdentityStore()
         self.coordinator = SessionCoordinator(identity: identity, role: role)
+        self.devSignIn = devSignInEmail.map { DevSignIn(email: $0, identity: identity) }
         coordinator.onEvent = { [weak self] event in self?.report(event) }
+    }
+
+    private func signInOnce(signalingDeviceID: String) {
+        guard let signIn = devSignIn else { return }
+        devSignIn = nil
+        Task {
+            do {
+                let linked = try await signIn.run()
+                emit("signed_in", [
+                    "deviceId": linked.device.deviceId,
+                    "signalingDeviceId": signalingDeviceID,
+                    "accountId": linked.accountId,
+                    "status": linked.entitlement?.status.rawValue ?? "",
+                ])
+            } catch {
+                emit("sign_in_error", ["message": error.localizedDescription])
+            }
+        }
     }
 
     // MARK: Output
@@ -43,6 +63,7 @@ final class Node {
                 "activeSessionId": hello.activeSessionId ?? "",
                 "heartbeatSec": hello.heartbeatSec,
             ])
+            signInOnce(signalingDeviceID: hello.deviceId)
         case .presence(let deviceID, let online):
             emit("presence", ["deviceId": deviceID, "online": online])
         case .sessionGranted(let sessionID, let grantedRole):
@@ -60,9 +81,7 @@ final class Node {
         case .roundTrip(let seconds):
             emit("pong", ["rttMs": Int((seconds * 1000).rounded())])
         case .connectFailed(let failure):
-            var fields: [String: Any] = ["code": failure.code, "message": failure.localizedDescription]
-            if case .rateLimited(let retry) = failure { fields["retryAfterSec"] = retry }
-            emit("connect_error", fields)
+            emitConnectError(failure)
         case .bye(let reason):
             emit("bye", ["reason": reason])
         case .accessCodeRequired(let reason):
@@ -103,6 +122,16 @@ final class Node {
         case .cursorShape(let shape, let outgoing):
             emit("cursor_shape", ["shape": shape.rawValue, "outgoing": outgoing])
         }
+    }
+
+    private func emitConnectError(_ failure: ConnectFailure) {
+        var fields: [String: Any] = ["code": failure.code, "message": failure.localizedDescription]
+        switch failure {
+        case .rateLimited(let retry): fields["retryAfterSec"] = retry
+        case .entitlement(let reason, _): fields["reason"] = reason ?? ""
+        default: break
+        }
+        emit("connect_error", fields)
     }
 
     private func pointerEvent(x: Double, y: Double,
@@ -177,8 +206,7 @@ final class Node {
                 do {
                     try await coordinator.connect(deviceID: parts[1], accessCode: parts[2], remember: remember)
                 } catch {
-                    let failure = (error as? ConnectFailure) ?? ConnectFailure(error)
-                    emit("connect_error", ["code": failure.code, "message": failure.localizedDescription])
+                    emitConnectError((error as? ConnectFailure) ?? ConnectFailure(error))
                 }
             }
 
@@ -341,8 +369,17 @@ func bootstrap() {
         FileHandle.standardError.write(Data("RC_ROLE must be host or controller\n".utf8))
         exit(2)
     }
+    let arguments = CommandLine.arguments
+    var devSignInEmail: String?
+    if let flag = arguments.firstIndex(of: "--dev-sign-in") {
+        guard flag + 1 < arguments.count, arguments[flag + 1].contains("@") else {
+            FileHandle.standardError.write(Data("usage: rc-node [--dev-sign-in <email>]\n".utf8))
+            exit(2)
+        }
+        devSignInEmail = arguments[flag + 1]
+    }
     do {
-        let node = try Node(role: role)
+        let node = try Node(role: role, devSignInEmail: devSignInEmail)
         sharedNode = node
         node.start()
     } catch {
