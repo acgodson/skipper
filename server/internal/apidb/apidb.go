@@ -60,7 +60,7 @@ func (d Device) Public() protocol.Device {
 
 type LinkCode struct {
 	Code      string
-	Nonce     string
+	NonceHash string
 	Pubkey    string
 	Platform  string
 	Label     string
@@ -499,7 +499,7 @@ func (d *DB) ListDevices(accountID string, after string, limit int) ([]Device, e
 
 func (d *DB) PutLinkCode(c LinkCode) error {
 	_, err := d.db.Exec(`INSERT INTO link_codes (code, nonce, pubkey, platform, label, account_id, expires_at, used)
- VALUES (?,?,?,?,?,?,?,0)`, c.Code, c.Nonce, c.Pubkey, c.Platform, c.Label, c.AccountID, c.ExpiresAt)
+ VALUES (?,?,?,?,?,?,?,0)`, c.Code, c.NonceHash, c.Pubkey, c.Platform, c.Label, c.AccountID, c.ExpiresAt)
 	return err
 }
 
@@ -508,7 +508,7 @@ func (d *DB) LinkCodeByCode(code string) (*LinkCode, error) {
 	var used int
 	err := d.db.QueryRow(`SELECT code, nonce, pubkey, platform, label, account_id, expires_at, used
  FROM link_codes WHERE code=?`, code).
-		Scan(&c.Code, &c.Nonce, &c.Pubkey, &c.Platform, &c.Label, &c.AccountID, &c.ExpiresAt, &used)
+		Scan(&c.Code, &c.NonceHash, &c.Pubkey, &c.Platform, &c.Label, &c.AccountID, &c.ExpiresAt, &used)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

@@ -10,14 +10,10 @@ public enum SecretAccount: String, CaseIterable {
 }
 
 public enum SecretStoreError: Error, LocalizedError {
-    case keychainUnavailable(SecretAccount, OSStatus)
     case unreadable(SecretAccount)
 
     public var errorDescription: String? {
         switch self {
-        case .keychainUnavailable(let account, let status):
-            let detail = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
-            return "The Keychain could not hold this Mac's \(account.rawValue) (\(detail))."
         case .unreadable(let account):
             return "This Mac's stored \(account.rawValue) could not be read."
         }
@@ -28,61 +24,6 @@ public protocol SecretBlobStore {
     func load(_ account: SecretAccount) throws -> Data?
     func save(_ blob: Data, for account: SecretAccount) throws
     func remove(_ account: SecretAccount) throws
-}
-
-public struct SecretKeychain: SecretBlobStore {
-
-    public static let service = DeviceKeyKeychain.service
-
-    public init() {}
-
-    private func query(_ account: SecretAccount) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: account.rawValue,
-        ]
-    }
-
-    public func load(_ account: SecretAccount) throws -> Data? {
-        var request = query(account)
-        request[kSecReturnData as String] = true
-        request[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(request as CFDictionary, &item)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = item as? Data else {
-            throw SecretStoreError.keychainUnavailable(account, status)
-        }
-        return data
-    }
-
-    public func save(_ blob: Data, for account: SecretAccount) throws {
-        let attributes: [String: Any] = [
-            kSecValueData as String: blob,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]
-        let update = SecItemUpdate(query(account) as CFDictionary, attributes as CFDictionary)
-        if update == errSecSuccess { return }
-        guard update == errSecItemNotFound else {
-            throw SecretStoreError.keychainUnavailable(account, update)
-        }
-
-        var insert = query(account)
-        insert.merge(attributes) { _, new in new }
-        let status = SecItemAdd(insert as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw SecretStoreError.keychainUnavailable(account, status)
-        }
-    }
-
-    public func remove(_ account: SecretAccount) throws {
-        let status = SecItemDelete(query(account) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw SecretStoreError.keychainUnavailable(account, status)
-        }
-    }
 }
 
 public struct SecretFileStore: SecretBlobStore {
@@ -119,17 +60,17 @@ public final class InMemorySecretStore: SecretBlobStore {
     public init() {}
 
     public func load(_ account: SecretAccount) throws -> Data? {
-        if isSealed { throw SecretStoreError.keychainUnavailable(account, errSecNotAvailable) }
+        if isSealed { throw KeychainError.status(errSecNotAvailable) }
         return blobs[account]
     }
 
     public func save(_ blob: Data, for account: SecretAccount) throws {
-        if isSealed { throw SecretStoreError.keychainUnavailable(account, errSecNotAvailable) }
+        if isSealed { throw KeychainError.status(errSecNotAvailable) }
         blobs[account] = blob
     }
 
     public func remove(_ account: SecretAccount) throws {
-        if isSealed { throw SecretStoreError.keychainUnavailable(account, errSecNotAvailable) }
+        if isSealed { throw KeychainError.status(errSecNotAvailable) }
         blobs[account] = nil
     }
 }
@@ -158,7 +99,7 @@ public struct SecretStore {
         if IdentityStore.usesDevFileIdentity(fileStore: fileStore) {
             return SecretStore(blobs: SecretFileStore(directory: fileStore.directory))
         }
-        return SecretStore(blobs: SecretKeychain())
+        return SecretStore(blobs: KeychainBlobs<SecretAccount>())
     }
 
     // MARK: This Mac's own access code

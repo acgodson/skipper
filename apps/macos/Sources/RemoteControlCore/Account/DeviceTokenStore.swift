@@ -30,14 +30,10 @@ public struct DeviceToken: Codable, Equatable {
 }
 
 public enum DeviceTokenStoreError: Error, LocalizedError {
-    case keychainUnavailable(OSStatus)
     case unreadable(String)
 
     public var errorDescription: String? {
         switch self {
-        case .keychainUnavailable(let status):
-            let detail = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
-            return "The Keychain could not hold this Mac's account token (\(detail))."
         case .unreadable(let reason):
             return "This Mac's stored account token could not be read (\(reason))."
         }
@@ -48,62 +44,6 @@ public protocol DeviceTokenBlobStore {
     func load() throws -> Data?
     func save(_ blob: Data) throws
     func remove() throws
-}
-
-public struct DeviceTokenKeychain: DeviceTokenBlobStore {
-
-    public static let service = DeviceKeyKeychain.service
-    public static let account = "device-token"
-
-    public init() {}
-
-    private var query: [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: Self.account,
-        ]
-    }
-
-    public func load() throws -> Data? {
-        var request = query
-        request[kSecReturnData as String] = true
-        request[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(request as CFDictionary, &item)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = item as? Data else {
-            throw DeviceTokenStoreError.keychainUnavailable(status)
-        }
-        return data
-    }
-
-    public func save(_ blob: Data) throws {
-        let attributes: [String: Any] = [
-            kSecValueData as String: blob,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]
-        let update = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if update == errSecSuccess { return }
-        guard update == errSecItemNotFound else {
-            throw DeviceTokenStoreError.keychainUnavailable(update)
-        }
-
-        var insert = query
-        insert.merge(attributes) { _, new in new }
-        let status = SecItemAdd(insert as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw DeviceTokenStoreError.keychainUnavailable(status)
-        }
-    }
-
-    public func remove() throws {
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw DeviceTokenStoreError.keychainUnavailable(status)
-        }
-    }
 }
 
 public struct DeviceTokenFile: DeviceTokenBlobStore {
@@ -140,22 +80,24 @@ public final class InMemoryDeviceTokenStore: DeviceTokenBlobStore {
     public init() {}
 
     public func load() throws -> Data? {
-        if isSealed { throw DeviceTokenStoreError.keychainUnavailable(errSecNotAvailable) }
+        if isSealed { throw KeychainError.status(errSecNotAvailable) }
         return blob
     }
 
     public func save(_ blob: Data) throws {
-        if isSealed { throw DeviceTokenStoreError.keychainUnavailable(errSecNotAvailable) }
+        if isSealed { throw KeychainError.status(errSecNotAvailable) }
         self.blob = blob
     }
 
     public func remove() throws {
-        if isSealed { throw DeviceTokenStoreError.keychainUnavailable(errSecNotAvailable) }
+        if isSealed { throw KeychainError.status(errSecNotAvailable) }
         blob = nil
     }
 }
 
 public struct DeviceTokenStore {
+
+    public static let keychainAccount = "device-token"
 
     private let blobs: DeviceTokenBlobStore
 
@@ -167,7 +109,7 @@ public struct DeviceTokenStore {
         if IdentityStore.usesDevFileIdentity(fileStore: fileStore) {
             return DeviceTokenStore(blobs: DeviceTokenFile(directory: fileStore.fileURL.deletingLastPathComponent()))
         }
-        return DeviceTokenStore(blobs: DeviceTokenKeychain())
+        return DeviceTokenStore(blobs: KeychainItem(account: keychainAccount))
     }
 
     public func load() throws -> DeviceToken? {

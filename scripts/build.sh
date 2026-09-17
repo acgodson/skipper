@@ -206,8 +206,11 @@ fi
 # fails with errSecMissingEntitlement (-34018) unless the binary carries
 # com.apple.application-identifier, and that entitlement is only honoured under a
 # Developer ID signature. Team ID comes from SKIPPER_TEAM_ID or from the selected
-# identity's own "Developer ID Application: NAME (TEAMID)" suffix. Without one the
-# build still succeeds; the app falls back to a Keychain key at runtime.
+# identity's own "Developer ID Application: NAME (TEAMID)" suffix. Every Keychain
+# item lives in the data-protection keychain under the TEAMID.app.skipperdesk.desktop
+# access group, so keychain-access-groups is always added when a Team ID exists.
+# Without one the build still succeeds, but the app reads no Team ID from its own
+# signature and refuses to create an identity outside the dev file-identity mode.
 KEYCHAIN_APP_IDENTIFIER="app.skipperdesk.desktop"
 TEAM_ID="${SKIPPER_TEAM_ID:-}"
 if [[ -z "${TEAM_ID}" && "${SIGN_IDENTITY}" == "Developer ID Application:"* ]]; then
@@ -224,11 +227,11 @@ if [[ -n "${TEAM_ID}" ]]; then
     </array>
 KC_ENTS
 )"
-    echo "==> Secure Enclave entitlements for team ${TEAM_ID} (${TEAM_ID}.${KEYCHAIN_APP_IDENTIFIER})"
+    echo "==> Keychain access group and Secure Enclave entitlements for team ${TEAM_ID} (${TEAM_ID}.${KEYCHAIN_APP_IDENTIFIER})"
 else
     KEYCHAIN_ENTITLEMENTS=""
-    echo "No Developer ID identity; Secure Enclave unavailable in this build"
-    echo "    The app falls back to a Keychain-held software key at runtime."
+    echo "No Developer ID identity; this build cannot store keys"
+    echo "    The app refuses to create an identity unless SKIPPER_DEV_FILE_IDENTITY=1 or RC_IDENTITY_DIR is set."
     echo "    Set SKIPPER_TEAM_ID, or sign with a Developer ID Application identity, to enable it."
 fi
 
@@ -314,9 +317,9 @@ fi
 #
 # NOTE: as of Phase 2.2 the signing identity is functional, not only a
 # distribution concern. The device private key goes to the Secure Enclave when
-# the entitlements above are present, to the Keychain otherwise, and to
-# identity.json only under SKIPPER_DEV_FILE_IDENTITY=1 or an overridden
-# RC_IDENTITY_DIR. A Developer ID therefore upgrades new identities from a
+# the entitlements above are present, to the data-protection Keychain if the
+# Enclave refuses, nowhere at all without a Team ID, and to identity.json only
+# under SKIPPER_DEV_FILE_IDENTITY=1 or an overridden RC_IDENTITY_DIR. A Developer ID therefore upgrades new identities from a
 # software key to a hardware one; existing identities keep their Device ID and
 # stay on their (Keychain-held) software key, because an SE key cannot be
 # imported.

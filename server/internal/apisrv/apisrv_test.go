@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -186,11 +187,13 @@ func (h *harness) link(email string, d device, hardwareID string) protocol.Devic
 	return grant
 }
 
+const appNonce = "app-nonce"
+
 func (h *harness) mintCode(email string, d device) (code, nonce string) {
 	h.t.Helper()
 	t := h.t
 	r := h.call("POST", protocol.PathAuthLink, "dev:"+email, idem(),
-		protocol.LinkRequest{Nonce: "app-nonce", Pubkey: d.pubkey, Platform: protocol.PlatformMacOS})
+		protocol.LinkRequest{Nonce: appNonce, Pubkey: d.pubkey, Platform: protocol.PlatformMacOS})
 	if r.status != http.StatusCreated {
 		t.Fatalf("link: %d %s", r.status, r.body)
 	}
@@ -207,8 +210,13 @@ func (h *harness) mintCode(email string, d device) (code, nonce string) {
 
 func (h *harness) tokenCall(code, nonce string, d device, hardwareID string) reply {
 	h.t.Helper()
+	return h.tokenCallWithAppNonce(code, appNonce, nonce, d, hardwareID)
+}
+
+func (h *harness) tokenCallWithAppNonce(code, linkNonce, nonce string, d device, hardwareID string) reply {
+	h.t.Helper()
 	return h.call("POST", protocol.PathAuthDeviceToken, "", idem(), protocol.DeviceTokenRequest{
-		Code: code, Pubkey: d.pubkey, Sig: d.sign(h.t, nonce),
+		Code: code, Nonce: linkNonce, Pubkey: d.pubkey, Sig: d.sign(h.t, nonce),
 		Platform: protocol.PlatformMacOS, HardwareID: hardwareID, Label: "test mac",
 	})
 }
@@ -515,5 +523,62 @@ func TestDevExpireTrialEndsTheAccountsTrial(t *testing.T) {
 	}
 	if r := h.call("POST", "/v1/dev/expire-trial", grant.DeviceToken, "", struct{}{}); r.status != http.StatusForbidden {
 		t.Fatalf("expire-trial with a device token: %d %s", r.status, r.body)
+	}
+}
+
+func (h *harness) challenge(code string) string {
+	h.t.Helper()
+	r := h.call("POST", protocol.PathAuthDeviceChallenge, "", "", protocol.DeviceChallengeRequest{Code: code})
+	var challenge protocol.DeviceChallengeResponse
+	r.decode(h.t, &challenge)
+	return challenge.Nonce
+}
+
+func TestTokenRequiresTheLinkNonceAndBurnsTheCodeOnMismatch(t *testing.T) {
+	for name, presented := range map[string]string{"wrong": "attacker-nonce", "missing": ""} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			mac := newDevice(t)
+			h.register(mac)
+			code, nonce := h.mintCode("hana@example.com", mac)
+			r := h.tokenCallWithAppNonce(code, presented, nonce, mac, "SERIAL-H")
+			if e := r.apiError(t); r.status != http.StatusBadRequest || e.Code != protocol.APIErrBadRequest ||
+				e.Reason != protocol.ReasonNonceMismatch {
+				t.Fatalf("%s nonce: %d %s", name, r.status, r.body)
+			}
+			r = h.tokenCall(code, h.challenge(code), mac, "SERIAL-H")
+			if r.status != http.StatusUnauthorized || r.apiError(t).Code != protocol.APIErrUnauthenticated {
+				t.Fatalf("the code survived a %s nonce: %d %s", name, r.status, r.body)
+			}
+		})
+	}
+}
+
+func TestTokenCodeCannotBeReplayed(t *testing.T) {
+	h := newHarness(t)
+	mac := newDevice(t)
+	h.register(mac)
+	code, nonce := h.mintCode("ivan@example.com", mac)
+	if r := h.tokenCall(code, nonce, mac, "SERIAL-I"); r.status != http.StatusOK {
+		t.Fatalf("first redeem: %d %s", r.status, r.body)
+	}
+	r := h.tokenCall(code, h.challenge(code), mac, "SERIAL-I")
+	if r.status != http.StatusUnauthorized || r.apiError(t).Code != protocol.APIErrUnauthenticated {
+		t.Fatalf("replayed code with the right nonce: %d %s", r.status, r.body)
+	}
+}
+
+func TestDevLinkPageEchoesTheAppNonce(t *testing.T) {
+	h := newHarness(t)
+	mac := newDevice(t)
+	form := url.Values{"nonce": {"nonce-from-app"}, "device": {mac.pubkey}, "email": {"jo@example.com"}}
+	resp, err := http.PostForm(h.url+"/link", form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	page, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(page, []byte("nonce=nonce-from-app")) {
+		t.Fatalf("handoff page: %d %s", resp.StatusCode, page)
 	}
 }

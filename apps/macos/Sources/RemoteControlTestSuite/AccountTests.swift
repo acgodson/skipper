@@ -147,7 +147,7 @@ public let accountSuite = TestSuite("Account", [
             try DeviceTokenStore(blobs: blobs).save(
                 DeviceToken(token: "t", deviceId: "1", accountId: "a", expiresAt: 0))
             throw fail("a sealed store accepted a token")
-        } catch is DeviceTokenStoreError {
+        } catch is KeychainError {
         }
     },
 

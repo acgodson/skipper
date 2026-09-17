@@ -74,7 +74,10 @@ final class DevSignIn {
                 var callback = URLComponents()
                 callback.scheme = AccountLinker.callbackScheme
                 callback.host = AccountLinker.callbackHost
-                callback.queryItems = [URLQueryItem(name: "code", value: code)]
+                callback.queryItems = [
+                    URLQueryItem(name: "code", value: code),
+                    URLQueryItem(name: "nonce", value: nonce),
+                ]
                 guard let url = callback.url, linker.handleCallback(url) else {
                     throw Failure.failed("the link callback was not accepted")
                 }
