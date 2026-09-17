@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import RemoteControlCore
+import SkipperDesign
 
 @main
 struct RemoteControlApp: App {
@@ -9,13 +10,15 @@ struct RemoteControlApp: App {
     @StateObject private var model = AppModel()
 
     var body: some Scene {
-        Window("RemoteControl", id: WindowID.main) {
+        Window("SkipperDesk", id: WindowID.main) {
             ContentView()
                 .environmentObject(model)
-                .frame(minWidth: 520, minHeight: 460)
+                .frame(minWidth: SkipperLayout.minWindowWidth, minHeight: SkipperLayout.minWindowHeight)
+                .tint(SkipperColor.accent)
         }
-        .defaultSize(width: 1000, height: 660)
+        .defaultSize(width: SkipperLayout.windowWidth, height: SkipperLayout.windowHeight)
         .windowResizability(.contentMinSize)
+        .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
@@ -23,9 +26,11 @@ struct RemoteControlApp: App {
         MenuBarExtra {
             MenuBarContent()
                 .environmentObject(model)
+                .tint(SkipperColor.accent)
         } label: {
             Image(systemName: model.sessionActive ? "display.and.arrow.down" : "display")
         }
+        .menuBarExtraStyle(.window)
     }
 }
 
@@ -80,9 +85,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { test.run() }
         }
         #if DEBUG
+        applyRequestedAppearance()
         dumpWindowIfRequested()
         #endif
     }
+
+    #if DEBUG
+    private func applyRequestedAppearance() {
+        switch UserDefaults.standard.string(forKey: "RCAppearance") {
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        default: break
+        }
+    }
+    #endif
 
     #if DEBUG
     private func dumpWindowIfRequested() {

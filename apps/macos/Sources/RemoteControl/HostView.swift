@@ -1,16 +1,14 @@
 import SwiftUI
 import AppKit
 import RemoteControlCore
+import SkipperDesign
 
 struct HostView: View {
 
     @EnvironmentObject private var model: AppModel
-    @State private var codeVisible = false
-    @State private var confirmingRefresh = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-
+        SkipperScreen {
             if model.sessionActive && model.coordinator?.canInjectInput == false {
                 InputBlockedBanner()
             }
@@ -18,211 +16,248 @@ struct HostView: View {
                 SessionActiveBanner()
             }
 
-            if let identity = model.identity {
-                SectionCard(title: "Remote Access") {
-                    LabeledContent {
-                        Text(identity.formattedDeviceID)
-                            .font(.system(.title3, design: .monospaced))
-                            .textSelection(.enabled)
-                    } label: {
-                        Text("Device ID")
-                    }
+            PermissionsBanners()
 
-                    Divider()
-
-                    LabeledContent {
-                        HStack(spacing: 8) {
-                            if codeVisible {
-                                Text(identity.formattedAccessCode)
-                                    .font(.system(.title3, design: .monospaced))
-                                    .textSelection(.enabled)
-                            } else {
-                                Text("\u{2022}\u{2022}\u{2022}\u{2022}-\u{2022}\u{2022}\u{2022}\u{2022}-\u{2022}\u{2022}\u{2022}\u{2022}")
-                                    .font(.system(.title3, design: .monospaced))
-                            }
-                            Button {
-                                codeVisible.toggle()
-                            } label: {
-                                Image(systemName: codeVisible ? "eye.slash" : "eye")
-                            }
-                            .buttonStyle(.borderless)
-                            .help(codeVisible ? "Hide access code" : "Show access code")
-                        }
-                    } label: {
-                        Text("Access Code")
-                    }
-
-                    HStack {
-                        Button("Refresh Access Code\u{2026}") { confirmingRefresh = true }
-                        Spacer()
-                        PresenceDot(state: model.selfPresence.state)
-                    }
-                    Text(model.selfPresence.explanation)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if let refreshError = identity.lastRefreshError {
-                        Text(refreshError)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                }
-                .confirmationDialog(
-                    "Refresh the access code?",
-                    isPresented: $confirmingRefresh
-                ) {
-                    Button("Refresh Access Code", role: .destructive) {
-                        model.refreshAccessCode()
-                        codeVisible = true
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("The current code stops working immediately. Any Mac that has saved it will have to be given the new code before it can connect again.")
-                }
+            if model.identity != nil {
+                HostHero()
             }
 
             AccountSection()
 
-            SectionCard(title: "Access") {
-                Toggle("Unattended Access", isOn: Binding(
-                    get: { model.settings.unattendedAccess },
-                    set: { model.settings.unattendedAccess = $0 }
-                ))
-                Text("Allows a controller with the correct code to connect while nobody is at this Mac.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Divider()
-
-                Toggle("Clipboard Sync", isOn: Binding(
-                    get: { model.settings.clipboardSync },
-                    set: { model.settings.clipboardSync = $0 }
-                ))
-                Text("Text only, both directions, while a session is open.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            AccessSection()
 
             ScreenSharingSection()
 
-            PermissionsSection()
+            TrustedControllersSection()
 
-            SectionCard(title: "Startup") {
-                Toggle("Launch at Login", isOn: Binding(
-                    get: { model.launchAtLogin.isEnabled },
-                    set: { model.launchAtLogin.set($0) }
-                ))
-                .disabled(!model.launchAtLogin.isAvailable)
-                Text(model.launchAtLogin.statusDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let error = model.launchAtLogin.lastError {
-                    Text(error).font(.caption).foregroundStyle(.orange)
-                }
-            }
-
-            SectionCard(title: "Quality") {
-                Picker("Remote Desktop Quality", selection: Binding(
-                    get: { model.settings.qualityMode },
-                    set: { model.settings.qualityMode = $0 }
-                )) {
-                    ForEach(QualityMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
-                .pickerStyle(.radioGroup)
-                Text(model.settings.qualityMode.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            QualitySection()
 
             DeviceKeyFooter()
 
             #if DEBUG
-            SectionCard(title: "Preview only (debug builds)") {
-                Toggle("Show the \u{201C}Remote session active\u{201D} banner", isOn: $model.previewSessionBanner)
-                Text("Renders the banner state. There is no real session \u{2014} the transport is a stub until Phase 3.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            SkipperCard(title: "Preview only (debug builds)") {
+                SkipperToggleRow(
+                    title: "Show the \u{201C}Remote session active\u{201D} banner",
+                    detail: "Renders the banner state without a real session.",
+                    isOn: $model.previewSessionBanner
+                )
             }
             #endif
+        }
+        .onAppear { model.reloadTrustedControllers() }
+    }
+}
+
+private struct HostHero: View {
+
+    @EnvironmentObject private var model: AppModel
+    @State private var codeVisible = false
+    @State private var confirmingRefresh = false
+
+    var body: some View {
+        if let identity = model.identity {
+            SkipperHero {
+                HStack(alignment: .firstTextBaseline, spacing: SkipperSpace.m) {
+                    VStack(alignment: .leading, spacing: SkipperSpace.xxs) {
+                        Text("This Mac")
+                            .font(SkipperFont.title)
+                            .foregroundStyle(SkipperColor.textPrimary)
+                        Text("Give these two to the Mac that will control this one.")
+                            .font(SkipperFont.caption)
+                            .foregroundStyle(SkipperColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: SkipperSpace.s)
+                    StatusPill(model.connectionStatus.label, tone: model.connectionStatus.tone)
+                }
+
+                CodeDisplay(label: "Device ID", value: identity.formattedDeviceID)
+
+                SkipperDivider()
+
+                CodeDisplay(
+                    label: "Access Code",
+                    value: identity.formattedAccessCode,
+                    maskedValue: codeVisible ? nil : "\u{2022}\u{2022}\u{2022}\u{2022}-\u{2022}\u{2022}\u{2022}\u{2022}-\u{2022}\u{2022}\u{2022}\u{2022}",
+                    copyValue: identity.formattedAccessCode
+                ) {
+                    SkipperIconButton(
+                        symbol: codeVisible ? "eye.slash" : "eye",
+                        help: codeVisible ? "Hide access code" : "Show access code"
+                    ) {
+                        withAnimation(SkipperMotion.quick) { codeVisible.toggle() }
+                    }
+                    SkipperIconButton(symbol: "arrow.clockwise", help: "Refresh the access code") {
+                        confirmingRefresh = true
+                    }
+                }
+
+                SkipperNote(model.selfPresence.explanation)
+
+                if let refreshError = identity.lastRefreshError {
+                    SkipperNote(refreshError, tone: .attention)
+                }
+            }
+            .confirmationDialog("Refresh the access code?", isPresented: $confirmingRefresh) {
+                Button("Refresh Access Code", role: .destructive) {
+                    model.refreshAccessCode()
+                    codeVisible = true
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The current code stops working immediately, and every controller this Mac already trusts is forgotten. Any Mac that saved the old code will have to be given the new one before it can connect again.")
+            }
         }
     }
 }
 
-struct AccountSection: View {
+private struct AccessSection: View {
 
     @EnvironmentObject private var model: AppModel
-    @State private var confirmingUnlink = false
 
     var body: some View {
-        SectionCard(title: "Account") {
-            switch model.account?.state ?? .unlinked {
+        SkipperCard(title: "Access") {
+            SkipperToggleRow(
+                title: "Unattended access",
+                detail: "Lets a controller with the correct code connect while nobody is at this Mac.",
+                isOn: Binding(
+                    get: { model.settings.unattendedAccess },
+                    set: { model.settings.unattendedAccess = $0 }
+                )
+            )
 
-            case .unlinked:
-                Button("Link this Mac") { model.linkAccount() }
-                Text("Hosting needs an account. This opens your browser to sign in; SkipperDesk never sees your password.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            SkipperDivider()
 
-            case .linking:
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Finish signing in in your browser").font(.callout)
-                    Spacer()
-                    Button("Cancel") { model.cancelAccountLink() }
-                }
+            SkipperToggleRow(
+                title: "Clipboard sync",
+                detail: "Text only, both directions, while a session is open.",
+                isOn: Binding(
+                    get: { model.settings.clipboardSync },
+                    set: { model.settings.clipboardSync = $0 }
+                )
+            )
 
-            case .linked(let accountLabel, let device):
-                LabeledContent {
-                    Text(accountLabel ?? "Signed in").textSelection(.enabled)
-                } label: {
-                    Text("Account")
+            SkipperDivider()
+
+            SkipperToggleRow(
+                title: "Launch at login",
+                detail: model.launchAtLogin.statusDescription,
+                isOn: Binding(
+                    get: { model.launchAtLogin.isEnabled },
+                    set: { model.launchAtLogin.set($0) }
+                )
+            )
+            .disabled(!model.launchAtLogin.isAvailable)
+
+            if let error = model.launchAtLogin.lastError {
+                SkipperNote(error, tone: .attention)
+            }
+        }
+    }
+}
+
+private struct QualitySection: View {
+
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        SkipperCard(title: "Quality") {
+            QualityPicker()
+        }
+    }
+}
+
+struct QualityPicker: View {
+
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: SkipperSpace.s) {
+            Picker("Remote desktop quality", selection: Binding(
+                get: { model.settings.qualityMode },
+                set: { model.settings.qualityMode = $0 }
+            )) {
+                ForEach(QualityMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
                 }
-                LabeledContent {
-                    Text(device.label.isEmpty ? DeviceID.formatted(device.deviceId) : device.label)
-                        .textSelection(.enabled)
-                } label: {
-                    Text("This Mac")
-                }
-                if let entitlement = model.account?.entitlement?.value {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(EntitlementPresentation.statusLine(for: entitlement))
-                            .font(.callout)
-                        if entitlement.status == .exhausted {
-                            Button("Top Up\u{2026}") {
-                                NSWorkspace.shared.open(
-                                    EntitlementPresentation.topUpURL(webBaseURL: AccountLinker.defaultWebBaseURL()))
-                            }
-                        }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            SkipperNote(model.settings.qualityMode.detail)
+        }
+    }
+}
+
+private struct TrustedControllersSection: View {
+
+    @EnvironmentObject private var model: AppModel
+    @State private var confirmingRevoke = false
+
+    var body: some View {
+        SkipperCard(title: "Trusted controllers") {
+            if model.trustedControllers.isEmpty {
+                SkipperNote("No Mac has proved this Mac's access code yet. A controller that does is remembered here, and can reconnect without the code until you refresh it.")
+            } else {
+                ForEach(Array(model.trustedControllers.enumerated()), id: \.element.id) { index, entry in
+                    if index > 0 { SkipperDivider() }
+                    SkipperRow(
+                        title: entry.displayName,
+                        subtitle: entry.lastSeenSentence(),
+                        monospacedSubtitle: false
+                    ) {
+                        Text(entry.shortKey)
+                            .font(SkipperFont.codeCaption)
+                            .foregroundStyle(SkipperColor.textTertiary)
                     }
                 }
+                SkipperDivider()
                 HStack {
                     Spacer()
-                    Button("Unlink\u{2026}", role: .destructive) { confirmingUnlink = true }
+                    Button("Remove All\u{2026}") { confirmingRevoke = true }
+                        .skipperButton(.destructive)
                 }
-                .confirmationDialog("Unlink this Mac?", isPresented: $confirmingUnlink) {
-                    Button("Unlink", role: .destructive) { model.unlinkAccount() }
+                .confirmationDialog("Forget every trusted controller?", isPresented: $confirmingRevoke) {
+                    Button("Remove All", role: .destructive) { model.revokeTrustedControllers() }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("This Mac stops being able to host sessions until it is linked again. Its Device ID and access code do not change.")
-                }
-
-            case .error(let message):
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    Button("Try Again") { model.retryAccount() }
-                    Button("Link this Mac") { model.linkAccount() }
+                    Text("Each of them has to enter this Mac's access code again before it can connect. The code itself does not change.")
                 }
             }
         }
-        .onAppear {
-            guard model.account?.entitlement?.isStale == true else { return }
-            Task { await model.account?.refreshEntitlement() }
+    }
+}
+
+private struct PermissionsBanners: View {
+
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        ForEach(model.missingPermissions) { kind in
+            SkipperBanner(
+                tone: .attention,
+                symbol: "exclamationmark.triangle.fill",
+                title: "\(kind.title) is off",
+                message: kind.consequenceWhenMissing
+            ) {
+                PermissionActions(kind: kind)
+            }
+        }
+    }
+}
+
+private struct PermissionActions: View {
+
+    @EnvironmentObject private var model: AppModel
+    let kind: PermissionKind
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: SkipperSpace.xs) {
+            Button("Open Settings") { model.permissions.openSettings(for: kind) }
+                .skipperButton(.primary)
+            Button("Ask macOS") { model.permissions.request(kind) }
+                .skipperButton(.quiet)
+                .help("Asks macOS to show its own permission dialog.")
         }
     }
 }
@@ -232,30 +267,17 @@ struct SessionActiveBanner: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "dot.radiowaves.left.and.right")
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.isReconnecting ? "Reconnecting\u{2026}" : "Remote session active")
-                    .font(.headline)
-                Text(model.isReconnecting
-                     ? "The connection wobbled. The session is still open and is recovering \u{2014} no one has to re-enter the access code."
-                     : "Someone is viewing and controlling this Mac.")
-                    .font(.caption)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
+        SkipperBanner(
+            tone: model.isReconnecting ? .attention : .accent,
+            symbol: "dot.radiowaves.left.and.right",
+            title: model.isReconnecting ? "Reconnecting\u{2026}" : "Remote session active",
+            message: model.isReconnecting
+                ? "The connection wobbled. The session is still open and is recovering \u{2014} no one has to re-enter the access code."
+                : "Someone is viewing and controlling this Mac."
+        ) {
             Button("End Session") { model.endSession() }
+                .skipperButton(.secondary)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.accentColor.opacity(0.18))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.accentColor)
-        )
     }
 }
 
@@ -264,29 +286,15 @@ struct InputBlockedBanner: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Remote input is being ignored")
-                    .font(.headline)
-                Text("The other Mac can see this screen but cannot click or type on it: RemoteControl does not have Accessibility permission, so macOS discards every event it posts.")
-                    .font(.caption)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Button("Open Settings") {
-                model.permissions.openSettings(for: .accessibility)
-            }
+        SkipperBanner(
+            tone: .critical,
+            symbol: "hand.raised.fill",
+            title: "Remote input is being ignored",
+            message: "The other Mac can see this screen but cannot click or type on it: SkipperDesk does not have Accessibility permission, so macOS discards every event it posts."
+        ) {
+            Button("Open Settings") { model.permissions.openSettings(for: .accessibility) }
+                .skipperButton(.primary)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.orange.opacity(0.18)))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.orange))
     }
 }
 
@@ -296,25 +304,26 @@ struct DeviceKeyFooter: View {
 
     var body: some View {
         if let identity = model.identity {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Key: \(identity.keyStorageLabel)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: SkipperSpace.xs) {
+                HStack(spacing: SkipperSpace.s) {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(SkipperColor.textTertiary)
+                    Text("Key: \(identity.keyStorageLabel)")
+                        .font(SkipperFont.caption)
+                        .foregroundStyle(SkipperColor.textTertiary)
+                }
 
                 if let note = identity.keyStorageNote {
-                    Text(note)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    SkipperNote(note)
                 }
 
                 if let warning = identity.permissionWarning {
-                    Label(warning, systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
+                    SkipperNote(warning, tone: .attention)
                 }
             }
+            .padding(.horizontal, SkipperSpace.xs)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -326,54 +335,53 @@ struct ScreenSharingSection: View {
     private var state: CaptureState { model.coordinator?.captureState ?? .idle }
 
     var body: some View {
-        SectionCard(title: "Screen Sharing") {
+        SkipperCard(title: "Screen sharing") {
             switch state {
             case .idle:
-                Label("Idle \u{2014} capture starts when a controller connects.",
-                      systemImage: "pause.circle")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: SkipperSpace.s) {
+                    StatusPill("Idle", tone: .neutral)
+                    Text("Capture starts when a controller connects.")
+                        .font(SkipperFont.body)
+                        .foregroundStyle(SkipperColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
             case .starting:
-                HStack(spacing: 8) {
+                HStack(spacing: SkipperSpace.s) {
                     ProgressView().controlSize(.small)
-                    Text("Starting screen capture\u{2026}").font(.callout)
+                    Text("Starting screen capture\u{2026}")
+                        .font(SkipperFont.body)
+                        .foregroundStyle(SkipperColor.textPrimary)
                 }
 
             case .running(let width, let height, let fps):
-                Label {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Sharing this Mac's screen").font(.callout.weight(.medium))
-                        if RCLog.enabled {
-                            Text("\(width)\u{00D7}\(height), up to \(fps) fps. The frame rate drops automatically while the screen is still.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                VStack(alignment: .leading, spacing: SkipperSpace.s) {
+                    HStack(spacing: SkipperSpace.s) {
+                        StatusPill("Sharing", tone: .positive)
+                        Text("This Mac's screen is being shared.")
+                            .font(SkipperFont.body)
+                            .foregroundStyle(SkipperColor.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                } icon: {
-                    Image(systemName: "record.circle").foregroundStyle(.green)
+                    if RCLog.enabled {
+                        SkipperNote("\(width)\u{00D7}\(height), up to \(fps) fps. The frame rate drops automatically while the screen is still.")
+                    }
                 }
 
             case .failed(let failure):
-                VStack(alignment: .leading, spacing: 8) {
-                    Label(failure.localizedDescription, systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if failure.isPermissionProblem {
-                        HStack(spacing: 8) {
-                            Button("Open Screen Recording Settings\u{2026}") {
-                                model.permissions.openSettings(for: .screenRecording)
-                            }
-                            Button("Request\u{2026}") {
-                                model.permissions.request(.screenRecording)
-                            }
+                VStack(alignment: .leading, spacing: SkipperSpace.s) {
+                    SkipperBanner(
+                        tone: .critical,
+                        symbol: "exclamationmark.triangle.fill",
+                        title: "Screen sharing stopped",
+                        message: failure.localizedDescription
+                    ) {
+                        if failure.isPermissionProblem {
+                            PermissionActions(kind: .screenRecording)
                         }
-                        Text("macOS ties this permission to the app's code signature, so updating RemoteControl can revoke it even though System Settings still lists the app. Turn it off and on again there if it looks granted. Sharing resumes on its own within a few seconds of the grant returning \u{2014} no need to reconnect.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if failure.isPermissionProblem {
+                        SkipperNote("macOS ties this permission to the app's code signature, so updating SkipperDesk can revoke it even though System Settings still lists the app. Turn it off and on again there if it looks granted. Sharing resumes on its own within a few seconds of the grant returning \u{2014} no need to reconnect.")
                     }
                 }
             }
