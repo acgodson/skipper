@@ -193,6 +193,7 @@ public final class APIClient: @unchecked Sendable {
 
     public func refreshDeviceToken(
         deviceId: String,
+        nonce: String,
         pubkey: String,
         signature: String,
         idempotencyKey: String = APIClient.newIdempotencyKey()
@@ -200,7 +201,7 @@ public final class APIClient: @unchecked Sendable {
         try await send(
             .post,
             "/v1/auth/device/refresh",
-            body: ["deviceId": deviceId, "pubkey": pubkey, "sig": signature],
+            body: ["deviceId": deviceId, "nonce": nonce, "pubkey": pubkey, "sig": signature],
             credential: .none,
             idempotencyKey: idempotencyKey
         )

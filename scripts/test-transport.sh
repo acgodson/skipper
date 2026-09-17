@@ -940,6 +940,10 @@ else
     kill "$PRIV_PID" 2>/dev/null
     wait "$PRIV_PID" 2>/dev/null
     PRIV_PID=""
+    for _ in $(seq 1 100); do
+      lsof -nP -iTCP:"$PRIV_API_PORT" -iTCP:"$PRIV_SIGNAL_PORT" -sTCP:LISTEN >/dev/null 2>&1 || return 0
+      sleep 0.1
+    done
   }
 
   SHARED_API_BASE_URL="$API_BASE_URL"

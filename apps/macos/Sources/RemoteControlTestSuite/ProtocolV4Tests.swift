@@ -246,19 +246,22 @@ public let protocolV4Suite = TestSuite("Protocol v4 client", [
     TestCase("Refresh Code resets per-controller counters but never the host-wide budget") {
         try await withStore { store, secrets, _ in
             let controller = try freshKey()
-            try secrets.saveGuessCounter(GuessCounter(failures: 4), forController: controller)
-            try secrets.saveGuessCounter(GuessCounter(failures: 17), forController: GuessLedger.hostKey)
+            let recent = Int64(Date().timeIntervalSince1970 * 1000)
+            let perController = GuessCounter(failures: 4, lastFailureMs: recent)
+            let hostWide = GuessCounter(failures: 17, lastFailureMs: recent)
+            try secrets.saveGuessCounter(perController, forController: controller)
+            try secrets.saveGuessCounter(hostWide, forController: GuessLedger.hostKey)
             try secrets.recordTrustedController(pubkey: controller, label: "a Mac")
 
             try secrets.revokeControllers()
-            try expectEqual(try secrets.guessCounter(forController: controller), GuessCounter(failures: 4))
-            try expectEqual(try secrets.guessCounter(forController: GuessLedger.hostKey), GuessCounter(failures: 17))
+            try expectEqual(try secrets.guessCounter(forController: controller), perController)
+            try expectEqual(try secrets.guessCounter(forController: GuessLedger.hostKey), hostWide)
 
             _ = try? await store.refreshAccessCode()
             try expect(try secrets.trustedControllers().isEmpty)
             try expectNil(try secrets.guessCounter(forController: controller),
                           "a new code gives each controller a fresh per-key count")
-            try expectEqual(try secrets.guessCounter(forController: GuessLedger.hostKey), GuessCounter(failures: 17),
+            try expectEqual(try secrets.guessCounter(forController: GuessLedger.hostKey), hostWide,
                             "but the host-wide budget is untouched")
         }
     },

@@ -3,8 +3,9 @@ import RCTestKit
 import RemoteControlCore
 import SkipperCore
 
-private let controllerKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEcontroller"
-private let otherKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEother"
+private let controllerKey = try! DeviceKey().publicKeyDER().base64EncodedString()
+private let otherKey = try! DeviceKey().publicKeyDER().base64EncodedString()
+private let recentMs = Int64(Date().timeIntervalSince1970 * 1000)
 
 public let secretStoreSuite = TestSuite("SecretStore (PROTOCOL.md §4.5)", [
 
@@ -52,7 +53,7 @@ public let secretStoreSuite = TestSuite("SecretStore (PROTOCOL.md §4.5)", [
 
     TestCase("a guess ledger survives being stored and read back") {
         let store = SecretStore(blobs: InMemorySecretStore())
-        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let now = Date()
         try expectNil(try store.guessCounter(forController: controllerKey))
 
         func load() throws -> GuessLedger {
@@ -109,12 +110,12 @@ public let secretStoreSuite = TestSuite("SecretStore (PROTOCOL.md §4.5)", [
         try store.saveAccessCode(code)
         try store.rememberPeerCode(try AccessCode.generate(), forHost: "482719351")
         try store.recordTrustedController(pubkey: controllerKey, label: "a Mac")
-        try store.saveGuessCounter(GuessCounter(failures: 3), forController: otherKey)
+        try store.saveGuessCounter(GuessCounter(failures: 3, lastFailureMs: recentMs), forController: otherKey)
 
         try store.revokeControllers()
 
         try expect(try store.trustedControllers().isEmpty, "every trusted controller is gone")
-        try expectEqual(try store.guessCounter(forController: otherKey), GuessCounter(failures: 3),
+        try expectEqual(try store.guessCounter(forController: otherKey), GuessCounter(failures: 3, lastFailureMs: recentMs),
                         "revoking never resets a guess counter")
         try expectEqual(try store.accessCode(), code,
                         "revoking controllers does not by itself change this Mac's code")

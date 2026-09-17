@@ -17,7 +17,7 @@ report() { echo "  FAIL  $1"; fail=1; }
 echo "== 1. Forbidden browser/automation/proxy APIs in source"
 # Word-boundary matched, comment lines excluded, so prose in docs cannot trip it.
 FORBIDDEN='WKWebView|WKUserScript|JavaScriptCore|JSContext|puppeteer|playwright|selenium|chromedriver|DevToolsProtocol|CDPSession|SOCKSEnable|HTTPProxy|HTTPSProxy|kCFNetworkProxies|kSCPropNetProxies|NEVPNManager|NETunnelProvider|NEProxyProvider|NEDNSProxyProvider|NEPacketTunnelProvider|SFSafariExtension|getDisplayMedia'
-hits=$(grep -rnE "$FORBIDDEN" apps/macos/Sources server protocol 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(//|#)' || true)
+hits=$(grep -rnIE "$FORBIDDEN" apps/macos/Sources server protocol 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(//|#)' || true)
 if [[ -n "$hits" ]]; then echo "$hits"; report "forbidden API referenced above"; else echo "  ok    none present"; fi
 
 echo "== 2. No WebKit/JavaScriptCore linked into the built binary"

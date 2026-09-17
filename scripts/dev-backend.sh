@@ -18,6 +18,7 @@ port_free() {
   python3 - "$1" <<'PY'
 import socket, sys
 s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 try:
     s.bind(("127.0.0.1", int(sys.argv[1])))
 except OSError:
@@ -98,10 +99,13 @@ fi
 INTERNAL_TOKEN="$(secret internal-token)"
 HARDWARE_SALT="$(secret hardware-salt)"
 
-echo "== generating a throwaway device-id certificate key and TURN secret in $KEYS"
-if ! (umask 077; openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$KEYS/id-cert-key.pem" 2>/dev/null); then
-  echo "FAIL  openssl could not generate the device-id certificate key"
-  exit 1
+ID_CERT_KEY="$DATA/id-cert-key.pem"
+if [[ ! -s "$ID_CERT_KEY" ]]; then
+  echo "== generating the dev device-id certificate key in $DATA (kept across restarts, like the real registry key)"
+  if ! (umask 077; openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$ID_CERT_KEY" 2>/dev/null); then
+    echo "FAIL  openssl could not generate the device-id certificate key"
+    exit 1
+  fi
 fi
 if [[ -n "${RC_TURN_SECRET_FILE:-}" ]]; then
   TURN_SECRET_FILE="$RC_TURN_SECRET_FILE"
@@ -118,7 +122,7 @@ echo "== starting rc-api on $API_URL (dev identity provider; internal surface on
   -db "$DATA/rc-api.db" \
   -idp dev \
   -internal-token "$INTERNAL_TOKEN" \
-  -id-cert-key-file "$KEYS/id-cert-key.pem" \
+  -id-cert-key-file "$ID_CERT_KEY" \
   -hardware-salt "$HARDWARE_SALT" \
   -web-base-url "${RC_DEV_WEB_BASE_URL:-$API_URL}" \
   -signal-upstream "$SIGNAL_URL" \

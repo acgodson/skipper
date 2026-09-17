@@ -60,7 +60,6 @@ public final class SignalingClient {
     private var sessionICE: (sessionID: String, servers: [ICEServerSpec])?
     private var connectAllowedAfter: Date?
 
-    // TODO: coordinator: SessionCoordinator.swift `startPeer`, pass `signaling.iceServers(forSession: machine.sessionID)` instead of `signaling.iceServers`.
     public var iceServers: [ICEServerSpec] { iceServers(forSession: sessionICE?.sessionID) }
 
     public func iceServers(forSession sessionID: String?) -> [ICEServerSpec] {

@@ -1,8 +1,6 @@
 import Foundation
 
-// Host keys pinned per Device ID on the controller (PROTOCOL.md v4 §1, FINDINGS H-A).
-// TODO: coordinator: SessionPake.swift `pakeSucceeded`, controller role, call `identity.hostKeyPins.confirm(sessionID: machine.sessionID ?? "", hostPubkey: peerPubkey)`; until then `SignalingClient.sendSDP` confirms on the first signed sdp.
-// TODO: coordinator: SessionPake.swift `peerEndedExchange`, replace `forgetRememberedPeerCode()` with `if identity.hostKeyPins.peerByeMayForgetCode(forHost: machine.peerDeviceID) { forgetRememberedPeerCode() }`.
+// Host keys pinned per Device ID on the controller (PROTOCOL.md v4 changes).
 
 public enum HostKeyPinDecision: Equatable {
     case firstUse

@@ -44,3 +44,5 @@ certs/
 
 !.env.example
 .claude/worktrees/
+/server/rc-signal
+/server/rc-api

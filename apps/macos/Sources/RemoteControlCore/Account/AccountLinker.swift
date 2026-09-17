@@ -234,6 +234,7 @@ public final class AccountLinker: ObservableObject {
         }
         let grant = try await client.refreshDeviceToken(
             deviceId: current.deviceId,
+            nonce: challenge.nonce,
             pubkey: identity.publicKeyBase64,
             signature: try identity.signatureBase64(purpose: .apiChallenge, nonce: nonceBytes)
         )

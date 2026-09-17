@@ -203,7 +203,7 @@ public struct SecretStore {
         guard !pubkey.isEmpty else { return }
         var counters: [String: GuessCounter] = try map(.guessCounters)
         counters[pubkey] = counter
-        try write(counters, to: .guessCounters)
+        try write(try GuessLedgerBook.pruned(counters), to: .guessCounters)
     }
 
     public func remove(pubkey: String) throws {

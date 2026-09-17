@@ -129,6 +129,9 @@ extension SessionCoordinator {
         expectPeerPublicKey(peerPubkey)
         emit(.pakeCompleted(peerPubkey: peerPubkey))
         recordPakeSuccess(peerPubkey: peerPubkey)
+        if role == .controller {
+            identity.hostKeyPins.confirm(sessionID: machine.sessionID ?? "", hostPubkey: peerPubkey)
+        }
         await admitPeer(pubkey: peerPubkey)
     }
 
@@ -172,7 +175,9 @@ extension SessionCoordinator {
         guard role == .controller, authentication else { return }
         lastError = SessionCoordinator.wrongAccessCodeMessage
         emit(.connectFailed(.authFailed))
-        forgetRememberedPeerCode()
+        if identity.hostKeyPins.peerByeMayForgetCode(forHost: machine.peerDeviceID) {
+            forgetRememberedPeerCode()
+        }
     }
 
     private func forgetRememberedPeerCode() {

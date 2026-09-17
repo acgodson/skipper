@@ -458,7 +458,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
     private func startPeer(offerer: Bool) {
         peer?.close()
-        let session = PeerSession(iceServers: signaling.iceServers, isOfferer: offerer,
+        let session = PeerSession(iceServers: signaling.iceServers(forSession: machine.sessionID), isOfferer: offerer,
                                   mediaRole: role == .host ? .sendScreen : .receiveScreen,
                                   forceTURNRelay: config.forceTURNRelay)
         session.delegate = self

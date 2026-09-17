@@ -381,6 +381,7 @@ impl SignalConnection {
                 .map_err(|e| SignalError::Protocol(e.to_string()))?,
             label: label.to_string(),
             preferred_device_id: String::new(),
+            id_cert: String::new(),
             code: code.clone(),
         };
         self.request(msg::REGISTER, &payload, msg::REGISTER_OK).await
