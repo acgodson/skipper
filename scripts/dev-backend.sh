@@ -95,7 +95,7 @@ echo "== starting rc-api on $API_URL (dev identity provider)"
   -idp dev \
   -internal-token "$INTERNAL_TOKEN" \
   -hardware-salt "$HARDWARE_SALT" \
-  -web-base-url "$API_URL" \
+  -web-base-url "${RC_DEV_WEB_BASE_URL:-$API_URL}" \
   -signal-upstream "$SIGNAL_URL" \
   -log-level "${RC_DEV_LOG_LEVEL:-info}" \
   >> "$DATA/rc-api.log" 2>&1 &
