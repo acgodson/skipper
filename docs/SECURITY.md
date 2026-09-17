@@ -1,8 +1,9 @@
 # SkipperDesk — Security (public draft)
 
 This is the factual security page for skipperdesk.app. No marketing language; every
-claim below traces to `docs/SCOPE.md` §5 and `docs/DECISIONS.md` ("Protocol v2").
-See `SECURITY.md` at the repo root for how to report a vulnerability.
+claim below traces to `docs/SCOPE.md` §5, `docs/DECISIONS.md` ("Protocol v2", "second
+review / protocol v4"), and `protocol/PROTOCOL.md`/`protocol/API.md` (the normative wire
+contract, currently v4). See `SECURITY.md` at the repo root for how to report a vulnerability.
 
 ## Threat model, in plain words
 
@@ -18,35 +19,52 @@ to relay bytes neither of them can reach directly.
   peer-to-peer and falls back to a TURN relay; it cannot decrypt it.
 
 **What the operator cannot see:**
-- The access code. It never reaches the server in any form — it is proved between
-  the two devices directly with a PAKE exchange (below).
+- The access code, or the session key derived from it. Neither ever reaches the
+  server in any form — the code is proved between the two devices directly with a
+  PAKE exchange (below). The server does learn *whether* an attempt failed (the
+  host tells it `bye{reason:"auth_failed"}` in cleartext, so a wrong guess can be
+  told from a clean hang-up) — but never the code itself, correct or not, and never
+  the key the guess would have produced.
 - The screen, keyboard, mouse, or clipboard content of a session — end-to-end
   encrypted, and never logged or persisted server-side.
-- Which SDP/ICE messages are authentic. Both sides sign their SDP with a
-  hardware-held device key, so even a fully compromised server cannot substitute
-  its own key and man-in-the-middle the media.
+- Which SDP/ICE messages are authentic. Both sides sign their SDP with their
+  device key, so even a fully compromised server cannot substitute its own key
+  and man-in-the-middle the media.
 
 **What a compromised or subpoenaed server can still do:** deny service (refuse to
-relay), see connection metadata (who/when/bytes), and see TURN-relayed ciphertext
-it cannot open. It cannot see plaintext of anything, and cannot silently insert
-itself into a session because of the signed-SDP step above.
+relay), see connection metadata (who/when/bytes, and whether a code attempt
+failed), and see TURN-relayed ciphertext it cannot open. It cannot see plaintext
+of anything, and cannot silently insert itself into a session because of the
+signed-SDP step above.
 
 ## Who lets a controller in
 
-The access code proves a controller *may* connect. With **Unattended access** off — the default
-on a new install — the host also asks the person at it, and only after the code has been proved,
-so a stranger who does not know the code can never make a prompt appear. No answer within 30
-seconds is a decline, and a controller declined twice in ten minutes is turned away without
-asking again. With Unattended access on, the code alone is permission; that is the setting for
-a Mac nobody is sitting at. Either way a session in progress is always shown on the host and can
-be ended there.
+The access code proves a controller *may* connect. Every connection — including one from a
+controller the host has seen before — runs the full code exchange; "trusted controllers" is
+only an informational list the host keeps of who has proved a code, and controllers separately
+remember a code locally so their own user isn't re-prompted for it. With **Unattended access**
+off — the default on a new install — the host also asks the person at it, and only after the
+code has been proved, so a stranger who does not know the code can never make a prompt appear.
+No answer within 30 seconds is a decline. A controller declined twice in ten minutes is turned
+away without asking again, and so is any controller once the host itself has been asked three
+times in ten minutes; both counts are persisted, not reset by a relaunch. Refresh Code clears the
+trusted list and every per-controller guess counter and ends any session in progress, but the
+host-wide guess budget is untouched by it — it exists to bound the server's own connect rate, not
+a particular controller's trust. With Unattended access on, the code alone is permission; that is
+the setting for a Mac nobody is sitting at. Either way a session in progress is always shown on
+the host and can be ended there.
+
+The system notification that accompanies the prompt uses generic text, not the connecting
+controller's label or Device ID. The prompt window itself does not steal focus or force its way
+to the front of other windows, and its Allow button is disabled for the first 1.5 seconds so a
+reflexive click can't grant access before the person has read it.
 
 ## Cryptography
 
 | Purpose | Algorithm |
 |---|---|
-| Device identity | ECDSA P-256, held in the Secure Enclave (Mac) or TPM (Windows, DPAPI-wrapped software key as fallback) |
-| Access code exchange | SPAKE2 (RustCrypto `spake2` 0.4) — the server relays opaque messages and learns nothing, correct guess or not |
+| Device identity | ECDSA P-256. Secure Enclave for a brand-new identity on a Mac that has one; otherwise a Keychain-held software key. A pre-existing software-key identity whose Keychain migration fails on a signed build keeps using its legacy file key for that one launch only (the app's footer says so); an unsigned build refuses such an identity instead. A file-backed key otherwise exists only in test-hook builds, never in a release |
+| Access code exchange | SPAKE2 (RustCrypto `spake2` 0.4) — the server relays opaque messages and never learns the code or the session key it produces, though it does learn whether an attempt failed (see "Who lets a controller in") |
 | Key derivation | HKDF-SHA256 |
 | Message authentication | HMAC-SHA256 |
 | Session media transport | WebRTC DTLS-SRTP, AES-GCM |
@@ -119,10 +137,13 @@ development server" banner whenever either points away from the shipped backend.
 ## Signing
 
 A Developer ID build runs under the hardened runtime with library validation on
-and no `disable-library-validation`; `WebRTC.framework` is signed with the same
-identity. A build signed without an Apple-issued certificate has no Team ID, so
-library validation could never admit its own framework: such local builds are
-signed without the hardened runtime and are for development only.
+and no `disable-library-validation`. `WebRTC.framework` is signed with the same
+identity, but on its own — never with `codesign --deep` — so it never inherits
+the app's entitlements; the embedded framework and the app binary are each signed
+individually, inside-out, before the whole bundle is verified. A build signed
+without an Apple-issued certificate has no Team ID, so library validation could
+never admit its own framework: such local builds are signed without the hardened
+runtime and are for development only.
 
 ## Supply-chain gates
 

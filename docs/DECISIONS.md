@@ -42,8 +42,9 @@ move is retried on every launch, the host screen's key-storage footer says "This
 not be moved to secure storage.", and nothing is regenerated. An unsigned build refuses such an identity instead. The existing rule stands unchanged: an identity is never
 silently regenerated, whatever fails.
 
-**What stays in the file:** Device ID, access code, `createdAt`, `serverRegistered`. The access
-code moves out when SPAKE2 lands.
+**What stays in the file:** Device ID, `createdAt`, `serverRegistered`. The access code has since
+moved out too, once SPAKE2 landed (Keychain account `access-code`, migrated out of any existing
+identity file the same way the device key was, see `LegacyKeychainMigration.swift`).
 
 **Storage:** a generic-password Keychain item, service `app.skipperdesk.desktop`, accounts
 `device-key` (the Secure Enclave blob) and `device-key-software` (the P-256 scalar), both
@@ -87,8 +88,19 @@ with no domain and no Developer ID account. Neither condition still holds.
   every connection); the host keeps an allow-list of controller public keys it has seen a
   successful code from. Refresh Code clears both sides at once — the host's allow-list and,
   implicitly, the controller's remembered code stops working the moment the host rejects it.
-- **Keychain for all secrets**, not just the device key: the access code moves out of the
-  identity file once SPAKE2 lands, per the Phase 2.2 migration note above.
+- **Keychain for all secrets**, not just the device key: the access code has moved out of the
+  identity file, per the Phase 2.2 migration note above.
+
+### 2026-09-17 — second review / protocol v4
+
+A second review found: a backend-reset device-ID takeover, credit drain and left-open accounting
+rows reachable without the access code, an unbounded `connect_req` flood able to exhaust a host's
+own guess budget, and a consent bypass through a leftover peer connection. Protocol v4 closes all
+of them — device-ID certificates, per-session TURN, proof-gated metering, a closed `bye`-reason
+set, rate limits, enforced roles (`PROTOCOL.md`, `API.md`). Every doc in this pass was checked
+against the resulting code; notably, the server does learn whether a code attempt failed, device
+keys are hardware-held only when a Secure Enclave identity actually exists, and every connect
+still runs the full SPAKE2 exchange regardless of "trusted controller" status.
 
 ## Lessons (read before changing things)
 
