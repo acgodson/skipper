@@ -87,6 +87,9 @@ Local backend: `./scripts/dev-backend.sh` builds and runs `rc-api` (REST, the `/
 page in dev mode, and a `/ws` pass-through) on `127.0.0.1:18080` in front of `rc-signal`; point the
 app at it with `SKIPPER_API_BASE_URL=http://127.0.0.1:18080`. `./scripts/smoke-signal.sh` and
 `./scripts/test-transport.sh` also work against a bare `rc-signal` on `127.0.0.1:18443`.
+The device-id claims database (`RC_API_CLAIMS_DB`, e.g. `rc-api-claims.db`; `RC_CLAIMS_DB` for a
+stand-alone `rc-signal`) must be backed up separately and never reset with the main database
+(`protocol/API.md` §6.1).
 
 Integration against the **live** server (two `rc-node` instances, real WebRTC):
 `test-transport.sh` (add `RC_ICE_POLICY=relay` to prove TURN), `test-media.sh`,

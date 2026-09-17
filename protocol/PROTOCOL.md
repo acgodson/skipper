@@ -859,19 +859,32 @@ owner's call, and the host's **Unattended access** setting says which rule appli
      and applies them — after the usual §2.12 checks — only on Allow.
   4. **Allow** starts the host's peer connection. **Decline**, or no answer within 30 s, is
      `bye{declined}` (§2.14). A `bye` from either side, a new `session_start` or a lost
-     session withdraws the prompt.
+     session withdraws the prompt. *v5:* a prompt is named by a random id the host's core
+     makes for it — never by the server-chosen `sessionId` — and an answer counts only for the
+     prompt it names that is still open. Allow is refused, not queued, until the prompt has
+     been on screen for **1.5 s**; the owner has to click again. A prompt that replaced an open
+     one says so ("A different request replaced the previous one."), and every prompt shows the
+     controller's key fingerprint, which that Mac shows as its own.
   5. The controller cannot tell a slow network from an owner deciding. From 2 s after its
      exchange completes until the peer connection is up it says "Waiting for the other Mac
      to accept…", and it gives up after 45 s with `bye{timeout}`.
 
 Prompts are rate-limited so an owner is never spammed: at most one prompt is open at a time
-(a new `session_start` replaces it), and a controller key that was declined — or left
-unanswered — **twice within 10 minutes** is declined without a prompt until the older of
-those two declines is 10 minutes old. Allow clears that controller's record. A controller
-that hangs up while the prompt is open is not counted. The policy is pure, in
-`core/crates/rc-identity` (`ConsentLedger`), keyed like the guess policy on the controller's
-pubkey; the state it gates (`awaitingConsent`) is part of the §4 session state machine in
-`core/crates/rc-session`.
+(a new `session_start` replaces it), and a prompt counts against two budgets the moment it
+opens:
+
+- **per controller key** — a key with **two** prompts within 10 minutes that were not allowed
+  (declined, unanswered, replaced, or ended by a hang-up or a crash) is declined without a
+  prompt until the older of those two is 10 minutes old. Allow clears that key's record.
+- **host-wide** — at most **3** prompts in any 10 minutes, across every controller; further
+  attempts are declined without a prompt until the oldest is 10 minutes old. Allow gives back
+  its own prompt only.
+
+*v5:* a hang-up during the prompt is counted like a decline — only Allow gives a prompt back —
+so a controller cannot prompt repeatedly for free by hanging up first. The policy is pure, in
+`core/crates/rc-identity` (`consent`, stored in the `GuessLedger` next to the guess counters),
+keyed like the guess policy on the controller's pubkey; the state it gates (`awaitingConsent`)
+is part of the §4 session state machine in `core/crates/rc-session`.
 
 ### 2.18 `ice_servers` — server → client (push, no `re`) — *v5*
 

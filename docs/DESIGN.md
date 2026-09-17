@@ -117,10 +117,16 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
 - **Consent prompt** (`SkipperConsentPrompt`) — asks the host's owner whether a controller that
   has just proved the access code may connect. Raised-hand glyph in `accent`, title "Allow
   <controller> to control this Mac?" (the trusted-controller label, else "another Mac"), a
-  `caption` sentence saying the code was entered and that no answer declines, the controller's
-  Device ID in `codeCaption`, then an `attention` status pill with the live countdown ("Declines in
-  30 seconds") and two buttons on the right: *Decline* (secondary, Esc) and *Allow* (primary, no
-  Return shortcut, so a stray keypress never lets anyone in). Two styles: **window** — `surface`,
+  `caption` sentence saying the code was entered and that no answer declines, then two detail
+  lines in `codeCaption`: the controller's Device ID ("Device ID 123 456 789") and its key
+  fingerprint ("Fingerprint F660 085E 05D4 830E" — the first four groups of four uppercase hex
+  digits of SHA-256 over the controller's canonical key, the same text that Mac shows as "This
+  Mac's fingerprint", so the owner can compare the two). When this prompt replaced one that was
+  still open, a semibold `caption` notice in `attention` sits above the sentence: "A different
+  request replaced the previous one." Then an `attention` status pill with the live countdown
+  ("Declines in 30 seconds") and two buttons on the right: *Decline* (secondary, Esc) and *Allow*
+  (primary, no Return shortcut, so a stray keypress never lets anyone in). *Allow* stays disabled
+  for the first 1.5 s the prompt is on screen, and a click before then is refused, not remembered. Two styles: **window** — `surface`,
   35 %-accent stroke, `large` radius, `high` elevation, `xl` padding, centred at most 440 pt wide
   over a `scrim` that covers the whole window whatever screen is showing; **menu** — the same
   content on `accentSoft` with `m` padding, at the top of the menu-bar panel in place of the
@@ -195,5 +201,7 @@ Source PNGs: `apps/macos/Resources/AppIcon.iconset` (compiled by `scripts/build.
 Host: hero (Device ID, access code with Copy/Show/Refresh, status pill), permission banners when
 needed, Account (sign in), Access toggles (unattended, clipboard, launch at login, install updates automatically), the "ready to update" banner when a verified update is staged, Screen sharing state,
 Trusted controllers, Quality, key-storage footer. Controller: hero form (Device ID, access code,
-label, Remember, Connect, state pill, failure banner), Saved devices with presence, Quality.
+label, Remember, Connect, state pill, failure banner, then "This Mac's fingerprint F660 085E 05D4
+830E" in `codeCaption`, `textTertiary`, selectable — the line a host owner compares with the
+prompt's "Fingerprint" line), Saved devices with presence, Quality.
 Session: full-window desktop with the floating toolbar and gesture palette.
