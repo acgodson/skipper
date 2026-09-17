@@ -101,17 +101,10 @@ private struct SessionToolbar: View {
     let videoSize: CGSize
     let pointer: RemotePointerSample?
 
-    private var title: String {
-        let label = model.settings.savedPeerLabel
-        if !label.isEmpty { return label }
-        let id = model.settings.savedPeerDeviceID
-        return id.isEmpty ? "Remote Mac" : DeviceID.formatted(id)
-    }
-
     var body: some View {
         SessionToolbarBar {
             VStack(alignment: .leading, spacing: 0) {
-                Text(title)
+                Text(model.otherMacLabel)
                     .font(SkipperFont.bodyEmphasis)
                     .foregroundStyle(SkipperColor.textPrimary)
                     .fixedSize()
@@ -206,8 +199,8 @@ private struct KeyboardCaptureToggle: View {
 
     var body: some View {
         SessionToolbarButton(
-            title: model.keyboardCaptureActive ? "Keys \u{2192} Remote" : "Keys \u{2192} This Mac",
-            symbol: model.keyboardCaptureActive ? "keyboard.fill" : "keyboard",
+            title: "Send shortcuts to \(model.otherMacLabel)",
+            symbol: "keyboard",
             isActive: model.keyboardCaptureActive,
             help: helpText
         ) {
@@ -218,10 +211,8 @@ private struct KeyboardCaptureToggle: View {
     private var helpText: String {
         if let problem = model.keyboardCaptureProblem { return problem }
         if model.keyboardCaptureActive {
-            return "Every keystroke goes to the other Mac, including Cmd-Space and Cmd-Tab. Press "
-                + KeyboardCaptureTap.escapeHatchDescription
-                + " to turn this off \u{2014} that combination is never forwarded."
+            return "\u{2318}Space, \u{2318}Tab and other shortcuts go to the remote Mac. Press \u{2303}\u{2325}\u{2318}K to stop."
         }
-        return "Keystrokes stay on this Mac. Turn this on to send them to the other Mac instead, so Cmd-Space opens its Spotlight rather than yours."
+        return "Turn this on to send shortcuts like \u{2318}Space and \u{2318}Tab to \(model.otherMacLabel) instead of this Mac."
     }
 }

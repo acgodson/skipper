@@ -20,7 +20,7 @@ final class AppModel: ObservableObject {
     @Published var sessionState: SessionState = .idle
     @Published var connectError: String?
     @Published var isConnecting = false
-    @Published var signalingSummary = "Connecting to SkipperDesk\u{2026}"
+    @Published var signalingReady = false
     @Published var lastRoundTripMs: Int?
 
     @Published var trustedControllers: [TrustedControllerEntry] = []
@@ -188,6 +188,7 @@ final class AppModel: ObservableObject {
     }
 
     private func startAutoConnectIfRequested() {
+        #if DEBUG
         let environment = ProcessInfo.processInfo.environment
         guard let spec = environment["RC_AUTOCONNECT"],
               environment["RC_IDENTITY_DIR"] != nil,
@@ -199,8 +200,9 @@ final class AppModel: ObservableObject {
                 if coordinator?.signalingState.isAuthenticated == true { break }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
-            connect(deviceID: parts[0], accessCode: parts[1], remember: false, label: "Auto-connected Mac")
+            connect(deviceID: parts[0], accessCode: parts[1], remember: false, label: "")
         }
+        #endif
     }
 
     private func apply(_ event: CoordinatorEvent) {
@@ -208,22 +210,22 @@ final class AppModel: ObservableObject {
         switch event {
         case .signalingState(let state):
             switch state {
-            case .authenticated(let deviceID):
-                signalingSummary = "Connected to SkipperDesk as \(DeviceID.formatted(deviceID))."
+            case .authenticated:
+                signalingReady = true
                 selfPresence.update(reachable: true,
                     detail: "This Mac is reachable. Another Mac can connect with the Device ID and access code above.")
             case .connecting, .authenticating:
-                signalingSummary = "Connecting to SkipperDesk\u{2026}"
+                signalingReady = false
                 selfPresence.setUnknown(detail: "Connecting to SkipperDesk\u{2026}")
             case .waitingToRetry:
-                signalingSummary = "Can't reach SkipperDesk. Retrying automatically."
+                signalingReady = false
                 selfPresence.update(reachable: false,
                     detail: "Cannot reach SkipperDesk, so no one can connect to this Mac right now. Retrying automatically.")
             case .stopped(let why):
-                signalingSummary = why
+                signalingReady = false
                 selfPresence.update(reachable: false, detail: why)
             case .idle:
-                signalingSummary = "Not connected."
+                signalingReady = false
                 selfPresence.setUnknown(detail: "Not connected.")
             }
         case .roundTrip(let seconds):
@@ -291,8 +293,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func linkAccount(signUp: Bool = false) {
-        browserOpener.nextOpenIsSignUp = signUp
+    func linkAccount() {
         account?.beginLink()
     }
 
@@ -351,9 +352,13 @@ final class AppModel: ObservableObject {
             .sorted { $0.lastSeen > $1.lastSeen }
     }
 
-    // TODO: per-controller removal needs a SecretStore API in RemoteControlCore (only revoke-all exists).
     func revokeTrustedControllers() {
         try? identity?.secrets.revokeControllers()
+        reloadTrustedControllers()
+    }
+
+    func removeTrustedController(pubkey: String) {
+        try? identity?.secrets.remove(pubkey: pubkey)
         reloadTrustedControllers()
     }
 

@@ -84,4 +84,11 @@ extension AppModel {
     var missingPermissions: [PermissionKind] {
         permissions.missing
     }
+
+    var otherMacLabel: String {
+        let label = settings.savedPeerLabel
+        if !label.isEmpty { return label }
+        let id = settings.savedPeerDeviceID
+        return id.isEmpty ? "the other Mac" : DeviceID.formatted(id)
+    }
 }

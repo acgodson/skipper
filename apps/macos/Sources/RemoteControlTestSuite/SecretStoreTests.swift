@@ -101,6 +101,20 @@ public let secretStoreSuite = TestSuite("SecretStore (PROTOCOL.md §4.5)", [
                          "nor the codes this Mac remembers for OTHER hosts")
     },
 
+    TestCase("removing a trusted controller forgets only that one, and persists") {
+        let store = SecretStore(blobs: InMemorySecretStore())
+        try store.recordTrustedController(pubkey: controllerKey, label: "a Mac")
+        try store.recordTrustedController(pubkey: otherKey, label: "another Mac")
+
+        try store.remove(pubkey: controllerKey)
+
+        try expectNil(try store.trustedControllers()[controllerKey],
+                      "the removed controller is gone")
+        try expectNotNil(try store.trustedControllers()[otherKey],
+                         "the other controller is untouched")
+        try expectEqual(try store.trustedControllers().count, 1)
+    },
+
     TestCase("a Keychain that refuses is reported, not silently ignored") {
         let blobs = InMemorySecretStore()
         let store = SecretStore(blobs: blobs)

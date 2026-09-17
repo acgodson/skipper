@@ -221,6 +221,12 @@ public struct SecretStore {
         try write(counters, to: .guessCounters)
     }
 
+    public func remove(pubkey: String) throws {
+        var trusted: [String: TrustedController] = try map(.trustedControllers)
+        guard trusted.removeValue(forKey: pubkey) != nil else { return }
+        try write(trusted, to: .trustedControllers)
+    }
+
     // MARK: Revocation
 
     public func revokeControllers() throws {
