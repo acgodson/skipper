@@ -91,7 +91,7 @@ public final class RemoteVideoLayerRenderer: NSObject, RTCVideoRenderer {
 
     private func dumpFrameIfRequested(_ pixelBuffer: CVPixelBuffer) {
         guard !hasDumpedFrame, renderedFrames >= 60,
-              let path = ProcessInfo.processInfo.environment["RC_DUMP_FRAME"] else { return }
+              let path = DevelopmentHooks.value(.dumpFrame) else { return }
         hasDumpedFrame = true
         let image = CIImage(cvPixelBuffer: pixelBuffer)
         let representation = NSCIImageRep(ciImage: image)

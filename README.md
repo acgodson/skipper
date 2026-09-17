@@ -47,7 +47,7 @@ current goal. Still v1: it predates protocol v2.
 
 | Path | What lives there |
 |---|---|
-| `apps/macos/` | SwiftPM package (no Xcode needed). Targets: `RemoteControl` (app), `RemoteControlCore`, `SkipperCore` + `CSkipperCore` (the shared Rust core, as Swift sees it), `RCCrypto`, `rc-node` (headless driver for scripts), `rc-tests` (test runner). WebRTC = `stasel/WebRTC` 125.0.0 |
+| `apps/macos/` | SwiftPM package (no Xcode needed). Targets: `RemoteControl` (app), `RemoteControlCore`, `SkipperCore` + `CSkipperCore` (the shared Rust core, as Swift sees it), `SkipperDesign`, `rc-node` (headless driver for scripts), `rc-tests` (test runner). WebRTC = `stasel/WebRTC` exactly 125.0.0 |
 | `apps/windows/` | Parked Windows host: `rc-host`, `rc-input`, `rc-transport`, `rc-signal-client` crates, plus `WINDOWS-HOST.md`. Still speaks protocol v1 |
 | `core/crates/` | Shared Rust core: `rc-proto`, `rc-session`, `rc-identity`, `rc-ffi` |
 | `Cargo.toml` | Single root Cargo workspace over `core/crates/*` and `apps/windows/crates/*` |

@@ -7,6 +7,16 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
+        VStack(spacing: 0) {
+            if let banner = model.developmentServerBanner {
+                DevelopmentServerBanner(text: banner)
+            }
+            screen
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var screen: some View {
         Group {
             if model.showsRemoteScreen {
                 RemoteSessionView()
@@ -32,6 +42,18 @@ struct ContentView: View {
                 }
             }
         }
+    }
+}
+
+private struct DevelopmentServerBanner: View {
+
+    let text: String
+
+    var body: some View {
+        SkipperBanner(tone: .attention, symbol: "wrench.and.screwdriver.fill", title: text)
+            .padding(.horizontal, SkipperSpace.m)
+            .padding(.vertical, SkipperSpace.s)
+            .background(SkipperColor.canvas)
     }
 }
 

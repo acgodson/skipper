@@ -140,6 +140,12 @@ public struct MouseButtonPayload: Codable, Equatable {
     public init(button: Int, x: Double, y: Double) {
         self.button = button; self.x = x; self.y = y
     }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        button = try container.decode(Int.self, forKey: .button)
+        x = try container.decodeBounded(.x, in: WireBounds.normalizedCoordinate)
+        y = try container.decodeBounded(.y, in: WireBounds.normalizedCoordinate)
+    }
     public var mouseButton: MouseButton? { MouseButton(wire: button) }
     public var normalized: CGPoint { CGPoint(x: x, y: y) }
 }
@@ -151,6 +157,13 @@ public struct ClickPayload: Codable, Equatable {
     public var count: Int
     public init(button: MouseButton, x: Double, y: Double, count: Int) {
         self.button = button.rawValue; self.x = x; self.y = y; self.count = count
+    }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        button = try container.decode(Int.self, forKey: .button)
+        x = try container.decodeBounded(.x, in: WireBounds.normalizedCoordinate)
+        y = try container.decodeBounded(.y, in: WireBounds.normalizedCoordinate)
+        count = try container.decode(Int.self, forKey: .count)
     }
     public var mouseButton: MouseButton? { MouseButton(wire: button) }
     public var normalized: CGPoint { CGPoint(x: x, y: y) }
@@ -177,6 +190,12 @@ public struct ScrollPayload: Codable, Equatable {
     public var phase: String
     public init(dx: Double, dy: Double, phase: ScrollPhase) {
         self.dx = dx; self.dy = dy; self.phase = phase.rawValue
+    }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        dx = try container.decodeBounded(.dx, in: WireBounds.scrollDelta)
+        dy = try container.decodeBounded(.dy, in: WireBounds.scrollDelta)
+        phase = try container.decode(String.self, forKey: .phase)
     }
     public var scrollPhase: ScrollPhase { ScrollPhase(wire: phase) }
 }

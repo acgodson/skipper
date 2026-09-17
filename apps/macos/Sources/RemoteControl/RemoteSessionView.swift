@@ -156,8 +156,10 @@ private struct SessionToolbar: View {
     private var statusLine: String {
         if model.isReconnecting { return "Reconnecting\u{2026}" }
         guard RCLog.enabled else { return videoSize.width > 0 ? "Live" : "Connected" }
-        if let display = model.coordinator?.remoteDisplay {
-            let scale = display.scale == rint(display.scale) ? String(Int(display.scale)) : String(format: "%.1f", display.scale)
+        if let display = model.coordinator?.remoteDisplay,
+           WireBounds.accepts(display.scale, in: WireBounds.displayScale) {
+            let whole = display.scale == rint(display.scale) ? WireBounds.int(display.scale) : nil
+            let scale = whole.map(String.init) ?? String(format: "%.1f", display.scale)
             return "Live \u{2014} remote display \(display.w)\u{00D7}\(display.h) @\(scale)x"
         }
         if videoSize.width > 0 {

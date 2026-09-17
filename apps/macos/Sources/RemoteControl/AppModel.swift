@@ -17,7 +17,7 @@ final class AppModel: ObservableObject {
 
     @Published var account: AccountLinker?
 
-    @Published var sessionState: SessionState = .idle
+    @Published var sessionState: SessionState = .idle { didSet { sessionStateChanged() } }
     @Published var connectError: String?
     @Published var isConnecting = false
     @Published var signalingReady = false
@@ -41,10 +41,13 @@ final class AppModel: ObservableObject {
     private var observers: [Any] = []
     private var cancellables = Set<AnyCancellable>()
 
+    let developmentServerBanner: String?
+
     var presence: any PeerPresenceSource { coordinator?.presence ?? offlinePresence }
     private let offlinePresence = SignalingPresenceSource()
 
     init() {
+        self.developmentServerBanner = BackendOverrides.fromEnvironment().developmentBannerText
         let settings = AppSettings()
         self.settings = settings
         self.permissions = PermissionsModel()
@@ -86,8 +89,17 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func sessionStateChanged() {
+        switch coordinator?.phase {
+        case .live, .reconnecting, .connecting:
+            applyKeyboardCapture()
+        default:
+            if captureKeyboard { captureKeyboard = false } else { applyKeyboardCapture() }
+        }
+    }
+
     private func applyKeyboardCapture() {
-        let wanted = captureKeyboard && showsRemoteScreen
+        let wanted = captureKeyboard && showsRemoteScreen && coordinator?.phase == .live
         if wanted && !keyboardCapture.isInstalled {
             if keyboardCapture.install() {
                 keyboardCaptureProblem = nil
@@ -113,6 +125,11 @@ final class AppModel: ObservableObject {
         bind(coordinator)
         bind(account)
         bindPresence(presence)
+
+        ClipboardSecrets.shared.replace(with: [])
+        identity?.$accessCode
+            .sink { ClipboardSecrets.shared.replace(with: [$0]) }
+            .store(in: &cancellables)
 
         settings.$qualityMode
             .dropFirst()
@@ -188,10 +205,8 @@ final class AppModel: ObservableObject {
     }
 
     private func startAutoConnectIfRequested() {
-        #if DEBUG
-        let environment = ProcessInfo.processInfo.environment
-        guard let spec = environment["RC_AUTOCONNECT"],
-              environment["RC_IDENTITY_DIR"] != nil,
+        guard let spec = DevelopmentHooks.value(.autoConnect),
+              DevelopmentHooks.value(.identityDirectory) != nil,
               settings.role == .controller else { return }
         let parts = spec.split(separator: ":", maxSplits: 1).map(String.init)
         guard parts.count == 2 else { return }
@@ -202,7 +217,6 @@ final class AppModel: ObservableObject {
             }
             connect(deviceID: parts[0], accessCode: parts[1], remember: false, label: "")
         }
-        #endif
     }
 
     private func apply(_ event: CoordinatorEvent) {
@@ -285,8 +299,7 @@ final class AppModel: ObservableObject {
     }
 
     private func startAutoLinkIfRequested() {
-        let environment = ProcessInfo.processInfo.environment
-        guard environment["RC_AUTOLINK"] == "1", environment["RC_IDENTITY_DIR"] != nil else { return }
+        guard DevelopmentHooks.isOn(.autoLink), DevelopmentHooks.value(.identityDirectory) != nil else { return }
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             if case .unlinked = account?.state { account?.beginLink() }
@@ -327,11 +340,21 @@ final class AppModel: ObservableObject {
         sessionState = .idle
     }
 
+    var hostSessionIsOpen: Bool {
+        AccessCodeExposure.sessionIsOpen(phase: coordinator?.phase, captureState: coordinator?.captureState)
+    }
+
     func refreshAccessCode() {
         guard let identity else { return }
+        let rotation = AccessCodeRotation(
+            sessionIsOpen: { [weak self] in self?.hostSessionIsOpen ?? false },
+            endSession: { [weak self] in self?.endSession() },
+            forceStop: { [weak self] in self?.restartTransport() },
+            rotate: { _ = try await identity.refreshAccessCode() }
+        )
         Task {
             do {
-                _ = try await identity.refreshAccessCode()
+                try await rotation.run()
             } catch {
                 connectError = error.localizedDescription
             }

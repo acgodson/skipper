@@ -31,7 +31,7 @@ public enum CaptureSourceKind: String, Equatable {
     case screen
     case synthetic
 
-    public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) -> CaptureSourceKind {
-        CaptureSourceKind(rawValue: env["RC_CAPTURE_SOURCE"]?.lowercased() ?? "") ?? .screen
+    public static func fromEnvironment(_ requested: String? = DevelopmentHooks.value(.captureSource)) -> CaptureSourceKind {
+        CaptureSourceKind(rawValue: requested?.lowercased() ?? "") ?? .screen
     }
 }

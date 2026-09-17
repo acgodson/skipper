@@ -65,7 +65,7 @@ public final class AppSettings: ObservableObject {
         let resolved: UserDefaults
         if let defaults {
             resolved = defaults
-        } else if let suite = ProcessInfo.processInfo.environment["RC_SETTINGS_SUITE"],
+        } else if let suite = DevelopmentHooks.value(.settingsSuite),
                   let suiteDefaults = UserDefaults(suiteName: suite) {
             resolved = suiteDefaults
         } else {

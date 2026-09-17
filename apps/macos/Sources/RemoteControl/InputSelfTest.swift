@@ -6,7 +6,7 @@ import RemoteControlCore
 @MainActor
 final class InputSelfTest {
 
-    static var isRequested: Bool { ProcessInfo.processInfo.environment["RC_INPUT_SELFTEST"] == "1" }
+    static var isRequested: Bool { DevelopmentHooks.isOn(.inputSelfTest) }
 
     private let injector = InputInjector()
     private let sink = CGEventSink()

@@ -411,9 +411,9 @@ public let videoStatsSuite = TestSuite("VideoStatistics", [
     },
 
     TestCase("the synthetic frame source is opt-in and never selected by accident") {
-        try expectEqual(CaptureSourceKind.fromEnvironment([:]), .screen)
-        try expectEqual(CaptureSourceKind.fromEnvironment(["RC_CAPTURE_SOURCE": "screen"]), .screen)
-        try expectEqual(CaptureSourceKind.fromEnvironment(["RC_CAPTURE_SOURCE": "synthetic"]), .synthetic)
-        try expectEqual(CaptureSourceKind.fromEnvironment(["RC_CAPTURE_SOURCE": "nonsense"]), .screen)
+        try expectEqual(CaptureSourceKind.fromEnvironment(nil), .screen)
+        try expectEqual(CaptureSourceKind.fromEnvironment("screen"), .screen)
+        try expectEqual(CaptureSourceKind.fromEnvironment("synthetic"), .synthetic)
+        try expectEqual(CaptureSourceKind.fromEnvironment("nonsense"), .screen)
     },
 ])

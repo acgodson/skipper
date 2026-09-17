@@ -9,10 +9,12 @@
 set -euo pipefail
 
 REPRODUCIBLE=0
+TEST_HOOKS=0
 for arg in "$@"; do
-    if [[ "$arg" == "--reproducible" ]]; then
-        REPRODUCIBLE=1
-    fi
+    case "$arg" in
+        --reproducible) REPRODUCIBLE=1 ;;
+        --test-hooks) TEST_HOOKS=1 ;;
+    esac
 done
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,21 +39,16 @@ ARCH="arm64"
 CONFIG="release"
 
 # ---- Signing configuration --------------------------------------------------
-# ONE place to change when a Developer ID becomes available. Everything below
-# reads these; nothing else in this script mentions a signing identity.
-#
-#   "-"  = ad-hoc (the default, and all this machine can do today: there is no
-#          paid Apple Developer account, so there is no Developer ID certificate)
-#
-# To switch later, either edit the default here or run:
+# ONE place that decides the signing identity; nothing else in this script
+# mentions one. A release build is signed with a Developer ID:
 #   RC_SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" ./scripts/build.sh
-# and set RC_NOTARY_PROFILE to a `notarytool store-credentials` profile name to
+# and RC_NOTARY_PROFILE names a `notarytool store-credentials` profile to
 # additionally notarise and staple.
 LOCAL_IDENTITY="${RC_LOCAL_IDENTITY:-RemoteControl Local Signing}"
 NOTARY_PROFILE="${RC_NOTARY_PROFILE:-}"
 
 # Identity selection, in order of preference:
-#   1. RC_SIGN_IDENTITY, if the caller set one (a real Developer ID, one day).
+#   1. RC_SIGN_IDENTITY, if the caller set one (the Developer ID for releases).
 #   2. The local self-signed identity from scripts/make-signing-cert.sh, if it
 #      is in the keychain.
 #   3. Ad-hoc.
@@ -64,8 +61,8 @@ NOTARY_PROFILE="${RC_NOTARY_PROFILE:-}"
 # rows. Signing with any stable certificate makes the requirement
 # `identifier "app.skipperdesk.desktop" and certificate leaf = H"..."`, which
 # does not move when the code does. This buys nothing for Gatekeeper or for
-# distribution — that still needs a paid Developer ID — but it is the difference
-# between granting Screen Recording once and granting it after every build.
+# distribution, but it is the difference between granting Screen Recording once
+# and granting it after every local build.
 if [[ -n "${RC_SIGN_IDENTITY:-}" ]]; then
     SIGN_IDENTITY="${RC_SIGN_IDENTITY}"
 elif security find-identity -v -p codesigning 2>/dev/null | grep -q "${LOCAL_IDENTITY}"; then
@@ -93,7 +90,11 @@ SWIFT_BUILD_FLAGS=("-c" "${CONFIG}" "--arch" "${ARCH}")
 if [[ "$REPRODUCIBLE" -eq 1 ]]; then
     SWIFT_BUILD_FLAGS+=("-Xswiftc" "-debug-prefix-map" "-Xswiftc" "${REPO_ROOT}=/BUILD")
 fi
-swift build "${SWIFT_BUILD_FLAGS[@]}"
+if [[ "$TEST_HOOKS" -eq 1 ]]; then
+    SWIFT_BUILD_FLAGS+=("-Xswiftc" "-DSKIPPER_TEST_HOOKS")
+    echo "==> --test-hooks: development environment hooks COMPILED IN. Never ship this build."
+fi
+swift build --force-resolved-versions "${SWIFT_BUILD_FLAGS[@]}"
 
 BIN_PATH="$(swift build -c "${CONFIG}" --arch "${ARCH}" --show-bin-path)"
 if [[ ! -x "${BIN_PATH}/${SWIFT_PRODUCT}" ]]; then
@@ -122,14 +123,19 @@ shopt -u nullglob
 # @rpath/WebRTC.framework/WebRTC, but the executable only carries an
 # @loader_path rpath -- so a bundle without this step builds, signs and verifies
 # perfectly and then dies at launch with "Library not loaded". It has to be
-# copied in and given an rpath that points at it.
+# copied in and given an rpath that points at it, and the @loader_path rpath is
+# removed so the only place dyld looks is the signed Frameworks directory.
 mkdir -p "${CONTENTS}/Frameworks"
 FRAMEWORK_SRC="${BIN_PATH}/WebRTC.framework"
 if [[ -d "${FRAMEWORK_SRC}" ]]; then
     rm -rf "${CONTENTS}/Frameworks/WebRTC.framework"
     cp -R "${FRAMEWORK_SRC}" "${CONTENTS}/Frameworks/"
-    install_name_tool -add_rpath "@executable_path/../Frameworks" \
-        "${CONTENTS}/MacOS/${APP_NAME}" 2>/dev/null || true
+    while otool -l "${CONTENTS}/MacOS/${APP_NAME}" | grep -q "path @loader_path "; do
+        install_name_tool -delete_rpath "@loader_path" "${CONTENTS}/MacOS/${APP_NAME}"
+    done
+    if ! otool -l "${CONTENTS}/MacOS/${APP_NAME}" | grep -q "path @executable_path/../Frameworks "; then
+        install_name_tool -add_rpath "@executable_path/../Frameworks" "${CONTENTS}/MacOS/${APP_NAME}"
+    fi
     echo "==> Embedded WebRTC.framework"
 else
     echo "error: WebRTC.framework not found at ${FRAMEWORK_SRC}" >&2
@@ -154,7 +160,7 @@ cat > "${CONTENTS}/Info.plist" <<PLIST
     <key>CFBundleVersion</key>               <string>${BUILD_NUMBER}</string>
     <key>CFBundleInfoDictionaryVersion</key> <string>6.0</string>
     <key>LSMinimumSystemVersion</key>        <string>${MIN_MACOS}</string>
-    <key>NSHumanReadableCopyright</key>      <string>Private build. Not for distribution.</string>
+    <key>NSHumanReadableCopyright</key>      <string>© 2026 SkipperDesk</string>
     <key>LSUIElement</key>                   <false/>
 
     <key>NSScreenCaptureUsageDescription</key>
@@ -185,6 +191,10 @@ cat > "${CONTENTS}/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+if [[ "$TEST_HOOKS" -eq 1 ]]; then
+    /usr/libexec/PlistBuddy -c "Add :SkipperTestHooks bool true" "${CONTENTS}/Info.plist" >/dev/null
+fi
 
 # ---- Icon (optional) --------------------------------------------------------
 # If an iconset is present, compile it. Never fail the build over an icon.
@@ -242,11 +252,8 @@ cat > "${ENTITLEMENTS}" <<ENTS
          CGEvent injection are incompatible with the App Sandbox. -->
     <key>com.apple.security.app-sandbox</key>            <false/>
     <key>com.apple.security.network.client</key>         <true/>
-    <key>com.apple.security.network.server</key>         <true/>
     <key>com.apple.security.device.camera</key>          <false/>
     <key>com.apple.security.device.microphone</key>      <false/>
-    <!-- Phase 3 adds libwebrtc, which is loaded as a signed xcframework. -->
-    <key>com.apple.security.cs.disable-library-validation</key> <true/>
 ${KEYCHAIN_ENTITLEMENTS}
 </dict>
 </plist>
@@ -261,9 +268,22 @@ else
     TIMESTAMP_FLAG="--timestamp"
 fi
 
+# Library validation only admits frameworks carrying the app's Team ID, and only
+# Apple-issued certificates record one. A Team ID build therefore gets the full
+# hardened runtime. A local or ad-hoc build could never load its own
+# WebRTC.framework under it, so it is signed without the runtime (kill,hard
+# only; "restrict" would also forbid the @rpath lookup) and is never granted
+# disable-library-validation. Such a build is for development, not distribution.
+if [[ "${SIGN_IDENTITY}" == "Developer ID"* || "${SIGN_IDENTITY}" == "Apple Development"* ]]; then
+    SIGN_OPTIONS="runtime"
+else
+    SIGN_OPTIONS="kill,hard"
+    echo "    no Team ID: hardened runtime off (development build only; not for distribution)"
+fi
+
 codesign --force --deep --sign "${SIGN_IDENTITY}" \
     --entitlements "${ENTITLEMENTS}" \
-    --options runtime \
+    --options "${SIGN_OPTIONS}" \
     "${TIMESTAMP_FLAG}" \
     "${BUNDLE}" 2>&1 | sed 's/^/    /'
 rm -f "${ENTITLEMENTS}"
@@ -298,28 +318,12 @@ elif [[ "${SIGN_IDENTITY}" == "Developer ID"* ]]; then
     echo "==> Signed with a real identity but RC_NOTARY_PROFILE is unset; skipping notarisation"
 fi
 
-# ---- TODO: Phase 7 — distribution -------------------------------------------
-#
-# Signing and notarisation are already wired above and driven entirely by
-# SIGN_IDENTITY / NOTARY_PROFILE at the top of this file. What is still missing
-# for Phase 7 is the .dmg:
-#
-#   hdiutil create -volname SkipperDesk -srcfolder "${BUNDLE}" -ov -format UDZO \
-#            "${DIST_DIR}/${APP_NAME}.dmg"
-#
-# And the one prerequisite that is NOT true yet: a paid Apple Developer account
-# with a Developer ID Application certificate in the login keychain. Until then
-# SIGN_IDENTITY stays "-" and the .app runs only on machines that are told to
-# trust it.
-#
-# NOTE: as of Phase 2.2 the signing identity is functional, not only a
-# distribution concern. The device private key goes to the Secure Enclave when
-# the entitlements above are present, to the Keychain otherwise, and to
-# identity.json only under SKIPPER_DEV_FILE_IDENTITY=1 or an overridden
-# RC_IDENTITY_DIR. A Developer ID therefore upgrades new identities from a
-# software key to a hardware one; existing identities keep their Device ID and
-# stay on their (Keychain-held) software key, because an SE key cannot be
-# imported.
+# ---- Signing identity and key storage ----------------------------------------
+# The signing identity is functional, not only a distribution concern. The
+# device private key goes to the Secure Enclave when the entitlements above are
+# present, and to the Keychain otherwise. identity.json holds a key only in a
+# --test-hooks or debug build (SKIPPER_DEV_FILE_IDENTITY=1 or RC_IDENTITY_DIR);
+# a release build ignores both. The .dmg is built by scripts/package-dmg.sh.
 # -----------------------------------------------------------------------------
 
 # The designated requirement IS the TCC identity. Printing it makes "why did my
@@ -328,8 +332,8 @@ if [[ "$REPRODUCIBLE" -eq 1 ]]; then
     echo "==> --reproducible: normalising file timestamps to SOURCE_DATE_EPOCH"
     find "${BUNDLE}" -exec touch -t "$(date -r "${SOURCE_DATE_EPOCH}" +%Y%m%d%H%M.%S)" {} +
     echo "    Info.plist carries no build timestamp key; nothing to strip there."
-    echo "    NOT reproducible: WebRTC.framework is Google's prebuilt binary xcframework,"
-    echo "    fetched as-is from stasel/WebRTC and never rebuilt from source here."
+    echo "    NOT reproducible: WebRTC.framework is prebuilt by the stasel/WebRTC project from"
+    echo "    Google's libwebrtc, pinned by exact version and checksum, never rebuilt here."
 fi
 
 echo "==> Designated requirement (this is what macOS ties privacy grants to)"

@@ -69,11 +69,13 @@ public final class CGEventSink: InputEventSink {
             return cgEvent
 
         case .scroll(let scroll):
-            guard let cgEvent = CGEvent(scrollWheelEvent2Source: source,
+            guard let wheel1 = WireBounds.int32(scroll.dy),
+                  let wheel2 = WireBounds.int32(scroll.dx),
+                  let cgEvent = CGEvent(scrollWheelEvent2Source: source,
                                         units: .pixel,
                                         wheelCount: 2,
-                                        wheel1: Int32(clamping: Int(scroll.dy.rounded())),
-                                        wheel2: Int32(clamping: Int(scroll.dx.rounded())),
+                                        wheel1: wheel1,
+                                        wheel2: wheel2,
                                         wheel3: 0) else { return nil }
             cgEvent.flags = scroll.flags.cgFlags
             cgEvent.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)

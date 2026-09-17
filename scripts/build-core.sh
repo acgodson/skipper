@@ -15,7 +15,7 @@ STAGED_DIR="${REPO_ROOT}/core/target/release"
 cd "${REPO_ROOT}"
 
 echo "==> Building rc-ffi (release, ${TARGET})"
-cargo build --release -p rc-ffi --target "${TARGET}"
+cargo build --locked --release -p rc-ffi --target "${TARGET}"
 
 BUILT="${REPO_ROOT}/target/${TARGET}/release/${LIB}"
 if [[ ! -f "${BUILT}" ]]; then

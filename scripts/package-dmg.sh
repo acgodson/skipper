@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Builds SkipperDesk.dmg — the thing you actually copy to the second Mac.
 #
-# Ad-hoc / locally signed, deliberately: there is no paid Apple Developer
-# account (PLAN.md 2.5). Gatekeeper therefore needs ONE right-click > Open on
-# first launch. Transferring by AirDrop/USB/scp instead of a browser download
-# usually avoids even that, because no quarantine attribute is attached.
+# A Developer ID build (RC_SIGN_IDENTITY) is signed and, with RC_NOTARY_PROFILE,
+# notarised, so it opens with no warning. An ad-hoc / locally signed build is for
+# development only; the Gatekeeper workaround for it is printed for the
+# developer and never written into the image a user receives.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -25,26 +25,28 @@ if ! otool -l "$APP/Contents/MacOS/SkipperDesk" | grep -q "@executable_path/../F
 fi
 [[ -d "$APP/Contents/Frameworks/WebRTC.framework" ]] || { echo "FAIL: WebRTC.framework not embedded" >&2; exit 1; }
 
+SIGN_IDENTITY="${RC_SIGN_IDENTITY:-}"
+NOTARY_PROFILE="${RC_NOTARY_PROFILE:-}"
+if codesign -dvv "$APP" 2>&1 | grep -q "^Authority=Developer ID Application"; then
+  DEVELOPER_ID_APP=1
+  FIRST_LAUNCH="2. FIRST LAUNCH. Open the app from Applications. macOS confirms once that
+   it was downloaded from the internet; click Open."
+else
+  DEVELOPER_ID_APP=0
+  FIRST_LAUNCH="2. FIRST LAUNCH. This is a development build. If macOS refuses to open it,
+   go to System Settings > Privacy & Security and click \"Open Anyway\"."
+fi
+
 echo "==> Staging"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
-cat > "$STAGE/READ ME FIRST.txt" <<'TXT'
+cat > "$STAGE/READ ME FIRST.txt" <<TXT
 SkipperDesk
 ===========
 
 1. Drag SkipperDesk.app onto the Applications folder.
 
-2. FIRST LAUNCH. This app is not notarised by Apple (no paid Developer ID),
-   so macOS blocks it once. Easiest fix - run this in Terminal:
-
-       xattr -cr /Applications/SkipperDesk.app
-
-   Then open the app normally. No warning at all.
-
-   Without Terminal: double-click the app and LET IT BE REFUSED, then go
-   straight to System Settings > Privacy & Security, scroll to the bottom,
-   and click "Open Anyway". The button only appears AFTER a blocked attempt
-   and disappears after about an hour - that is why it may look missing.
+${FIRST_LAUNCH}
 
 3. Grant these two permissions when asked
    (System Settings > Privacy & Security):
@@ -82,9 +84,6 @@ hdiutil detach "$MP" >/dev/null
 #
 # This is DIRECT distribution, not the App Store: notarisation is an automated
 # malware scan (typically 1-15 min), with no App Review and no human approval.
-SIGN_IDENTITY="${RC_SIGN_IDENTITY:-}"
-NOTARY_PROFILE="${RC_NOTARY_PROFILE:-}"
-
 if [[ "$SIGN_IDENTITY" == "Developer ID"* ]]; then
   echo "==> Signing the disk image"
   codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
@@ -99,22 +98,23 @@ if [[ "$SIGN_IDENTITY" == "Developer ID"* ]]; then
     echo "    This image now opens with a plain double-click, no warning."
   else
     echo "    RC_NOTARY_PROFILE unset -- signed but NOT notarised."
-    echo "    Gatekeeper will still warn. See below."
+    echo "    Gatekeeper will still warn until the image is notarised."
   fi
 else
-  cat <<'NOTE'
+  if [[ "$DEVELOPER_ID_APP" -eq 0 ]]; then
+    cat <<'NOTE'
 
-    NOTE: ad-hoc / locally signed, so Gatekeeper will warn on first open.
-    That is expected, not a failure. Recipient does ONE of:
-      - right-click the app > Open > Open        (macOS 14 and earlier)
-      - System Settings > Privacy & Security > "Open Anyway"   (macOS 15+)
-      - xattr -c /Applications/SkipperDesk.app
+    DEVELOPER NOTE: ad-hoc / locally signed, so Gatekeeper warns on first open.
+    That is expected for a development build. On your own test Mac, either:
+      - System Settings > Privacy & Security > "Open Anyway"
+      - xattr -cr /Applications/SkipperDesk.app
 
     To remove the warning entirely with an Apple Developer account:
       RC_SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" \
       RC_NOTARY_PROFILE=rc-notary \
         ./scripts/build.sh && ./scripts/package-dmg.sh
 NOTE
+  fi
 fi
 
 echo

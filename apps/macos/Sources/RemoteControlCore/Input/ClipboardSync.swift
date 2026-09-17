@@ -14,17 +14,26 @@ public final class ClipboardSyncEngine {
 
     public private(set) var droppedEchoes = 0
     public private(set) var droppedOversize = 0
+    public private(set) var droppedPrivate = 0
 
-    public init(originId: String) {
+    private let secrets: ClipboardSecrets
+
+    public init(originId: String, secrets: ClipboardSecrets = .shared) {
         self.originId = originId
+        self.secrets = secrets
     }
 
     public static func hash(_ text: String) -> String {
         Data(SHA256.hash(data: Data(text.utf8))).base64EncodedString()
     }
 
-    public func localChange(text: String) -> ClipboardTextPayload? {
+    public func localChange(text: String, pasteboardTypes: [String] = []) -> ClipboardTextPayload? {
         guard !text.isEmpty else { return nil }
+        guard !PasteboardMarker.isPrivate(pasteboardTypes), !secrets.contains(in: text) else {
+            droppedPrivate += 1
+            RCLog.info("clipboard: local change is marked private or holds this Mac's access code; not sent")
+            return nil
+        }
         guard text.utf8.count <= ClipboardSyncEngine.maxTextBytes else {
             droppedOversize += 1
             RCLog.info("clipboard: local change of \(text.utf8.count) bytes exceeds the \(ClipboardSyncEngine.maxTextBytes)-byte limit; not sent")
@@ -82,7 +91,7 @@ public final class ClipboardMonitor {
     private var lastChangeCount: Int
 
     nonisolated public static func environmentPasteboard() -> NSPasteboard {
-        guard let name = ProcessInfo.processInfo.environment["RC_PASTEBOARD_NAME"], !name.isEmpty else {
+        guard let name = DevelopmentHooks.value(.pasteboardName) else {
             return .general
         }
         return NSPasteboard(name: NSPasteboard.Name(name))
@@ -120,7 +129,8 @@ public final class ClipboardMonitor {
         guard count != lastChangeCount else { return }
         lastChangeCount = count
         guard let text = pasteboard.string(forType: .string) else { return }
-        guard let payload = engine.localChange(text: text) else { return }
+        let types = pasteboard.types?.map(\.rawValue) ?? []
+        guard let payload = engine.localChange(text: text, pasteboardTypes: types) else { return }
         onOutgoing?(payload)
     }
 
