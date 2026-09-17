@@ -55,7 +55,7 @@ func TestIdleBucketsAreEvicted(t *testing.T) {
 	l := New()
 	now := time.Unix(1_800_000_000, 0)
 	for i := 0; i < 1000; i++ {
-		l.Take(now, Charge{perMinute, string(rune('a' + i%26)) + time.Duration(i).String()})
+		l.Take(now, Charge{perMinute, string(rune('a'+i%26)) + time.Duration(i).String()})
 	}
 	if l.Len() != 1000 {
 		t.Fatalf("buckets = %d, want 1000", l.Len())
