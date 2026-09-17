@@ -28,6 +28,8 @@ const (
 	PathInternalDevices      = "/internal/devices"
 	PathInternalRegister     = PathInternalDevices + "/register"
 	InternalEpochSuffix      = "/epoch"
+	InternalCertSuffix       = "/cert"
+	PathInternalPairs        = "/internal/pairs"
 
 	PathInternalLiveSessions = "/internal/sessions/live"
 )
@@ -383,11 +385,22 @@ type InternalRegisterResponse struct {
 }
 
 // InternalDevice is what the signaling server needs to verify a hello and pin a session.
+// IDCert is present only in the answer to InternalCertPath, the one call that signs.
 type InternalDevice struct {
 	DeviceID  string `json:"deviceId"`
 	Pubkey    string `json:"pubkey"`
 	CodeEpoch int64  `json:"codeEpoch"`
-	IDCert    string `json:"idCert"`
+	IDCert    string `json:"idCert,omitempty"`
+}
+
+// InternalCertRequest names the key a hello proved; the registry certifies the binding only if it owns the id.
+type InternalCertRequest struct {
+	Pubkey string `json:"pubkey"`
+}
+
+// InternalPair says whether the controller has had a metered session with the host before.
+type InternalPair struct {
+	Known bool `json:"known"`
 }
 
 // InternalLiveSessions is rc-signal's answer to rc-api's reconciliation sweep:
@@ -401,6 +414,14 @@ func InternalDevicePath(deviceID string) string { return PathInternalDevices + "
 
 func InternalEpochPath(deviceID string) string {
 	return InternalDevicePath(deviceID) + InternalEpochSuffix
+}
+
+func InternalCertPath(deviceID string) string {
+	return InternalDevicePath(deviceID) + InternalCertSuffix
+}
+
+func InternalPairPath(hostDeviceID, controllerDeviceID string) string {
+	return PathInternalPairs + "/" + hostDeviceID + "/" + controllerDeviceID
 }
 
 func NewAPIError(code, message, requestID string) APIErrorBody {

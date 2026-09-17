@@ -1,5 +1,6 @@
-// Package store is the SQLite device registry.
-// It stores the device id, P-256 public key, label and code epoch; sessions are in-memory only.
+// Package store is rc-signal's stand-alone SQLite device registry: device id, P-256 public key,
+// label and code epoch, the controller/host pairs that have had a metered session, and (in a
+// separate database file) the durable device-id claims. Sessions are in-memory only.
 package store
 
 import (
@@ -8,9 +9,8 @@ import (
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"rc-signal/internal/deviceid"
+	"rc-signal/internal/sqlitex"
 )
 
 var ErrNotFound = errors.New("device not found")
@@ -25,7 +25,8 @@ type Device struct {
 }
 
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	claims *sql.DB
 }
 
 const schema = `
@@ -36,38 +37,31 @@ CREATE TABLE IF NOT EXISTS devices (
   code_epoch   INTEGER NOT NULL DEFAULT 1,
   created_at   INTEGER NOT NULL,
   updated_at   INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS known_pairs (
+  host_device_id       TEXT NOT NULL,
+  controller_device_id TEXT NOT NULL,
+  first_metered_at     INTEGER NOT NULL,
+  PRIMARY KEY (host_device_id, controller_device_id)
 );`
 
-func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
+// Open opens the registry at path and the device-id claims at claimsPath, which the operator
+// keeps and backs up separately and never resets together with path.
+func Open(path, claimsPath string) (*Store, error) {
+	db, err := sqlitex.Open(path, schema)
 	if err != nil {
-		return nil, err
-	}
-
-	db.SetMaxOpenConns(1)
-	for _, p := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA foreign_keys=ON",
-	} {
-		if _, err := db.Exec(p); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("%s: %w", p, err)
-		}
-	}
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
 		return nil, err
 	}
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}
-	if _, err := db.Exec(deviceid.ClaimsSchema); err != nil {
+	claims, err := deviceid.OpenClaims(claimsPath, db)
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, claims: claims}, nil
 }
 
 func migrate(db *sql.DB) error {
@@ -124,7 +118,7 @@ func migrate(db *sql.DB) error {
 	return tx.Commit()
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error { return errors.Join(s.db.Close(), s.claims.Close()) }
 
 const selectCols = `device_id, pubkey, label, code_epoch, created_at, updated_at`
 
@@ -155,7 +149,7 @@ func (s *Store) GetByPubkey(pubkey string) (*Device, error) {
 func (s *Store) Register(pubkey, label, certifiedID string, now time.Time) (*Device, deviceid.Result, error) {
 	ms := now.UnixMilli()
 	ledger := deviceid.SQL{
-		DB: s.db,
+		DB: s.db, Claims: s.claims,
 		Insert: func(tx *sql.Tx, id string) error {
 			_, err := tx.Exec(`INSERT INTO devices
  (device_id, pubkey, label, code_epoch, created_at, updated_at)
@@ -196,4 +190,17 @@ func (s *Store) SetLabel(deviceID, label string, now time.Time) error {
 	_, err := s.db.Exec(`UPDATE devices SET label=?, updated_at=? WHERE device_id=?`,
 		label, now.UnixMilli(), deviceID)
 	return err
+}
+
+func (s *Store) RecordPair(hostDeviceID, controllerDeviceID string, at time.Time) error {
+	_, err := s.db.Exec(`INSERT INTO known_pairs (host_device_id, controller_device_id, first_metered_at)
+ VALUES (?,?,?) ON CONFLICT DO NOTHING`, hostDeviceID, controllerDeviceID, at.UnixMilli())
+	return err
+}
+
+func (s *Store) KnownPair(hostDeviceID, controllerDeviceID string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(1) FROM known_pairs WHERE host_device_id=? AND controller_device_id=?`,
+		hostDeviceID, controllerDeviceID).Scan(&n)
+	return n > 0, err
 }

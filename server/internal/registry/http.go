@@ -71,6 +71,7 @@ func (h *HTTP) Register(ctx context.Context, r Registration) (Registered, error)
 	if dev.Pubkey != r.Pubkey {
 		return Registered{}, unavailable("register", errors.New("the registered id is bound to another key"))
 	}
+	dev.IDCert = out.IDCert
 	return Registered{Device: dev, Existing: out.Existing}, nil
 }
 
@@ -92,8 +93,30 @@ func (h *HTTP) Lookup(ctx context.Context, deviceID string) (Device, error) {
 	if err := resp.Decode(&out); err != nil || out.DeviceID != deviceID || out.Pubkey == "" {
 		return Device{}, unavailable("lookup", fmt.Errorf("malformed answer: %v", err))
 	}
-	dev := Device{DeviceID: out.DeviceID, Pubkey: out.Pubkey, CodeEpoch: out.CodeEpoch, IDCert: out.IDCert}
+	dev := Device{DeviceID: out.DeviceID, Pubkey: out.Pubkey, CodeEpoch: out.CodeEpoch}
 	h.remember(dev)
+	return dev, nil
+}
+
+func (h *HTTP) Certify(ctx context.Context, deviceID, pubkey string) (Device, error) {
+	resp, err := h.api.Do(ctx, http.MethodPost, protocol.InternalCertPath(deviceID),
+		protocol.InternalCertRequest{Pubkey: pubkey})
+	if err != nil {
+		return Device{}, unavailable("certify", err)
+	}
+	if resp.Status == http.StatusNotFound {
+		return Device{}, ErrNotFound
+	}
+	if !resp.OK() {
+		return Device{}, unexpected("certify", resp)
+	}
+	var out protocol.InternalDevice
+	if err := resp.Decode(&out); err != nil || out.DeviceID != deviceID || out.Pubkey != pubkey || out.IDCert == "" {
+		return Device{}, unavailable("certify", fmt.Errorf("malformed answer: %v", err))
+	}
+	dev := Device{DeviceID: out.DeviceID, Pubkey: out.Pubkey, CodeEpoch: out.CodeEpoch}
+	h.remember(dev)
+	dev.IDCert = out.IDCert
 	return dev, nil
 }
 

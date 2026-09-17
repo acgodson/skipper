@@ -7,6 +7,7 @@
 pub mod consts;
 pub mod ctrl;
 pub mod envelope;
+pub mod relay;
 pub mod signaling;
 
 pub use consts::VERSION;

@@ -23,10 +23,11 @@ type Case struct {
 // File.ByeReasons is the closed §2.14 set; InvalidByeReasons are values every
 // implementation must refuse (the server answers error{bad_request} and relays nothing).
 type File struct {
-	Version           int      `json:"version"`
-	ByeReasons        []string `json:"byeReasons"`
-	InvalidByeReasons []string `json:"invalidByeReasons"`
-	Cases             []Case   `json:"cases"`
+	Version           int         `json:"version"`
+	ByeReasons        []string    `json:"byeReasons"`
+	InvalidByeReasons []string    `json:"invalidByeReasons"`
+	Cases             []Case      `json:"cases"`
+	Relay             RelayVector `json:"relay"`
 }
 
 var cases []Case
@@ -51,12 +52,14 @@ func main() {
 	const signedFP = "sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A"
 	const signedOffer = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:" + signedFP + "\r\na=setup:actpass\r\n"
 
-	sessionICE := []p.ICEServer{
+	stunICE := []p.ICEServer{
 		{URLs: []string{"stun:54.246.73.81:3478"}},
-		{URLs: []string{"turn:54.246.73.81:3478?transport=udp"},
-			Username:   "1755607200:8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
-			Credential: "Y3JlZA==", ExpiresAt: ts + 7200000},
 	}
+	sessionICE := append(append([]p.ICEServer{}, stunICE...), p.ICEServer{
+		URLs:     []string{"turn:54.246.73.81:3478?transport=udp"},
+		Username: "1755600600:8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Credential: "Y3JlZA==",
+		ExpiresAt: ts + int64(p.TurnCredTTLSec)*1000,
+	})
 
 	recCode := p.CodeVerifier{
 		Alg: p.AlgArgon2id, Salt: "c2FsdHNhbHRzYWx0c2FsdA==",
@@ -148,14 +151,14 @@ func main() {
 		})
 
 	add("connect_ok_with_ice_servers", "signaling", p.TypeConnectOK,
-		"v4: iceServers is this session's complete list; the TURN username is <expiry>:<sessionId>, valid 2 h",
+		"v5: iceServers is STUN only; TURN arrives in ice_servers once the session is metered",
 		"", "c-7", ts,
 		p.ConnectOK{
 			SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "dG9rZW4=",
 			ExpiresAt: ts + 600000, TTLSec: 600,
 			HostDeviceID: "739000587", ControllerDeviceID: "481930275",
 			HostPubkey: hostPubkey,
-			ICEServers: sessionICE,
+			ICEServers: stunICE,
 		})
 
 	add("connect_ok_no_host_pubkey", "signaling", p.TypeConnectOK,
@@ -167,7 +170,7 @@ func main() {
 		})
 
 	add("session_start", "signaling", p.TypeSessionStart,
-		"connect_ok plus controllerPubkey, which the host keys its guess policy on; v4 iceServers as in connect_ok",
+		"connect_ok plus controllerPubkey, which the host keys its guess policy on; v5 iceServers STUN only, as in connect_ok",
 		"", "", ts,
 		p.SessionStart{
 			ConnectOK: p.ConnectOK{
@@ -175,7 +178,7 @@ func main() {
 				ExpiresAt: ts + 600000, TTLSec: 600,
 				HostDeviceID: "739000587", ControllerDeviceID: "481930275",
 				HostPubkey: hostPubkey,
-				ICEServers: sessionICE,
+				ICEServers: stunICE,
 			},
 			ControllerPubkey: controllerPubkey,
 		})
@@ -198,12 +201,17 @@ func main() {
 
 	add("renew", "signaling", p.TypeRenew, "", "c-9", "", ts,
 		p.Renew{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "bmV3dG9rZW4="})
-	add("renew_ok", "signaling", p.TypeRenewOK, "v4: iceServers carries fresh session credentials", "", "c-9", ts,
+	add("renew_ok", "signaling", p.TypeRenewOK, "v5: a metered session's renew_ok carries fresh TURN credentials, valid 10 min", "", "c-9", ts,
 		p.RenewOK{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "bmV3ZXI=",
 			ExpiresAt: ts + 600000, TTLSec: 600, ICEServers: sessionICE})
-	add("renew_ok_no_ice_servers", "signaling", p.TypeRenewOK, "iceServers is omitempty", "", "c-9", ts,
+	add("renew_ok_no_ice_servers", "signaling", p.TypeRenewOK, "v5: iceServers is absent while the session is not metered", "", "c-9", ts,
 		p.RenewOK{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "bmV3ZXI=",
 			ExpiresAt: ts + 600000, TTLSec: 600})
+
+	add("ice_servers", "signaling", p.TypeICEServers,
+		"v5: pushed to both peers when the host's first sdp starts metering; the complete list, TURN username <expiry>:<sessionId>, valid 10 min",
+		"", "", ts,
+		p.ICEServers{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", ICEServers: sessionICE})
 
 	add("peer_state_attached", "signaling", p.TypePeerState, "", "", "", ts,
 		p.PeerState{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Attached: true})
@@ -229,7 +237,7 @@ func main() {
 	add("ice_candidate", "signaling", p.TypeICE, "", "", "", ts,
 		p.ICE{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
 			Candidate: "candidate:1 1 udp 2130706431 192.0.2.1 54321 typ host",
-			SDPMid:    "0", SDPMLineIndex: 0})
+			SDPMid:    "0", SDPMLineIndex: intPtr(0)})
 	add("ice_end_of_candidates", "signaling", p.TypeICE,
 		"empty candidate means end-of-candidates", "", "", ts,
 		p.ICE{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Candidate: ""})
@@ -259,7 +267,7 @@ func main() {
 		p.Error{Code: p.ErrForbidden, Message: "only a controller connection may send connect_req"})
 
 	add("pake_step1", "signaling", p.TypePake,
-		"v2: opaque to the server, relayed verbatim like sdp and ice", "", "", ts,
+		"v5: step is an integer 1..3; the server re-encodes the payload it validated, never the client bytes", "", "", ts,
 		p.Pake{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Step: 1, Payload: "cGFrZXN0ZXAx"})
 	add("pake_step2", "signaling", p.TypePake, "", "", "", ts,
 		p.Pake{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Step: 2, Payload: "cGFrZXN0ZXAy"})
@@ -270,6 +278,10 @@ func main() {
 	add("refresh_code", "signaling", p.TypeRefreshCode, "", "c-10", "", ts, p.RefreshCode(recCode))
 	add("refresh_code_ok", "signaling", p.TypeRefreshCodeOK, "", "", "c-10", ts,
 		p.RefreshCodeOK{DeviceID: "739000587", UpdatedAt: ts})
+
+	add("error_bad_relay", "signaling", p.TypeError,
+		"v5: a relayed payload outside its exact schema (see relay.rejected) is answered with this and never relayed", "", "c-12", ts,
+		p.Error{Code: p.ErrBadRequest, Message: "relay payload: step must be an integer 1..3"})
 
 	add("error_bad_code", "signaling", p.TypeError, "", "", "c-7", ts,
 		p.Error{Code: p.ErrBadCode, Message: "access code rejected"})
@@ -368,12 +380,15 @@ func main() {
 		ByeReasons:        p.ByeReasons,
 		InvalidByeReasons: []string{"", "user", "USER_ENDED", "user_ended ", "reconciled", "declined\n"},
 		Cases:             cases,
+		Relay:             relayVectors(),
 	})
 	fmt.Fprintf(os.Stderr, "wrote %d cases to %s\n", len(cases), *out)
 	signing := signingCases()
 	write(*signingOut, SigningFile{Version: p.Version, Note: signingNote, Cases: signing})
 	fmt.Fprintf(os.Stderr, "wrote %d cases to %s\n", len(signing), *signingOut)
 }
+
+func intPtr(v int) *int { return &v }
 
 func write(path string, v any) {
 	b, err := json.MarshalIndent(v, "", "  ")

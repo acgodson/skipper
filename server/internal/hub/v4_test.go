@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"rc-signal/internal/auth"
 	"rcprotocol"
 )
 
@@ -109,7 +108,10 @@ func TestTightConnectByeLoopsReportEveryStopAfterItsStart(t *testing.T) {
 func (hn *harness) connectingController(i int) *peer {
 	if len(hn.pool) == 0 {
 		for j := 0; j < 8; j++ {
-			hn.pool = append(hn.pool, hn.controller(fmt.Sprintf("ctrl-%d", j)))
+			c := hn.newPeerAt(fmt.Sprintf("198.51.100.%d", j+1))
+			c.register(fmt.Sprintf("ctrl-%d", j))
+			c.hello(protocol.RoleController)
+			hn.pool = append(hn.pool, c)
 		}
 	}
 	return hn.pool[i%len(hn.pool)]
@@ -182,45 +184,6 @@ func TestConnectReqIsRateLimitedPerControllerAndPerHost(t *testing.T) {
 	if opened != protocol.ConnectPerHostPerMin || last.Code != protocol.ErrRateLimited || last.RetryAfterSec < 1 {
 		t.Fatalf("one host, many controllers: %d sessions opened, last error %+v; want %d then rate_limited",
 			opened, last, protocol.ConnectPerHostPerMin)
-	}
-}
-
-func TestTurnCredentialsAreIssuedPerEntitledSession(t *testing.T) {
-	hn := newHarness(t)
-	host, ctrl := hn.pair(t)
-	hn.ent.denyDevice(host.deviceID, protocol.EntitlementNoBalance)
-	if _, opened := ctrl.connect(host.deviceID); opened {
-		t.Fatal("a denied host opened a session")
-	}
-	if e := ctrl.lastErr(); e.Code != protocol.ErrEntitlement || ctrl.count(protocol.TypeError) != 1 || ctrl.has(protocol.TypeConnectOK) {
-		t.Fatal("a denied connect answered more than its error")
-	}
-	hn.ent.allowDevice(host.deviceID)
-
-	host.reset()
-	ok, _ := ctrl.connect(host.deviceID)
-	start := unmarshal[protocol.SessionStart](t, host.last(protocol.TypeSessionStart))
-	wantUser, wantCred, wantExp := auth.TurnCreds("turnsecret", ok.SessionID, hn.clock.Now(), TurnCredTTL)
-	for name, servers := range map[string][]protocol.ICEServer{"connect_ok": ok.ICEServers, "session_start": start.ICEServers} {
-		if len(servers) != 2 || servers[0].Username != "" || servers[0].URLs[0] != "stun:stun.example:3478" {
-			t.Fatalf("%s iceServers = %+v", name, servers)
-		}
-		turn := servers[1]
-		if turn.Username != wantUser || turn.Credential != wantCred || turn.ExpiresAt != wantExp.UnixMilli() {
-			t.Fatalf("%s TURN = %+v, want %q/%q", name, turn, wantUser, wantCred)
-		}
-		if !strings.HasSuffix(turn.Username, ":"+ok.SessionID) || TurnCredTTL != 2*time.Hour {
-			t.Fatalf("%s TURN username %q is not scoped to the session", name, turn.Username)
-		}
-	}
-
-	hn.clock.Advance(5 * time.Minute)
-	ctrl.reset()
-	ctrl.send(protocol.TypeRenew, protocol.Renew{SessionID: ok.SessionID, SessionToken: ok.SessionToken})
-	renew := unmarshal[protocol.RenewOK](t, ctrl.last(protocol.TypeRenewOK))
-	freshUser, _, freshExp := auth.TurnCreds("turnsecret", ok.SessionID, hn.clock.Now(), TurnCredTTL)
-	if len(renew.ICEServers) != 2 || renew.ICEServers[1].Username != freshUser || renew.ICEServers[1].ExpiresAt != freshExp.UnixMilli() {
-		t.Fatalf("renew_ok iceServers = %+v, want fresh session credentials", renew.ICEServers)
 	}
 }
 

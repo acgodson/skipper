@@ -1,7 +1,7 @@
 // Package registry is the one device registry rc-signal consults: which
 // deviceId belongs to which public key, and the code epoch of each device.
 // Local mode keeps it in rc-signal's SQLite store; http mode asks rc-api, which owns it.
-// Either way every answer carries the registry's device-id certificate for the binding.
+// The registry signs a device-id certificate only on Register and Certify, never on Lookup.
 package registry
 
 import (
@@ -19,6 +19,7 @@ var (
 	ErrUnavailable = errors.New("device registry unavailable")
 )
 
+// Device.IDCert is set only by Register and Certify.
 type Device struct {
 	DeviceID  string
 	Pubkey    string
@@ -42,5 +43,7 @@ type Registered struct {
 type Registry interface {
 	Register(ctx context.Context, r Registration) (Registered, error)
 	Lookup(ctx context.Context, deviceID string) (Device, error)
+	// Certify answers ErrNotFound unless pubkey owns deviceID, and signs only when it does.
+	Certify(ctx context.Context, deviceID, pubkey string) (Device, error)
 	BumpEpoch(ctx context.Context, deviceID string) error
 }

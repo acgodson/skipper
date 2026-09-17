@@ -129,6 +129,8 @@ func (s *Server) routes() {
 	in.HandleFunc("POST "+protocol.PathInternalRegister, s.internalOnly(s.internalRegister))
 	in.HandleFunc("GET "+protocol.PathInternalDevices+"/{deviceId}", s.internalOnly(s.internalDeviceRead))
 	in.HandleFunc("POST "+protocol.PathInternalDevices+"/{deviceId}"+protocol.InternalEpochSuffix, s.internalOnly(s.internalEpoch))
+	in.HandleFunc("POST "+protocol.PathInternalDevices+"/{deviceId}"+protocol.InternalCertSuffix, s.internalOnly(s.internalDeviceCert))
+	in.HandleFunc("GET "+protocol.PathInternalPairs+"/{hostDeviceId}/{controllerDeviceId}", s.internalOnly(s.internalPair))
 	in.HandleFunc("POST "+protocol.PathInternalSessionStart, s.internalOnly(s.internalSessionStart))
 	in.HandleFunc("POST "+protocol.PathInternalSessionStop, s.internalOnly(s.internalSessionStop))
 	in.HandleFunc("GET /healthz", s.healthz)

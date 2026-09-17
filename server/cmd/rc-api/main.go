@@ -23,6 +23,7 @@ import (
 	"rc-signal/internal/idcert"
 	"rc-signal/internal/idp"
 	"rc-signal/internal/internalapi"
+	"rc-signal/internal/sqlitex"
 	protocol "rcprotocol"
 )
 
@@ -39,6 +40,7 @@ func main() {
 		addr         = flag.String("listen", envx.Env("RC_API_LISTEN", "127.0.0.1:18080"), "public listen address (RC_API_LISTEN)")
 		internalAddr = flag.String("internal-listen", envx.Env("RC_API_INTERNAL_LISTEN", "127.0.0.1:18081"), "internal listen address for rc-signal (RC_API_INTERNAL_LISTEN)")
 		dbPath       = flag.String("db", envx.Env("RC_API_DB", "rc-api.db"), "SQLite path (RC_API_DB)")
+		claimsPath   = flag.String("claims-db", envx.Env("RC_API_CLAIMS_DB", ""), "SQLite device-id claims path, backed up separately and never reset with -db; default <db>-claims (RC_API_CLAIMS_DB)")
 		internal     = flag.String("internal-token", envx.Env("RC_API_INTERNAL_TOKEN", ""), "shared bearer secret for the internal surfaces (RC_API_INTERNAL_TOKEN)")
 		idCertKey    = flag.String("id-cert-key-file", envx.Env("RC_API_ID_CERT_KEY_FILE", ""), "PEM PKCS#8 P-256 key that signs device-id certificates (RC_API_ID_CERT_KEY_FILE)")
 		signalURL    = flag.String("signal-internal-url", envx.Env("RC_API_SIGNAL_INTERNAL_URL", ""), "rc-signal's internal base URL for the session reconciliation sweep (RC_API_SIGNAL_INTERNAL_URL)")
@@ -95,7 +97,10 @@ func main() {
 		log.Warn("no -signal-internal-url: open sessions are not reconciled against signaling")
 	}
 
-	db, err := apidb.Open(*dbPath)
+	if *claimsPath == "" {
+		*claimsPath = sqlitex.SiblingPath(*dbPath, "-claims")
+	}
+	db, err := apidb.Open(*dbPath, *claimsPath)
 	if err != nil {
 		log.Error("could not open the API database", "err", err)
 		os.Exit(1)
@@ -131,6 +136,7 @@ func main() {
 	}()
 	go func() { errCh <- internalSrv.ListenAndServe() }()
 	log.Info("rc-api started", "addr", *addr, "internalAddr", *internalAddr, "tls", !*insecure, "db", *dbPath,
+		"claimsDb", *claimsPath,
 		"idp", provider.Name(), "signalUpstream", *upstream, "reconcile", signaling != nil)
 
 	sigCh := make(chan os.Signal, 1)

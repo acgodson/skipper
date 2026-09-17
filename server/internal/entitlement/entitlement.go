@@ -22,8 +22,11 @@ func Denied(reason string) Decision {
 	return Decision{Reason: reason}
 }
 
+// Entitlement.KnownPair reports whether the controller has had a metered session with the host;
+// the answer must survive a restart of the signaling server.
 type Entitlement interface {
 	Check(ctx context.Context, hostDeviceID string) (Decision, error)
+	KnownPair(ctx context.Context, hostDeviceID, controllerDeviceID string) (bool, error)
 	SessionStarted(ctx context.Context, r protocol.SessionStartReport) error
 	SessionStopped(ctx context.Context, r protocol.SessionStopReport) error
 }

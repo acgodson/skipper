@@ -9,14 +9,8 @@ import (
 	protocol "rcprotocol"
 )
 
-func (s *Server) internalDevice(w http.ResponseWriter, r *http.Request, status int, d *apidb.Device) {
-	cert, err := s.opt.IDCert.Issue(d.DeviceID, d.Pubkey)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	s.writeJSON(w, r, status, protocol.InternalDevice{
-		DeviceID: d.DeviceID, Pubkey: d.Pubkey, CodeEpoch: d.CodeEpoch, IDCert: cert})
+func internalDevice(d *apidb.Device) protocol.InternalDevice {
+	return protocol.InternalDevice{DeviceID: d.DeviceID, Pubkey: d.Pubkey, CodeEpoch: d.CodeEpoch}
 }
 
 func (s *Server) internalRegister(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +65,52 @@ func (s *Server) internalDeviceRead(w http.ResponseWriter, r *http.Request) {
 	if s.deviceMissing(w, r, err) {
 		return
 	}
-	s.internalDevice(w, r, http.StatusOK, device)
+	s.writeJSON(w, r, http.StatusOK, internalDevice(device))
+}
+
+// internalDeviceCert signs the binding a hello just proved; it is the only lookup that signs.
+func (s *Server) internalDeviceCert(w http.ResponseWriter, r *http.Request) {
+	deviceID, ok := s.deviceIDPath(w, r)
+	if !ok {
+		return
+	}
+	body, ok := s.readBody(w, r)
+	if !ok {
+		return
+	}
+	var req protocol.InternalCertRequest
+	if !s.decode(w, r, body, &req) {
+		return
+	}
+	device, err := s.opt.DB.DeviceByID(deviceID)
+	if err == nil && device.Pubkey != req.Pubkey {
+		err = apidb.ErrNotFound
+	}
+	if s.deviceMissing(w, r, err) {
+		return
+	}
+	cert, err := s.opt.IDCert.Issue(device.DeviceID, device.Pubkey)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	out := internalDevice(device)
+	out.IDCert = cert
+	s.writeJSON(w, r, http.StatusOK, out)
+}
+
+func (s *Server) internalPair(w http.ResponseWriter, r *http.Request) {
+	host, ctrl := r.PathValue("hostDeviceId"), r.PathValue("controllerDeviceId")
+	if !protocol.ValidDeviceID(host) || !protocol.ValidDeviceID(ctrl) {
+		s.badRequest(w, r, "both device ids must be 9 digits")
+		return
+	}
+	known, err := s.opt.DB.PairKnown(host, ctrl)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.writeJSON(w, r, http.StatusOK, protocol.InternalPair{Known: known})
 }
 
 func (s *Server) internalEpoch(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +130,7 @@ func (s *Server) internalEpoch(w http.ResponseWriter, r *http.Request) {
 	if s.deviceMissing(w, r, err) {
 		return
 	}
-	s.internalDevice(w, r, http.StatusOK, device)
+	s.writeJSON(w, r, http.StatusOK, internalDevice(device))
 }
 
 func (s *Server) deviceIDPath(w http.ResponseWriter, r *http.Request) (string, bool) {

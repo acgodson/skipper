@@ -3,8 +3,9 @@
 #
 # Boots the server in local plain-HTTP static mode on a scratch database with a
 # throwaway device-id certificate key, drives real WebSocket clients through the
-# v4 flow (register and certificates, presence, session TURN, SDP/ICE relay, resume,
-# renew, code refresh, roles, bye reasons, rate limits, auth timeout), prints
+# v5 flow (register and certificates, presence, strict re-encoded SDP/ICE/PAKE relay,
+# TURN only once a session is metered, resume, renew, code refresh, roles, bye reasons,
+# per-address rate limits, auth timeout), prints
 # PASS/FAIL per step and exits non-zero on any failure.
 set -uo pipefail
 
@@ -43,6 +44,7 @@ echo "== starting rc-signal on $ADDR (plain HTTP, local only)"
   -listen "$ADDR" \
   -entitlement static \
   -db "$WORK/smoke.db" \
+  -claims-db "$WORK/smoke-claims.db" \
   -id-cert-key-file "$WORK/id-cert-key.pem" \
   -turn-secret-file "$WORK/turn-secret" \
   -turn-urls "turn:198.51.100.7:3478?transport=udp" \
