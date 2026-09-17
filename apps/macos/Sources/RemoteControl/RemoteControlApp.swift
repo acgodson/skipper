@@ -38,16 +38,9 @@ struct RemoteControlApp: App {
 private struct MenuBarLabel: View {
 
     @EnvironmentObject private var model: AppModel
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Image(systemName: symbol)
-            .onChange(of: model.consentRequest?.sessionID) { sessionID in
-                guard sessionID != nil else { return }
-                NSApp.setActivationPolicy(.regular)
-                openWindow(id: WindowID.main)
-                NSApp.activate(ignoringOtherApps: true)
-            }
     }
 
     private var symbol: String {

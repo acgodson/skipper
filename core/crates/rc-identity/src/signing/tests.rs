@@ -122,3 +122,64 @@ fn matches_the_shared_signing_vectors() {
         }
     }
 }
+
+pub(crate) fn compressed_spki(key: &DeviceKey) -> String {
+    let der = B64.decode(key.public_key_spki_base64()).unwrap();
+    let (x, y) = (&der[27..59], &der[59..91]);
+    let mut out = vec![
+        0x30, 0x39, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08,
+        0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x22, 0x00,
+    ];
+    out.push(if y[31] & 1 == 1 { 0x03 } else { 0x02 });
+    out.extend_from_slice(x);
+    B64.encode(out)
+}
+
+#[test]
+fn a_device_key_is_already_canonical() {
+    let pubkey = DeviceKey::generate().public_key_spki_base64();
+    assert_eq!(canonical_public_key(&pubkey).unwrap(), pubkey);
+    require_canonical_public_key(&pubkey).unwrap();
+}
+
+#[test]
+fn another_spelling_of_the_same_key_canonicalises_but_is_not_accepted_as_is() {
+    let key = DeviceKey::generate();
+    let compressed = compressed_spki(&key);
+    assert_ne!(compressed, key.public_key_spki_base64());
+    assert_eq!(
+        canonical_public_key(&compressed).unwrap(),
+        key.public_key_spki_base64()
+    );
+    assert_eq!(
+        require_canonical_public_key(&compressed),
+        Err(VerifyError::BadPubkey)
+    );
+}
+
+#[test]
+fn malformed_keys_are_errors_not_panics() {
+    let key = DeviceKey::generate().public_key_spki_base64();
+    let unpadded = key.trim_end_matches('=').to_string();
+    let wrapped = format!("{}\n{}", &key[..64], &key[64..]);
+    let mut off_curve = B64.decode(&key).unwrap();
+    off_curve[90] ^= 1;
+    let off_curve = B64.encode(off_curve);
+    let appended = format!("{key}AAAA");
+    for bad in [
+        "",
+        "host",
+        "not base64!",
+        "AAAA",
+        unpadded.as_str(),
+        wrapped.as_str(),
+        off_curve.as_str(),
+        appended.as_str(),
+    ] {
+        assert_eq!(
+            canonical_public_key(bad),
+            Err(VerifyError::BadPubkey),
+            "{bad:?}"
+        );
+    }
+}

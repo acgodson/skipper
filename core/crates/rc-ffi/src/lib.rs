@@ -128,6 +128,7 @@ fn state_json(machine: &SessionStateMachine) -> Value {
         "serverAdvertisedSessionId": machine.server_advertised_session_id,
         "consentRequired": machine.consent_required,
         "consentExpiresAtMs": machine.consent_expires_at_ms(),
+        "peerStarted": machine.peer_started(),
     })
 }
 
@@ -202,14 +203,24 @@ where
         let Some(session) = (unsafe { session.as_mut() }) else {
             return error_string(&"session handle is null".into());
         };
-        match body(&mut session.machine) {
+        let outcome = body(&mut session.machine);
+        let outcome = match session.machine.take_rejection() {
+            Some(rejection) => Err(rejection.to_string()),
+            None => outcome,
+        };
+        match outcome {
             Ok(actions) => json!({
                 "ok": true,
                 "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
                 "state": state_json(&session.machine),
             })
             .to_string(),
-            Err(message) => error_string(&message.into()),
+            Err(message) => json!({
+                "ok": false,
+                "error": message,
+                "state": state_json(&session.machine),
+            })
+            .to_string(),
         }
     }));
     into_c_string(outcome.unwrap_or_else(|_| error_string(&"the state machine panicked".into())))
@@ -499,10 +510,13 @@ pub unsafe extern "C" fn skipper_session_pake_succeeded(
 pub unsafe extern "C" fn skipper_session_consent_answered(
     session: *mut SkipperSession,
     allow: bool,
+    session_id: *const u8,
+    session_id_len: usize,
     now_ms: i64,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        Ok(machine.consent_answered(allow, now_ms))
+        let session_id = unsafe { optional_text(session_id, session_id_len, "session_id") }?;
+        Ok(machine.consent_answered(allow, session_id, now_ms))
     })
 }
 

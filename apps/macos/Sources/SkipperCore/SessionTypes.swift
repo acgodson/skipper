@@ -62,7 +62,7 @@ public enum ConsentOutcome: String, Equatable, Sendable {
     case timedOut
     case cancelled
 
-    public var countsAsDecline: Bool { self == .declined || self == .timedOut }
+    public var countsAsDecline: Bool { self != .allowed }
 }
 
 public protocol SessionGrantLike {

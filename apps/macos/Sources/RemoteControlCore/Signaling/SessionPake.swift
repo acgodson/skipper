@@ -41,8 +41,7 @@ extension SessionCoordinator {
 
     func startHostPake(grant: SessionGrantPayload) async {
         guard role == .host else { return }
-        let controllerPubkey = grant.controllerPubkey ?? ""
-        guard !controllerPubkey.isEmpty, controllerPubkey != GuessLedger.hostKey else {
+        guard let controllerPubkey = grant.controllerPubkey, DevicePublicKey.isCanonical(controllerPubkey) else {
             await pakeFailed(reason: "session_start carried no usable controller key", authentication: true)
             return
         }
@@ -111,8 +110,8 @@ extension SessionCoordinator {
     // MARK: - Ending
 
     private func pakeSucceeded(_ exchange: PakeExchange) async {
-        guard let peerPubkey = exchange.peerPublicKey, !peerPubkey.isEmpty else {
-            await pakeFailed(reason: "the exchange completed without a peer key", authentication: true)
+        guard let peerPubkey = exchange.peerPublicKey, DevicePublicKey.isCanonical(peerPubkey) else {
+            await pakeFailed(reason: "the exchange completed without a well-formed peer key", authentication: true)
             return
         }
         if role == .controller, let pinned = expectedPeerPublicKey, pinned != peerPubkey {
@@ -184,13 +183,15 @@ extension SessionCoordinator {
 
     // MARK: - The host's guess ledger (PROTOCOL.md §2.17 Guessing)
 
-    private func guessLedger(for controllerPubkey: String) throws -> GuessLedger {
-        GuessLedger(controller: try identity.secrets.guessCounter(forController: controllerPubkey),
-                    host: try identity.secrets.guessCounter(forController: GuessLedger.hostKey))
+    func guessLedger(for controllerPubkey: String) throws -> GuessLedger {
+        let key = try DevicePublicKey.canonical(controllerPubkey)
+        return GuessLedger(controller: try identity.secrets.guessCounter(forController: key),
+                           host: try identity.secrets.guessCounter(forController: GuessLedger.hostKey))
     }
 
-    private func saveGuessLedger(_ ledger: GuessLedger, for controllerPubkey: String) throws {
-        try identity.secrets.saveGuessCounter(ledger.controller, forController: controllerPubkey)
+    func saveGuessLedger(_ ledger: GuessLedger, for controllerPubkey: String) throws {
+        let key = try DevicePublicKey.canonical(controllerPubkey)
+        try identity.secrets.saveGuessCounter(ledger.controller, forController: key)
         try identity.secrets.saveGuessCounter(ledger.host, forController: GuessLedger.hostKey)
     }
 

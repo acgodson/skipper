@@ -2,6 +2,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
+use rc_session::input::{self, InputError};
 use sha2::Sha256;
 
 use crate::signing::{self, signing_message, SigningPurpose, VerifyError};
@@ -10,6 +11,8 @@ pub const MAC_KEY_INFO: &str = "skipperdesk/sdp-mac/v1";
 pub const MAC_KEY_LEN: usize = 32;
 
 const FINGERPRINT_ATTRIBUTE: &str = "a=fingerprint:";
+const CANDIDATE_ATTRIBUTE: &str = "a=candidate";
+const END_OF_CANDIDATES: &str = "a=end-of-candidates";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -21,6 +24,10 @@ pub enum SdpAuthError {
     MalformedSdp,
     #[error("sessionId and sdpType are required")]
     MissingContext,
+    #[error("{0}")]
+    BadContext(InputError),
+    #[error("the expected peer key is missing or is not a canonical P-256 key")]
+    NoExpectedPeer,
     #[error("the signed fingerprints are not the ones in the SDP")]
     FingerprintMismatch,
     #[error("pubkey is not base64 of a P-256 DER SPKI key")]
@@ -93,6 +100,9 @@ pub fn payload(
     if session_id.is_empty() || sdp_type.is_empty() {
         return Err(SdpAuthError::MissingContext);
     }
+    input::session_id(session_id)
+        .and_then(|_| input::sdp_type(sdp_type))
+        .map_err(SdpAuthError::BadContext)?;
     if fingerprints.is_empty() {
         return Err(SdpAuthError::NoFingerprint);
     }
@@ -156,15 +166,16 @@ pub struct Presented<'a> {
     pub mac: &'a str,
 }
 
-/// Everything a receiver must check before `setRemoteDescription`.
-/// `expected_pubkey_base64` of `None` skips peer-identity pinning.
+/// Everything a receiver must check before `setRemoteDescription`. The peer
+/// key is always pinned: the MAC key is the same in both directions, so the
+/// pin is what stops an SDP being reflected back to its sender.
 pub fn verify(
     mac_key: &[u8; MAC_KEY_LEN],
     session_id: &str,
     sdp_type: &str,
     sdp: &str,
     presented: &Presented<'_>,
-    expected_pubkey_base64: Option<&str>,
+    expected_pubkey_base64: &str,
 ) -> Result<(), SdpAuthError> {
     if presented.fingerprints.is_empty() {
         return Err(SdpAuthError::NoFingerprint);
@@ -172,10 +183,11 @@ pub fn verify(
     if fingerprints(sdp)? != presented.fingerprints {
         return Err(SdpAuthError::FingerprintMismatch);
     }
-    if let Some(expected) = expected_pubkey_base64 {
-        if !expected.is_empty() && expected != presented.pubkey {
-            return Err(SdpAuthError::UnexpectedPeer);
-        }
+    signing::require_canonical_public_key(expected_pubkey_base64)
+        .map_err(|_| SdpAuthError::NoExpectedPeer)?;
+    signing::require_canonical_public_key(presented.pubkey)?;
+    if expected_pubkey_base64 != presented.pubkey {
+        return Err(SdpAuthError::UnexpectedPeer);
     }
     let message = message_to_sign(session_id, sdp_type, presented.fingerprints)?;
     if presented.mac.is_empty() {
@@ -195,6 +207,20 @@ pub fn verify(
         presented.sig,
     )
     .map_err(SdpAuthError::from)
+}
+
+/// The SDP a receiver hands to `setRemoteDescription`: every candidate line
+/// removed, because candidates arrive only as `ice` messages, after the
+/// installed fingerprints have been re-checked.
+pub fn without_candidates(sdp: &str) -> Result<String, SdpAuthError> {
+    require_well_formed(sdp)?;
+    Ok(sdp
+        .split_inclusive('\n')
+        .filter(|line| {
+            let attribute = line.trim_start();
+            !attribute.starts_with(CANDIDATE_ATTRIBUTE) && attribute.trim_end() != END_OF_CANDIDATES
+        })
+        .collect())
 }
 
 #[cfg(test)]

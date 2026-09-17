@@ -5,6 +5,8 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use spake2::{Ed25519Group, Identity, Password, Spake2};
+use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
 
 pub const STEP_CONTROLLER_START: u32 = 1;
 pub const STEP_HOST_REPLY: u32 = 2;
@@ -102,9 +104,9 @@ struct Keys {
 
 impl Drop for Keys {
     fn drop(&mut self) {
-        burn(&mut self.session);
-        burn(&mut self.controller_confirm);
-        burn(&mut self.host_confirm);
+        self.session.zeroize();
+        self.controller_confirm.zeroize();
+        self.host_confirm.zeroize();
     }
 }
 
@@ -128,7 +130,7 @@ pub struct PakeExchange {
 
 impl Drop for PakeExchange {
     fn drop(&mut self) {
-        burn(&mut self.password);
+        self.password.zeroize();
     }
 }
 
@@ -229,7 +231,7 @@ impl PakeExchange {
     pub fn sdp_mac_key(&self) -> Result<[u8; crate::sdp::MAC_KEY_LEN], PakeError> {
         let mut session = self.session_key()?;
         let key = crate::sdp::mac_key(&session);
-        burn(&mut session);
+        session.zeroize();
         Ok(key)
     }
 
@@ -451,8 +453,8 @@ fn derive(shared: &[u8], transcript: &[u8]) -> Keys {
     );
     keys.controller_confirm = tag(&controller_key, transcript);
     keys.host_confirm = tag(&host_key, transcript);
-    burn(&mut controller_key);
-    burn(&mut host_key);
+    controller_key.zeroize();
+    host_key.zeroize();
     keys
 }
 
@@ -471,29 +473,11 @@ fn verify(expected: &[u8; CONFIRM_LEN], presented: &[u8]) -> Result<(), PakeErro
     if presented.len() != CONFIRM_LEN {
         return Err(PakeError::BadPayload);
     }
-    if constant_time_equal(expected, presented) {
+    if bool::from(expected.as_slice().ct_eq(presented)) {
         Ok(())
     } else {
         Err(PakeError::ConfirmationFailed)
     }
-}
-
-fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut difference = 0u8;
-    for (a, b) in left.iter().zip(right.iter()) {
-        difference |= a ^ b;
-    }
-    difference == 0
-}
-
-fn burn(bytes: &mut [u8]) {
-    for byte in bytes.iter_mut() {
-        unsafe { std::ptr::write_volatile(byte, 0) };
-    }
-    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -529,6 +513,43 @@ pub struct GuessCounter {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub failure_times_ms: Vec<i64>,
+    #[serde(
+        default,
+        rename = "declineTimesMs",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub decline_times_ms: Vec<i64>,
+    #[serde(
+        default,
+        rename = "promptTimesMs",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub prompt_times_ms: Vec<i64>,
+}
+
+impl GuessCounter {
+    /// The latest moment this counter still says anything about.
+    pub fn last_activity_ms(&self) -> i64 {
+        [
+            &self.failure_times_ms,
+            &self.decline_times_ms,
+            &self.prompt_times_ms,
+        ]
+        .into_iter()
+        .flatten()
+        .copied()
+        .chain([self.last_failure_ms, self.locked_until_ms])
+        .max()
+        .unwrap_or(0)
+    }
+
+    fn with_guesses(&self, guesses: GuessCounter) -> GuessCounter {
+        GuessCounter {
+            decline_times_ms: self.decline_times_ms.clone(),
+            prompt_times_ms: self.prompt_times_ms.clone(),
+            ..guesses
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -567,16 +588,16 @@ impl GuessPolicy {
         } else {
             counter.locked_until_ms
         };
-        GuessCounter {
+        counter.with_guesses(GuessCounter {
             failures,
             last_failure_ms: now_ms,
             locked_until_ms,
-            failure_times_ms: Vec::new(),
-        }
+            ..GuessCounter::default()
+        })
     }
 
-    pub fn record_success(&self, _counter: &GuessCounter) -> GuessCounter {
-        GuessCounter::default()
+    pub fn record_success(&self, counter: &GuessCounter) -> GuessCounter {
+        counter.with_guesses(GuessCounter::default())
     }
 
     fn lockout_ms(&self, failures: u32) -> i64 {
@@ -626,6 +647,7 @@ impl HostGuessBudget {
             last_failure_ms,
             locked_until_ms,
             failure_times_ms: recent,
+            ..GuessCounter::default()
         }
     }
 
@@ -642,7 +664,7 @@ impl HostGuessBudget {
     pub fn record_failure(&self, counter: &GuessCounter, now_ms: i64) -> GuessCounter {
         let mut times = counter.failure_times_ms.clone();
         times.push(now_ms);
-        self.counter(self.recent(&times, now_ms), now_ms)
+        counter.with_guesses(self.counter(self.recent(&times, now_ms), now_ms))
     }
 
     /// Withdraws the most recent failure: the one recorded for an exchange
@@ -651,7 +673,7 @@ impl HostGuessBudget {
         let mut times = counter.failure_times_ms.clone();
         times.sort_unstable();
         times.pop();
-        self.counter(times, counter.last_failure_ms)
+        counter.with_guesses(self.counter(times, counter.last_failure_ms))
     }
 }
 

@@ -39,6 +39,7 @@ private struct CoreState: Decodable {
     let serverAdvertisedSessionId: String?
     let consentRequired: Bool
     let consentExpiresAtMs: Int64?
+    let peerStarted: Bool
 }
 
 public final class SessionStateMachine {
@@ -66,6 +67,7 @@ public final class SessionStateMachine {
     public private(set) var isOfferer = false
     public private(set) var serverAdvertisedSessionID: String?
     public private(set) var consentExpiresAt: Date?
+    public private(set) var peerStarted = false
 
     public var consentRequired: Bool {
         get { storedConsentRequired }
@@ -133,8 +135,13 @@ public final class SessionStateMachine {
         call { skipper_session_pake_succeeded(handle, CoreBoundary.milliseconds(now)) }
     }
 
-    public func consentAnswered(allow: Bool, now: Date = Date()) -> [SessionAction] {
-        call { skipper_session_consent_answered(handle, allow, CoreBoundary.milliseconds(now)) }
+    /// `sessionID` names the prompt being answered; an answer meant for an
+    /// earlier prompt changes nothing.
+    public func consentAnswered(allow: Bool, sessionID: String? = nil, now: Date = Date()) -> [SessionAction] {
+        call([sessionID]) {
+            skipper_session_consent_answered(handle, allow, $0[0].base, $0[0].count,
+                                             CoreBoundary.milliseconds(now))
+        }
     }
 
     public func connectFailed(code: String) -> [SessionAction] {
@@ -214,6 +221,7 @@ public final class SessionStateMachine {
     }
 
     private func call(_ body: () -> UnsafeMutablePointer<CChar>?) -> [SessionAction] {
+        lastRejection = nil
         guard let raw = body() else {
             preconditionFailure("the shared core could not allocate a result")
         }
@@ -222,11 +230,11 @@ public final class SessionStateMachine {
         guard let response = try? JSONDecoder().decode(CoreResponse.self, from: data) else {
             preconditionFailure("the shared core returned an undecodable result")
         }
-        guard response.ok, let state = response.state else {
+        if let state = response.state { apply(state) }
+        guard response.ok, response.state != nil else {
             lastRejection = response.error ?? "the shared core rejected the event"
             return []
         }
-        apply(state)
         return (response.actions ?? []).map(Self.action)
     }
 
@@ -257,6 +265,7 @@ public final class SessionStateMachine {
         serverAdvertisedSessionID = state.serverAdvertisedSessionId
         storedConsentRequired = state.consentRequired
         consentExpiresAt = state.consentExpiresAtMs.map(Self.date)
+        peerStarted = state.peerStarted
     }
 
     private static func date(_ milliseconds: Int64) -> Date {

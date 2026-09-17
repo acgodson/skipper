@@ -114,7 +114,10 @@ pub extern "C" fn skipper_pake_max_payload_base64() -> i32 {
     MAX_PAYLOAD_BASE64 as i32
 }
 
-unsafe fn ledger_from_json(pointer: *const u8, len: usize) -> Result<GuessLedger, String> {
+pub(crate) unsafe fn ledger_from_json(
+    pointer: *const u8,
+    len: usize,
+) -> Result<GuessLedger, String> {
     match unsafe { optional_text(pointer, len, "ledger_json") }? {
         None => Ok(GuessLedger::default()),
         Some(text) if text.trim().is_empty() => Ok(GuessLedger::default()),

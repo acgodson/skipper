@@ -64,7 +64,7 @@ fn check(
     sdp: &str,
     fp: &str,
     sent: &Sent,
-    expected: Option<&str>,
+    expected: &str,
 ) -> Result<(), SdpAuthError> {
     verify(
         &MAC_KEY,
@@ -104,7 +104,7 @@ fn an_sdp_without_a_fingerprint_is_refused() {
 fn a_signature_over_the_offer_verifies() {
     let key = DeviceKey::generate();
     let sent = sent(&key, &MAC_KEY, SESSION, "offer", FP);
-    check(SESSION, "offer", OFFER, FP, &sent, Some(&sent.pubkey)).unwrap();
+    check(SESSION, "offer", OFFER, FP, &sent, &sent.pubkey).unwrap();
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn a_fingerprint_swapped_by_the_relay_is_caught() {
     let sent = sent(&key, &MAC_KEY, SESSION, "offer", FP);
     let tampered = OFFER.replace("7B:8C", "7B:8D");
     assert_eq!(
-        check(SESSION, "offer", &tampered, FP, &sent, Some(&sent.pubkey)).unwrap_err(),
+        check(SESSION, "offer", &tampered, FP, &sent, &sent.pubkey).unwrap_err(),
         SdpAuthError::FingerprintMismatch
     );
 }
@@ -132,7 +132,7 @@ fn a_relay_that_signs_the_swapped_fingerprint_with_its_own_key_is_caught() {
             &tampered,
             &tampered_fp,
             &sent,
-            Some(&peer.public_key_spki_base64()),
+            &peer.public_key_spki_base64(),
         )
         .unwrap_err(),
         SdpAuthError::UnexpectedPeer
@@ -145,7 +145,7 @@ fn a_signature_from_another_session_does_not_verify() {
     let mut sent = sent(&key, &MAC_KEY, SESSION, "offer", FP);
     sent.sig = signed(&key, "0000000000000000000000000000dead", "offer", FP);
     assert_eq!(
-        check(SESSION, "offer", OFFER, FP, &sent, Some(&sent.pubkey)).unwrap_err(),
+        check(SESSION, "offer", OFFER, FP, &sent, &sent.pubkey).unwrap_err(),
         SdpAuthError::SignatureRejected
     );
 }
@@ -156,7 +156,7 @@ fn an_offer_signature_cannot_be_replayed_as_an_answer() {
     let mut sent = sent(&key, &MAC_KEY, SESSION, "offer", FP);
     sent.mac = mac_base64(&MAC_KEY, &message_to_sign(SESSION, "answer", FP).unwrap());
     assert_eq!(
-        check(SESSION, "answer", OFFER, FP, &sent, Some(&sent.pubkey)).unwrap_err(),
+        check(SESSION, "answer", OFFER, FP, &sent, &sent.pubkey).unwrap_err(),
         SdpAuthError::SignatureRejected
     );
 }
@@ -169,7 +169,15 @@ fn a_malformed_pubkey_or_signature_is_rejected_rather_than_panicking() {
         ..sent(&key, &MAC_KEY, SESSION, "offer", FP)
     };
     assert_eq!(
-        check(SESSION, "offer", OFFER, FP, &bad_pubkey, None).unwrap_err(),
+        check(
+            SESSION,
+            "offer",
+            OFFER,
+            FP,
+            &bad_pubkey,
+            &key.public_key_spki_base64()
+        )
+        .unwrap_err(),
         SdpAuthError::BadPubkey
     );
     let bad_sig = Sent {
@@ -177,7 +185,15 @@ fn a_malformed_pubkey_or_signature_is_rejected_rather_than_panicking() {
         ..sent(&key, &MAC_KEY, SESSION, "offer", FP)
     };
     assert_eq!(
-        check(SESSION, "offer", OFFER, FP, &bad_sig, None).unwrap_err(),
+        check(
+            SESSION,
+            "offer",
+            OFFER,
+            FP,
+            &bad_sig,
+            &key.public_key_spki_base64()
+        )
+        .unwrap_err(),
         SdpAuthError::BadSignature
     );
 }
@@ -211,29 +227,13 @@ fn c1_a_nul_padded_sdp_with_swapped_media_fingerprints_is_refused() {
             "the media sections carry the relay's"
         );
         assert_eq!(
-            check(
-                SESSION,
-                sdp_type,
-                &attack,
-                FP,
-                &genuine,
-                Some(&genuine.pubkey)
-            )
-            .unwrap_err(),
+            check(SESSION, sdp_type, &attack, FP, &genuine, &genuine.pubkey).unwrap_err(),
             SdpAuthError::MalformedSdp,
             "{sdp_type}"
         );
         let unpadded = attack.replace('\0', "");
         assert_eq!(
-            check(
-                SESSION,
-                sdp_type,
-                &unpadded,
-                FP,
-                &genuine,
-                Some(&genuine.pubkey)
-            )
-            .unwrap_err(),
+            check(SESSION, sdp_type, &unpadded, FP, &genuine, &genuine.pubkey).unwrap_err(),
             SdpAuthError::FingerprintMismatch,
             "{sdp_type}: the full body shows the relay's fingerprints"
         );
@@ -269,15 +269,7 @@ fn an_sdp_without_a_mac_is_refused() {
         ..sent(&key, &MAC_KEY, SESSION, "offer", FP)
     };
     assert_eq!(
-        check(
-            SESSION,
-            "offer",
-            OFFER,
-            FP,
-            &unmacked,
-            Some(&unmacked.pubkey)
-        )
-        .unwrap_err(),
+        check(SESSION, "offer", OFFER, FP, &unmacked, &unmacked.pubkey).unwrap_err(),
         SdpAuthError::MissingMac
     );
 }
@@ -287,7 +279,7 @@ fn a_mac_under_another_exchange_key_is_refused_even_with_a_valid_signature() {
     let key = DeviceKey::generate();
     let relayed = sent(&key, &OTHER_MAC_KEY, SESSION, "offer", FP);
     assert_eq!(
-        check(SESSION, "offer", OFFER, FP, &relayed, Some(&relayed.pubkey)).unwrap_err(),
+        check(SESSION, "offer", OFFER, FP, &relayed, &relayed.pubkey).unwrap_err(),
         SdpAuthError::MacRejected
     );
     let garbage = Sent {
@@ -295,7 +287,7 @@ fn a_mac_under_another_exchange_key_is_refused_even_with_a_valid_signature() {
         ..sent(&key, &MAC_KEY, SESSION, "offer", FP)
     };
     assert_eq!(
-        check(SESSION, "offer", OFFER, FP, &garbage, Some(&garbage.pubkey)).unwrap_err(),
+        check(SESSION, "offer", OFFER, FP, &garbage, &garbage.pubkey).unwrap_err(),
         SdpAuthError::MacRejected
     );
 }
@@ -309,16 +301,124 @@ fn c2_a_server_chosen_nonce_cannot_become_an_sdp_signature() {
         "the SDP message is not a 32-byte nonce"
     );
     let short_fp = "sha-256 AB";
-    let wanted = message_to_sign("s", "answer", short_fp).unwrap();
+    let wanted = message_to_sign(SESSION, "answer", short_fp).unwrap();
     let nonce: [u8; 32] = wanted[..32].try_into().unwrap();
     let harvested = Sent {
         sig: key.sign(SigningPurpose::Hello, &nonce).unwrap(),
-        ..sent(&key, &MAC_KEY, "s", "answer", short_fp)
+        ..sent(&key, &MAC_KEY, SESSION, "answer", short_fp)
     };
     let sdp = format!("v=0\r\na=fingerprint:{short_fp}\r\n");
     assert_eq!(
-        check("s", "answer", &sdp, short_fp, &harvested, None).unwrap_err(),
+        check(
+            SESSION,
+            "answer",
+            &sdp,
+            short_fp,
+            &harvested,
+            &harvested.pubkey
+        )
+        .unwrap_err(),
         SdpAuthError::SignatureRejected
+    );
+}
+
+#[test]
+fn the_peer_pin_is_required_and_must_be_a_canonical_key() {
+    let key = DeviceKey::generate();
+    let sent = sent(&key, &MAC_KEY, SESSION, "offer", FP);
+    for missing in ["", "host", "not a key"] {
+        assert_eq!(
+            check(SESSION, "offer", OFFER, FP, &sent, missing).unwrap_err(),
+            SdpAuthError::NoExpectedPeer,
+            "{missing:?}"
+        );
+    }
+    let respelled = crate::signing::tests::compressed_spki(&key);
+    assert_eq!(
+        check(SESSION, "offer", OFFER, FP, &sent, &respelled).unwrap_err(),
+        SdpAuthError::NoExpectedPeer
+    );
+    let presented_respelled = Sent {
+        pubkey: respelled,
+        ..sent
+    };
+    assert_eq!(
+        check(
+            SESSION,
+            "offer",
+            OFFER,
+            FP,
+            &presented_respelled,
+            &key.public_key_spki_base64()
+        )
+        .unwrap_err(),
+        SdpAuthError::BadPubkey
+    );
+}
+
+#[test]
+fn a_host_answer_reflected_back_to_the_host_is_refused() {
+    let host = DeviceKey::generate();
+    let controller = DeviceKey::generate();
+    let answer = OFFER.replace("a=setup:actpass", "a=setup:active");
+    let fp = fingerprints(&answer).unwrap();
+    let reflected = sent(&host, &MAC_KEY, SESSION, "answer", &fp);
+    assert_eq!(
+        check(
+            SESSION,
+            "answer",
+            &answer,
+            &fp,
+            &reflected,
+            &controller.public_key_spki_base64()
+        )
+        .unwrap_err(),
+        SdpAuthError::UnexpectedPeer
+    );
+}
+
+#[test]
+fn a_malformed_session_id_or_sdp_type_never_reaches_a_signature() {
+    for (session, sdp_type, error) in [
+        ("S|offer", "x", InputError::SessionId),
+        ("sess-0001", "offer", InputError::SessionId),
+        (SESSION, "pranswer", InputError::SdpType),
+        (SESSION, "offer|x", InputError::SdpType),
+    ] {
+        assert_eq!(
+            message_to_sign(session, sdp_type, FP).unwrap_err(),
+            SdpAuthError::BadContext(error),
+            "{session:?} {sdp_type:?}"
+        );
+        assert_eq!(
+            signable(&MAC_KEY, session, sdp_type, OFFER).err(),
+            Some(SdpAuthError::BadContext(error))
+        );
+    }
+}
+
+#[test]
+fn every_candidate_line_is_stripped_and_nothing_else() {
+    let with_candidates = OFFER
+        .replace(
+            "a=mid:0\r\n",
+            "a=mid:0\r\na=candidate:1 1 udp 2122260223 203.0.113.9 50000 typ host\r\n  a=candidate:2 1 tcp 1 198.51.100.1 9 typ host\r\na=end-of-candidates\r\n",
+        )
+        .replace(
+            "a=mid:1\r\n",
+            "a=mid:1\r\na=candidate:3 1 udp 1 192.0.2.1 3478 typ relay\na=end-of-candidates \r\n",
+        );
+    let stripped = without_candidates(&with_candidates).unwrap();
+    assert_eq!(stripped, OFFER);
+    assert_eq!(fingerprints(&stripped).unwrap(), FP);
+    assert_eq!(without_candidates(OFFER).unwrap(), OFFER);
+    assert_eq!(
+        without_candidates("a=candidate:1\ra=fingerprint:x\r\n").unwrap_err(),
+        SdpAuthError::MalformedSdp
+    );
+    assert_eq!(
+        without_candidates("v=0\r\na=candidate:1 1 udp 1 192.0.2.1 1 typ host").unwrap(),
+        "v=0\r\n"
     );
 }
 

@@ -20,6 +20,9 @@ Conventions:
   expectPhase   idle | connecting | live | reconnecting | closed:<reason>
   expectRelayOnly whether the session has fallen back to a TURN-relay-only path
   expiresAt     (promptForConsent) seconds since scenario start, like `at`
+  expectRejected  the core refused the event's input; absent means false
+  expectPeerStarted whether the machine has ordered a peer connection
+  expectPeerDeviceId the peer Device ID the UI may show (empty: "another Mac")
 
 The peer connection starts only once the access-code exchange (§2.17) has
 verified (`pakeSucceeded`). A host with `consentRequired` asks its owner first
@@ -30,10 +33,11 @@ import json, sys
 SESS, TOK, TOK2 = "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", "tok-1", "tok-2"
 HOSTID, CTRLID, CODE = "739000587", "481930275", "K7M2QX9P"
 STALE = "feedfacefeedfacefeedfacefeedface"
+OTHER = "0123456789abcdef0123456789abcdef"
 
-def grant(sess=SESS, tok=TOK):
+def grant(sess=SESS, tok=TOK, host=HOSTID, ctrl=CTRLID):
     return {"event": "sessionGranted", "sessionId": sess, "sessionToken": tok,
-            "hostDeviceId": HOSTID, "controllerDeviceId": CTRLID}
+            "hostDeviceId": host, "controllerDeviceId": ctrl}
 
 def auth(active=None):
     return {"event": "signalingAuthenticated", "activeSessionId": active}
@@ -64,8 +68,11 @@ def offer(v=True):
 PAKE_OK = {"event": "pakeSucceeded"}
 REQUIRE_CONSENT = {"event": "setConsentRequired", "required": True}
 
-def answer(allow):
-    return {"event": "consentAnswered", "allow": allow}
+def answer(allow, sess=None):
+    e = {"event": "consentAnswered", "allow": allow}
+    if sess is not None:
+        e["sessionId"] = sess
+    return e
 
 def a_prompt(expires_at):
     return {"action": "promptForConsent", "expiresAt": expires_at}
@@ -85,7 +92,7 @@ def step(at, do, actions=None, phase=None, **extra):
 def granted(at, offerer, **extra):
     """session_start/connect_ok, then the verified exchange starts the peer."""
     return [
-        step(at, grant(), [], "connecting", **extra),
+        step(at, grant(), [A_TEARDOWN], "connecting", **extra),
         step(at, PAKE_OK, [offer(offerer)], "connecting"),
     ]
 
@@ -136,7 +143,7 @@ scen("the_peer_connection_waits_for_the_access_code_exchange", [
     step(0, auth(), [], "idle"),
     step(0, {"event": "connectRequested", "deviceId": HOSTID,
              "accessCode": CODE, "remember": False}, [a_connect()], "connecting"),
-    step(0, grant(), [], "connecting", expectHasSession=True),
+    step(0, grant(), [A_TEARDOWN], "connecting", expectHasSession=True),
     step(5, {"event": "tick"}, [], "connecting"),
     step(6, PAKE_OK, [offer(True)], "connecting"),
     step(7, PAKE_OK, [], "connecting"),
@@ -144,7 +151,7 @@ scen("the_peer_connection_waits_for_the_access_code_exchange", [
 
 scen("a_host_without_consent_starts_the_peer_as_soon_as_the_code_is_proved", [
     step(0, auth(), [], "idle"),
-    step(0, grant(), [], "connecting"),
+    step(0, grant(), [A_TEARDOWN], "connecting"),
     step(1, PAKE_OK, [offer(False)], "connecting", expectConsentRequired=False),
     step(1, answer(True), [], "connecting"),
 ], role="host", note="unattended access on: the code alone is permission")
@@ -154,14 +161,14 @@ scen("a_controller_never_asks_for_consent", [
     step(0, auth(), [], "idle"),
     step(0, {"event": "connectRequested", "deviceId": HOSTID,
              "accessCode": CODE, "remember": False}, [a_connect()], "connecting"),
-    step(0, grant(), [], "connecting"),
+    step(0, grant(), [A_TEARDOWN], "connecting"),
     step(1, PAKE_OK, [offer(True)], "connecting"),
 ])
 
 scen("an_exchange_that_never_verified_never_prompts", [
     step(0, REQUIRE_CONSENT, [], "idle"),
     step(0, auth(), [], "idle"),
-    step(0, grant(), [], "connecting"),
+    step(0, grant(), [A_TEARDOWN], "connecting"),
     step(40, {"event": "tick"}, [], "connecting"),
     step(41, answer(True), [], "connecting"),
 ], role="host", note="a prompt for an unauthenticated controller would be a nuisance and a phishing vector")
@@ -172,7 +179,7 @@ def consenting_host(pake_at=1):
     return [
         step(0, REQUIRE_CONSENT, [], "idle", expectConsentRequired=True),
         step(0, auth(), [], "idle"),
-        step(0, grant(), [], "connecting"),
+        step(0, grant(), [A_TEARDOWN], "connecting"),
         step(pake_at, PAKE_OK, [a_prompt(pake_at + 30)], "awaitingConsent",
              expectHasSession=True),
     ]
@@ -228,7 +235,7 @@ scen("ending_the_session_locally_during_the_wait_cancels_the_prompt", [
 
 scen("a_new_session_start_replaces_the_open_prompt", [
     *consenting_host(),
-    step(4, grant(sess=STALE, tok=TOK2), [a_dismiss("cancelled")], "connecting"),
+    step(4, grant(sess=STALE, tok=TOK2), [A_TEARDOWN, a_dismiss("cancelled")], "connecting"),
     step(5, PAKE_OK, [a_prompt(35)], "awaitingConsent"),
     step(34, {"event": "tick"}, [], "awaitingConsent"),
     step(35, {"event": "tick"},
@@ -257,11 +264,110 @@ scen("a_session_lost_during_the_wait_cancels_the_prompt", [
 scen("the_host_keeps_renewing_while_it_waits", [
     step(0, REQUIRE_CONSENT, [], "idle"),
     step(0, auth(), [], "idle"),
-    step(0, grant(), [], "connecting"),
+    step(0, grant(), [A_TEARDOWN], "connecting"),
     step(290, PAKE_OK, [a_prompt(320)], "awaitingConsent"),
     step(300, {"event": "tick"}, [{"action": "sendRenew", "sessionId": SESS,
                                    "sessionToken": TOK}], "awaitingConsent"),
 ], role="host")
+
+scen("a_leftover_peer_never_turns_a_new_prompt_into_a_live_session", [
+    step(0, REQUIRE_CONSENT, [], "idle"),
+    step(0, auth(), [], "idle"),
+    step(0, grant(), [A_TEARDOWN], "connecting"),
+    step(1, PAKE_OK, [a_prompt(31)], "awaitingConsent"),
+    step(3, answer(True), [a_dismiss("allowed"), offer(False)], "connecting"),
+    step(4, ice("connected"), [A_RESET], "live", expectPeerStarted=True),
+    step(10, grant(sess=OTHER, tok=TOK2), [A_TEARDOWN], "connecting",
+         expectPeerStarted=False),
+    step(11, PAKE_OK, [a_prompt(41)], "awaitingConsent"),
+    step(12, ice("disconnected"), [], "awaitingConsent"),
+    step(13, ice("connected"), [], "awaitingConsent", expectPeerStarted=False),
+    step(14, ice("completed"), [], "awaitingConsent"),
+    step(15, answer(False, OTHER),
+         [a_dismiss("declined"), a_bye(OTHER, "declined"), *CLOSE_SET],
+         "closed:declined", expectPeerStarted=False, expectHasSession=False),
+    step(16, ice("connected"), [], "closed:declined"),
+    step(45, {"event": "tick"}, [], "closed:declined"),
+], role="host", note="review M-A: a compromised server pushes session_start for B while A's "
+                     "peer is up, then bounces A's ICE; B must never reach live, and Decline "
+                     "must still end B")
+
+scen("link_events_before_the_peer_starts_are_ignored", [
+    step(0, auth(), [], "idle"),
+    step(0, grant(), [A_TEARDOWN], "connecting"),
+    step(0, ice("connected"), [], "connecting", expectPeerStarted=False),
+    step(1, PAKE_OK, [offer(False)], "connecting"),
+    step(2, ice("connected"), [A_RESET], "live"),
+], role="host", note="only the peer connection the machine ordered can move the phase")
+
+scen("allow_is_ignored_for_the_first_1_5_s_of_a_prompt", [
+    *consenting_host(),
+    step(1, answer(True), [], "awaitingConsent"),
+    step(2.499, answer(True), [], "awaitingConsent"),
+    step(2.5, answer(True), [a_dismiss("allowed"), offer(False)], "connecting"),
+], role="host", note="a click aimed at something else cannot land on Allow")
+
+scen("decline_is_accepted_at_once", [
+    *consenting_host(),
+    step(1, answer(False),
+         [a_dismiss("declined"), a_bye(SESS, "declined"), *CLOSE_SET], "closed:declined"),
+], role="host")
+
+scen("an_answer_meant_for_another_prompt_changes_nothing", [
+    *consenting_host(),
+    step(5, answer(True, STALE), [], "awaitingConsent"),
+    step(6, answer(False, STALE), [], "awaitingConsent"),
+    step(7, answer(True, SESS), [a_dismiss("allowed"), offer(False)], "connecting"),
+], role="host")
+
+# ---- server-supplied values are checked before use ------------------------
+
+scen("a_grant_with_a_malformed_session_or_host_id_is_refused", [
+    step(0, auth(), [], "idle"),
+    step(0, grant(sess="S|offer"), [], "idle", expectRejected=True, expectHasSession=False),
+    step(0, grant(sess=SESS.upper()), [], "idle", expectRejected=True),
+    step(0, grant(sess=SESS + "0"), [], "idle", expectRejected=True),
+    step(0, grant(host="73900058"), [], "idle", expectRejected=True),
+    step(1, grant(), [A_TEARDOWN], "connecting", expectHasSession=True,
+         expectPeerDeviceId=CTRLID),
+], role="host")
+
+scen("a_malformed_controller_device_id_is_shown_as_another_mac", [
+    step(0, auth(), [], "idle"),
+    step(0, grant(ctrl="Evil Mac 123"), [A_TEARDOWN], "connecting", expectPeerDeviceId=""),
+    step(1, grant(sess=OTHER, ctrl="48193027"), [A_TEARDOWN], "connecting",
+         expectPeerDeviceId=""),
+    step(2, grant(sess=STALE), [A_TEARDOWN], "connecting", expectPeerDeviceId=CTRLID),
+], role="host", note="the prompt names only a well-formed Device ID")
+
+scen("a_connect_to_a_malformed_device_id_is_refused", [
+    step(0, auth(), [], "idle"),
+    step(0, {"event": "connectRequested", "deviceId": "739 000 587",
+             "accessCode": CODE, "remember": False}, [], "idle", expectRejected=True),
+])
+
+scen("a_malformed_advertised_session_is_ignored", [
+    step(0, {"event": "connectRequested", "deviceId": HOSTID,
+             "accessCode": CODE, "remember": False}, [], "connecting"),
+    step(1, auth("x|y"), [a_connect()], "connecting"),
+])
+
+scen("a_resume_ok_for_another_session_is_refused_and_retried", [
+    *live_controller(),
+    step(5, {"event": "signalingLost"}, []),
+    step(8, auth(SESS), [a_resume()]),
+    step(8, {"event": "resumeSucceeded", "sessionId": OTHER, "sessionToken": TOK2},
+         [], "live", expectRejected=True, expectResumeInFlight=False),
+    step(9, {"event": "tick"}, [a_resume()]),
+])
+
+scen("renew_ok_with_a_malformed_session_id_is_refused", [
+    *live_controller(),
+    step(1, {"event": "renewSucceeded", "sessionId": "not-our-session",
+             "sessionToken": "evil"}, None, expectRejected=True),
+    step(2, {"event": "signalingLost"}, []),
+    step(3, auth(SESS), [a_resume(tok=TOK)]),
+])
 
 # ---- the controller outlasts the host's prompt ----------------------------
 
@@ -364,7 +470,7 @@ scen("renew_fires_on_schedule_and_not_before", [
 
 scen("renew_ok_rotates_the_token_only_for_the_matching_session", [
     *live_controller(),
-    step(1, {"event": "renewSucceeded", "sessionId": "not-our-session",
+    step(1, {"event": "renewSucceeded", "sessionId": OTHER,
              "sessionToken": "evil"}, None),
     step(2, {"event": "signalingLost"}, []),
     step(3, auth(SESS), [a_resume(tok=TOK)]),
@@ -637,7 +743,7 @@ scen("a_deliberately_closed_session_is_not_resurrected", [
     step(9, auth(SESS), [], "closed:user_ended", expectHasSession=False),
 ], note="the regression the first stale-session fix caused: closed is closed")
 
-out = {"version": 1, "clockNote": "at is seconds from scenario start",
+out = {"version": 2, "clockNote": "at is seconds from scenario start",
        "scenarios": S}
 path = sys.argv[1] if len(sys.argv) > 1 else "session-scenarios.json"
 with open(path, "w") as f:

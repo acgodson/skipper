@@ -3,6 +3,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod input;
+
+pub use input::InputError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IceLinkState {
     New,
@@ -108,7 +112,7 @@ impl ConsentOutcome {
     }
 
     pub fn counts_as_decline(self) -> bool {
-        matches!(self, Self::Declined | Self::TimedOut)
+        self != Self::Allowed
     }
 }
 
@@ -134,6 +138,7 @@ pub struct SessionStateMachine {
     pub ice_failure_grace_ms: i64,
     pub renew_interval_ms: i64,
     pub consent_timeout_ms: i64,
+    pub consent_allow_delay_ms: i64,
     pub peer_start_timeout_ms: i64,
     pub consent_required: bool,
 
@@ -160,8 +165,10 @@ pub struct SessionStateMachine {
     cleared_stale_session: bool,
 
     consent_deadline: Option<i64>,
+    consent_allow_after: Option<i64>,
     peer_start_since: Option<i64>,
     peer_started: bool,
+    last_rejection: Option<InputError>,
 }
 
 impl SessionStateMachine {
@@ -171,6 +178,7 @@ impl SessionStateMachine {
             ice_failure_grace_ms: 45_000,
             renew_interval_ms: 300_000,
             consent_timeout_ms: 30_000,
+            consent_allow_delay_ms: 1_500,
             peer_start_timeout_ms: 45_000,
             consent_required: false,
             role,
@@ -192,8 +200,10 @@ impl SessionStateMachine {
             server_advertised_session_id: None,
             cleared_stale_session: false,
             consent_deadline: None,
+            consent_allow_after: None,
             peer_start_since: None,
             peer_started: false,
+            last_rejection: None,
         }
     }
 
@@ -240,7 +250,23 @@ impl SessionStateMachine {
         self.consent_deadline
     }
 
+    pub fn peer_started(&self) -> bool {
+        self.peer_started
+    }
+
+    /// Why the last event was refused, if it was. A refused event performs
+    /// no action.
+    pub fn take_rejection(&mut self) -> Option<InputError> {
+        self.last_rejection.take()
+    }
+
+    fn reject(&mut self, error: InputError) -> Vec<SessionAction> {
+        self.last_rejection = Some(error);
+        vec![]
+    }
+
     fn leave_consent(&mut self, outcome: ConsentOutcome) -> Vec<SessionAction> {
+        self.consent_allow_after = None;
         match self.consent_deadline.take() {
             Some(_) => vec![SessionAction::DismissConsentPrompt { outcome }],
             None => vec![],
@@ -253,6 +279,9 @@ impl SessionStateMachine {
         access_code: &str,
         remember: bool,
     ) -> Vec<SessionAction> {
+        if let Err(error) = input::device_id(device_id) {
+            return self.reject(error);
+        }
         if self.has_session() {
             return vec![];
         }
@@ -271,23 +300,38 @@ impl SessionStateMachine {
         }]
     }
 
+    /// A new session never inherits the previous one's peer connection, link
+    /// state or prompt: the teardown comes before anything else.
     pub fn session_granted(&mut self, grant: &SessionGrant, now_ms: i64) -> Vec<SessionAction> {
+        let checked = input::session_id(&grant.session_id)
+            .and_then(|_| input::device_id(&grant.host_device_id));
+        if let Err(error) = checked {
+            return self.reject(error);
+        }
+        let mut actions = vec![SessionAction::TeardownPeerConnection];
+        actions.extend(self.leave_consent(ConsentOutcome::Cancelled));
         self.session_id = Some(grant.session_id.clone());
         self.session_token = Some(grant.session_token.clone());
-        self.peer_device_id = Some(match self.role {
-            Role::Controller => grant.host_device_id.clone(),
-            Role::Host => grant.controller_device_id.clone(),
-        });
+        self.peer_device_id = match self.role {
+            Role::Controller => Some(grant.host_device_id.clone()),
+            Role::Host => input::device_id(&grant.controller_device_id)
+                .ok()
+                .map(|_| grant.controller_device_id.clone()),
+        };
         if self.role == Role::Host {
             self.remembered_access_code = None;
         }
         self.pending_access_code = None;
-        let actions = self.leave_consent(ConsentOutcome::Cancelled);
         self.peer_start_since = None;
         self.peer_started = false;
+        self.ice_state = IceLinkState::New;
+        self.disconnected_since = None;
+        self.failed_since = None;
+        self.ice_restart_requested = false;
+        self.resume_in_flight = false;
+        self.resume_wanted = false;
         self.phase = SessionPhase::Connecting;
         self.last_renew = Some(now_ms);
-        self.ice_restart_requested = false;
         actions
     }
 
@@ -304,17 +348,33 @@ impl SessionStateMachine {
         if self.role == Role::Host && self.consent_required {
             let expires_at_ms = now_ms.saturating_add(self.consent_timeout_ms);
             self.consent_deadline = Some(expires_at_ms);
+            self.consent_allow_after = Some(now_ms.saturating_add(self.consent_allow_delay_ms));
             self.phase = SessionPhase::AwaitingConsent;
             return vec![SessionAction::PromptForConsent { expires_at_ms }];
         }
         self.start_peer(now_ms)
     }
 
-    pub fn consent_answered(&mut self, allow: bool, now_ms: i64) -> Vec<SessionAction> {
-        if self.phase != SessionPhase::AwaitingConsent {
+    /// Decline works whenever a prompt is open; Allow only while the machine
+    /// is still waiting, and not before the prompt has been on screen for
+    /// `consent_allow_delay_ms`. `session_id` names the prompt being answered.
+    pub fn consent_answered(
+        &mut self,
+        allow: bool,
+        session_id: Option<&str>,
+        now_ms: i64,
+    ) -> Vec<SessionAction> {
+        if self.consent_deadline.is_none() {
+            return vec![];
+        }
+        if session_id.is_some_and(|id| Some(id) != self.session_id.as_deref()) {
             return vec![];
         }
         if allow {
+            let too_early = self.consent_allow_after.is_some_and(|at| now_ms < at);
+            if self.phase != SessionPhase::AwaitingConsent || too_early {
+                return vec![];
+            }
             let mut actions = self.leave_consent(ConsentOutcome::Allowed);
             self.phase = SessionPhase::Connecting;
             actions.extend(self.start_peer(now_ms));
@@ -383,6 +443,7 @@ impl SessionStateMachine {
         &mut self,
         active_session_id: Option<&str>,
     ) -> Vec<SessionAction> {
+        let active_session_id = active_session_id.filter(|id| input::session_id(id).is_ok());
         self.signaling_up = true;
         self.server_advertised_session_id = active_session_id.map(str::to_string);
 
@@ -452,6 +513,13 @@ impl SessionStateMachine {
     }
 
     pub fn resume_succeeded(&mut self, ok: &ResumeOk, now_ms: i64) -> Vec<SessionAction> {
+        if let Err(error) = self.check_own_session(&ok.session_id) {
+            if self.resume_in_flight {
+                self.resume_in_flight = false;
+                self.resume_wanted = true;
+            }
+            return self.reject(error);
+        }
         self.resume_in_flight = false;
         self.session_id = Some(ok.session_id.clone());
         self.session_token = Some(ok.session_token.clone());
@@ -531,11 +599,24 @@ impl SessionStateMachine {
         actions
     }
 
+    fn check_own_session(&self, session_id: &str) -> Result<(), InputError> {
+        input::session_id(session_id)?;
+        match self.session_id.as_deref() {
+            Some(own) if own != session_id => Err(InputError::SessionMismatch),
+            _ => Ok(()),
+        }
+    }
+
+    /// Only the peer connection this machine started moves the phase, and
+    /// never while the owner is being asked.
     pub fn ice_state_changed(
         &mut self,
         new_state: IceLinkState,
         now_ms: i64,
     ) -> Vec<SessionAction> {
+        if !self.peer_started || self.phase == SessionPhase::AwaitingConsent {
+            return vec![];
+        }
         let previous = self.ice_state;
         self.ice_state = new_state;
         if !self.has_session() {
@@ -647,6 +728,10 @@ impl SessionStateMachine {
     }
 
     pub fn renew_succeeded(&mut self, ok: &RenewOk, now_ms: i64) {
+        if let Err(error) = input::session_id(&ok.session_id) {
+            self.last_rejection = Some(error);
+            return;
+        }
         if Some(ok.session_id.as_str()) != self.session_id.as_deref() {
             return;
         }

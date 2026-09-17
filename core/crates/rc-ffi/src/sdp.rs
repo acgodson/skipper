@@ -6,7 +6,7 @@ use rc_identity::sdp;
 use serde_json::json;
 
 use crate::pake::sdp_mac_key;
-use crate::{optional_text, required_text, respond, SkipperPake};
+use crate::{required_text, respond, SkipperPake};
 
 #[no_mangle]
 pub unsafe extern "C" fn skipper_sdp_fingerprints(
@@ -77,9 +77,21 @@ pub unsafe extern "C" fn skipper_sdp_verify(
             mac: unsafe { required_text(mac, mac_len, "mac") }?,
         };
         let expected =
-            unsafe { optional_text(expected_pubkey, expected_pubkey_len, "expected_pubkey") }?;
+            unsafe { required_text(expected_pubkey, expected_pubkey_len, "expected_pubkey") }?;
         sdp::verify(&mac_key, session_id, sdp_type, body, &presented, expected)
             .map_err(|e| e.to_string())?;
         Ok(json!({ "verified": true }))
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn skipper_sdp_without_candidates(
+    sdp_body: *const u8,
+    sdp_body_len: usize,
+) -> *mut c_char {
+    respond("sdp candidate stripping panicked", || {
+        let body = unsafe { required_text(sdp_body, sdp_body_len, "sdp") }?;
+        let stripped = sdp::without_candidates(body).map_err(|e| e.to_string())?;
+        Ok(json!({ "sdp": stripped }))
     })
 }

@@ -13,8 +13,10 @@
  *     "iceState":S,
  *     "sessionId":S|null, "sessionToken":S|null, "peerDeviceId":S|null,
  *     "rememberedAccessCode":S|null, "serverAdvertisedSessionId":S|null,
- *     "consentRequired":B, "consentExpiresAtMs":N|null } }
- * or, rejected: { "ok": false, "error": "<message>", "kind"?: "<kind>" }.
+ *     "consentRequired":B, "consentExpiresAtMs":N|null, "peerStarted":B } }
+ * or, rejected: { "ok": false, "error": "<message>", "kind"?: "<kind>" }; a
+ * session call the machine refused also carries its current "state" and
+ * performs no action.
  * Actions match protocol/vectors/session-scenarios.json; "phase" and
  * "iceState" match the SessionPhase/IceLinkState variant names, lowercased.
  *
@@ -125,27 +127,60 @@ char *skipper_session_set_remembered_access_code(SkipperSession *session,
  * "allowed", "declined", "timedOut", "cancelled". Declined and timed out end
  * the session with bye{declined}. Either side whose peer connection has not
  * come up 45 s after it started ends the session with bye{timeout}.
+ *
+ * session_granted always emits teardownPeerConnection first and resets every
+ * per-session value; ICE events are ignored until the machine itself emitted
+ * startPeerConnection, and always while awaitingConsent. Decline (and the
+ * timeout) works whenever a prompt is open; Allow only in awaitingConsent and
+ * not before 1.5 s after the prompt opened. session_id (nullable) names the
+ * prompt being answered; an answer for another session changes nothing.
+ *
+ * Server-supplied values are checked: a session id must be 32 lowercase hex,
+ * a device id 9 digits. A call whose input fails returns ok:false and
+ * performs nothing. A malformed controller device id on session_granted is
+ * not an error: peerDeviceId is then null ("another Mac").
  */
 char *skipper_session_pake_succeeded(SkipperSession *session, int64_t now_ms);
 
-char *skipper_session_consent_answered(SkipperSession *session, bool allow, int64_t now_ms);
+char *skipper_session_consent_answered(SkipperSession *session, bool allow,
+                                       const uint8_t *session_id, size_t session_id_len,
+                                       int64_t now_ms);
 
 char *skipper_session_set_consent_required(SkipperSession *session, bool consent_required);
 
 /*
- * The host's per-controller consent ledger. Pure, like guess_*: pass back the
- * ledger JSON received (NULL/"" for a fresh one) and persist what comes out.
- *   "prompt":B, "retryAfterMs":N, "ledger":{"declineTimesMs":[N]}
- * "prompt" is false while the controller has two declines inside 10 minutes:
- * the host then declines without asking.
+ * The host's consent budget, kept in the same ledger JSON as guess_*:
+ * "controller" is the counter of the controller asking, "host" the host-wide
+ * one; new fields "declineTimesMs" and "promptTimesMs" are omitted when empty.
+ *   "prompt":B, "retryAfterMs":N, "ledger":{"controller":{..},"host":{..}}
+ * "prompt" is false while the controller has two unallowed prompts inside
+ * 10 minutes, or the host has shown three unallowed prompts inside 10 minutes.
+ * Call prompted when a prompt opens: it counts as a decline and a spent prompt
+ * until allowed gives both back, so a hang-up or crash costs the controller.
  */
 char *skipper_consent_admit(const uint8_t *ledger_json, size_t ledger_json_len, int64_t now_ms);
 
-char *skipper_consent_declined(const uint8_t *ledger_json, size_t ledger_json_len,
+char *skipper_consent_prompted(const uint8_t *ledger_json, size_t ledger_json_len,
                                int64_t now_ms);
 
 char *skipper_consent_allowed(const uint8_t *ledger_json, size_t ledger_json_len,
                               int64_t now_ms);
+
+/*
+ * The one spelling of a device key, which is also the key its counter is
+ * stored under: "key":S, the canonical base64 DER SPKI of the P-256 key, and
+ * "canonical":B, whether the input was already spelled that way. Anything
+ * that is not a P-256 key is an error.
+ */
+char *skipper_pubkey_canonical(const uint8_t *pubkey, size_t pubkey_len);
+
+/*
+ * The whole stored map {key: counter}: entries idle for 24 h are dropped,
+ * keys are canonicalised (spellings of one key merged), and at most 256
+ * entries remain, "host" always among them.  "counters":{..}
+ */
+char *skipper_ledger_prune(const uint8_t *counters_json, size_t counters_json_len,
+                           int64_t now_ms);
 
 /*
  * Domain-separated device-key signatures (PROTOCOL.md §3.1). A device key
@@ -232,7 +267,9 @@ char *skipper_sdp_signing_message(SkipperPake *pake,
                                   const uint8_t *sdp_type, size_t sdp_type_len,
                                   const uint8_t *sdp, size_t sdp_len);
 
-/* expected_pubkey NULL/empty means the peer's key is not yet known. */
+/* session_id must be 32 lowercase hex and sdp_type "offer" or "answer".
+ * expected_pubkey is required: the canonical key of the peer this exchange
+ * proved; the presented pubkey must be exactly that key. */
 char *skipper_sdp_verify(SkipperPake *pake,
                          const uint8_t *session_id, size_t session_id_len,
                          const uint8_t *sdp_type, size_t sdp_type_len,
@@ -242,6 +279,11 @@ char *skipper_sdp_verify(SkipperPake *pake,
                          const uint8_t *sig, size_t sig_len,
                          const uint8_t *mac, size_t mac_len,
                          const uint8_t *expected_pubkey, size_t expected_pubkey_len);
+
+/* The verified SDP with every a=candidate and a=end-of-candidates line
+ * removed, for setRemoteDescription: candidates arrive only as `ice`.
+ *   "sdp":S */
+char *skipper_sdp_without_candidates(const uint8_t *sdp, size_t sdp_len);
 
 #ifdef __cplusplus
 }

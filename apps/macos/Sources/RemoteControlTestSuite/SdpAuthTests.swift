@@ -173,4 +173,45 @@ public let sdpAuthSuite = TestSuite("SdpAuth", [
             try expectNil(fooled.installedRemoteSDP, "the peer connection was closed at once")
         }
     },
+
+    TestCase("candidates inside a remote SDP never reach libwebrtc") {
+        let sender = PeerSession(iceServers: [], isOfferer: true)
+        defer { sender.close() }
+        let genuine = try await offer(from: sender)
+        let inline = "a=candidate:1 1 udp 2122260223 203.0.113.9 50000 typ host\r\n"
+        let smuggled = genuine.replacingOccurrences(of: "a=mid:0\r\n", with: "a=mid:0\r\n\(inline)a=end-of-candidates\r\n")
+        try expect(smuggled.contains(inline))
+        let stripped = try SdpAuth.withoutCandidates(smuggled)
+        try expectFalse(stripped.contains("a=candidate"))
+        try expectFalse(stripped.contains("a=end-of-candidates"))
+        try expectEqual(try SdpAuth.fingerprints(in: stripped), try SdpAuth.fingerprints(in: genuine))
+
+        let receiver = PeerSession(iceServers: [], isOfferer: false)
+        defer { receiver.close() }
+        try receiver.start()
+        try await receiver.setRemoteDescription(type: "offer", sdp: smuggled,
+                                                verifiedFingerprints: try SdpAuth.fingerprints(in: genuine))
+        try expectFalse(try expectNotNil(receiver.installedRemoteSDP).contains("203.0.113.9"),
+                        "the installed description carries no candidate from the SDP body")
+    },
+
+    TestCase("a remote candidate or sdp type outside the protocol is refused, never trapped on") {
+        let peer = PeerSession(iceServers: [], isOfferer: false)
+        defer { peer.close() }
+        try peer.start()
+        for index in [-1, 65, Int(Int32.max) + 1, Int.max] {
+            try await expectThrows("sdpMLineIndex \(index)") {
+                try await peer.addCandidate("candidate:1 1 udp 1 192.0.2.1 9 typ host",
+                                            sdpMid: "0", sdpMLineIndex: index)
+            }
+        }
+        try await expectThrows("a pranswer") {
+            try await peer.setRemoteDescription(type: "pranswer", sdp: sdpOffer,
+                                                verifiedFingerprints: try SdpAuth.fingerprints(in: sdpOffer))
+        }
+        try await expectThrows("the SDP signing context") {
+            _ = try SdpAuth.signable(pake: try completedExchange().controller, sessionID: "S|offer",
+                                     sdpType: "offer", sdp: sdpOffer)
+        }
+    },
 ])

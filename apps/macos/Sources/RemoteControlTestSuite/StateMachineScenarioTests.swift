@@ -22,6 +22,9 @@ private struct Step: Decodable {
     let expectResumeInFlight: Bool?
     let expectRelayOnly: Bool?
     let expectConsentRequired: Bool?
+    let expectRejected: Bool?
+    let expectPeerStarted: Bool?
+    let expectPeerDeviceId: String?
 }
 
 private enum JSONValue: Decodable {
@@ -192,7 +195,7 @@ public let scenarioSuite = TestSuite("Shared state-machine scenarios (through th
                     actions = machine.pakeSucceeded(now: now)
                 case "consentAnswered":
                     guard let allow = e["allow"]?.boolean else { throw fail("\(ctx): allow") }
-                    actions = machine.consentAnswered(allow: allow, now: now)
+                    actions = machine.consentAnswered(allow: allow, sessionID: e["sessionId"]?.string, now: now)
                 case "setConsentRequired":
                     guard let required = e["required"]?.boolean else { throw fail("\(ctx): required") }
                     machine.consentRequired = required
@@ -201,6 +204,8 @@ public let scenarioSuite = TestSuite("Shared state-machine scenarios (through th
                     throw fail("\(ctx): unknown event \(other)")
                 }
 
+                try expectEqual(machine.lastRejection != nil, step.expectRejected ?? false,
+                                "\(ctx): rejection \(machine.lastRejection ?? "none")")
                 if let expected = step.expectActions {
                     let want = try expected.map { try action(from: $0, ctx) }
                     guard let got = actions else { throw fail("\(ctx): expectActions on a non-action event") }
@@ -221,6 +226,12 @@ public let scenarioSuite = TestSuite("Shared state-machine scenarios (through th
                 }
                 if let relayOnly = step.expectRelayOnly {
                     try expectEqual(machine.relayOnly, relayOnly, "\(ctx): relayOnly")
+                }
+                if let started = step.expectPeerStarted {
+                    try expectEqual(machine.peerStarted, started, "\(ctx): peerStarted")
+                }
+                if let peer = step.expectPeerDeviceId {
+                    try expectEqual(machine.peerDeviceID, peer.isEmpty ? nil : peer, "\(ctx): peerDeviceId")
                 }
                 stepsRun += 1
             }
