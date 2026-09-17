@@ -20,6 +20,7 @@ import (
 	"rc-signal/internal/auth"
 	"rc-signal/internal/clockx"
 	"rc-signal/internal/entitlement"
+	"rc-signal/internal/registry"
 	"rc-signal/internal/store"
 	"rcprotocol"
 )
@@ -93,11 +94,69 @@ func (f *fakeEntitlement) awaitReports(t *testing.T, starts, stops int) ([]proto
 	}
 }
 
+type switchableRegistry struct {
+	registry.Registry
+	mu   sync.Mutex
+	down bool
+	gate chan struct{}
+}
+
+func (r *switchableRegistry) setDown(down bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.down = down
+}
+
+func (r *switchableRegistry) holdLookups() func() {
+	gate := make(chan struct{})
+	r.mu.Lock()
+	r.gate = gate
+	r.mu.Unlock()
+	return func() {
+		r.mu.Lock()
+		r.gate = nil
+		r.mu.Unlock()
+		close(gate)
+	}
+}
+
+func (r *switchableRegistry) state() (bool, chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.down, r.gate
+}
+
+func (r *switchableRegistry) Register(ctx context.Context, pubkey, label string) (registry.Device, bool, error) {
+	if down, _ := r.state(); down {
+		return registry.Device{}, false, registry.ErrUnavailable
+	}
+	return r.Registry.Register(ctx, pubkey, label)
+}
+
+func (r *switchableRegistry) Lookup(ctx context.Context, deviceID string) (registry.Device, error) {
+	down, gate := r.state()
+	if gate != nil {
+		<-gate
+	}
+	if down {
+		return registry.Device{}, registry.ErrUnavailable
+	}
+	return r.Registry.Lookup(ctx, deviceID)
+}
+
+func (r *switchableRegistry) BumpEpoch(ctx context.Context, deviceID string) error {
+	if down, _ := r.state(); down {
+		return registry.ErrUnavailable
+	}
+	return r.Registry.BumpEpoch(ctx, deviceID)
+}
+
 type harness struct {
 	t     *testing.T
 	hub   *Hub
 	clock *clockx.Fake
 	store *store.Store
+	reg   *switchableRegistry
 	ent   *fakeEntitlement
 }
 
@@ -110,8 +169,9 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(func() { st.Close() })
 	clk := clockx.NewFake()
 	ent := newFakeEntitlement()
+	reg := &switchableRegistry{Registry: registry.NewLocal(st, clk)}
 	h := New(Options{
-		Store:       st,
+		Registry:    reg,
 		Entitlement: ent,
 		Clock:       clk,
 		Signer:      auth.NewSigner([]byte("test-hmac-secret-0123456789abcdef")),
@@ -120,7 +180,7 @@ func newHarness(t *testing.T) *harness {
 		TurnURLs:    []string{"turn:198.51.100.7:3478?transport=udp"},
 		StunURLs:    []string{"stun:stun.example:3478"},
 	})
-	return &harness{t: t, hub: h, clock: clk, store: st, ent: ent}
+	return &harness{t: t, hub: h, clock: clk, store: st, reg: reg, ent: ent}
 }
 
 type peer struct {
@@ -1165,5 +1225,80 @@ func TestShutdownClosesSessions(t *testing.T) {
 		if b.Reason != protocol.ByeShutdown {
 			t.Fatalf("bye reason = %q, want %q", b.Reason, protocol.ByeShutdown)
 		}
+	}
+}
+
+func TestRegistryOutageAnswersUnavailableAndNeverMintsAnID(t *testing.T) {
+	hn := newHarness(t)
+	known := hn.newPeer()
+	known.register("Known Mac")
+
+	hn.reg.setDown(true)
+	fresh := hn.newPeer()
+	fresh.send(protocol.TypeRegister, protocol.Register{Pubkey: fresh.pubB64, Sig: fresh.sig(false)})
+	if fresh.has(protocol.TypeRegisterOK) {
+		t.Fatal("register succeeded while the registry was down")
+	}
+	e := fresh.lastErr()
+	if e.Code != protocol.APIErrUnavailable || e.RetryAfterSec <= 0 {
+		t.Fatalf("register during an outage: error = %+v, want unavailable with retryAfterSec", e)
+	}
+	if _, err := hn.store.GetByPubkey(fresh.pubB64); err == nil {
+		t.Fatal("a device id was minted during the outage")
+	}
+
+	known.reset()
+	known.send(protocol.TypeHello, protocol.Hello{
+		DeviceID: known.deviceID, Pubkey: known.pubB64, Sig: known.sig(false), Role: protocol.RoleHost})
+	if known.has(protocol.TypeHelloOK) {
+		t.Fatal("hello succeeded while the registry was down")
+	}
+	if got := known.lastErr().Code; got != protocol.APIErrUnavailable {
+		t.Fatalf("hello during an outage: error = %q, want unavailable", got)
+	}
+
+	hn.reg.setDown(false)
+	known.hello(protocol.RoleHost)
+	known.reset()
+	hn.reg.setDown(true)
+	known.send(protocol.TypeRefreshCode, map[string]any{})
+	if got := known.lastErr().Code; got != protocol.APIErrUnavailable {
+		t.Fatalf("refresh_code during an outage: error = %q, want unavailable", got)
+	}
+}
+
+func TestRegistryCallDoesNotHoldTheHubLock(t *testing.T) {
+	hn := newHarness(t)
+	online, _ := hn.pair(t)
+	slow := hn.newPeer()
+	slow.register("Slow Mac")
+
+	release := hn.reg.holdLookups()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		slow.send(protocol.TypeHello, protocol.Hello{
+			DeviceID: slow.deviceID, Pubkey: slow.pubB64, Sig: slow.sig(false), Role: protocol.RoleHost})
+	}()
+
+	online.reset()
+	beat := make(chan struct{})
+	go func() {
+		defer close(beat)
+		online.send(protocol.TypeHeartbeat, map[string]any{})
+	}()
+	select {
+	case <-beat:
+	case <-time.After(2 * time.Second):
+		release()
+		t.Fatal("a heartbeat blocked behind a pending registry lookup")
+	}
+	if !online.has(protocol.TypeHeartbeatOK) {
+		t.Fatal("no heartbeat_ok while a registry lookup was pending")
+	}
+	release()
+	<-done
+	if !slow.has(protocol.TypeHelloOK) {
+		t.Fatal("the held hello did not complete once the registry answered")
 	}
 }

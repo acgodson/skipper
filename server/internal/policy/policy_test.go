@@ -38,8 +38,8 @@ func TestDecideStatuses(t *testing.T) {
 		{"trial", Facts{Known: true, TrialEndsAt: live}, protocol.StatusTrial, ""},
 		{"active", Facts{Known: true, HasAccount: true, BalanceCents: 1, TrialEndsAt: ended}, protocol.StatusActive, ""},
 		{"trial over, no account", Facts{Known: true, TrialEndsAt: ended}, protocol.StatusExhausted, protocol.EntitlementTrialExpired},
-		{"trial over, empty balance", Facts{Known: true, HasAccount: true, TrialEndsAt: ended}, protocol.StatusExhausted, protocol.EntitlementNoBalance},
-		{"never had a trial", Facts{Known: true, HasAccount: true}, protocol.StatusExhausted, protocol.EntitlementTrialExpired},
+		{"trial over, empty balance", Facts{Known: true, HasAccount: true, TrialEndsAt: ended}, protocol.StatusExhausted, protocol.EntitlementTrialExpired},
+		{"never had a trial", Facts{Known: true, HasAccount: true}, protocol.StatusExhausted, protocol.EntitlementNoBalance},
 		{"suspended", Facts{Known: true, HasAccount: true, Suspended: true, BalanceCents: 500}, protocol.StatusExhausted, protocol.EntitlementSuspended},
 	}
 	for _, c := range cases {

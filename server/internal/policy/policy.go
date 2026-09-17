@@ -82,7 +82,7 @@ func Decide(f Facts, now time.Time) Decision {
 	default:
 		ent.Status = protocol.StatusExhausted
 		reason := protocol.EntitlementTrialExpired
-		if f.HasAccount && f.TrialEndsAt != 0 {
+		if f.HasAccount && f.TrialEndsAt == 0 {
 			reason = protocol.EntitlementNoBalance
 		}
 		return Decision{Entitlement: ent, Reason: reason}

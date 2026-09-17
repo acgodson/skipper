@@ -1,80 +1,47 @@
 package entitlement
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
+	"rc-signal/internal/internalapi"
 	protocol "rcprotocol"
 )
 
 const (
-	CheckTimeout   = 3 * time.Second
-	ReportTimeout  = 3 * time.Second
+	CheckTimeout   = internalapi.CallTimeout
 	ReportAttempts = 3
 	ReportBackoff  = 250 * time.Millisecond
 )
 
 type HTTP struct {
-	base   string
-	token  string
-	client *http.Client
+	api *internalapi.Client
 }
 
-func NewHTTP(baseURL, token string) (*HTTP, error) {
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if baseURL == "" {
-		return nil, errors.New("internal API base URL is required")
-	}
-	u, err := url.Parse(baseURL)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("internal API base URL %q is not an absolute URL", baseURL)
-	}
-	if strings.TrimSpace(token) == "" {
-		return nil, errors.New("internal API bearer token is required")
-	}
-	return &HTTP{
-		base:   baseURL,
-		token:  token,
-		client: &http.Client{Timeout: CheckTimeout},
-	}, nil
+func NewHTTP(api *internalapi.Client) *HTTP {
+	return &HTTP{api: api}
 }
 
 func (h *HTTP) Check(ctx context.Context, hostDeviceID string) (Decision, error) {
 	if !protocol.ValidDeviceID(hostDeviceID) {
 		return Decision{}, errors.New("hostDeviceID must be 9 digits")
 	}
-	target := h.base + protocol.PathInternalEntitlement + "/" + hostDeviceID
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return Decision{}, err
-	}
-	req.Header.Set(protocol.HeaderAuthorization, protocol.BearerPrefix+h.token)
-	resp, err := h.client.Do(req)
-	if err != nil {
-		return Decision{}, err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, protocol.APIMaxBodyBytes))
+	resp, err := h.api.Do(ctx, http.MethodGet, protocol.PathInternalEntitlement+"/"+hostDeviceID, nil)
 	if err != nil {
 		return Decision{}, err
 	}
 	switch {
-	case resp.StatusCode == http.StatusOK:
+	case resp.Status == http.StatusOK:
 		var ent protocol.Entitlement
-		if err := json.Unmarshal(body, &ent); err != nil {
-			return Decision{}, fmt.Errorf("entitlement body: %w", err)
+		if err := resp.Decode(&ent); err != nil {
+			return Decision{}, err
 		}
 		return decideFrom(ent), nil
-	case resp.StatusCode == http.StatusPaymentRequired || resp.StatusCode == http.StatusForbidden:
-		apiErr := protocol.DecodeAPIError(body)
+	case resp.Status == http.StatusPaymentRequired || resp.Status == http.StatusForbidden:
+		apiErr := resp.APIError()
 		if apiErr.Code == protocol.APIErrEntitlement && ValidReason(apiErr.Reason) {
 			return Denied(apiErr.Reason), nil
 		}
@@ -82,10 +49,10 @@ func (h *HTTP) Check(ctx context.Context, hostDeviceID string) (Decision, error)
 			return Denied(protocol.EntitlementTrialExpired), nil
 		}
 		return Decision{}, fmt.Errorf("internal entitlement: %s", apiErr.Error())
-	case resp.StatusCode == http.StatusNotFound:
+	case resp.Status == http.StatusNotFound:
 		return Denied(protocol.EntitlementUnlinked), nil
 	default:
-		return Decision{}, fmt.Errorf("internal entitlement: unexpected status %d", resp.StatusCode)
+		return Decision{}, fmt.Errorf("internal entitlement: unexpected status %d", resp.Status)
 	}
 }
 
@@ -112,10 +79,6 @@ func (h *HTTP) SessionStopped(ctx context.Context, r protocol.SessionStopReport)
 }
 
 func (h *HTTP) post(ctx context.Context, path string, payload any) error {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
 	var last error
 	for attempt := 0; attempt < ReportAttempts; attempt++ {
 		if attempt > 0 {
@@ -126,7 +89,7 @@ func (h *HTTP) post(ctx context.Context, path string, payload any) error {
 			case <-time.After(delay):
 			}
 		}
-		retry, err := h.postOnce(ctx, path, body)
+		retry, err := h.postOnce(ctx, path, payload)
 		if err == nil {
 			return nil
 		}
@@ -138,24 +101,14 @@ func (h *HTTP) post(ctx context.Context, path string, payload any) error {
 	return last
 }
 
-func (h *HTTP) postOnce(ctx context.Context, path string, body []byte) (bool, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, ReportTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, h.base+path, bytes.NewReader(body))
-	if err != nil {
-		return false, err
-	}
-	req.Header.Set(protocol.HeaderAuthorization, protocol.BearerPrefix+h.token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := h.client.Do(req)
+func (h *HTTP) postOnce(ctx context.Context, path string, payload any) (bool, error) {
+	resp, err := h.api.Do(ctx, http.MethodPost, path, payload)
 	if err != nil {
 		return true, err
 	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, protocol.APIMaxBodyBytes))
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if resp.OK() {
 		return false, nil
 	}
-	retry := resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests
-	return retry, fmt.Errorf("%s: unexpected status %d", path, resp.StatusCode)
+	retry := resp.Status >= 500 || resp.Status == http.StatusTooManyRequests
+	return retry, fmt.Errorf("%s: unexpected status %d", path, resp.Status)
 }

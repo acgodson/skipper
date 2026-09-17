@@ -23,6 +23,9 @@ const (
 	PathInternalSessionStart = "/internal/sessions/start"
 	PathInternalSessionStop  = "/internal/sessions/stop"
 	PathInternalEntitlement  = "/internal/entitlement"
+	PathInternalDevices      = "/internal/devices"
+	PathInternalRegister     = PathInternalDevices + "/register"
+	InternalEpochSuffix      = "/epoch"
 )
 
 const (
@@ -79,6 +82,7 @@ const (
 	ReasonInProgress      = "in_progress"
 	ReasonLinkedElsewhere = "linked_elsewhere"
 	ReasonRevoked         = "revoked"
+	ReasonUnregistered    = "unregistered"
 )
 
 const (
@@ -305,6 +309,31 @@ type SessionStopReport struct {
 	RelayUsed    bool   `json:"relayUsed"`
 	BytesRelayed *int64 `json:"bytesRelayed,omitempty"`
 	Reason       string `json:"reason"`
+}
+
+// InternalRegisterRequest is idempotent by Pubkey: a known key answers with its existing id.
+type InternalRegisterRequest struct {
+	Pubkey   string `json:"pubkey"`
+	Label    string `json:"label,omitempty"`
+	Platform string `json:"platform,omitempty"`
+}
+
+type InternalRegisterResponse struct {
+	DeviceID string `json:"deviceId"`
+	Existing bool   `json:"existing"`
+}
+
+// InternalDevice is what the signaling server needs to verify a hello and pin a session.
+type InternalDevice struct {
+	DeviceID  string `json:"deviceId"`
+	Pubkey    string `json:"pubkey"`
+	CodeEpoch int64  `json:"codeEpoch"`
+}
+
+func InternalDevicePath(deviceID string) string { return PathInternalDevices + "/" + deviceID }
+
+func InternalEpochPath(deviceID string) string {
+	return InternalDevicePath(deviceID) + InternalEpochSuffix
 }
 
 func NewAPIError(code, message, requestID string) APIErrorBody {

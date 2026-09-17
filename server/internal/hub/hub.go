@@ -11,7 +11,7 @@ import (
 	"rc-signal/internal/auth"
 	"rc-signal/internal/clockx"
 	"rc-signal/internal/entitlement"
-	"rc-signal/internal/store"
+	"rc-signal/internal/registry"
 	"rcprotocol"
 )
 
@@ -30,7 +30,7 @@ const (
 // is not implemented yet, and error{rate_limited} is therefore never sent.
 
 type Options struct {
-	Store       *store.Store
+	Registry    registry.Registry
 	Entitlement entitlement.Entitlement
 	Clock       clockx.Clock
 	Signer      *auth.Signer

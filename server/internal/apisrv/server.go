@@ -101,12 +101,16 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /v1/credits", s.credits)
 	m.HandleFunc("GET /v1/credits/ledger", s.creditsLedger)
 	m.HandleFunc("POST /v1/credits/dev-topup", s.devTopup)
+	m.HandleFunc("POST /v1/dev/expire-trial", s.devExpireTrial)
 	m.HandleFunc("POST /v1/credits/gifts", s.createGift)
 	m.HandleFunc("GET /v1/credits/gifts", s.listGifts)
 	m.HandleFunc("POST /v1/credits/gifts/{giftId}/accept", s.acceptGift)
 	m.HandleFunc("POST /v1/credits/gifts/{giftId}/cancel", s.cancelGift)
 
 	m.HandleFunc("GET /internal/entitlement/{deviceId}", s.internalEntitlement)
+	m.HandleFunc("POST "+protocol.PathInternalRegister, s.internalRegister)
+	m.HandleFunc("GET "+protocol.PathInternalDevices+"/{deviceId}", s.internalDeviceRead)
+	m.HandleFunc("POST "+protocol.PathInternalDevices+"/{deviceId}"+protocol.InternalEpochSuffix, s.internalEpoch)
 	m.HandleFunc("POST /internal/sessions/start", s.internalSessionStart)
 	m.HandleFunc("POST /internal/sessions/stop", s.internalSessionStop)
 

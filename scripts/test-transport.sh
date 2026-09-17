@@ -21,6 +21,14 @@
 #      RESUMES with no access code, and the peer connection is never torn down
 #   g. an ICE restart completes and the connection returns to `connected`
 #   h. `bye` closes cleanly on both sides
+#   i. Refresh Code revokes the old code and every trusted controller
+#   j. (rc-api only) real entitlement gating: a host that never signed in is
+#      refused with entitlement/unlinked, and a host whose trial has ended with
+#      entitlement/trial_expired
+#
+# Against rc-api (scripts/dev-backend.sh), the host signs in first with the
+# real API.md §1 flow (rc-node --dev-sign-in), and the Device ID the sign-in
+# returns must be the one signaling assigned: rc-api owns the one registry.
 #
 # Exits non-zero on any failure.
 set -uo pipefail
@@ -31,6 +39,8 @@ WORK="$(mktemp -d -t rc-transport)"
 BIN="$APP_DIR/.build/debug/rc-node"
 
 API_BASE_URL="${SKIPPER_API_BASE_URL:-http://127.0.0.1:18443}"
+API_BASE_URL="${API_BASE_URL%/}"
+RUN_TAG="$(date +%s)-$$"
 
 steps=0
 failures=0
@@ -99,13 +109,20 @@ for line in open(path):
 PY
 }
 
-start_node() {  # start_node <name> <role> <identity-dir>
+field_after() {  # field_after <file> <start-line> <event> <json key>  -> first match at or after the line
+  tail -n "+$2" "$1" > "$WORK/field_after.tmp" 2>/dev/null
+  field "$WORK/field_after.tmp" "$3" "$4"
+}
+
+start_node() {  # start_node <name> <role> <identity-dir> [rc-node args...]
   local name="$1" role="$2" dir="$3"
+  shift 3
   mkdir -p "$dir"
+  rm -f "$WORK/$name.in"
   mkfifo "$WORK/$name.in"
   env RC_ROLE="$role" RC_IDENTITY_DIR="$dir" SKIPPER_API_BASE_URL="$API_BASE_URL" \
       RC_DEVICE_LABEL="rc-test-$name" \
-      "$BIN" < "$WORK/$name.in" > "$WORK/$name.log" 2>&1 &
+      "$BIN" "$@" < "$WORK/$name.in" > "$WORK/$name.log" 2>&1 &
   PIDS+=("$!")
   # Hold the write end open so the node does not see EOF between commands.
   # macOS ships bash 3.2, which has neither {fd}> auto-allocation nor
@@ -130,14 +147,55 @@ fi
 [[ -x "$BIN" ]] || { fail "build rc-node" "no binary at $BIN"; exit 1; }
 
 echo "== server health"
-HEALTH_URL="$(printf '%s' "$API_BASE_URL" | sed -e 's|/$||')/healthz"
+HEALTH_URL="$API_BASE_URL/healthz"
 if [[ "$(curl -sk --max-time 10 "$HEALTH_URL")" == "ok" ]]; then
   pass "the signaling server is healthy ($HEALTH_URL)"
 else
   fail "the signaling server is healthy" "$HEALTH_URL did not return ok; is scripts/smoke-signal.sh's server (or another SKIPPER_API_BASE_URL) running?"
   exit 1
 fi
+# rc-api answers the REST health call; a bare rc-signal does not.
+API_MODE=0
+if curl -sk --max-time 10 "$API_BASE_URL/v1/health" | grep -q '"status":"ok"'; then
+  API_MODE=1
+  info "backend is rc-api: the host signs in and entitlement is really gated"
+else
+  info "backend is a bare rc-signal (static entitlement): sign-in and gating steps are skipped"
+fi
+HOST_EMAIL="host-$RUN_TAG@example.com"
+HOST_ARGS=()
+[[ "$API_MODE" == "1" ]] && HOST_ARGS=(--dev-sign-in "$HOST_EMAIL")
 echo
+
+dev_session_post() {  # dev_session_post <email> <path>  -> HTTP status
+  curl -sk --max-time 10 -o "$WORK/dev_post.out" -w '%{http_code}' -X POST "$API_BASE_URL$2" \
+    -H "Authorization: Bearer dev:$1" -H 'Content-Type: application/json' \
+    -H "Idempotency-Key: $(uuidgen)" -d '{}'
+}
+
+# expect_denied <label> <host-id> <reason>: the controller's connect_req must be refused with it.
+expect_denied() {
+  local label="$1" target="$2" reason="$3" mark
+  mark=$(( $(lines_in "$WORK/ctrl.log") + 1 ))
+  say ctrl "connect $target ZZZZZZZZZZZZ"
+  if wait_for "$WORK/ctrl.log" '"event":"connect_error"' 30 "$mark"; then
+    local code got
+    code="$(field_after "$WORK/ctrl.log" "$mark" connect_error code)"
+    got="$(field_after "$WORK/ctrl.log" "$mark" connect_error reason)"
+    if [[ "$code" == "entitlement" && "$got" == "$reason" ]]; then
+      pass "$label -> error{entitlement, reason: $reason}"
+    else
+      fail "$label -> entitlement/$reason" "got $code/$got"
+    fi
+  else
+    fail "$label -> entitlement/$reason" "no connect_error; $(tail -n "+$mark" "$WORK/ctrl.log")"
+  fi
+  if must_not_appear "$WORK/ctrl.log" '"event":"session"' "$mark"; then
+    pass "$label: no session was opened"
+  else
+    fail "$label: no session may open" "$(tail -n "+$mark" "$WORK/ctrl.log" | grep '"event":"session"')"
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # a. registration, authentication, presence flip
@@ -146,13 +204,33 @@ echo "== a. registration, authentication and presence"
 
 # Register the host once so the controller can learn its Device ID and code,
 # then stop it: the controller must observe the OFFLINE -> ONLINE edge.
-start_node bootstrap host "$WORK/id-host"
+start_node bootstrap host "$WORK/id-host" ${HOST_ARGS[@]+"${HOST_ARGS[@]}"}
 if ! wait_for "$WORK/bootstrap.log" '"event":"hello_ok"' 30; then
   fail "host registers with the live server" "no hello_ok; see $WORK/bootstrap.log"
   exit 1
 fi
 HOST_ID="$(field "$WORK/bootstrap.log" hello_ok deviceId)"
 HOST_CODE="$(field "$WORK/bootstrap.log" ready accessCode)"
+if [[ "$API_MODE" == "1" ]]; then
+  if wait_for "$WORK/bootstrap.log" '"event":"signed_in"' 40; then
+    SIGNED_ID="$(field "$WORK/bootstrap.log" signed_in deviceId)"
+    SIGNED_STATUS="$(field "$WORK/bootstrap.log" signed_in status)"
+    pass "the host signed in as $HOST_EMAIL through the API.md §1 flow (entitlement: $SIGNED_STATUS)"
+    if [[ -n "$SIGNED_ID" && "$SIGNED_ID" == "$HOST_ID" ]]; then
+      pass "This Mac's Device ID from sign-in equals its signaling Device ID ($SIGNED_ID): one registry"
+    else
+      fail "sign-in and signaling agree on the Device ID" "sign-in '$SIGNED_ID' vs signaling '$HOST_ID'"
+    fi
+    if [[ "$SIGNED_STATUS" == "trial" ]]; then
+      pass "the first link started the device's trial"
+    else
+      fail "the first link starts a trial" "status '$SIGNED_STATUS'"
+    fi
+  else
+    fail "the host signs in" "$(grep -E 'sign_in_error|signed_in' "$WORK/bootstrap.log" || tail -5 "$WORK/bootstrap.log")"
+    exit 1
+  fi
+fi
 say bootstrap quit
 sleep 2
 
@@ -475,6 +553,36 @@ if [[ -n "$NEW_CODE" ]]; then
   else
     fail "the new access code opens a session" "$(tail -n "+$MARK" "$WORK/ctrl.log")"
   fi
+fi
+
+if [[ "$API_MODE" == "1" ]]; then
+  echo
+  echo "== j. entitlement gating by rc-api (SCOPE §6 rule 1)"
+  start_node unsigned host "$WORK/id-unsigned"
+  if wait_for "$WORK/unsigned.log" '"event":"hello_ok"' 30; then
+    UNSIGNED_ID="$(field "$WORK/unsigned.log" hello_ok deviceId)"
+    pass "a host that never signed in still registers and comes online ($UNSIGNED_ID)"
+    expect_denied "a host that never signed in" "$UNSIGNED_ID" unlinked
+  else
+    fail "the unsigned host comes online" "see $WORK/unsigned.log"
+  fi
+  say unsigned quit
+
+  EXPIRED_EMAIL="expired-$RUN_TAG@example.com"
+  start_node expired host "$WORK/id-expired" --dev-sign-in "$EXPIRED_EMAIL"
+  if wait_for "$WORK/expired.log" '"event":"signed_in"' 40; then
+    EXPIRED_ID="$(field "$WORK/expired.log" signed_in deviceId)"
+    status="$(dev_session_post "$EXPIRED_EMAIL" /v1/dev/expire-trial)"
+    if [[ "$status" == "204" ]]; then
+      pass "the second host signed in ($EXPIRED_ID) and its account's trial was ended"
+      expect_denied "a host whose trial has ended" "$EXPIRED_ID" trial_expired
+    else
+      fail "POST /v1/dev/expire-trial" "HTTP $status $(cat "$WORK/dev_post.out")"
+    fi
+  else
+    fail "the second host signs in" "$(grep -E 'sign_in_error' "$WORK/expired.log" || tail -5 "$WORK/expired.log")"
+  fi
+  say expired quit
 fi
 
 say ctrl quit
