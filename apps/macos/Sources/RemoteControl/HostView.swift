@@ -137,15 +137,6 @@ struct HostView: View {
             }
 
             DeviceKeyFooter()
-
-            #if DEBUG
-            SectionCard(title: "Preview only (debug builds)") {
-                Toggle("Show the \u{201C}Remote session active\u{201D} banner", isOn: $model.previewSessionBanner)
-                Text("Renders the banner state. There is no real session \u{2014} the transport is a stub until Phase 3.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            #endif
         }
     }
 }

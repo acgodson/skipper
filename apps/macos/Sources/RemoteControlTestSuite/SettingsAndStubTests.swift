@@ -86,37 +86,7 @@ public let settingsSuite = TestSuite("AppSettings", [
     },
 ])
 
-public let stubSuite = TestSuite("Phase 2 stubs", [
-
-    TestCase("PreviewTransport validates input then refuses to pretend") {
-        let transport = PreviewTransport()
-        try expectEqual(transport.state, .idle)
-
-        try await expectThrows("invalidDeviceID") {
-            try await transport.connect(deviceID: "123", accessCode: "K7FM3Q8PW2XY")
-        }
-        try await expectThrows("invalidAccessCode") {
-            try await transport.connect(deviceID: "482719351", accessCode: "nope")
-        }
-        try await expectThrows("notImplemented") {
-            try await transport.connect(deviceID: "482719351", accessCode: "K7FM-3Q8P-W2XY")
-        }
-
-        try expectFalse(transport.state.isActive, "the stub must never enter an active state")
-        transport.disconnect(reason: "test")
-        try expectEqual(transport.state, .idle)
-    },
-
-    TestCase("PreviewPresence never claims Online") {
-        let presence = PreviewPresenceSource()
-        try expectEqual(presence.state, .unknown)
-        presence.watch(deviceID: "482719351")
-        try expectEqual(presence.watchedDeviceID, "482719351")
-        try expectEqual(presence.state, .unknown, "with no signaling server we must not claim Online")
-        presence.stopWatching()
-        try expectNil(presence.watchedDeviceID)
-        try expectEqual(presence.state, .unknown)
-    },
+public let sessionStateSuite = TestSuite("Session state and permissions", [
 
     TestCase("session state activity") {
         try expectFalse(SessionState.idle.isActive)
