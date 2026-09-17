@@ -1,4 +1,4 @@
-pub const VERSION: i32 = 3;
+pub const VERSION: i32 = 4;
 
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 
@@ -10,7 +10,7 @@ pub mod tunable {
     pub const AUTH_TIMEOUT_SEC: i32 = 20;
     pub const NONCE_TTL_SEC: i32 = 20;
     pub const MAX_WATCHES: usize = 8;
-    pub const TURN_CRED_TTL_SEC: i32 = 12 * 60 * 60;
+    pub const TURN_CRED_TTL_SEC: i32 = 2 * 60 * 60;
 }
 
 pub mod msg {
@@ -113,6 +113,37 @@ pub mod bye {
     pub const PEER_AUTH_FAILED: &str = "peer_auth_failed";
     pub const AUTH_FAILED: &str = "auth_failed";
     pub const DECLINED: &str = "declined";
+    pub const DISPLACED: &str = "displaced";
+
+    /// The closed set; the server answers any other reason with `bad_request` and relays nothing.
+    pub const ALL: [&str; 12] = [
+        USER_ENDED,
+        HOST_ENDED,
+        TIMEOUT,
+        FAILED,
+        CODE_REFRESHED,
+        REPLACED,
+        SHUTDOWN,
+        ERROR,
+        PEER_AUTH_FAILED,
+        AUTH_FAILED,
+        DECLINED,
+        DISPLACED,
+    ];
+
+    pub fn is_valid(reason: &str) -> bool {
+        ALL.contains(&reason)
+    }
+}
+
+/// Server-side signaling limits; exceeding one answers `error{rate_limited, retryAfterSec}`.
+pub mod limits {
+    pub const CONNECT_PER_CONTROLLER_PER_MIN: u32 = 6;
+    pub const CONNECT_PER_CONTROLLER_PER_HOUR: u32 = 60;
+    pub const CONNECT_PER_HOST_PER_MIN: u32 = 30;
+    pub const CONNECT_PER_HOST_PER_HOUR: u32 = 300;
+    pub const REGISTERS_PER_SOCKET: u32 = 1;
+    pub const REGISTERS_PER_IP_PER_HOUR: u32 = 20;
 }
 
 pub mod session_state {

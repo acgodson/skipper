@@ -1,6 +1,9 @@
 package protocol
 
 import (
+	"encoding/json"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -28,6 +31,38 @@ func TestByeReasonsAreAClosedSet(t *testing.T) {
 	for _, r := range []string{"", "user", "USER_ENDED", strings.Repeat("A", 70*1024), "declined\n"} {
 		if ValidByeReason(r) {
 			t.Fatalf("%.20q was accepted", r)
+		}
+	}
+}
+
+func TestTheSharedVectorsMatchThisBuild(t *testing.T) {
+	raw, err := os.ReadFile("vectors/vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Version           int      `json:"version"`
+		ByeReasons        []string `json:"byeReasons"`
+		InvalidByeReasons []string `json:"invalidByeReasons"`
+		Cases             []struct {
+			Name  string          `json:"name"`
+			Frame json.RawMessage `json:"frame"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatal(err)
+	}
+	if file.Version != Version || !slices.Equal(file.ByeReasons, ByeReasons) || len(file.InvalidByeReasons) == 0 {
+		t.Fatalf("vector file v%d reasons %v; regenerate with go run ./vectors", file.Version, file.ByeReasons)
+	}
+	for _, r := range file.InvalidByeReasons {
+		if ValidByeReason(r) {
+			t.Fatalf("invalid bye reason %q is accepted", r)
+		}
+	}
+	for _, c := range file.Cases {
+		if _, err := Decode(c.Frame); err != nil {
+			t.Fatalf("%s: %v", c.Name, err)
 		}
 	}
 }

@@ -111,3 +111,8 @@ impl Envelope {
 pub fn valid_device_id(s: &str) -> bool {
     s.len() == 9 && s.bytes().all(|b| b.is_ascii_digit())
 }
+
+/// Exactly 32 lowercase hex characters, as the server mints them.
+pub fn valid_session_id(s: &str) -> bool {
+    s.len() == 32 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}

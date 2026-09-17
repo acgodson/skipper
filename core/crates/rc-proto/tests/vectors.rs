@@ -5,6 +5,10 @@ use serde_json::Value;
 #[derive(serde::Deserialize)]
 struct VectorFile {
     version: i32,
+    #[serde(rename = "byeReasons", default)]
+    bye_reasons: Vec<String>,
+    #[serde(rename = "invalidByeReasons", default)]
+    invalid_bye_reasons: Vec<String>,
     cases: Vec<Case>,
 }
 
@@ -177,6 +181,67 @@ fn every_go_vector_round_trips_through_the_rust_types() {
     ] {
         assert!(seen_types.contains(t), "vectors do not cover {t}");
     }
+}
+
+#[test]
+fn bye_reasons_are_the_same_closed_set_as_go() {
+    let file: VectorFile = serde_json::from_str(VECTORS).unwrap();
+    let go: Vec<&str> = file.bye_reasons.iter().map(String::as_str).collect();
+    assert_eq!(go, rc_proto::consts::bye::ALL.to_vec());
+    assert!(!file.invalid_bye_reasons.is_empty());
+    for reason in &file.invalid_bye_reasons {
+        assert!(
+            !rc_proto::consts::bye::is_valid(reason),
+            "{reason:?} must be refused"
+        );
+    }
+    for case in &file.cases {
+        if case.msg_type == rc_proto::consts::msg::BYE {
+            let bye: sig::Bye = serde_json::from_value(case.frame["payload"].clone()).unwrap();
+            assert!(
+                rc_proto::consts::bye::is_valid(&bye.reason),
+                "{}",
+                case.name
+            );
+            assert!(rc_proto::valid_session_id(&bye.session_id), "{}", case.name);
+        }
+    }
+}
+
+#[test]
+fn session_ids_are_32_lowercase_hex() {
+    assert!(rc_proto::valid_session_id("8c7f1a2b3c4d5e6f708192a3b4c5d6e7"));
+    for bad in [
+        "",
+        "8C7F1A2B3C4D5E6F708192A3B4C5D6E7",
+        "8c7f1a2b3c4d5e6f708192a3b4c5d6e",
+        "8c7f1a2b3c4d5e6f708192a3b4c5|d6e",
+    ] {
+        assert!(!rc_proto::valid_session_id(bad), "{bad:?}");
+    }
+}
+
+#[test]
+fn v4_session_messages_carry_session_scoped_ice_servers() {
+    let file: VectorFile = serde_json::from_str(VECTORS).unwrap();
+    let find = |name: &str| {
+        let case = file.cases.iter().find(|c| c.name == name).unwrap();
+        Envelope::decode(&serde_json::to_vec(&case.frame).unwrap()).unwrap()
+    };
+    let ok: sig::ConnectOk = find("connect_ok_with_ice_servers").payload_as().unwrap();
+    let turn = ok.ice_servers.iter().find(|s| !s.credential.is_empty()).unwrap();
+    assert!(turn.username.ends_with(&format!(":{}", ok.session_id)));
+    let start: sig::SessionStart = find("session_start").payload_as().unwrap();
+    assert_eq!(start.session.ice_servers, ok.ice_servers);
+    let renew: sig::RenewOk = find("renew_ok").payload_as().unwrap();
+    assert!(!renew.ice_servers.is_empty());
+    let hello: sig::HelloOk = find("hello_ok_with_active_session").payload_as().unwrap();
+    assert!(hello.ice_servers.iter().all(|s| s.credential.is_empty()));
+    assert!(!hello.id_cert.is_empty());
+    let registered: sig::RegisterOk = find("register_ok_existing").payload_as().unwrap();
+    assert!(!registered.id_cert.is_empty());
+    let register: sig::Register = find("register_with_id_cert").payload_as().unwrap();
+    assert!(!register.id_cert.is_empty() && !register.preferred_device_id.is_empty());
 }
 
 #[test]
