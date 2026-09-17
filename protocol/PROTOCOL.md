@@ -783,6 +783,7 @@ Nothing else may be sent on `hi`.
 | `forbidden` | Operation not allowed for this role (e.g. `refresh_code` for another device). | Bug. |
 | `entitlement` | *v2.* The host's account may not open a session. `reason` is one of `unlinked`, `trial_expired`, `no_balance`, `concurrency`, `suspended` — the same set as API.md §4.3. | Render the reason; re-fetch `GET /v1/entitlement` once. Do not retry until the user acts. |
 | `internal` | Server fault. | Retry with backoff. |
+| `unavailable` | *v2.* A backend the server depends on (the device registry) is unreachable, so `register`, `hello`, `refresh_code` or `connect_req` cannot be answered safely. `retryAfterSec` is set. The server never falls back to minting or trusting an id on its own. | Back off `retryAfterSec`, then reconnect normally. Not the user's fault; show "temporarily unavailable". |
 
 ## 8. Server-side privacy guarantees (normative)
 

@@ -90,6 +90,7 @@ pub mod err {
     pub const FORBIDDEN: &str = "forbidden";
     pub const ENTITLEMENT: &str = "entitlement";
     pub const INTERNAL: &str = "internal";
+    pub const UNAVAILABLE: &str = "unavailable";
 }
 
 pub mod entitlement {

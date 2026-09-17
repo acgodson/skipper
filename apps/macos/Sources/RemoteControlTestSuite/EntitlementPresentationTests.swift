@@ -77,6 +77,13 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
             "old wording")
     },
 
+    TestCase("unavailable never blames the user or leaks the server's wording") {
+        try expectEqual(
+            EntitlementPresentation.connectFailureSentence(
+                code: "unavailable", reason: nil, retryAfterSec: 5, fallback: "registry timeout"),
+            EntitlementPresentation.unavailableSentence)
+    },
+
     TestCase("entitlement delegates to the reason mapping") {
         try expectEqual(
             EntitlementPresentation.connectFailureSentence(

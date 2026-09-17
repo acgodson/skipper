@@ -63,6 +63,8 @@ public enum EntitlementPresentation {
         return "Too many attempts. Try again in \(minutes) min."
     }
 
+    public static let unavailableSentence = "SkipperDesk is temporarily unavailable. Try again in a moment."
+
     public static func connectFailureSentence(
         code: String,
         reason: String?,
@@ -74,6 +76,7 @@ public enum EntitlementPresentation {
         case "auth_failed": return wrongCodeSentence
         case "entitlement": return entitlementSentence(reason: reason, fallback: fallback)
         case "rate_limited": return retryAfterSec.map(rateLimitedSentence) ?? fallback
+        case Wire.ErrorCode.unavailable: return unavailableSentence
         default: return fallback
         }
     }

@@ -1240,7 +1240,7 @@ func TestRegistryOutageAnswersUnavailableAndNeverMintsAnID(t *testing.T) {
 		t.Fatal("register succeeded while the registry was down")
 	}
 	e := fresh.lastErr()
-	if e.Code != protocol.APIErrUnavailable || e.RetryAfterSec <= 0 {
+	if e.Code != protocol.ErrUnavailable || e.RetryAfterSec <= 0 {
 		t.Fatalf("register during an outage: error = %+v, want unavailable with retryAfterSec", e)
 	}
 	if _, err := hn.store.GetByPubkey(fresh.pubB64); err == nil {
@@ -1253,7 +1253,7 @@ func TestRegistryOutageAnswersUnavailableAndNeverMintsAnID(t *testing.T) {
 	if known.has(protocol.TypeHelloOK) {
 		t.Fatal("hello succeeded while the registry was down")
 	}
-	if got := known.lastErr().Code; got != protocol.APIErrUnavailable {
+	if got := known.lastErr().Code; got != protocol.ErrUnavailable {
 		t.Fatalf("hello during an outage: error = %q, want unavailable", got)
 	}
 
@@ -1262,7 +1262,7 @@ func TestRegistryOutageAnswersUnavailableAndNeverMintsAnID(t *testing.T) {
 	known.reset()
 	hn.reg.setDown(true)
 	known.send(protocol.TypeRefreshCode, map[string]any{})
-	if got := known.lastErr().Code; got != protocol.APIErrUnavailable {
+	if got := known.lastErr().Code; got != protocol.ErrUnavailable {
 		t.Fatalf("refresh_code during an outage: error = %q, want unavailable", got)
 	}
 }

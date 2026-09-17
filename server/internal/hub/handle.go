@@ -122,7 +122,7 @@ const RegistryRetryAfterSec = 5
 func (h *Hub) sendRegistryErrLocked(c *Client, re, what string, err error) {
 	if errors.Is(err, registry.ErrUnavailable) {
 		h.log.Error(what+" failed: device registry unavailable", "err", err)
-		h.sendErrLocked(c, re, protocol.APIErrUnavailable,
+		h.sendErrLocked(c, re, protocol.ErrUnavailable,
 			"the device registry is unavailable; retry shortly", RegistryRetryAfterSec)
 		return
 	}

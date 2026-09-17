@@ -90,6 +90,7 @@ const (
 	ErrForbidden          = "forbidden"
 	ErrEntitlement        = "entitlement"
 	ErrInternal           = "internal"
+	ErrUnavailable        = "unavailable"
 )
 
 const (

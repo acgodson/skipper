@@ -54,6 +54,7 @@ public enum Wire {
         public static let forbidden = "forbidden"
         public static let entitlement = "entitlement"
         public static let internalError = "internal"
+        public static let unavailable = "unavailable"
     }
 
     public enum ByeReason {
