@@ -74,10 +74,9 @@ public final class AccountLinker: ObservableObject {
 
     nonisolated public static func defaultWebBaseURL(
         apiBaseURL: URL = RCConfig.current.apiBaseURL,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        overrides: BackendOverrides = .fromEnvironment()
     ) -> URL {
-        if let override = environment["SKIPPER_WEB_BASE_URL"]?.trimmingCharacters(in: .whitespaces).nilIfEmpty,
-           let url = URL(string: override) {
+        if let url = overrides.webBaseURL {
             return url
         }
         guard var parts = URLComponents(url: apiBaseURL, resolvingAgainstBaseURL: false),

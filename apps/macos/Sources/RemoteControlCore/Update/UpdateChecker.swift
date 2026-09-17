@@ -60,6 +60,9 @@ public enum UpdateStatus: Equatable {
     case downloading(version: String)
     case ready(StagedUpdate)
     case unavailable
+    case needsReinstall
+
+    public static let reinstallSentence = "SkipperDesk could not finish updating. Reinstall from skipperdesk.app."
 
     public var sentence: String? {
         switch self {
@@ -70,6 +73,7 @@ public enum UpdateStatus: Equatable {
         case .downloading(let version): return "Downloading SkipperDesk \(version)\u{2026}"
         case .ready(let staged): return "SkipperDesk \(staged.version) is ready. Restart to update."
         case .unavailable: return "Could not check for updates. SkipperDesk will try again later."
+        case .needsReinstall: return Self.reinstallSentence
         }
     }
 
@@ -158,7 +162,7 @@ public final class UpdateChecker: ObservableObject {
     }
 
     private func check() async {
-        guard let installer, !status.isBusy, status.staged == nil else { return }
+        guard let installer, !status.isBusy, status.staged == nil, status != .needsReinstall else { return }
         status = .checking
         let release: AppRelease?
         do {
@@ -207,6 +211,10 @@ public final class UpdateChecker: ObservableObject {
             status = .idle
             RCLog.info("update: installed \(staged.version)")
             if relaunch { installer.relaunch() }
+        } catch UpdateRefusal.installIncomplete(let why) {
+            refusedBuilds.insert(staged.build)
+            status = .needsReinstall
+            RCLog.error("update: install of \(staged.version) could not be finished or undone: \(why)")
         } catch {
             refusedBuilds.insert(staged.build)
             status = .upToDate

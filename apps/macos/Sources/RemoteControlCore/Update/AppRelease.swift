@@ -87,6 +87,9 @@ public enum UpdateRefusal: Error, Equatable, CustomStringConvertible {
     case exceedsSizeCap(Int64)
     case unsafeWorkDirectory(String)
     case installedCopyRejected(String)
+    case announcedMismatch(field: String, announced: String, sealed: String)
+    case sharedStagingFile(String)
+    case installIncomplete(String)
 
     public var description: String {
         switch self {
@@ -108,6 +111,10 @@ public enum UpdateRefusal: Error, Equatable, CustomStringConvertible {
         case .exceedsSizeCap(let size): return "announced size \(size) exceeds the \(UpdateTrust.maximumDownloadBytes)-byte cap"
         case .unsafeWorkDirectory(let path): return "update work directory is not private: \(path)"
         case .installedCopyRejected(let why): return "installed copy failed re-verification and was rolled back: \(why)"
+        case .announcedMismatch(let field, let announced, let sealed):
+            return "sealed \(field) \(sealed) differs from the announced \(announced)"
+        case .sharedStagingFile(let path): return "staged file is hard-linked elsewhere or changed while it was checked: \(path)"
+        case .installIncomplete(let why): return "update could not be finished or undone: \(why)"
         }
     }
 }

@@ -14,6 +14,39 @@ cd "$(dirname "$0")/.."
 fail=0
 report() { echo "  FAIL  $1"; fail=1; }
 
+compiled_in_byte() {
+  local bin="$1" thin="$1" scratch="" arch line address segment section
+  arch=$(lipo -archs "$bin" 2>/dev/null | awk '{print $1}')
+  if [[ $(lipo -archs "$bin" 2>/dev/null | wc -w) -gt 1 ]]; then
+    scratch=$(mktemp -d)
+    thin="$scratch/thin"
+    lipo -thin "$arch" -output "$thin" "$bin" || { rm -rf "$scratch"; return; }
+  fi
+  line=$(nm -m "$thin" 2>/dev/null | grep -E ' _\$s17RemoteControlCore16DevelopmentHooksO13areCompiledInSbvpZ$' | head -1)
+  address=$(awk '{print $1}' <<<"$line")
+  segment=$(sed -nE 's/.*\(([^,]+),([^)]+)\).*/\1/p' <<<"$line")
+  section=$(sed -nE 's/.*\(([^,]+),([^)]+)\).*/\2/p' <<<"$line")
+  if [[ -n "$address" && ( "$section" == "__bss" || "$section" == "__common" ) ]]; then
+    echo 00
+  elif [[ -n "$address" ]]; then
+    local symbol=$((16#$address)) name owner start size offset
+    while read -r name owner start size offset; do
+      [[ "$name" == "$section" && "$owner" == "$segment" ]] || continue
+      if (( symbol >= start && symbol < start + size )); then
+        xxd -s "$((offset + symbol - start))" -l 1 -p "$thin"
+        break
+      fi
+    done < <(otool -l "$thin" | awk '
+      $1 == "sectname" { name = $2 }
+      $1 == "segname" { owner = $2 }
+      $1 == "addr" { start = $2 }
+      $1 == "size" { size = $2 }
+      $1 == "offset" && name != "" { print name, owner, start, size, $2; name = "" }' \
+      | while read -r n o a s f; do echo "$n $o $((a)) $((s)) $f"; done)
+  fi
+  if [[ -n "$scratch" ]]; then rm -rf "$scratch"; fi
+}
+
 echo "== 1. Forbidden browser/automation/proxy APIs in source"
 # Word-boundary matched, comment lines excluded, so prose in docs cannot trip it.
 FORBIDDEN='WKWebView|WKUserScript|JavaScriptCore|JSContext|puppeteer|playwright|selenium|chromedriver|DevToolsProtocol|CDPSession|SOCKSEnable|HTTPProxy|HTTPSProxy|kCFNetworkProxies|kSCPropNetProxies|NEVPNManager|NETunnelProvider|NEProxyProvider|NEDNSProxyProvider|NEPacketTunnelProvider|SFSafariExtension|getDisplayMedia'
@@ -96,14 +129,55 @@ if [[ -n "$BIN" ]]; then
       echo "  ok    no development hook reader symbol (DevelopmentHooks.environmentValue / variableName)"
     fi
   fi
-  HOOK_VARS='RC_IDENTITY_DIR|RC_DUMP_FRAME|RC_INPUT_SELFTEST|RC_CAPTURE_SOURCE|RC_SYNTHETIC_SIZE|RC_PASTEBOARD_NAME|RC_SETTINGS_SUITE|RC_AUTOLINK|RC_AUTOCONNECT|RC_LOG_FILE'
-  present=$(strings -a "$BIN" | grep -oE "$HOOK_VARS" | sort -u || true)
+  flag=$(compiled_in_byte "$BIN")
+  case "$flag" in
+    00) echo "  ok    DevelopmentHooks.areCompiledIn is stored as false" ;;
+    "") report "could not locate the DevelopmentHooks.areCompiledIn storage byte" ;;
+    *) report "DevelopmentHooks.areCompiledIn is stored as 0x$flag, not false" ;;
+  esac
+  HOOK_VARS='RC_IDENTITY_DIR|SKIPPER_DEV_FILE_IDENTITY|RC_DUMP_FRAME|RC_INPUT_SELFTEST|RC_CAPTURE_SOURCE|RC_SYNTHETIC_SIZE|RC_PASTEBOARD_NAME|RC_SETTINGS_SUITE|RC_AUTOLINK|RC_AUTOCONNECT|RC_LOG_FILE|RC_DEVICE_LABEL|RC_HANDSHAKE_TIMEOUT|RC_REQUEST_TIMEOUT|RC_HEARTBEAT_SEC|RC_BACKOFF_MIN|RC_BACKOFF_MAX|RC_ICE_RESTART_DELAY|RC_ICE_FAILURE_GRACE|RC_ICE_POLICY'
+  present=$(strings -a "$BIN" | grep -xE "$HOOK_VARS" | sort -u || true)
   if [[ -n "$present" ]]; then
     echo "$present" | sed 's/^/        /'
     report "the binary still names the development variables above"
   else
-    echo "  ok    no development variable name longer than the inline-string limit is present"
+    echo "  ok    no development variable name longer than the inline-string limit is present as a string of its own"
   fi
+fi
+
+echo "== 3d. Only the configuration files read the process environment"
+SHIPPED_SWIFT=(apps/macos/Sources/RemoteControl apps/macos/Sources/RemoteControlCore apps/macos/Sources/SkipperCore apps/macos/Sources/SkipperDesign)
+CONFIG_SWIFT=apps/macos/Sources/RemoteControlCore/Config/Config.swift
+HOOKS_SWIFT=apps/macos/Sources/RemoteControlCore/Config/DevelopmentHooks.swift
+ENV_READ='processInfo\.environment|\b(get|set|unset|put)env\b'
+strangers=$(grep -rnE "$ENV_READ" "${SHIPPED_SWIFT[@]}" --include='*.swift' | grep -vE "^($CONFIG_SWIFT|$HOOKS_SWIFT):" || true)
+if [[ -n "$strangers" ]]; then
+  echo "$strangers" | sed 's/^/        /'
+  report "shipped Swift outside Config.swift and DevelopmentHooks.swift touches the environment"
+else
+  echo "  ok    no other shipped Swift file reads or writes the environment"
+fi
+config_reads=$(grep -nE "$ENV_READ" "$CONFIG_SWIFT" \
+  | grep -vE '^[0-9]+:[[:space:]]*values\[(apiVariable|webVariable)\] = ProcessInfo\.processInfo\.environment\[\1\]$' || true)
+if [[ -n "$config_reads" ]] \
+  || ! grep -qE '^[[:space:]]*public static let apiVariable = "SKIPPER_API_BASE_URL"$' "$CONFIG_SWIFT" \
+  || ! grep -qE '^[[:space:]]*public static let webVariable = "SKIPPER_WEB_BASE_URL"$' "$CONFIG_SWIFT"; then
+  echo "$config_reads" | sed 's/^/        /'
+  report "Config.swift reads something other than SKIPPER_API_BASE_URL and SKIPPER_WEB_BASE_URL"
+else
+  echo "  ok    Config.swift reads only SKIPPER_API_BASE_URL and SKIPPER_WEB_BASE_URL"
+fi
+hooks_reads=$(awk -v pattern="$ENV_READ" '
+  /^#if DEBUG \|\| SKIPPER_TEST_HOOKS$/ { gated = 1; next }
+  /^#else$/ { gated = 0; next }
+  /^#endif$/ { gated = 0; next }
+  !gated && $0 ~ /processInfo\.environment|(get|set|unset|put)env/ { print NR ": " $0 }
+' "$HOOKS_SWIFT" | grep -vE '^[0-9]+: +public static let diagnosticsRequested = ProcessInfo\.processInfo\.environment\["RC_DEBUG"\] == "1"$' || true)
+if [[ -n "$hooks_reads" ]]; then
+  echo "$hooks_reads" | sed 's/^/        /'
+  report "DevelopmentHooks.swift reads the environment outside the development-only block"
+else
+  echo "  ok    DevelopmentHooks.swift reads only RC_DEBUG outside the development-only block"
 fi
 
 echo "== 4. WebRTC must be the NATIVE xcframework, never a webview's RTCPeerConnection"

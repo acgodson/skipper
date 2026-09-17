@@ -228,12 +228,19 @@ public enum UpdateVerifier {
         try checkNotarized(code, requirement: UpdateTrust.notarizationRequirement)
     }
 
-    static func identity(fromInfo info: [String: Any], newerThan floor: BuildNumber) throws -> (version: String, build: BuildNumber) {
+    static func identity(fromInfo info: [String: Any], newerThan floor: BuildNumber?) throws -> (version: String, build: BuildNumber) {
         let identifier = info["CFBundleIdentifier"] as? String
         guard identifier == UpdateTrust.bundleIdentifier else {
             throw UpdateRefusal.wrongBundleIdentifier(identifier)
         }
-        let build = try UpdateTrust.requireNewer(candidate: info["CFBundleVersion"] as? String, running: floor)
+        let raw = info["CFBundleVersion"] as? String
+        let build: BuildNumber
+        if let floor {
+            build = try UpdateTrust.requireNewer(candidate: raw, running: floor)
+        } else {
+            guard let parsed = raw.flatMap(BuildNumber.init) else { throw UpdateRefusal.malformedRelease("CFBundleVersion") }
+            build = parsed
+        }
         return ((info["CFBundleShortVersionString"] as? String) ?? build.description, build)
     }
 
@@ -265,7 +272,7 @@ public enum UpdateVerifier {
     }
 
     private static func check(
-        _ code: SecStaticCode, policy: UpdateSignaturePolicy, newerThan floor: BuildNumber
+        _ code: SecStaticCode, policy: UpdateSignaturePolicy, newerThan floor: BuildNumber?
     ) throws -> (version: String, build: BuildNumber) {
         try checkPublisher(code, requirement: policy.publisher)
         if let notarization = policy.notarization {
@@ -278,6 +285,29 @@ public enum UpdateVerifier {
         let code = try staticCode(at: app)
         let identity = try check(code, policy: policy, newerThan: floor)
         return SealedBundle(url: app, version: identity.version, build: identity.build, code: code)
+    }
+
+    public static func sealPrevious(appAt app: URL, policy: UpdateSignaturePolicy) throws -> SealedBundle {
+        let code = try staticCode(at: app)
+        let identity = try check(code, policy: policy, newerThan: nil)
+        return SealedBundle(url: app, version: identity.version, build: identity.build, code: code)
+    }
+
+    public static func requireAnnounced(_ sealed: SealedBundle, by release: AppRelease) throws {
+        guard let announced = BuildNumber(release.build), announced.canonicalKey == sealed.build.canonicalKey else {
+            throw UpdateRefusal.announcedMismatch(field: "build", announced: release.build, sealed: sealed.build.description)
+        }
+        guard sealed.version == release.version else {
+            throw UpdateRefusal.announcedMismatch(field: "version", announced: release.version, sealed: sealed.version)
+        }
+    }
+
+    public static func requireSameRelease(_ copy: SealedBundle, as staged: SealedBundle) throws {
+        guard copy.build.canonicalKey == staged.build.canonicalKey, copy.version == staged.version else {
+            throw UpdateRefusal.announcedMismatch(
+                field: "staged copy", announced: "\(staged.version) (\(staged.build))",
+                sealed: "\(copy.version) (\(copy.build))")
+        }
     }
 
     public static func recheck(_ sealed: SealedBundle, policy: UpdateSignaturePolicy, newerThan floor: BuildNumber) throws {

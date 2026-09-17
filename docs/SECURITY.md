@@ -102,7 +102,11 @@ gate, not just a style check.
 A handful of environment variables exist only so scripts can drive the app:
 `RC_IDENTITY_DIR`, `SKIPPER_DEV_FILE_IDENTITY`, `RC_DUMP_FRAME`, `RC_INPUT_SELFTEST`,
 `RC_CAPTURE_SOURCE`, `RC_SYNTHETIC_SIZE`, `RC_PASTEBOARD_NAME`, `RC_SETTINGS_SUITE`,
-`RC_AUTOLINK`, `RC_AUTOCONNECT` and `RC_LOG_FILE`. Every read of them goes through
+`RC_AUTOLINK`, `RC_AUTOCONNECT` and `RC_LOG_FILE`. The connection tuning knobs are
+development-only too: `RC_DEVICE_LABEL`, `RC_HANDSHAKE_TIMEOUT`, `RC_REQUEST_TIMEOUT`,
+`RC_HEARTBEAT_SEC`, `RC_RENEW_SEC`, `RC_BACKOFF_MIN`, `RC_BACKOFF_MAX`,
+`RC_ICE_RESTART_DELAY`, `RC_ICE_FAILURE_GRACE` and `RC_ICE_POLICY`. A release build uses
+the constants in `RCConfig` and the Mac's own name. Every read of them goes through
 `DevelopmentHooks`, whose environment reader (`DevelopmentHooks.environmentValue` and
 `DevelopmentHooks.variableName`) is compiled only under `#if DEBUG || SKIPPER_TEST_HOOKS`.
 A release build of SkipperDesk.app does not contain the code that reads them, so no
@@ -111,9 +115,18 @@ runtime flag, bundle check or environment value can switch them back on.
 `check-isolation.sh` proves this on the artefact. Swift stores strings of 15 bytes or
 fewer inside the code, where `strings` cannot find them, so the gate does not rely on
 variable names. It fails when the binary's symbol table contains either reader symbol,
-or when the symbol table is missing (a stripped binary cannot be checked). It also still
-fails on any longer hook name that `strings` can see, and on the `SkipperTestHooks`
-Info.plist marker. The script checks exactly the path it is given
+or when the symbol table is missing (a stripped binary cannot be checked). It reads the
+stored byte of `DevelopmentHooks.areCompiledIn` from the binary and fails unless it is
+0. It also still fails on any longer hook name that `strings` finds as a string of its
+own, and on the `SkipperTestHooks` Info.plist marker.
+
+The gate also checks the source. It fails if any Swift file that ships in the app
+(`RemoteControl`, `RemoteControlCore`, `SkipperCore`, `SkipperDesign`) other than
+`Config/Config.swift` and `Config/DevelopmentHooks.swift` reads
+`ProcessInfo.processInfo.environment` or calls `getenv`, `setenv`, `unsetenv` or
+`putenv`. `Config.swift` may read exactly `SKIPPER_API_BASE_URL` and
+`SKIPPER_WEB_BASE_URL`, and `DevelopmentHooks.swift` may read only `RC_DEBUG` outside its
+`#if DEBUG || SKIPPER_TEST_HOOKS` block. The script checks exactly the path it is given
 (`check-isolation.sh path/to/SkipperDesk.app`) and fails if nothing is there. With no
 path, it checks `dist/SkipperDesk.app`.
 
@@ -121,6 +134,10 @@ path, it checks `dist/SkipperDesk.app`.
 on-device `scripts/verify-*.sh` checks need `./scripts/build.sh --test-hooks`, which
 defines `SKIPPER_TEST_HOOKS` and marks the bundle `SkipperTestHooks`. `check-isolation.sh`
 refuses that bundle, and such a build never updates itself (see Updates).
+
+Release builds read exactly three environment variables: `SKIPPER_API_BASE_URL`,
+`SKIPPER_WEB_BASE_URL` and `RC_DEBUG`. `RC_DEBUG` is the only switch among them, and it
+only raises log and diagnostic verbosity.
 
 `RC_DEBUG=1` is not a hook and stays available in release, because the product rule is
 "diagnostics hidden unless `RC_DEBUG`". In release it does two things only: it shows the
@@ -190,8 +207,9 @@ only if every check below passes:
 2. **Publisher.** The `SkipperDesk.app` inside the image is copied into a fresh
    directory that the app creates with mode 0700 under
    `~/Library/Application Support/app.skipperdesk.desktop/Updates/`. The app refuses
-   the directory if it, or its parent, is a symlink, belongs to another user, or (for
-   `Updates` and the fresh directory) is readable or writable by anyone else. The copy
+   the directory if it, or its parent, is a symlink or belongs to another user. The
+   `app.skipperdesk.desktop` parent must not be writable by group or others, and
+   `Updates` and the fresh directory must not be readable or writable by anyone else. The copy
    is opened once with `SecStaticCodeCreateWithPath`, and the app keeps that code
    object. It is checked with `SecStaticCodeCheckValidity` (strict validation, all
    architectures, nested code, no symlinks that escape the bundle) against:
@@ -210,19 +228,74 @@ only if every check below passes:
    The build must be strictly greater than both the running build and the build of
    the copy currently at the install location, so a newer copy the user installed
    by hand is never replaced by an older one.
+5. **The announced release.** The sealed build must equal the feed's `build`
+   (compared by numeric value, so `4` and `4.0` match) and the sealed
+   `CFBundleShortVersionString` must equal the feed's `version` exactly. A validly
+   signed older-but-still-newer build cannot be served under another release's
+   announcement.
+
+### Installing
 
 The app never checks a path and then acts on a path that someone else can change.
-Right before the swap, it checks the kept code object again. It then swaps with
-`FileManager.replaceItemAt` and keeps a hidden backup of the previous app next to it.
-After the swap, it opens the bundle **now at the install location** and runs checks 2
-to 4 on it again, and the build must equal the staged build. If any of that fails, the
-app restores the backup, deletes the staged copy, and logs the reason. The check after
-the swap is the one that matters: in a 1,000-iteration race where another process kept
-swapping the staged bundle with an unsigned one, the check before the swap never
-caught the switch (the code object had already cached the signature). The check after
-the swap caught all 481 switched installs and rolled them back, and no unverified
-bundle was ever left installed. The same race against the old flow, which checked a
-path and then swapped it, left an unsigned bundle installed.
+
+1. Right before the swap, it checks the kept code object again.
+2. It walks the staged bundle and refuses it if any regular file has a second hard
+   link, or if any entry disappears during the walk.
+3. It clones the staged bundle with `clonefile(2)` (a plain `copyfile` when the volume
+   cannot clone) into a **new** 0700 directory under `Updates`. The clone has new
+   inodes, so write handles or hard links held on the staged files cannot reach it.
+   It opens the clone as a new code object and runs checks 2 to 4 on it again, and
+   the clone's build and version must equal the staged ones.
+4. It exchanges the clone and the installed app in one `renamex_np(RENAME_SWAP)`
+   call. The previous app lands at the clone's old path, inside the private
+   directory, and never appears next to the app in `/Applications`. Only when the two
+   are on different volumes does it fall back to `FileManager.replaceItemAt`; it
+   then moves the hidden backup out of the install folder into the private directory
+   straight away.
+5. It opens the bundle **now at the install location** and runs checks 2 to 4 on it
+   again. Its build and version must equal the verified clone's.
+
+If step 5 fails, the app rolls back, but only to a previous app it has verified:
+the backup in the private directory must pass the publisher and notarization checks
+and be SkipperDesk (no newer-build rule, since it is the older copy). Only then are
+the two exchanged again, and the restored app is checked once more. If the backup
+fails that check, or any step of the rollback fails, the app **deletes nothing**. It
+leaves whatever is at the install location, keeps the backup in its private
+directory, stops checking for updates for this run, and shows "SkipperDesk could not
+finish updating. Reinstall from skipperdesk.app."
+
+The review race harness (`review3/client-upd`) measured this against a process that
+kept swapping the staged bundle with an unsigned one, and another that kept swapping
+any `.SkipperDesk.app.previous-*` item next to the app with an attacker bundle:
+
+| Run | Iterations | Verified installs | Refused before the swap | Unverified bundle installed | Install path deleted |
+| --- | --- | --- | --- | --- | --- |
+| staged-bundle swap (`race3`) | 400 | 363 | 37 | 0 | 0 |
+| staged swap + backup swap (`variants rollback`) | 400 | 250 | 150 | 0 | 0 |
+| held fd + hard link (`variants fdwrite`) | 50 | 0 | 50 | 0 tampered | 0 |
+
+The previous flow left the attacker's bundle installed by rollback in 9 to 13 of 400
+runs, and deleted the app folder in 141 to 168 of 400.
+
+### What another process running as the same user can still do
+
+The updater protects the install from tampering **in flight**. It is not a boundary
+against malware that already runs as the same user:
+
+- It **cannot** get an unverified bundle installed by swapping, hard-linking or
+  writing the staged copy or the backup: the swap uses a fresh clone, and a rollback
+  only restores a backup that passes the publisher check.
+- It **cannot** make the updater delete the installed app.
+- It **can** write to its own clone-to-be between step 3 and step 4 by finding the
+  new directory, or modify `/Applications/SkipperDesk.app` after the install, or
+  before any update ever runs, because the user owns those files. Nothing in the
+  updater can stop that; Gatekeeper and the code signature at launch are the checks
+  that apply.
+- It **can** make an update fail repeatedly, which only leaves the current version
+  installed or shows the reinstall message.
+
+TODO: verify App Management protection on a notarized build (macOS 13+ may block
+same-user writes into a notarized app bundle, which would close the last two points).
 
 If any check fails, the app discards the download and logs the reason. The user sees
 nothing alarming. The app does not retry that build during this run. Builds are

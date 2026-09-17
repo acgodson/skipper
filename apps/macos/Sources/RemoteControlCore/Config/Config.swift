@@ -65,22 +65,33 @@ public struct RCConfig: Equatable {
         return url
     }
 
-    public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) -> RCConfig {
+    public static let tuningHooks: [DevelopmentHook] = [
+        .deviceLabel, .handshakeTimeout, .requestTimeout, .heartbeatInterval, .renewInterval,
+        .backoffMinimum, .backoffMaximum, .iceRestartDelay, .iceFailureGrace, .icePolicy,
+    ]
+
+    public static func processEnvironment() -> [String: String] {
+        BackendOverrides.processEnvironment().merging(DevelopmentHooks.environment(for: tuningHooks)) { backend, _ in backend }
+    }
+
+    public static func fromEnvironment(_ env: [String: String] = processEnvironment()) -> RCConfig {
         let url = BackendOverrides.fromEnvironment(env).apiBaseURL ?? defaultAPIBaseURL
+        let tuning = { (hook: DevelopmentHook) in DevelopmentHooks.value(hook, in: env) }
+        let seconds = { (hook: DevelopmentHook) in tuning(hook).flatMap(Double.init) }
 
         var config = RCConfig(
             apiBaseURL: url,
-            deviceLabel: env["RC_DEVICE_LABEL"]?.nilIfEmpty ?? Host.current().localizedName ?? "Mac")
+            deviceLabel: tuning(.deviceLabel) ?? Host.current().localizedName ?? "Mac")
 
-        if let v = env["RC_HANDSHAKE_TIMEOUT"].flatMap(Double.init) { config.handshakeTimeout = v }
-        if let v = env["RC_REQUEST_TIMEOUT"].flatMap(Double.init) { config.requestTimeout = v }
-        if let v = env["RC_HEARTBEAT_SEC"].flatMap(Double.init) { config.heartbeatInterval = v }
-        if let v = env["RC_RENEW_SEC"].flatMap(Double.init) { config.renewInterval = v }
-        if let v = env["RC_BACKOFF_MIN"].flatMap(Double.init) { config.backoffMinimum = v }
-        if let v = env["RC_BACKOFF_MAX"].flatMap(Double.init) { config.backoffMaximum = v }
-        if let v = env["RC_ICE_RESTART_DELAY"].flatMap(Double.init) { config.iceRestartDelay = v }
-        if let v = env["RC_ICE_FAILURE_GRACE"].flatMap(Double.init) { config.iceFailureGrace = v }
-        if let policy = env["RC_ICE_POLICY"] { config.forceTURNRelay = (policy == "relay") }
+        if let v = seconds(.handshakeTimeout) { config.handshakeTimeout = v }
+        if let v = seconds(.requestTimeout) { config.requestTimeout = v }
+        if let v = seconds(.heartbeatInterval) { config.heartbeatInterval = v }
+        if let v = seconds(.renewInterval) { config.renewInterval = v }
+        if let v = seconds(.backoffMinimum) { config.backoffMinimum = v }
+        if let v = seconds(.backoffMaximum) { config.backoffMaximum = v }
+        if let v = seconds(.iceRestartDelay) { config.iceRestartDelay = v }
+        if let v = seconds(.iceFailureGrace) { config.iceFailureGrace = v }
+        if let policy = tuning(.icePolicy) { config.forceTURNRelay = (policy == "relay") }
         return config
     }
 
@@ -131,7 +142,6 @@ public enum BackendURLPolicy {
     }
 }
 
-// TODO: AccountLinker.defaultWebBaseURL should read BackendOverrides.fromEnvironment().webBaseURL; until then AppModel validates both variables at launch.
 public struct BackendOverrides: Equatable {
 
     public static let apiVariable = "SKIPPER_API_BASE_URL"
@@ -158,7 +168,14 @@ public struct BackendOverrides: Equatable {
         return .success(BackendOverrides(apiBaseURL: resolved[apiVariable], webBaseURL: resolved[webVariable]))
     }
 
-    public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) -> BackendOverrides {
+    public static func processEnvironment() -> [String: String] {
+        var values: [String: String] = [:]
+        values[apiVariable] = ProcessInfo.processInfo.environment[apiVariable]
+        values[webVariable] = ProcessInfo.processInfo.environment[webVariable]
+        return values
+    }
+
+    public static func fromEnvironment(_ env: [String: String] = processEnvironment()) -> BackendOverrides {
         switch parse(env) {
         case .success(let overrides):
             return overrides

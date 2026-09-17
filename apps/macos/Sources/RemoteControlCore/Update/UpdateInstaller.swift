@@ -52,7 +52,8 @@ public final class UpdateInstaller: @unchecked Sendable {
                 try? fileManager.removeItem(at: mountRoot)
                 try? fileManager.removeItem(at: image)
             }
-            return try stage(appAt: try mounted.bundledApp(), into: work, floor: floor, critical: release.critical)
+            return try stage(appAt: try mounted.bundledApp(), into: work, floor: floor,
+                             critical: release.critical, announced: release)
         } catch {
             try? fileManager.removeItem(at: work)
             throw error
@@ -60,16 +61,18 @@ public final class UpdateInstaller: @unchecked Sendable {
     }
 
 #if DEBUG || SKIPPER_TEST_HOOKS
+    public var afterSwapForTesting: ((URL) -> Void)?
+
     public static func forTesting(
         policy: UpdateSignaturePolicy, runningBuild: BuildNumber, installURL: URL, workRoot: URL
     ) -> UpdateInstaller {
         UpdateInstaller(policy: policy, runningBuild: runningBuild, installURL: installURL, workRoot: workRoot)
     }
 
-    public func stage(appAt source: URL, critical: Bool = false) throws -> StagedUpdate {
+    public func stage(appAt source: URL, critical: Bool = false, announced: AppRelease? = nil) throws -> StagedUpdate {
         let work = try PrivateDirectory.create(under: workRoot)
         do {
-            return try stage(appAt: source, into: work, floor: buildFloor, critical: critical)
+            return try stage(appAt: source, into: work, floor: buildFloor, critical: critical, announced: announced)
         } catch {
             try? fileManager.removeItem(at: work)
             throw error
@@ -77,10 +80,15 @@ public final class UpdateInstaller: @unchecked Sendable {
     }
 #endif
 
-    private func stage(appAt source: URL, into work: URL, floor: BuildNumber, critical: Bool) throws -> StagedUpdate {
+    private func stage(
+        appAt source: URL, into work: URL, floor: BuildNumber, critical: Bool, announced release: AppRelease?
+    ) throws -> StagedUpdate {
         let copy = work.appendingPathComponent(UpdateTrust.appName, isDirectory: true)
         try fileManager.copyItem(at: source, to: copy)
         let sealed = try UpdateVerifier.seal(appAt: copy, policy: policy, newerThan: floor)
+        if let release {
+            try UpdateVerifier.requireAnnounced(sealed, by: release)
+        }
         return StagedUpdate(sealed: sealed, critical: critical)
     }
 
@@ -94,34 +102,68 @@ public final class UpdateInstaller: @unchecked Sendable {
         let floor = buildFloor
         try UpdateVerifier.recheck(staged.sealed, policy: policy, newerThan: floor)
 
-        let backupName = ".\(UpdateTrust.appName).previous-\(UUID().uuidString)"
-        let backup = installURL.deletingLastPathComponent().appendingPathComponent(backupName, isDirectory: true)
+        let fresh = try freshCopy(of: staged.sealed, newerThan: floor)
+        let swapDirectory = fresh.url.deletingLastPathComponent()
+        var keepSwapDirectory = false
+        defer { if !keepSwapDirectory { try? fileManager.removeItem(at: swapDirectory) } }
+
+        let backup = fresh.url
         do {
-            _ = try fileManager.replaceItemAt(
-                installURL, withItemAt: staged.appURL,
-                backupItemName: backupName, options: [.withoutDeletingBackupItem])
-        } catch {
-            throw UpdateRefusal.installFailed(error.localizedDescription)
+            try BundleSwap.exchange(fresh.url, installURL, previousTo: backup)
+        } catch UpdateRefusal.installIncomplete(let why) {
+            keepSwapDirectory = true
+            throw UpdateRefusal.installIncomplete(why)
         }
 
         do {
+            #if DEBUG || SKIPPER_TEST_HOOKS
+            afterSwapForTesting?(installURL)
+            #endif
             let installed = try UpdateVerifier.seal(appAt: installURL, policy: policy, newerThan: floor)
-            guard installed.build == staged.build else {
-                throw UpdateRefusal.notNewer(candidate: installed.build.description, running: staged.build.description)
-            }
+            try UpdateVerifier.requireSameRelease(installed, as: fresh)
         } catch {
-            try rollBack(from: backup)
+            do {
+                try rollBack(from: backup)
+            } catch let incomplete {
+                keepSwapDirectory = true
+                RCLog.error("update: \(incomplete); the previous app is kept at \(backup.path)")
+                throw incomplete
+            }
             throw UpdateRefusal.installedCopyRejected(String(describing: error))
         }
-        try? fileManager.removeItem(at: backup)
+    }
+
+    private func freshCopy(of staged: SealedBundle, newerThan floor: BuildNumber) throws -> SealedBundle {
+        try StagingTree.requireSingleLinks(staged.url)
+        let directory = try PrivateDirectory.create(under: workRoot)
+        do {
+            let copy = directory.appendingPathComponent(UpdateTrust.appName, isDirectory: true)
+            try StagingTree.clone(staged.url, to: copy)
+            try StagingTree.requireSingleLinks(copy)
+            let sealed = try UpdateVerifier.seal(appAt: copy, policy: policy, newerThan: floor)
+            try UpdateVerifier.requireSameRelease(sealed, as: staged)
+            return sealed
+        } catch {
+            try? fileManager.removeItem(at: directory)
+            throw error
+        }
     }
 
     private func rollBack(from backup: URL) throws {
         do {
-            _ = try fileManager.replaceItemAt(installURL, withItemAt: backup)
+            _ = try UpdateVerifier.sealPrevious(appAt: backup, policy: policy)
         } catch {
-            try? fileManager.removeItem(at: installURL)
-            throw UpdateRefusal.installFailed("rollback failed: \(error.localizedDescription)")
+            throw UpdateRefusal.installIncomplete("the previous app failed verification: \(error)")
+        }
+        do {
+            try BundleSwap.exchange(backup, installURL, previousTo: backup)
+        } catch {
+            throw UpdateRefusal.installIncomplete("the previous app could not be restored: \(error)")
+        }
+        do {
+            _ = try UpdateVerifier.sealPrevious(appAt: installURL, policy: policy)
+        } catch {
+            throw UpdateRefusal.installIncomplete("the restored app failed verification: \(error)")
         }
     }
 
@@ -137,30 +179,103 @@ public final class UpdateInstaller: @unchecked Sendable {
     }
 }
 
+enum BundleSwap {
+
+    static func exchange(_ replacement: URL, _ target: URL, previousTo previous: URL) throws {
+        if renamex_np(replacement.path, target.path, UInt32(RENAME_SWAP)) == 0 { return }
+        let failure = errno
+        guard failure == EXDEV || failure == ENOTSUP else {
+            throw UpdateRefusal.installFailed(String(cString: strerror(failure)))
+        }
+        try exchangeAcrossVolumes(replacement, target, previousTo: previous)
+    }
+
+    private static func exchangeAcrossVolumes(_ replacement: URL, _ target: URL, previousTo previous: URL) throws {
+        let fileManager = FileManager.default
+        let backupName = ".\(UpdateTrust.appName).previous-\(UUID().uuidString)"
+        let besideTarget = target.deletingLastPathComponent().appendingPathComponent(backupName, isDirectory: true)
+        let incoming = replacement.deletingLastPathComponent()
+            .appendingPathComponent("incoming-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try fileManager.moveItem(at: replacement, to: incoming)
+            _ = try fileManager.replaceItemAt(
+                target, withItemAt: incoming, backupItemName: backupName, options: [.withoutDeletingBackupItem])
+        } catch {
+            throw UpdateRefusal.installFailed(error.localizedDescription)
+        }
+        do {
+            try fileManager.moveItem(at: besideTarget, to: previous)
+        } catch {
+            throw UpdateRefusal.installIncomplete("could not move \(besideTarget.path) out of the install folder: \(error)")
+        }
+    }
+}
+
+enum StagingTree {
+
+    static func requireSingleLinks(_ root: URL) throws {
+        try requireSingleLink(root.path)
+        guard let walker = FileManager.default.enumerator(atPath: root.path) else {
+            throw UpdateRefusal.sharedStagingFile(root.path)
+        }
+        while let relative = walker.nextObject() as? String {
+            try requireSingleLink(root.appendingPathComponent(relative).path)
+        }
+    }
+
+    private static func requireSingleLink(_ path: String) throws {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { throw UpdateRefusal.sharedStagingFile(path) }
+        if info.st_mode & S_IFMT == S_IFREG, info.st_nlink > 1 {
+            throw UpdateRefusal.sharedStagingFile(path)
+        }
+    }
+
+    static func clone(_ source: URL, to destination: URL) throws {
+        if clonefile(source.path, destination.path, UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY)) == 0 { return }
+        let flags = copyfile_flags_t(COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_NOFOLLOW)
+        guard copyfile(source.path, destination.path, nil, flags) == 0 else {
+            throw UpdateRefusal.installFailed("could not copy the verified bundle: \(String(cString: strerror(errno)))")
+        }
+    }
+}
+
 enum PrivateDirectory {
 
+    enum Access {
+        case notShared
+        case ownerOnly
+
+        var forbiddenBits: mode_t {
+            switch self {
+            case .notShared: return 0o022
+            case .ownerOnly: return 0o077
+            }
+        }
+    }
+
     static func create(under root: URL) throws -> URL {
-        try ensureOwned(root.deletingLastPathComponent(), requirePrivate: false)
-        try ensureOwned(root, requirePrivate: true)
+        try ensureOwned(root.deletingLastPathComponent(), access: .notShared)
+        try ensureOwned(root, access: .ownerOnly)
         let directory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         guard mkdir(directory.path, 0o700) == 0 else { throw UpdateRefusal.unsafeWorkDirectory(directory.path) }
-        try requireOwned(directory, requirePrivate: true)
+        try requireOwned(directory, access: .ownerOnly)
         return directory
     }
 
-    private static func ensureOwned(_ directory: URL, requirePrivate: Bool) throws {
+    private static func ensureOwned(_ directory: URL, access: Access) throws {
         if mkdir(directory.path, 0o700) != 0, errno != EEXIST {
             throw UpdateRefusal.unsafeWorkDirectory(directory.path)
         }
-        try requireOwned(directory, requirePrivate: requirePrivate)
+        try requireOwned(directory, access: access)
     }
 
-    private static func requireOwned(_ directory: URL, requirePrivate: Bool) throws {
+    private static func requireOwned(_ directory: URL, access: Access) throws {
         var info = stat()
         guard lstat(directory.path, &info) == 0,
               info.st_mode & S_IFMT == S_IFDIR,
               info.st_uid == getuid(),
-              !requirePrivate || info.st_mode & 0o077 == 0
+              info.st_mode & access.forbiddenBits == 0
         else { throw UpdateRefusal.unsafeWorkDirectory(directory.path) }
     }
 }
