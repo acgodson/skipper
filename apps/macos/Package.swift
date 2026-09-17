@@ -44,8 +44,14 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "RemoteControl",
-            dependencies: ["RemoteControlCore", "SkipperCore"],
+            dependencies: ["RemoteControlCore", "SkipperCore", "SkipperDesign"],
             path: "Sources/RemoteControl"
+        ),
+
+        // The design system (docs/DESIGN.md): tokens and components only, never RemoteControlCore.
+        .target(
+            name: "SkipperDesign",
+            path: "Sources/SkipperDesign"
         ),
         // BLAKE2b + Argon2id. Its own target for exactly one reason: it is
         // compiled with -O even in debug builds. Argon2id at the protocol's

@@ -1,5 +1,6 @@
 import SwiftUI
 import RemoteControlCore
+import SkipperDesign
 
 struct GesturePalette: View {
 
@@ -12,36 +13,39 @@ struct GesturePalette: View {
     ]
 
     var body: some View {
-        VStack(alignment: .trailing, spacing: 8) {
+        VStack(alignment: .trailing, spacing: SkipperSpace.s) {
             if isExpanded {
-                VStack(spacing: 2) {
+                VStack(spacing: SkipperSpace.xxs) {
                     ForEach(GesturePalette.order, id: \.self) { gesture in
                         GestureButton(gesture: gesture) { model.coordinator?.sendGesture(gesture) }
                     }
                 }
-                .padding(6)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(SkipperSpace.s - 2)
+                .frame(width: 210)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: SkipperRadius.large, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12))
+                    RoundedRectangle(cornerRadius: SkipperRadius.large, style: .continuous)
+                        .strokeBorder(SkipperColor.onStage.opacity(0.12))
                 )
-                .shadow(radius: 12, y: 4)
+                .skipperElevation(.high)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
 
             Button {
-                withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() }
+                withAnimation(SkipperMotion.standard) { isExpanded.toggle() }
             } label: {
-                Image(systemName: isExpanded ? "chevron.right.circle.fill" : "hand.tap.fill")
-                    .font(.title2)
-                    .padding(8)
+                Image(systemName: isExpanded ? "xmark" : "hand.tap.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(SkipperColor.onAccent)
+                    .frame(width: 40, height: 40)
+                    .background(Circle().fill(SkipperColor.accent))
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .background(.regularMaterial, in: Circle())
-            .shadow(radius: 8, y: 2)
+            .skipperElevation(.high)
             .help(isExpanded ? "Hide the gesture palette" : "Gesture palette \u{2014} Mission Control, Spotlight, Launchpad and more, performed on the other Mac")
         }
-        .padding(14)
+        .padding(SkipperSpace.l)
     }
 }
 
@@ -49,20 +53,29 @@ private struct GestureButton: View {
     let gesture: GestureName
     let action: () -> Void
 
+    @State private var hovering = false
+
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: SkipperSpace.s) {
                 Image(systemName: gesture.symbolName)
                     .frame(width: 18)
+                    .foregroundStyle(hovering ? SkipperColor.accent : SkipperColor.textSecondary)
                 Text(gesture.displayName)
-                    .font(.callout)
+                    .font(SkipperFont.callout)
+                    .foregroundStyle(SkipperColor.textPrimary)
                 Spacer(minLength: 0)
             }
+            .padding(.horizontal, SkipperSpace.s)
+            .padding(.vertical, SkipperSpace.s - 3)
+            .background(
+                RoundedRectangle(cornerRadius: SkipperRadius.small, style: .continuous)
+                    .fill(hovering ? SkipperColor.surfaceMuted : Color.clear)
+            )
             .contentShape(Rectangle())
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
         }
         .buttonStyle(.plain)
+        .onHover { hovering = $0 }
         .help(GesturePalette.help(for: gesture))
     }
 }

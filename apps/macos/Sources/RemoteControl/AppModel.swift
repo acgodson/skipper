@@ -20,10 +20,12 @@ final class AppModel: ObservableObject {
     @Published var sessionState: SessionState = .idle
     @Published var connectError: String?
     @Published var isConnecting = false
-    @Published var signalingSummary = "Connecting to the signaling server\u{2026}"
+    @Published var signalingSummary = "Connecting to SkipperDesk\u{2026}"
     @Published var lastRoundTripMs: Int?
 
     @Published var previewSessionBanner = false
+
+    @Published var trustedControllers: [TrustedControllerEntry] = []
 
     // MARK: - Phase 5: keyboard capture
 
@@ -37,6 +39,7 @@ final class AppModel: ObservableObject {
     let launchAtLogin = LaunchAtLogin()
     private let stayAwake = StayAwake()
     private let fileStore = IdentityFileStore()
+    private let browserOpener = AccountBrowserOpener()
     private var observers: [Any] = []
     private var cancellables = Set<AnyCancellable>()
 
@@ -212,16 +215,16 @@ final class AppModel: ObservableObject {
         case .signalingState(let state):
             switch state {
             case .authenticated(let deviceID):
-                signalingSummary = "Signed in to the signaling server as \(DeviceID.formatted(deviceID))."
+                signalingSummary = "Connected to SkipperDesk as \(DeviceID.formatted(deviceID))."
                 selfPresence.update(reachable: true,
                     detail: "This Mac is reachable. Another Mac can connect with the Device ID and access code above.")
             case .connecting, .authenticating:
-                signalingSummary = "Connecting to the signaling server\u{2026}"
-                selfPresence.setUnknown(detail: "Contacting the signaling server\u{2026}")
-            case .waitingToRetry(let delay):
-                signalingSummary = String(format: "Signaling server unreachable. Retrying in %.1fs.", delay)
+                signalingSummary = "Connecting to SkipperDesk\u{2026}"
+                selfPresence.setUnknown(detail: "Connecting to SkipperDesk\u{2026}")
+            case .waitingToRetry:
+                signalingSummary = "Can't reach SkipperDesk. Retrying automatically."
                 selfPresence.update(reachable: false,
-                    detail: "Cannot reach the signaling server, so no one can connect to this Mac right now. Retrying automatically.")
+                    detail: "Cannot reach SkipperDesk, so no one can connect to this Mac right now. Retrying automatically.")
             case .stopped(let why):
                 signalingSummary = why
                 selfPresence.update(reachable: false, detail: why)
@@ -275,7 +278,8 @@ final class AppModel: ObservableObject {
 
     private func startAccount() {
         guard let identity else { return }
-        let account = AccountLinker(identity: identity)
+        let opener = browserOpener
+        let account = AccountLinker(identity: identity, openInBrowser: { opener.open($0) })
         self.account = account
         URLCallbackBus.shared.handler = { [weak self] url in
             self?.account?.handleCallback(url)
@@ -293,7 +297,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func linkAccount() { account?.beginLink() }
+    func linkAccount(signUp: Bool = false) {
+        browserOpener.nextOpenIsSignUp = signUp
+        account?.beginLink()
+    }
 
     func cancelAccountLink() { account?.cancelLink() }
 
@@ -334,7 +341,27 @@ final class AppModel: ObservableObject {
             } catch {
                 connectError = error.localizedDescription
             }
+            reloadTrustedControllers()
         }
+    }
+
+    // MARK: - Trusted controllers
+
+    func reloadTrustedControllers() {
+        guard let identity else {
+            trustedControllers = []
+            return
+        }
+        let stored = (try? identity.secrets.trustedControllers()) ?? [:]
+        trustedControllers = stored
+            .map { TrustedControllerEntry(pubkey: $0.key, controller: $0.value) }
+            .sorted { $0.lastSeen > $1.lastSeen }
+    }
+
+    // TODO: per-controller removal needs a SecretStore API in RemoteControlCore (only revoke-all exists).
+    func revokeTrustedControllers() {
+        try? identity?.secrets.revokeControllers()
+        reloadTrustedControllers()
     }
 
     // MARK: - Controller

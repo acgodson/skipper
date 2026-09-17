@@ -1,5 +1,6 @@
 import SwiftUI
 import RemoteControlCore
+import SkipperDesign
 
 struct RemoteSessionView: View {
 
@@ -7,47 +8,90 @@ struct RemoteSessionView: View {
     @State private var videoSize: CGSize = .zero
     @State private var lastPointer: RemotePointerSample?
     @State private var paletteExpanded = false
+    @State private var pointerNearTop = false
+    @State private var hoveringToolbar = false
+    @State private var revealed = true
+    @State private var hideGeneration = 0
+
+    private static let revealBand: CGFloat = 56
 
     private var hasPicture: Bool { videoSize.width > 0 && videoSize.height > 0 }
 
+    private var toolbarPinned: Bool {
+        pointerNearTop || hoveringToolbar || !hasPicture || model.isReconnecting
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            SessionToolbar(videoSize: videoSize, pointer: lastPointer)
-            Divider()
-            ZStack {
-                Color.black
-                if let coordinator = model.coordinator {
-                    RemoteScreenView(
-                        session: coordinator,
-                        capturingKeyboard: model.keyboardCaptureActive,
-                        onVideoSizeChange: { videoSize = $0 },
-                        onPointerSample: { sample, _ in lastPointer = sample })
-                }
-                if !hasPicture {
-                    WaitingForVideoOverlay()
-                }
-                if model.isReconnecting {
-                    ReconnectingOverlay(overPicture: hasPicture)
-                }
+        ZStack(alignment: .top) {
+            SkipperColor.stage
 
-                VStack {
+            if let coordinator = model.coordinator {
+                RemoteScreenView(
+                    session: coordinator,
+                    capturingKeyboard: model.keyboardCaptureActive,
+                    onVideoSizeChange: { videoSize = $0 },
+                    onPointerSample: { sample, _ in
+                        lastPointer = sample
+                        let near = sample.viewPoint.y < Self.revealBand
+                        if near != pointerNearTop { pointerNearTop = near }
+                    })
+            }
+
+            if !hasPicture {
+                StageOverlayCard(
+                    title: "Connected \u{2014} waiting for video\u{2026}",
+                    message: "The other Mac is starting its screen capture. If this does not clear within a few seconds, check that SkipperDesk has Screen Recording permission on that Mac \u{2014} macOS can revoke it after the app is updated."
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            if model.isReconnecting {
+                StageOverlayCard(
+                    title: "Reconnecting\u{2026}",
+                    message: "The network wobbled. The session is still open and is recovering by itself."
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.opacity)
+            }
+
+            VStack {
+                Spacer()
+                HStack {
                     Spacer()
-                    HStack {
-                        Spacer()
-                        GesturePalette(isExpanded: $paletteExpanded)
-                    }
-                }
-
-                if model.keyboardCaptureActive {
-                    RoundedRectangle(cornerRadius: 2)
-                        .strokeBorder(Color.accentColor, lineWidth: 3)
-                        .allowsHitTesting(false)
+                    GesturePalette(isExpanded: $paletteExpanded)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if model.keyboardCaptureActive {
+                RoundedRectangle(cornerRadius: 2)
+                    .strokeBorder(SkipperColor.accent, lineWidth: 3)
+                    .allowsHitTesting(false)
+            }
+
+            SessionToolbar(videoSize: videoSize, pointer: lastPointer)
+                .padding(.top, SkipperSpace.m)
+                .onHover { hoveringToolbar = $0 }
+                .opacity(revealed ? 1 : 0)
+                .offset(y: revealed ? 0 : -SkipperSpace.xl)
+                .allowsHitTesting(revealed)
+                .animation(SkipperMotion.toolbarReveal, value: revealed)
         }
         .frame(minWidth: 640, minHeight: 420)
-        .background(Color.black)
+        .animation(SkipperMotion.standard, value: model.isReconnecting)
+        .onChange(of: toolbarPinned) { pinned in
+            if pinned { revealed = true } else { scheduleHide() }
+        }
+        .onAppear { scheduleHide() }
+    }
+
+    private func scheduleHide() {
+        hideGeneration += 1
+        let generation = hideGeneration
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(SkipperMotion.toolbarHideDelaySeconds * 1_000_000_000))
+            guard generation == hideGeneration, !toolbarPinned else { return }
+            revealed = false
+        }
     }
 }
 
@@ -65,55 +109,60 @@ private struct SessionToolbar: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "display")
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.body.weight(.medium))
+        SessionToolbarBar {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(SkipperFont.bodyEmphasis)
+                    .foregroundStyle(SkipperColor.textPrimary)
+                    .fixedSize()
                 Text(statusLine)
-                    .font(.caption2)
-                    .foregroundStyle(model.isReconnecting ? Color.orange : Color.secondary)
+                    .font(SkipperFont.caption)
+                    .foregroundStyle(model.isReconnecting ? SkipperColor.attention : SkipperColor.textSecondary)
+                    .fixedSize()
             }
 
-            Spacer()
-
-            if let pointer {
-                Text(String(format: "%.0f, %.0f", pointer.remotePixel.x, pointer.remotePixel.y))
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(pointer.insideVideo ? Color.secondary : Color.orange)
-                    .help("Pointer position on the remote display, in its own pixels.")
+            if RCLog.enabled {
+                diagnostics
             }
 
-            if let rtt = model.lastRoundTripMs {
-                Text("\(rtt) ms")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-
-            Picker("Quality", selection: Binding(
-                get: { model.settings.qualityMode },
-                set: { model.settings.qualityMode = $0 }
-            )) {
-                ForEach(QualityMode.allCases) { mode in
-                    Text(mode.displayName).tag(mode)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .frame(width: 150)
-            .help("Sent to the other Mac, which changes what it encodes.")
+            Rectangle()
+                .fill(SkipperColor.border)
+                .frame(width: 1, height: 20)
 
             KeyboardCaptureToggle()
 
-            Button("Disconnect") { model.endSession() }
-                .keyboardShortcut(".", modifiers: .command)
+            QualityMenu()
+
+            SessionToolbarButton(
+                title: "Disconnect",
+                symbol: "xmark.circle",
+                tone: .critical,
+                help: "End the session (\u{2318}.)"
+            ) {
+                model.endSession()
+            }
+            .keyboardShortcut(".", modifiers: .command)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
+    }
+
+    @ViewBuilder
+    private var diagnostics: some View {
+        if let pointer {
+            Text(String(format: "%.0f, %.0f", pointer.remotePixel.x, pointer.remotePixel.y))
+                .font(SkipperFont.codeCaption)
+                .foregroundStyle(pointer.insideVideo ? SkipperColor.textSecondary : SkipperColor.attention)
+                .help("Pointer position on the remote display, in its own pixels.")
+        }
+        if let rtt = model.lastRoundTripMs {
+            Text("\(rtt) ms")
+                .font(SkipperFont.codeCaption)
+                .foregroundStyle(SkipperColor.textSecondary)
+        }
     }
 
     private var statusLine: String {
-        if model.isReconnecting { return "Reconnecting\u{2026} the session is still open" }
+        if model.isReconnecting { return "Reconnecting\u{2026}" }
+        guard RCLog.enabled else { return videoSize.width > 0 ? "Live" : "Connected" }
         if let display = model.coordinator?.remoteDisplay {
             let scale = display.scale == rint(display.scale) ? String(Int(display.scale)) : String(format: "%.1f", display.scale)
             return "Live \u{2014} remote display \(display.w)\u{00D7}\(display.h) @\(scale)x"
@@ -125,28 +174,45 @@ private struct SessionToolbar: View {
     }
 }
 
+private struct QualityMenu: View {
+
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        Menu {
+            Picker("Quality", selection: Binding(
+                get: { model.settings.qualityMode },
+                set: { model.settings.qualityMode = $0 }
+            )) {
+                ForEach(QualityMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            Label(model.settings.qualityMode.displayName, systemImage: "slider.horizontal.3")
+                .font(SkipperFont.caption.weight(.medium))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Sent to the other Mac, which changes what it encodes.")
+    }
+}
+
 private struct KeyboardCaptureToggle: View {
 
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        Button {
+        SessionToolbarButton(
+            title: model.keyboardCaptureActive ? "Keys \u{2192} Remote" : "Keys \u{2192} This Mac",
+            symbol: model.keyboardCaptureActive ? "keyboard.fill" : "keyboard",
+            isActive: model.keyboardCaptureActive,
+            help: helpText
+        ) {
             model.captureKeyboard.toggle()
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: model.keyboardCaptureActive ? "keyboard.fill" : "keyboard")
-                Text(model.keyboardCaptureActive ? "Keys \u{2192} Remote" : "Keys \u{2192} This Mac")
-                    .font(.caption.weight(.medium))
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(model.keyboardCaptureActive ? Color.accentColor : Color.secondary.opacity(0.18)))
-            .foregroundStyle(model.keyboardCaptureActive ? Color.white : Color.primary)
         }
-        .buttonStyle(.plain)
-        .help(helpText)
     }
 
     private var helpText: String {
@@ -154,47 +220,8 @@ private struct KeyboardCaptureToggle: View {
         if model.keyboardCaptureActive {
             return "Every keystroke goes to the other Mac, including Cmd-Space and Cmd-Tab. Press "
                 + KeyboardCaptureTap.escapeHatchDescription
-                + " to turn this off — that combination is never forwarded."
+                + " to turn this off \u{2014} that combination is never forwarded."
         }
         return "Keystrokes stay on this Mac. Turn this on to send them to the other Mac instead, so Cmd-Space opens its Spotlight rather than yours."
-    }
-}
-
-private struct WaitingForVideoOverlay: View {
-    var body: some View {
-        VStack(spacing: 10) {
-            ProgressView().controlSize(.small)
-            Text("Connected \u{2014} waiting for video\u{2026}")
-                .font(.headline)
-                .foregroundStyle(.white)
-            Text("The other Mac is starting its screen capture. If this does not clear within a few seconds, check that RemoteControl has Screen Recording permission on that Mac \u{2014} macOS can revoke it after the app is updated.")
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.7))
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(24)
-    }
-}
-
-private struct ReconnectingOverlay: View {
-    let overPicture: Bool
-
-    var body: some View {
-        VStack(spacing: 8) {
-            ProgressView().controlSize(.small)
-            Text("Reconnecting\u{2026}").font(.headline).foregroundStyle(.white)
-            Text("The network wobbled. The session is still open and is recovering by itself.")
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.8))
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
-        }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.black.opacity(overPicture ? 0.65 : 0.0))
-        )
     }
 }
