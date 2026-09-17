@@ -31,6 +31,16 @@ relay), see connection metadata (who/when/bytes), and see TURN-relayed ciphertex
 it cannot open. It cannot see plaintext of anything, and cannot silently insert
 itself into a session because of the signed-SDP step above.
 
+## Who lets a controller in
+
+The access code proves a controller *may* connect. With **Unattended access** off — the default
+on a new install — the host also asks the person at it, and only after the code has been proved,
+so a stranger who does not know the code can never make a prompt appear. No answer within 30
+seconds is a decline, and a controller declined twice in ten minutes is turned away without
+asking again. With Unattended access on, the code alone is permission; that is the setting for
+a Mac nobody is sitting at. Either way a session in progress is always shown on the host and can
+be ended there.
+
 ## Cryptography
 
 | Purpose | Algorithm |

@@ -18,12 +18,40 @@ public let settingsSuite = TestSuite("AppSettings", [
         try withDefaults { defaults, _ in
             let settings = AppSettings(defaults: defaults)
             try expectEqual(settings.qualityMode, .balanced)
-            try expect(settings.unattendedAccess)
+            try expectFalse(settings.unattendedAccess, "a new install asks before each connection")
             try expect(settings.clipboardSync)
             try expectFalse(settings.rememberPeerCode)
             try expectEqual(settings.role, .host)
             try expectFalse(settings.hasSavedPeer)
             try expect(settings.installUpdatesAutomatically)
+        }
+    },
+
+    TestCase("an existing install that never touched unattended access keeps it on") {
+        try withDefaults { defaults, _ in
+            let settings = AppSettings(defaults: defaults, isExistingInstall: true)
+            try expect(settings.unattendedAccess, "the old default was on; upgrading must not change behaviour")
+            try expectEqual(defaults.object(forKey: AppSettings.Key.unattendedAccess) as? Bool, true)
+            try expect(AppSettings(defaults: defaults).unattendedAccess)
+        }
+    },
+
+    TestCase("a new install stays off after its identity exists and the app relaunches") {
+        try withDefaults { defaults, _ in
+            try expectFalse(AppSettings(defaults: defaults, isExistingInstall: false).unattendedAccess)
+            try expectFalse(AppSettings(defaults: defaults, isExistingInstall: true).unattendedAccess,
+                            "the second launch sees an identity file; it must not look like an upgrade")
+        }
+    },
+
+    TestCase("an existing install keeps an explicit choice either way") {
+        try withDefaults { defaults, _ in
+            defaults.set(false, forKey: AppSettings.Key.unattendedAccess)
+            try expectFalse(AppSettings(defaults: defaults, isExistingInstall: true).unattendedAccess)
+        }
+        try withDefaults { defaults, _ in
+            defaults.set(true, forKey: AppSettings.Key.unattendedAccess)
+            try expect(AppSettings(defaults: defaults, isExistingInstall: false).unattendedAccess)
         }
     },
 

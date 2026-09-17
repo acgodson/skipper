@@ -112,6 +112,7 @@ const (
 	ByeError          = "error"
 	ByePeerAuthFailed = "peer_auth_failed"
 	ByeAuthFailed     = "auth_failed"
+	ByeDeclined       = "declined"
 )
 
 const (

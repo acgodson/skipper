@@ -622,6 +622,21 @@
       "note": "the host refused the access code, or refused to try one from a locked-out controller"
     },
     {
+      "name": "bye_declined",
+      "surface": "signaling",
+      "type": "bye",
+      "frame": {
+        "v": 3,
+        "type": "bye",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "reason": "declined"
+        }
+      },
+      "note": "the host proved the code but its owner declined the connection, or did not answer in 30 s"
+    },
+    {
       "name": "pake_step1",
       "surface": "signaling",
       "type": "pake",

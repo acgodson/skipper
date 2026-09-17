@@ -24,6 +24,7 @@ impl IceLinkState {
 pub enum SessionPhase {
     Idle,
     Connecting,
+    AwaitingConsent,
     Live,
     Reconnecting,
     Closed { reason: String },
@@ -69,6 +70,46 @@ pub enum SessionAction {
         session_id: String,
         reason: String,
     },
+    PromptForConsent {
+        expires_at_ms: i64,
+    },
+    DismissConsentPrompt {
+        outcome: ConsentOutcome,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsentOutcome {
+    Allowed,
+    Declined,
+    TimedOut,
+    Cancelled,
+}
+
+impl ConsentOutcome {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::Declined => "declined",
+            Self::TimedOut => "timedOut",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            Self::Allowed,
+            Self::Declined,
+            Self::TimedOut,
+            Self::Cancelled,
+        ]
+        .into_iter()
+        .find(|outcome| outcome.name() == name)
+    }
+
+    pub fn counts_as_decline(self) -> bool {
+        matches!(self, Self::Declined | Self::TimedOut)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +133,9 @@ pub struct SessionStateMachine {
     pub ice_restart_delay_ms: i64,
     pub ice_failure_grace_ms: i64,
     pub renew_interval_ms: i64,
+    pub consent_timeout_ms: i64,
+    pub peer_start_timeout_ms: i64,
+    pub consent_required: bool,
 
     role: Role,
     session_id: Option<String>,
@@ -114,6 +158,10 @@ pub struct SessionStateMachine {
 
     pub server_advertised_session_id: Option<String>,
     cleared_stale_session: bool,
+
+    consent_deadline: Option<i64>,
+    peer_start_since: Option<i64>,
+    peer_started: bool,
 }
 
 impl SessionStateMachine {
@@ -122,6 +170,9 @@ impl SessionStateMachine {
             ice_restart_delay_ms: 3_000,
             ice_failure_grace_ms: 45_000,
             renew_interval_ms: 300_000,
+            consent_timeout_ms: 30_000,
+            peer_start_timeout_ms: 45_000,
+            consent_required: false,
             role,
             session_id: None,
             session_token: None,
@@ -140,6 +191,9 @@ impl SessionStateMachine {
             resume_wanted: false,
             server_advertised_session_id: None,
             cleared_stale_session: false,
+            consent_deadline: None,
+            peer_start_since: None,
+            peer_started: false,
         }
     }
 
@@ -182,6 +236,17 @@ impl SessionStateMachine {
         self.session_id.is_some() && self.session_token.is_some()
     }
 
+    pub fn consent_expires_at_ms(&self) -> Option<i64> {
+        self.consent_deadline
+    }
+
+    fn leave_consent(&mut self, outcome: ConsentOutcome) -> Vec<SessionAction> {
+        match self.consent_deadline.take() {
+            Some(_) => vec![SessionAction::DismissConsentPrompt { outcome }],
+            None => vec![],
+        }
+    }
+
     pub fn connect_requested(
         &mut self,
         device_id: &str,
@@ -217,9 +282,56 @@ impl SessionStateMachine {
             self.remembered_access_code = None;
         }
         self.pending_access_code = None;
+        let actions = self.leave_consent(ConsentOutcome::Cancelled);
+        self.peer_start_since = None;
+        self.peer_started = false;
         self.phase = SessionPhase::Connecting;
         self.last_renew = Some(now_ms);
         self.ice_restart_requested = false;
+        actions
+    }
+
+    /// The §2.17 exchange verified. The peer connection starts now, unless
+    /// this host asks its owner first (§2.17 Consent).
+    pub fn pake_succeeded(&mut self, now_ms: i64) -> Vec<SessionAction> {
+        let waiting = matches!(
+            self.phase,
+            SessionPhase::Connecting | SessionPhase::Reconnecting
+        );
+        if !self.has_session() || !waiting || self.peer_started {
+            return vec![];
+        }
+        if self.role == Role::Host && self.consent_required {
+            let expires_at_ms = now_ms.saturating_add(self.consent_timeout_ms);
+            self.consent_deadline = Some(expires_at_ms);
+            self.phase = SessionPhase::AwaitingConsent;
+            return vec![SessionAction::PromptForConsent { expires_at_ms }];
+        }
+        self.start_peer(now_ms)
+    }
+
+    pub fn consent_answered(&mut self, allow: bool, now_ms: i64) -> Vec<SessionAction> {
+        if self.phase != SessionPhase::AwaitingConsent {
+            return vec![];
+        }
+        if allow {
+            let mut actions = self.leave_consent(ConsentOutcome::Allowed);
+            self.phase = SessionPhase::Connecting;
+            actions.extend(self.start_peer(now_ms));
+            return actions;
+        }
+        self.decline(ConsentOutcome::Declined)
+    }
+
+    fn decline(&mut self, outcome: ConsentOutcome) -> Vec<SessionAction> {
+        let mut actions = self.leave_consent(outcome);
+        actions.extend(self.user_ended(rc_proto::consts::bye::DECLINED));
+        actions
+    }
+
+    fn start_peer(&mut self, now_ms: i64) -> Vec<SessionAction> {
+        self.peer_start_since = Some(now_ms);
+        self.peer_started = true;
         vec![SessionAction::StartPeerConnection {
             offerer: self.is_offerer(),
         }]
@@ -260,7 +372,7 @@ impl SessionStateMachine {
         self.resume_in_flight = false;
         if self.has_session() {
             self.resume_wanted = true;
-            if !self.ice_state.is_up() {
+            if !self.ice_state.is_up() && self.phase != SessionPhase::AwaitingConsent {
                 self.phase = SessionPhase::Reconnecting;
             }
         }
@@ -345,6 +457,9 @@ impl SessionStateMachine {
         self.session_token = Some(ok.session_token.clone());
         self.last_renew = Some(now_ms);
         let mut actions = vec![SessionAction::ReissueWatches, SessionAction::SendInputReset];
+        if self.phase == SessionPhase::AwaitingConsent {
+            return actions;
+        }
         if !self.ice_state.is_up() {
             self.phase = SessionPhase::Reconnecting;
             if self.is_offerer() {
@@ -375,11 +490,14 @@ impl SessionStateMachine {
             return vec![];
         }
 
+        let dismissed = self.leave_consent(ConsentOutcome::Cancelled);
         self.session_id = None;
         self.session_token = None;
         self.ice_restart_requested = false;
         self.disconnected_since = None;
         self.failed_since = None;
+        self.peer_start_since = None;
+        self.peer_started = false;
 
         if self.role == Role::Controller {
             if let (Some(peer), Some(code)) = (
@@ -402,13 +520,15 @@ impl SessionStateMachine {
         }
 
         self.phase = SessionPhase::Idle;
-        vec![
+        let mut actions = dismissed;
+        actions.extend([
             SessionAction::TeardownPeerConnection,
             SessionAction::ClearStoredSession,
             SessionAction::PromptForAccessCode {
                 reason: code.to_string(),
             },
-        ]
+        ]);
+        actions
     }
 
     pub fn ice_state_changed(
@@ -424,6 +544,7 @@ impl SessionStateMachine {
 
         match new_state {
             IceLinkState::Connected | IceLinkState::Completed => {
+                self.peer_start_since = None;
                 self.disconnected_since = None;
                 self.failed_since = None;
                 self.ice_restart_requested = false;
@@ -464,6 +585,19 @@ impl SessionStateMachine {
         let mut actions = vec![];
         if !self.has_session() {
             return actions;
+        }
+
+        if self
+            .consent_deadline
+            .is_some_and(|deadline| now_ms >= deadline)
+        {
+            return self.decline(ConsentOutcome::TimedOut);
+        }
+
+        if let Some(since) = self.peer_start_since {
+            if now_ms - since >= self.peer_start_timeout_ms {
+                return self.user_ended(rc_proto::consts::bye::TIMEOUT);
+            }
         }
 
         if let Some(since) = self.disconnected_since {
@@ -529,6 +663,9 @@ impl SessionStateMachine {
     }
 
     pub fn close_locally(&mut self, reason: &str) -> Vec<SessionAction> {
+        let mut actions = self.leave_consent(ConsentOutcome::Cancelled);
+        self.peer_start_since = None;
+        self.peer_started = false;
         self.session_id = None;
         self.session_token = None;
         self.pending_access_code = None;
@@ -542,11 +679,12 @@ impl SessionStateMachine {
         self.phase = SessionPhase::Closed {
             reason: reason.to_string(),
         };
-        vec![
+        actions.extend([
             SessionAction::SendInputReset,
             SessionAction::TeardownPeerConnection,
             SessionAction::ClearStoredSession,
-        ]
+        ]);
+        actions
     }
 
     pub fn user_ended(&mut self, reason: &str) -> Vec<SessionAction> {

@@ -19,6 +19,11 @@ Conventions:
   expectActions the EXACT ordered action list the event must return
   expectPhase   idle | connecting | live | reconnecting | closed:<reason>
   expectRelayOnly whether the session has fallen back to a TURN-relay-only path
+  expiresAt     (promptForConsent) seconds since scenario start, like `at`
+
+The peer connection starts only once the access-code exchange (§2.17) has
+verified (`pakeSucceeded`). A host with `consentRequired` asks its owner first
+(§2.17 Consent): phase awaitingConsent, allow/decline/30 s timeout.
 """
 import json, sys
 
@@ -56,6 +61,18 @@ CLOSE_SET = [A_RESET, A_TEARDOWN, A_CLEAR]
 def offer(v=True):
     return {"action": "startPeerConnection", "offerer": v}
 
+PAKE_OK = {"event": "pakeSucceeded"}
+REQUIRE_CONSENT = {"event": "setConsentRequired", "required": True}
+
+def answer(allow):
+    return {"event": "consentAnswered", "allow": allow}
+
+def a_prompt(expires_at):
+    return {"action": "promptForConsent", "expiresAt": expires_at}
+
+def a_dismiss(outcome):
+    return {"action": "dismissConsentPrompt", "outcome": outcome}
+
 def step(at, do, actions=None, phase=None, **extra):
     s = {"at": at, "do": do}
     if actions is not None:
@@ -65,6 +82,13 @@ def step(at, do, actions=None, phase=None, **extra):
     s.update(extra)
     return s
 
+def granted(at, offerer, **extra):
+    """session_start/connect_ok, then the verified exchange starts the peer."""
+    return [
+        step(at, grant(), [], "connecting", **extra),
+        step(at, PAKE_OK, [offer(offerer)], "connecting"),
+    ]
+
 def live_controller(remember=True):
     """Steps that bring a controller to live: auth, connect, grant, ICE up."""
     return [
@@ -72,7 +96,7 @@ def live_controller(remember=True):
         step(0, {"event": "connectRequested", "deviceId": HOSTID,
                  "accessCode": CODE, "remember": remember},
              [a_connect()], "connecting"),
-        step(0, grant(), [offer(True)], "connecting"),
+        *granted(0, True),
         step(0, ice("connected"), [A_RESET], "live"),
     ]
 
@@ -90,14 +114,14 @@ scen("controller_connects_and_goes_live", [
     step(0, {"event": "connectRequested", "deviceId": HOSTID,
              "accessCode": CODE, "remember": False},
          [a_connect()], "connecting"),
-    step(0, grant(), [offer(True)], "connecting", expectHasSession=True),
+    *granted(0, True, expectHasSession=True),
     step(0, ice("checking"), [], "connecting"),
     step(0, ice("connected"), [A_RESET], "live"),
 ])
 
 scen("host_is_never_the_offerer", [
     step(0, auth(), [], "idle"),
-    step(0, grant(), [offer(False)], "connecting"),
+    *granted(0, False),
 ], role="host")
 
 scen("no_connect_req_while_a_session_is_believed_alive", [
@@ -105,6 +129,174 @@ scen("no_connect_req_while_a_session_is_believed_alive", [
     step(1, {"event": "connectRequested", "deviceId": HOSTID,
              "accessCode": CODE, "remember": False}, [], "live"),
 ], note="§4.4: a client must never connect_req over its own live session")
+
+# ---- the access-code exchange gates the peer (§2.17) ----------------------
+
+scen("the_peer_connection_waits_for_the_access_code_exchange", [
+    step(0, auth(), [], "idle"),
+    step(0, {"event": "connectRequested", "deviceId": HOSTID,
+             "accessCode": CODE, "remember": False}, [a_connect()], "connecting"),
+    step(0, grant(), [], "connecting", expectHasSession=True),
+    step(5, {"event": "tick"}, [], "connecting"),
+    step(6, PAKE_OK, [offer(True)], "connecting"),
+    step(7, PAKE_OK, [], "connecting"),
+], note="a second verified exchange for the same session never starts a second peer")
+
+scen("a_host_without_consent_starts_the_peer_as_soon_as_the_code_is_proved", [
+    step(0, auth(), [], "idle"),
+    step(0, grant(), [], "connecting"),
+    step(1, PAKE_OK, [offer(False)], "connecting", expectConsentRequired=False),
+    step(1, answer(True), [], "connecting"),
+], role="host", note="unattended access on: the code alone is permission")
+
+scen("a_controller_never_asks_for_consent", [
+    step(0, REQUIRE_CONSENT, [], "idle"),
+    step(0, auth(), [], "idle"),
+    step(0, {"event": "connectRequested", "deviceId": HOSTID,
+             "accessCode": CODE, "remember": False}, [a_connect()], "connecting"),
+    step(0, grant(), [], "connecting"),
+    step(1, PAKE_OK, [offer(True)], "connecting"),
+])
+
+scen("an_exchange_that_never_verified_never_prompts", [
+    step(0, REQUIRE_CONSENT, [], "idle"),
+    step(0, auth(), [], "idle"),
+    step(0, grant(), [], "connecting"),
+    step(40, {"event": "tick"}, [], "connecting"),
+    step(41, answer(True), [], "connecting"),
+], role="host", note="a prompt for an unauthenticated controller would be a nuisance and a phishing vector")
+
+# ---- host consent (§2.17 Consent) -----------------------------------------
+
+def consenting_host(pake_at=1):
+    return [
+        step(0, REQUIRE_CONSENT, [], "idle", expectConsentRequired=True),
+        step(0, auth(), [], "idle"),
+        step(0, grant(), [], "connecting"),
+        step(pake_at, PAKE_OK, [a_prompt(pake_at + 30)], "awaitingConsent",
+             expectHasSession=True),
+    ]
+
+scen("consent_allowed_releases_the_held_peer_start", [
+    *consenting_host(),
+    step(11, {"event": "tick"}, [], "awaitingConsent"),
+    step(25, {"event": "tick"}, [], "awaitingConsent"),
+    step(26, answer(True), [a_dismiss("allowed"), offer(False)], "connecting"),
+    step(27, ice("connected"), [A_RESET], "live"),
+    step(60, {"event": "tick"}, [], "live"),
+    step(61, answer(False), [], "live"),
+], role="host", note="no step timer runs during the wait; the answer is taken once")
+
+scen("consent_declined_ends_the_session_with_bye_declined", [
+    *consenting_host(),
+    step(5, answer(False),
+         [a_dismiss("declined"), a_bye(SESS, "declined"), *CLOSE_SET],
+         "closed:declined", expectHasSession=False),
+    step(6, answer(True), [], "closed:declined"),
+    step(40, {"event": "tick"}, [], "closed:declined"),
+], role="host")
+
+scen("an_unanswered_prompt_declines_after_exactly_30s", [
+    *consenting_host(pake_at=2),
+    step(31, {"event": "tick"}, [], "awaitingConsent"),
+    step(32, {"event": "tick"},
+         [a_dismiss("timedOut"), a_bye(SESS, "declined"), *CLOSE_SET],
+         "closed:declined", expectHasSession=False),
+    step(33, {"event": "tick"}, [], "closed:declined"),
+], role="host", note="the default answer is decline")
+
+scen("a_controller_that_gives_up_takes_the_prompt_with_it", [
+    *consenting_host(),
+    step(20, {"event": "closeLocally", "reason": "timeout"},
+         [a_dismiss("cancelled"), *CLOSE_SET], "closed:timeout"),
+    step(21, answer(True), [], "closed:timeout"),
+    step(40, {"event": "tick"}, [], "closed:timeout"),
+], role="host", note="the controller's own bye{timeout} or bye{user_ended} arrives as closeLocally")
+
+scen("a_server_bye_during_the_wait_cancels_the_prompt", [
+    *consenting_host(),
+    step(3, {"event": "closeLocally", "reason": "code_refreshed"},
+         [a_dismiss("cancelled"), *CLOSE_SET], "closed:code_refreshed"),
+], role="host")
+
+scen("ending_the_session_locally_during_the_wait_cancels_the_prompt", [
+    *consenting_host(),
+    step(3, {"event": "userEnded", "reason": "user_ended"},
+         [a_bye(SESS, "user_ended"), a_dismiss("cancelled"), *CLOSE_SET],
+         "closed:user_ended"),
+], role="host")
+
+scen("a_new_session_start_replaces_the_open_prompt", [
+    *consenting_host(),
+    step(4, grant(sess=STALE, tok=TOK2), [a_dismiss("cancelled")], "connecting"),
+    step(5, PAKE_OK, [a_prompt(35)], "awaitingConsent"),
+    step(34, {"event": "tick"}, [], "awaitingConsent"),
+    step(35, {"event": "tick"},
+         [a_dismiss("timedOut"), a_bye(STALE, "declined"), *CLOSE_SET], "closed:declined"),
+], role="host", note="at most one prompt at a time, and its timer restarts")
+
+scen("a_signaling_flap_during_the_wait_keeps_the_prompt", [
+    *consenting_host(),
+    step(5, {"event": "signalingLost"}, [], "awaitingConsent"),
+    step(8, auth(SESS), [a_resume()], "awaitingConsent"),
+    step(8, {"event": "resumeSucceeded", "sessionId": SESS, "sessionToken": TOK2},
+         [A_WATCHES, A_RESET], "awaitingConsent"),
+    step(10, answer(True), [a_dismiss("allowed"), offer(False)], "connecting"),
+], role="host")
+
+scen("a_session_lost_during_the_wait_cancels_the_prompt", [
+    *consenting_host(),
+    step(5, {"event": "signalingLost"}, []),
+    step(8, auth(SESS), [a_resume()]),
+    step(9, {"event": "resumeFailed", "code": "no_session", "retryAfterSec": 0},
+         [a_dismiss("cancelled"), A_TEARDOWN, A_CLEAR,
+          {"action": "promptForAccessCode", "reason": "no_session"}], "idle"),
+    step(40, {"event": "tick"}, []),
+], role="host")
+
+scen("the_host_keeps_renewing_while_it_waits", [
+    step(0, REQUIRE_CONSENT, [], "idle"),
+    step(0, auth(), [], "idle"),
+    step(0, grant(), [], "connecting"),
+    step(290, PAKE_OK, [a_prompt(320)], "awaitingConsent"),
+    step(300, {"event": "tick"}, [{"action": "sendRenew", "sessionId": SESS,
+                                   "sessionToken": TOK}], "awaitingConsent"),
+], role="host")
+
+# ---- the controller outlasts the host's prompt ----------------------------
+
+scen("a_controller_waits_45s_for_the_peer_before_giving_up", [
+    step(0, auth(), [], "idle"),
+    step(0, {"event": "connectRequested", "deviceId": HOSTID,
+             "accessCode": CODE, "remember": False}, [a_connect()], "connecting"),
+    *granted(0, True),
+    step(30, {"event": "tick"}, [], "connecting"),
+    step(44.9, {"event": "tick"}, [], "connecting"),
+    step(45, {"event": "tick"},
+         [a_bye(SESS, "timeout"), *CLOSE_SET], "closed:timeout", expectHasSession=False),
+], note="longer than the host's 30 s prompt, so a slow Allow still connects")
+
+scen("a_host_that_allows_late_still_connects", [
+    step(0, auth(), [], "idle"),
+    step(0, {"event": "connectRequested", "deviceId": HOSTID,
+             "accessCode": CODE, "remember": False}, [a_connect()], "connecting"),
+    *granted(0, True),
+    step(31, ice("checking"), [], "connecting"),
+    step(32, ice("connected"), [A_RESET], "live"),
+    step(60, {"event": "tick"}, [], "live"),
+])
+
+scen("a_declined_controller_closes_with_the_hosts_reason", [
+    step(0, auth(), [], "idle"),
+    step(0, {"event": "connectRequested", "deviceId": HOSTID,
+             "accessCode": CODE, "remember": True}, [a_connect()], "connecting"),
+    *granted(0, True),
+    step(12, {"event": "closeLocally", "reason": "declined"},
+         CLOSE_SET, "closed:declined"),
+    step(60, {"event": "tick"}, [], "closed:declined"),
+    step(61, {"event": "signalingLost"}, []),
+    step(62, auth(SESS), [], "closed:declined"),
+], note="declined is terminal: no retry, no resume")
 
 # ---- signaling flutter (PLAN.md §2.1) -------------------------------------
 
@@ -118,7 +310,7 @@ scen("signaling_loss_with_media_down_shows_reconnecting_never_disconnected", [
     step(0, auth(), [], "idle"),
     step(0, {"event": "connectRequested", "deviceId": HOSTID,
              "accessCode": CODE, "remember": False}, [a_connect()], "connecting"),
-    step(0, grant(), [offer(True)], "connecting"),
+    *granted(0, True),
     step(1, {"event": "signalingLost"}, [], "reconnecting"),
 ])
 
@@ -220,7 +412,7 @@ scen("server_restart_with_a_remembered_code_reconnects_silently", [
 
 scen("a_host_never_silently_reconnects", [
     step(0, auth(), [], "idle"),
-    step(0, grant(), [offer(False)], "connecting"),
+    *granted(0, False),
     step(5, {"event": "signalingLost"}, []),
     step(8, auth(None), [a_resume()]),
     step(9, {"event": "resumeFailed", "code": "no_session", "retryAfterSec": 0},
@@ -258,7 +450,7 @@ scen("resume_ok_with_ice_down_orders_a_restart_from_the_controller", [
     step(0, auth(), [], "idle"),
     step(0, {"event": "connectRequested", "deviceId": HOSTID,
              "accessCode": CODE, "remember": False}, [a_connect()], "connecting"),
-    step(0, grant(), [offer(True)], "connecting"),
+    *granted(0, True),
     step(1, ice("connected"), [A_RESET], "live"),
     step(2, ice("disconnected"), [A_RESET], "reconnecting"),
     step(3, {"event": "signalingLost"}, []),
@@ -269,7 +461,7 @@ scen("resume_ok_with_ice_down_orders_a_restart_from_the_controller", [
 
 scen("a_host_does_not_offer_the_ice_restart", [
     step(0, auth(), [], "idle"),
-    step(0, grant(), [offer(False)], "connecting"),
+    *granted(0, False),
     step(1, ice("connected"), [A_RESET], "live"),
     step(2, ice("disconnected"), [A_RESET], "reconnecting"),
     step(3, {"event": "signalingLost"}, []),
@@ -330,14 +522,14 @@ scen("a_session_that_is_already_relay_only_never_asks_for_a_relay_retry", [
          expectRelayOnly=True),
     step(0, {"event": "connectRequested", "deviceId": HOSTID,
              "accessCode": CODE, "remember": False}, [a_connect()], "connecting"),
-    step(0, grant(), [offer(True)], "connecting"),
+    *granted(0, True),
     step(0, ice("connected"), [A_RESET], "live"),
     step(10, ice("failed"), [A_RESET], "reconnecting", expectRelayOnly=True),
 ], note="RC_ICE_POLICY=relay already: there is nothing left to fall back to")
 
 scen("a_host_never_offers_the_relay_retry", [
     step(0, auth(), [], "idle"),
-    step(0, grant(), [offer(False)], "connecting"),
+    *granted(0, False),
     step(1, ice("connected"), [A_RESET], "live"),
     step(10, ice("failed"), [A_RESET], "reconnecting", expectRelayOnly=False),
     step(55, {"event": "tick"},

@@ -18,6 +18,8 @@ private struct CoreAction: Decodable {
     let offerer: Bool?
     let relayOnly: Bool?
     let reason: String?
+    let expiresAtMs: Int64?
+    let outcome: String?
 }
 
 private struct CoreState: Decodable {
@@ -35,6 +37,8 @@ private struct CoreState: Decodable {
     let peerDeviceId: String?
     let rememberedAccessCode: String?
     let serverAdvertisedSessionId: String?
+    let consentRequired: Bool
+    let consentExpiresAtMs: Int64?
 }
 
 public final class SessionStateMachine {
@@ -61,6 +65,13 @@ public final class SessionStateMachine {
     public private(set) var hasSession = false
     public private(set) var isOfferer = false
     public private(set) var serverAdvertisedSessionID: String?
+    public private(set) var consentExpiresAt: Date?
+
+    public var consentRequired: Bool {
+        get { storedConsentRequired }
+        set { _ = call { skipper_session_set_consent_required(handle, newValue) } }
+    }
+    private var storedConsentRequired = false
 
     public var rememberedAccessCode: String? {
         get { storedRememberedAccessCode }
@@ -114,8 +125,16 @@ public final class SessionStateMachine {
         call([grant.sessionId, grant.sessionToken, grant.hostDeviceId, grant.controllerDeviceId]) {
             skipper_session_granted(handle, $0[0].base, $0[0].count, $0[1].base, $0[1].count,
                                     $0[2].base, $0[2].count, $0[3].base, $0[3].count,
-                                    Self.milliseconds(now))
+                                    CoreBoundary.milliseconds(now))
         }
+    }
+
+    public func pakeSucceeded(now: Date = Date()) -> [SessionAction] {
+        call { skipper_session_pake_succeeded(handle, CoreBoundary.milliseconds(now)) }
+    }
+
+    public func consentAnswered(allow: Bool, now: Date = Date()) -> [SessionAction] {
+        call { skipper_session_consent_answered(handle, allow, CoreBoundary.milliseconds(now)) }
     }
 
     public func connectFailed(code: String) -> [SessionAction] {
@@ -137,7 +156,7 @@ public final class SessionStateMachine {
     public func resumeSucceeded(_ ok: SessionTokenLike, now: Date = Date()) -> [SessionAction] {
         call([ok.sessionId, ok.sessionToken]) {
             skipper_session_resume_succeeded(handle, $0[0].base, $0[0].count,
-                                             $0[1].base, $0[1].count, Self.milliseconds(now))
+                                             $0[1].base, $0[1].count, CoreBoundary.milliseconds(now))
         }
     }
 
@@ -151,7 +170,7 @@ public final class SessionStateMachine {
     public func renewSucceeded(_ ok: SessionTokenLike, now: Date = Date()) {
         _ = call([ok.sessionId, ok.sessionToken]) {
             skipper_session_renew_succeeded(handle, $0[0].base, $0[0].count,
-                                            $0[1].base, $0[1].count, Self.milliseconds(now))
+                                            $0[1].base, $0[1].count, CoreBoundary.milliseconds(now))
         }
     }
 
@@ -163,12 +182,12 @@ public final class SessionStateMachine {
 
     public func iceStateChanged(to newState: ICELinkState, now: Date = Date()) -> [SessionAction] {
         call([newState.rawValue]) {
-            skipper_session_ice_state_changed(handle, $0[0].base, $0[0].count, Self.milliseconds(now))
+            skipper_session_ice_state_changed(handle, $0[0].base, $0[0].count, CoreBoundary.milliseconds(now))
         }
     }
 
     public func tick(now: Date = Date()) -> [SessionAction] {
-        call { skipper_session_tick(handle, Self.milliseconds(now)) }
+        call { skipper_session_tick(handle, CoreBoundary.milliseconds(now)) }
     }
 
     // MARK: - Endings
@@ -182,10 +201,6 @@ public final class SessionStateMachine {
     }
 
     // MARK: - Boundary
-
-    private static func milliseconds(_ date: Date) -> Int64 {
-        Int64((date.timeIntervalSince1970 * 1000).rounded())
-    }
 
     private static func milliseconds(_ interval: TimeInterval) -> Int64 {
         Int64((interval * 1000).rounded())
@@ -220,6 +235,7 @@ public final class SessionStateMachine {
         switch state.phase {
         case "idle": phase = .idle
         case "connecting": phase = .connecting
+        case "awaitingConsent": phase = .awaitingConsent
         case "live": phase = .live
         case "reconnecting": phase = .reconnecting
         case "closed": phase = .closed(reason: state.closedReason ?? "")
@@ -239,6 +255,12 @@ public final class SessionStateMachine {
         peerDeviceID = state.peerDeviceId
         storedRememberedAccessCode = state.rememberedAccessCode
         serverAdvertisedSessionID = state.serverAdvertisedSessionId
+        storedConsentRequired = state.consentRequired
+        consentExpiresAt = state.consentExpiresAtMs.map(Self.date)
+    }
+
+    private static func date(_ milliseconds: Int64) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1000)
     }
 
     private static func action(_ raw: CoreAction) -> SessionAction {
@@ -277,6 +299,14 @@ public final class SessionStateMachine {
         case "sendBye":
             return .sendBye(sessionID: need(raw.sessionId, "sessionId"),
                             reason: need(raw.reason, "reason"))
+        case "promptForConsent":
+            return .promptForConsent(expiresAt: date(need(raw.expiresAtMs, "expiresAtMs")))
+        case "dismissConsentPrompt":
+            let name = need(raw.outcome, "outcome")
+            guard let outcome = ConsentOutcome(rawValue: name) else {
+                preconditionFailure("unknown consent outcome \(name) from the shared core")
+            }
+            return .dismissConsentPrompt(outcome: outcome)
         default:
             preconditionFailure("unknown action \(raw.action) from the shared core")
         }

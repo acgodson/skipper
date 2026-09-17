@@ -116,6 +116,10 @@ struct ControllerView: View {
                 StatusPill(sessionLabel, tone: sessionTone)
             }
 
+            if model.awaitingPeerAcceptance {
+                SkipperNote(EntitlementPresentation.awaitingAcceptanceSentence, tone: .attention)
+            }
+
             if model.isReconnecting {
                 SkipperNote("The network wobbled. The session is still open and is recovering by itself \u{2014} you will not be asked for the access code again.")
             }
@@ -136,6 +140,7 @@ struct ControllerView: View {
 
     private var sessionLabel: String {
         if model.isReconnecting { return "Reconnecting\u{2026}" }
+        if model.awaitingPeerAcceptance { return "Waiting\u{2026}" }
         if failedToConnect { return "Not connected" }
         if model.sessionState.isActive || model.isConnecting { return model.sessionState.summary }
         return model.signalingReady ? "Ready" : "Offline"

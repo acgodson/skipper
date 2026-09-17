@@ -12,6 +12,7 @@ use rc_session::{
 };
 use serde_json::{json, Value};
 
+mod consent;
 mod pake;
 mod sdp;
 mod signing;
@@ -67,6 +68,12 @@ fn action_json(action: &SessionAction) -> Value {
         SessionAction::SendBye { session_id, reason } => {
             json!({ "action": "sendBye", "sessionId": session_id, "reason": reason })
         }
+        SessionAction::PromptForConsent { expires_at_ms } => {
+            json!({ "action": "promptForConsent", "expiresAtMs": expires_at_ms })
+        }
+        SessionAction::DismissConsentPrompt { outcome } => {
+            json!({ "action": "dismissConsentPrompt", "outcome": outcome.name() })
+        }
     }
 }
 
@@ -99,6 +106,7 @@ fn state_json(machine: &SessionStateMachine) -> Value {
     let (phase, closed_reason) = match machine.phase() {
         SessionPhase::Idle => ("idle", None),
         SessionPhase::Connecting => ("connecting", None),
+        SessionPhase::AwaitingConsent => ("awaitingConsent", None),
         SessionPhase::Live => ("live", None),
         SessionPhase::Reconnecting => ("reconnecting", None),
         SessionPhase::Closed { reason } => ("closed", Some(reason.clone())),
@@ -118,6 +126,8 @@ fn state_json(machine: &SessionStateMachine) -> Value {
         "peerDeviceId": machine.peer_device_id(),
         "rememberedAccessCode": machine.remembered_access_code,
         "serverAdvertisedSessionId": machine.server_advertised_session_id,
+        "consentRequired": machine.consent_required,
+        "consentExpiresAtMs": machine.consent_expires_at_ms(),
     })
 }
 
@@ -473,6 +483,36 @@ pub unsafe extern "C" fn skipper_session_set_remembered_access_code(
         machine.remembered_access_code =
             unsafe { optional_text(access_code, access_code_len, "access_code") }?
                 .map(str::to_string);
+        Ok(vec![])
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn skipper_session_pake_succeeded(
+    session: *mut SkipperSession,
+    now_ms: i64,
+) -> *mut c_char {
+    dispatch(session, |machine| Ok(machine.pake_succeeded(now_ms)))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn skipper_session_consent_answered(
+    session: *mut SkipperSession,
+    allow: bool,
+    now_ms: i64,
+) -> *mut c_char {
+    dispatch(session, |machine| {
+        Ok(machine.consent_answered(allow, now_ms))
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn skipper_session_set_consent_required(
+    session: *mut SkipperSession,
+    consent_required: bool,
+) -> *mut c_char {
+    dispatch(session, |machine| {
+        machine.consent_required = consent_required;
         Ok(vec![])
     })
 }

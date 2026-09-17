@@ -27,6 +27,7 @@ ways a compromised server could still get between two peers after v2. A v3 endpo
 | 3 | `sdp` gains a required **`mac`**: HMAC-SHA256 under `sdpMacKey`, a key derived from the §2.17 session key, over the same bytes `sig` signs. An `sdp` that arrives before the exchange completes is dropped. | Channel binding: a signature proves *which device* sent the fingerprints; the MAC proves it was the device that just proved the access code **in this session**. The v2 session key was derived and never used. | §2.12, §2.17 |
 | 4 | A receiver refuses an `sdp` body containing a NUL byte or a CR that is not followed by LF, and, after `setRemoteDescription`, requires the fingerprints the WebRTC stack actually installed to equal the verified `fp`. | A NUL let the verifier (which read a C string) see a different SDP from the one the WebRTC stack installed. | §2.12 |
 | 5 | The host adds a **host-wide guess budget** (20 failures per rolling hour across all controllers) next to the per-key counter, and a failure is recorded **before** step 2 leaves the host, withdrawn only when step 3 verifies. | Under v2 a server could present a fresh `controllerPubkey` per guess, or end the exchange by starting a new session, and never be counted. | §2.17 |
+| 6 | *Additive.* `bye` gains the reason **`declined`**: a host with unattended access off asks its owner after the exchange verifies, and says `declined` on Decline or after 30 s. A controller waits up to 45 s for the peer, then `bye{timeout}`. No envelope or message changes. | Unattended access used to be only a sleep setting: with it off, the right code still connected with nobody asked. | §2.14, §2.17 Consent, §4.2 |
 
 The `sdp` signing string itself is unchanged: `"skipperdesk/sdp/v1|" sessionId "|" sdpType "|" fp`
 is exactly the domain-separated message for purpose `sdp` with payload
@@ -447,7 +448,20 @@ peer is detached are dropped with `error{peer_offline}` and re-gathered after re
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
 | `sessionId` | string | yes | |
-| `reason` | string | yes | One of `user_ended`, `host_ended`, `timeout`, `failed`, `code_refreshed`, `replaced`, `shutdown`, `error`, `peer_auth_failed`, `auth_failed`. |
+| `reason` | string | yes | One of `user_ended`, `host_ended`, `timeout`, `failed`, `code_refreshed`, `replaced`, `shutdown`, `error`, `peer_auth_failed`, `auth_failed`, `declined`. |
+
+`declined` means the §2.17 exchange **succeeded** — the controller knows the code — but the
+host's owner did not let it in: they clicked Decline, did not answer within 30 s, or the host
+declined on its own because this controller was declined twice in the last 10 minutes
+(§2.17 Consent). It is sent only by a host with unattended access off, only after step 3
+verified, and never before either side has started a peer connection. It is **not** a guess
+failure: the host does not charge the guess policy for it. A controller that receives it
+shows "The other Mac declined the connection.", keeps any remembered code (the code was
+right), and does not retry without the user.
+
+A controller whose peer connection has not come up **45 s** after its exchange completed
+ends the session with `bye{timeout}`. The 45 s is deliberately longer than the host's 30 s
+prompt, so an owner who clicks Allow late still gets a working session.
 
 `peer_auth_failed` is *v2* and means exactly one thing: the peer's `sdp` did not pass §2.12 —
 a bad signature, fingerprints that are not the ones in the SDP, or the wrong device key. It is
@@ -623,6 +637,41 @@ guess costs the host exactly when step 2 leaves it, and the host accounts for it
   host next to each other: the per-key counters by pubkey, the host-wide one under the key
   `host` with its failure timestamps (`failureTimesMs`). Refresh Code (§2.15) clears both.
 
+#### Consent
+
+The access code proves a controller *may* connect. Whether it connects *now* is the host
+owner's call, and the host's **Unattended access** setting says which rule applies:
+
+- **On** — the code is the permission. The peer connection starts as soon as step 3
+  verifies, as described above.
+- **Off** (the default on a new install) — the host asks its owner first. Nothing on the
+  wire changes; the host simply holds its side:
+  1. Only **after** step 3 verifies does the host ask. A controller that has not proved the
+     code never causes a prompt: a prompt for an unauthenticated peer would be a nuisance
+     and a phishing vector.
+  2. The host shows "Allow <controller> to control this Mac?" with Allow and Decline and a
+     30-second countdown. The 10-second exchange timer has already stopped; nothing else
+     times out while the owner decides.
+  3. The host starts no peer connection and applies no remote `sdp` or `ice` while it waits.
+     The controller has already started its own side and sent its offer; the host keeps the
+     latest offer and up to 64 candidates for this `sessionId`, and applies them — after the
+     usual §2.12 checks — only on Allow.
+  4. **Allow** starts the host's peer connection. **Decline**, or no answer within 30 s, is
+     `bye{declined}` (§2.14). A `bye` from either side, a new `session_start` or a lost
+     session withdraws the prompt.
+  5. The controller cannot tell a slow network from an owner deciding. From 2 s after its
+     exchange completes until the peer connection is up it says "Waiting for the other Mac
+     to accept…", and it gives up after 45 s with `bye{timeout}`.
+
+Prompts are rate-limited so an owner is never spammed: at most one prompt is open at a time
+(a new `session_start` replaces it), and a controller key that was declined — or left
+unanswered — **twice within 10 minutes** is declined without a prompt until the older of
+those two declines is 10 minutes old. Allow clears that controller's record. A controller
+that hangs up while the prompt is open is not counted. The policy is pure, in
+`core/crates/rc-identity` (`ConsentLedger`), keyed like the guess policy on the controller's
+pubkey; the state it gates (`awaitingConsent`) is part of the §4 session state machine in
+`core/crates/rc-session`.
+
 ---
 
 ## 3. Authorisation, rate limiting and session tokens
@@ -733,6 +782,16 @@ resume attempt is never rejected for a reason the user cannot understand.
                                                             │ resume
                                                             └──► half_open
 ```
+
+The **client** machine (`core/crates/rc-session`, pinned by
+`protocol/vectors/session-scenarios.json`) has its own phases: `idle`, `connecting`,
+`awaitingConsent`, `live`, `reconnecting`, `closed(reason)`. A session grant never starts the
+peer connection by itself; the verified §2.17 exchange does (`pakeSucceeded`). A host with
+unattended access off goes `connecting → awaitingConsent` there and emits
+`promptForConsent{expiresAtMs}`; the owner's answer or the 30 s `tick` leaves it with
+`dismissConsentPrompt{outcome}` (`allowed`, `declined`, `timedOut`, `cancelled`) and either
+`startPeerConnection` or `bye{declined}`. A signaling flap does not move a host out of
+`awaitingConsent`; the prompt and its deadline survive a resume.
 
 ### 4.3 Client algorithm on signaling-socket loss
 

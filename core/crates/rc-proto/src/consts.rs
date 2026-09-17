@@ -112,6 +112,7 @@ pub mod bye {
     pub const ERROR: &str = "error";
     pub const PEER_AUTH_FAILED: &str = "peer_auth_failed";
     pub const AUTH_FAILED: &str = "auth_failed";
+    pub const DECLINED: &str = "declined";
 }
 
 pub mod session_state {

@@ -63,7 +63,9 @@ struct MenuBarContent: View {
                 }
             }
 
-            if model.sessionActive {
+            if let request = model.consentRequest {
+                ConsentPromptView(request: request, style: .menu)
+            } else if model.sessionActive {
                 SkipperNote("Remote session active")
             }
 

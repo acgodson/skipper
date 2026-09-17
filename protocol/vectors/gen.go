@@ -205,6 +205,10 @@ func main() {
 		"the host refused the access code, or refused to try one from a locked-out controller",
 		"", "", ts,
 		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByeAuthFailed})
+	add("bye_declined", "signaling", p.TypeBye,
+		"the host proved the code but its owner declined the connection, or did not answer in 30 s",
+		"", "", ts,
+		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByeDeclined})
 
 	add("pake_step1", "signaling", p.TypePake,
 		"v2: opaque to the server, relayed verbatim like sdp and ice", "", "", ts,

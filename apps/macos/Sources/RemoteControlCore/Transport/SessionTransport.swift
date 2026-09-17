@@ -8,6 +8,16 @@ public enum SessionState: Equatable {
     case reconnecting
     case failed(String)
 
+    public init(phase: SessionPhase, sessionID: String?) {
+        switch phase {
+        case .idle: self = .idle
+        case .connecting, .awaitingConsent: self = .connecting
+        case .live: self = sessionID.map { .connected(sessionID: $0) } ?? .connecting
+        case .reconnecting: self = .reconnecting
+        case .closed(let reason): self = reason == Wire.ByeReason.userEnded ? .idle : .failed(reason)
+        }
+    }
+
     public var isActive: Bool {
         switch self {
         case .connected, .reconnecting: return true

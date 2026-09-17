@@ -68,6 +68,7 @@ public enum Wire {
         public static let error = "error"
         public static let peerAuthFailed = "peer_auth_failed"
         public static let authFailed = "auth_failed"
+        public static let declined = "declined"
     }
 
     public typealias Role = SessionRole

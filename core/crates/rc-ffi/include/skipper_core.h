@@ -12,7 +12,8 @@
  *     "signalingUp":B, "resumeInFlight":B, "relayOnly":B, "isOfferer":B,
  *     "iceState":S,
  *     "sessionId":S|null, "sessionToken":S|null, "peerDeviceId":S|null,
- *     "rememberedAccessCode":S|null, "serverAdvertisedSessionId":S|null } }
+ *     "rememberedAccessCode":S|null, "serverAdvertisedSessionId":S|null,
+ *     "consentRequired":B, "consentExpiresAtMs":N|null } }
  * or, rejected: { "ok": false, "error": "<message>", "kind"?: "<kind>" }.
  * Actions match protocol/vectors/session-scenarios.json; "phase" and
  * "iceState" match the SessionPhase/IceLinkState variant names, lowercased.
@@ -115,6 +116,36 @@ char *skipper_session_set_relay_only(SkipperSession *session, bool relay_only);
 char *skipper_session_set_remembered_access_code(SkipperSession *session,
                                                  const uint8_t *access_code,
                                                  size_t access_code_len);
+
+/*
+ * Host consent (PROTOCOL.md §2.17 Consent). The peer connection starts only
+ * after pake_succeeded. A host with consent_required enters "awaitingConsent"
+ * instead and emits promptForConsent{"expiresAtMs":N}; consent_answered or the
+ * 30 s tick timeout leaves it with dismissConsentPrompt{"outcome":S}, S one of
+ * "allowed", "declined", "timedOut", "cancelled". Declined and timed out end
+ * the session with bye{declined}. Either side whose peer connection has not
+ * come up 45 s after it started ends the session with bye{timeout}.
+ */
+char *skipper_session_pake_succeeded(SkipperSession *session, int64_t now_ms);
+
+char *skipper_session_consent_answered(SkipperSession *session, bool allow, int64_t now_ms);
+
+char *skipper_session_set_consent_required(SkipperSession *session, bool consent_required);
+
+/*
+ * The host's per-controller consent ledger. Pure, like guess_*: pass back the
+ * ledger JSON received (NULL/"" for a fresh one) and persist what comes out.
+ *   "prompt":B, "retryAfterMs":N, "ledger":{"declineTimesMs":[N]}
+ * "prompt" is false while the controller has two declines inside 10 minutes:
+ * the host then declines without asking.
+ */
+char *skipper_consent_admit(const uint8_t *ledger_json, size_t ledger_json_len, int64_t now_ms);
+
+char *skipper_consent_declined(const uint8_t *ledger_json, size_t ledger_json_len,
+                               int64_t now_ms);
+
+char *skipper_consent_allowed(const uint8_t *ledger_json, size_t ledger_json_len,
+                              int64_t now_ms);
 
 /*
  * Domain-separated device-key signatures (PROTOCOL.md §3.1). A device key

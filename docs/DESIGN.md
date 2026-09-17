@@ -105,7 +105,8 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
 - **Menu-bar menu** — a 280 pt `surface` panel: "SkipperDesk" (`heading`) + status pill, Device ID
   (mono), one state line, divider, the account row ("Sign In…", or avatar + label and "Sign Out…"),
   divider, then actions as full-width rows with a glyph (hover = muted fill):
-  Open SkipperDesk (⌘O), Disconnect Session (disabled with no session), Quit (⌘Q).
+  Open SkipperDesk (⌘O), Disconnect Session (disabled with no session), Quit (⌘Q). While a consent
+  prompt is open, its menu style replaces the state line.
 - **Session chrome** — the remote desktop fills the window on `stage`. A floating capsule toolbar
   (ultra-thin material, `high` elevation) is centred at the top: peer name + state line, capture-mode
   toggle (accent fill when keys go to the remote), quality menu, Disconnect (critical text, ⌘.).
@@ -113,6 +114,21 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
   waiting for video and while reconnecting; otherwise it hides after 2 s. The gesture palette is a
   40 pt accent circle bottom-right that opens a material list of gestures. Keyboard capture draws a
   3 pt accent frame round the stage.
+- **Consent prompt** (`SkipperConsentPrompt`) — asks the host's owner whether a controller that
+  has just proved the access code may connect. Raised-hand glyph in `accent`, title "Allow
+  <controller> to control this Mac?" (the trusted-controller label, else "another Mac"), a
+  `caption` sentence saying the code was entered and that no answer declines, the controller's
+  Device ID in `codeCaption`, then an `attention` status pill with the live countdown ("Declines in
+  30 seconds") and two buttons on the right: *Decline* (secondary, Esc) and *Allow* (primary, no
+  Return shortcut, so a stray keypress never lets anyone in). Two styles: **window** — `surface`,
+  35 %-accent stroke, `large` radius, `high` elevation, `xl` padding, centred at most 440 pt wide
+  over a `scrim` that covers the whole window whatever screen is showing; **menu** — the same
+  content on `accentSoft` with `m` padding, at the top of the menu-bar panel in place of the
+  state line. When a prompt opens the app comes to the front and opens its window, the menu-bar
+  glyph becomes a raised hand, and, if SkipperDesk is not the frontmost app, macOS shows a
+  time-sensitive notification with the same title (permission is asked the first time; if it is
+  refused the window prompt still appears). Only one prompt is ever open; answering in either
+  place closes both.
 - **Stage overlay card** — `scrim` fill, `large` radius, small spinner, `heading` title, `caption`
   message in white. Used for "waiting for video" and "Reconnecting…".
 
@@ -127,6 +143,14 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
 | Session active | Host banner (with End Session) + pill; menu pill | accent, "Session active" / "Remote session active" |
 | Error | Controller connect banner; account, capture, identity banners | critical banner, one plain sentence |
 | Missing permission | Host only, only when missing | attention banner per permission: Open Settings + Ask macOS |
+| Asking to connect | Host window overlay + menu panel (+ notification when in the background) | consent prompt with a 30 s countdown; no answer declines |
+| Waiting to be accepted | Controller hero | attention note "Waiting for the other Mac to accept…", pill "Waiting…"; after a decline the critical banner "The other Mac declined the connection." |
+
+**Unattended access** is a toggle row whose detail follows its state — on: "Anyone with the code
+can connect without you here."; off: "You will be asked to allow each connection." It is off on a
+new install (an existing install keeps what it had). While it is off the host hero carries one
+extra note: "Leaving this Mac on its own? Turn on Unattended access below so connections do not
+wait for someone to click Allow." The keep-awake assertion follows the same toggle.
 
 Nothing is shown for a healthy permission. Trusted controllers list each Mac with its label and
 when it last connected; each row has a quiet destructive "Remove" for just that one (no

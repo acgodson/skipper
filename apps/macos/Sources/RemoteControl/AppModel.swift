@@ -37,6 +37,7 @@ final class AppModel: ObservableObject {
     let launchAtLogin = LaunchAtLogin()
     let updates = UpdateChecker()
     private let stayAwake = StayAwake()
+    private let consentNotifier = ConsentNotifier()
     private let fileStore = IdentityFileStore()
     private let browserOpener = AccountBrowserOpener()
     private var observers: [Any] = []
@@ -49,7 +50,8 @@ final class AppModel: ObservableObject {
 
     init() {
         self.developmentServerBanner = BackendOverrides.fromEnvironment().developmentBannerText
-        let settings = AppSettings()
+        let existingIdentity = FileManager.default.fileExists(atPath: IdentityFileStore().fileURL.path)
+        let settings = AppSettings(isExistingInstall: existingIdentity)
         self.settings = settings
         self.permissions = PermissionsModel()
         loadIdentity()
@@ -171,7 +173,10 @@ final class AppModel: ObservableObject {
         settings.$unattendedAccess
             .dropFirst()
             .sink { [weak self] _ in
-                Task { @MainActor in self?.applyStayAwake() }
+                Task { @MainActor in
+                    self?.applyStayAwake()
+                    self?.applyConsentRequirement()
+                }
             }
             .store(in: &cancellables)
     }
@@ -213,6 +218,7 @@ final class AppModel: ObservableObject {
             self?.sessionState = .idle
         }
         coordinator.setQuality(settings.qualityMode.wireMode)
+        applyConsentRequirement()
         coordinator.start()
         startAutoConnectIfRequested()
     }
@@ -265,6 +271,11 @@ final class AppModel: ObservableObject {
             if case .connecting = coordinator.phase {} else { isConnecting = false }
         case .silentReconnect:
             connectError = nil
+        case .consentRequested(let request):
+            consentNotifier.bringForward()
+            consentNotifier.post(request)
+        case .consentEnded:
+            consentNotifier.withdraw()
         default:
             break
         }
@@ -331,6 +342,25 @@ final class AppModel: ObservableObject {
 
     func retryAccount() {
         Task { await account?.restore() }
+    }
+
+    // MARK: - Host consent
+
+    private func applyConsentRequirement() {
+        coordinator?.consentRequired = !settings.unattendedAccess
+    }
+
+    var consentRequest: ConsentRequest? {
+        settings.role == .host ? coordinator?.consentRequest : nil
+    }
+
+    var awaitingPeerAcceptance: Bool {
+        settings.role == .controller && coordinator?.awaitingPeerAcceptance == true
+    }
+
+    func answerConsent(allow: Bool) {
+        guard let coordinator else { return }
+        Task { await coordinator.answerConsent(allow: allow) }
     }
 
     // MARK: - Host

@@ -21,6 +21,7 @@ private struct Step: Decodable {
     let expectHasSession: Bool?
     let expectResumeInFlight: Bool?
     let expectRelayOnly: Bool?
+    let expectConsentRequired: Bool?
 }
 
 private enum JSONValue: Decodable {
@@ -90,6 +91,13 @@ private func action(from obj: [String: JSONValue], _ ctx: String) throws -> Sess
     case "sendBye":
         return .sendBye(sessionID: try string(obj, "sessionId", ctx),
                         reason: try string(obj, "reason", ctx))
+    case "promptForConsent":
+        guard let at = obj["expiresAt"]?.number else { throw fail("\(ctx): expiresAt") }
+        return .promptForConsent(expiresAt: Date(timeIntervalSinceReferenceDate: at))
+    case "dismissConsentPrompt":
+        let name = try string(obj, "outcome", ctx)
+        guard let outcome = ConsentOutcome(rawValue: name) else { throw fail("\(ctx): outcome \(name)") }
+        return .dismissConsentPrompt(outcome: outcome)
     case let other: throw fail("\(ctx): unknown action \(other)")
     }
 }
@@ -103,7 +111,7 @@ private func icd(_ name: String, _ ctx: String) throws -> ICELinkState {
 
 private func phaseMatches(_ phase: SessionPhase, _ expected: String) -> Bool {
     switch (phase, expected) {
-    case (.idle, "idle"), (.connecting, "connecting"),
+    case (.idle, "idle"), (.connecting, "connecting"), (.awaitingConsent, "awaitingConsent"),
          (.live, "live"), (.reconnecting, "reconnecting"):
         return true
     case (.closed(let reason), let e) where e.hasPrefix("closed:"):
@@ -180,6 +188,15 @@ public let scenarioSuite = TestSuite("Shared state-machine scenarios (through th
                     actions = machine.closeLocally(reason: try string(e, "reason", ctx))
                 case "userEnded":
                     actions = machine.userEnded(reason: try string(e, "reason", ctx))
+                case "pakeSucceeded":
+                    actions = machine.pakeSucceeded(now: now)
+                case "consentAnswered":
+                    guard let allow = e["allow"]?.boolean else { throw fail("\(ctx): allow") }
+                    actions = machine.consentAnswered(allow: allow, now: now)
+                case "setConsentRequired":
+                    guard let required = e["required"]?.boolean else { throw fail("\(ctx): required") }
+                    machine.consentRequired = required
+                    actions = []
                 case let other:
                     throw fail("\(ctx): unknown event \(other)")
                 }
@@ -198,6 +215,9 @@ public let scenarioSuite = TestSuite("Shared state-machine scenarios (through th
                 }
                 if let inFlight = step.expectResumeInFlight {
                     try expectEqual(machine.resumeInFlight, inFlight, "\(ctx): resumeInFlight")
+                }
+                if let required = step.expectConsentRequired {
+                    try expectEqual(machine.consentRequired, required, "\(ctx): consentRequired")
                 }
                 if let relayOnly = step.expectRelayOnly {
                     try expectEqual(machine.relayOnly, relayOnly, "\(ctx): relayOnly")

@@ -65,7 +65,7 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(installUpdatesAutomatically, forKey: Key.installUpdatesAutomatically) }
     }
 
-    public init(defaults: UserDefaults? = nil) {
+    public init(defaults: UserDefaults? = nil, isExistingInstall: Bool = false) {
         let resolved: UserDefaults
         if let defaults {
             resolved = defaults
@@ -78,7 +78,6 @@ public final class AppSettings: ObservableObject {
         self.defaults = resolved
         resolved.register(defaults: [
             Key.role: AppRole.host.rawValue,
-            Key.unattendedAccess: true,
             Key.clipboardSync: true,
             Key.qualityMode: QualityMode.balanced.rawValue,
             Key.savedPeerLabel: "",
@@ -87,13 +86,19 @@ public final class AppSettings: ObservableObject {
             Key.installUpdatesAutomatically: true,
         ])
         self.role = AppRole(rawValue: resolved.string(forKey: Key.role) ?? "") ?? .host
-        self.unattendedAccess = resolved.bool(forKey: Key.unattendedAccess)
+        self.unattendedAccess = Self.unattendedAccess(in: resolved, isExistingInstall: isExistingInstall)
         self.clipboardSync = resolved.bool(forKey: Key.clipboardSync)
         self.qualityMode = QualityMode(rawValue: resolved.string(forKey: Key.qualityMode) ?? "") ?? .balanced
         self.savedPeerLabel = resolved.string(forKey: Key.savedPeerLabel) ?? ""
         self.savedPeerDeviceID = resolved.string(forKey: Key.savedPeerDeviceID) ?? ""
         self.rememberPeerCode = resolved.bool(forKey: Key.rememberPeerCode)
         self.installUpdatesAutomatically = resolved.bool(forKey: Key.installUpdatesAutomatically)
+    }
+
+    private static func unattendedAccess(in defaults: UserDefaults, isExistingInstall: Bool) -> Bool {
+        if let stored = defaults.object(forKey: Key.unattendedAccess) as? Bool { return stored }
+        defaults.set(isExistingInstall, forKey: Key.unattendedAccess)
+        return isExistingInstall
     }
 
     public var hasSavedPeer: Bool { DeviceID.canonicalize(savedPeerDeviceID) != nil }

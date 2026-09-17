@@ -7,7 +7,7 @@ public enum AccessCodeExposure {
 
     public static func sessionIsOpen(phase: SessionPhase?, captureState: CaptureState?) -> Bool {
         switch phase {
-        case .connecting, .live, .reconnecting: return true
+        case .connecting, .awaitingConsent, .live, .reconnecting: return true
         case .idle, .closed, .none: break
         }
         switch captureState {

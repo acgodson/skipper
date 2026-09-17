@@ -22,6 +22,9 @@ at the remote Mac. No session time limit.
 - Trusted controllers list: hosts remember a controller's public key after a successful code, so
   later connects from it are key-only. Refresh Code clears the list.
 - Online/offline status · Unattended access on/off · Clipboard sync on/off.
+- Unattended access off (the default on a new install): after a controller proves the code, the
+  host asks "Allow … to control this Mac?" and waits up to 30 s; no answer declines. On: the code
+  alone is permission, and the Mac is kept awake.
 - A visible "Remote session active" indicator and a local way to end the session.
   Never covert.
 

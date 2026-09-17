@@ -3,6 +3,12 @@ import AppKit
 import CoreGraphics
 import RemoteControlCore
 
+enum ConsentAnswer: String {
+    case allow
+    case decline
+    case timeout
+}
+
 @MainActor
 final class Node {
 
@@ -10,13 +16,25 @@ final class Node {
     let coordinator: SessionCoordinator
     let identity: IdentityStore
     private var devSignIn: DevSignIn?
+    private let consentAnswer: ConsentAnswer?
 
-    init(role: Wire.Role, devSignInEmail: String?) throws {
+    init(role: Wire.Role, devSignInEmail: String?, consentAnswer: ConsentAnswer?) throws {
         self.role = role
         self.identity = try IdentityStore()
         self.coordinator = SessionCoordinator(identity: identity, role: role)
+        self.consentAnswer = consentAnswer
         self.devSignIn = devSignInEmail.map { DevSignIn(email: $0, identity: identity) }
+        coordinator.consentRequired = consentAnswer != nil
         coordinator.onEvent = { [weak self] event in self?.report(event) }
+    }
+
+    private func answer(_ request: ConsentRequest) {
+        guard let consentAnswer, consentAnswer != .timeout else { return }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            emit("consent_answer", ["allow": consentAnswer == .allow, "sessionId": request.sessionID])
+            await coordinator.answerConsent(allow: consentAnswer == .allow)
+        }
     }
 
     private func signInOnce(signalingDeviceID: String) {
@@ -98,6 +116,17 @@ final class Node {
             emit("pake_ok", ["peerPubkey": peerPubkey])
         case .pakeFailed(let reason, let authentication):
             emit("pake_failed", ["reason": reason, "auth": authentication])
+        case .consentRequested(let request):
+            emit("consent_prompt", [
+                "title": request.title,
+                "sessionId": request.sessionID,
+                "secondsRemaining": request.secondsRemaining(),
+            ])
+            answer(request)
+        case .consentEnded(let outcome, let automatic):
+            emit("consent_ended", ["outcome": outcome.rawValue, "automatic": automatic])
+        case .awaitingPeerAcceptance:
+            emit("awaiting_acceptance", ["message": EntitlementPresentation.awaitingAcceptanceSentence])
         case .captureState(let state):
             switch state {
             case .idle: emit("capture", ["state": "idle"])
@@ -125,7 +154,11 @@ final class Node {
     }
 
     private func emitConnectError(_ failure: ConnectFailure) {
-        var fields: [String: Any] = ["code": failure.code, "message": failure.localizedDescription]
+        var fields: [String: Any] = [
+            "code": failure.code,
+            "message": failure.localizedDescription,
+            "sentence": EntitlementPresentation.sentence(for: failure),
+        ]
         switch failure {
         case .rateLimited(let retry): fields["retryAfterSec"] = retry
         case .entitlement(let reason, _): fields["reason"] = reason ?? ""
@@ -169,6 +202,7 @@ final class Node {
         switch phase {
         case .idle: return "idle"
         case .connecting: return "connecting"
+        case .awaitingConsent: return "awaitingConsent"
         case .live: return "live"
         case .reconnecting: return "reconnecting"
         case .closed(let reason): return "closed:\(reason)"
@@ -335,6 +369,8 @@ final class Node {
         case "status":
             emit("status", [
                 "phase": describe(coordinator.phase),
+                "consentRequired": coordinator.consentRequired,
+                "consentPending": coordinator.consentRequest != nil,
                 "signaling": describe(coordinator.signalingState),
                 "ice": coordinator.iceState.rawValue,
                 "relayOnly": coordinator.isRelayOnly,
@@ -378,8 +414,20 @@ func bootstrap() {
         }
         devSignInEmail = arguments[flag + 1]
     }
+    var consentAnswer: ConsentAnswer?
+    if let flag = arguments.firstIndex(of: "--consent") {
+        guard DevelopmentHooks.areCompiledIn else {
+            FileHandle.standardError.write(Data("--consent needs a build with test hooks\n".utf8))
+            exit(2)
+        }
+        guard flag + 1 < arguments.count, let parsed = ConsentAnswer(rawValue: arguments[flag + 1]) else {
+            FileHandle.standardError.write(Data("usage: rc-node [--consent allow|decline|timeout]\n".utf8))
+            exit(2)
+        }
+        consentAnswer = parsed
+    }
     do {
-        let node = try Node(role: role, devSignInEmail: devSignInEmail)
+        let node = try Node(role: role, devSignInEmail: devSignInEmail, consentAnswer: consentAnswer)
         sharedNode = node
         node.start()
     } catch {
