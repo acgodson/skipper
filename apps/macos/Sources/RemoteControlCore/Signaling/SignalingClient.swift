@@ -56,8 +56,25 @@ public final class SignalingClient {
     public weak var delegate: SignalingClientDelegate?
 
     public private(set) var lastHelloOK: HelloOKPayload?
-    public var iceServers: [ICEServerSpec] { lastHelloOK?.iceServers ?? [] }
     public private(set) var watchedDeviceIDs: Set<String> = []
+    private var sessionICE: (sessionID: String, servers: [ICEServerSpec])?
+    private var connectAllowedAfter: Date?
+
+    // TODO: coordinator: SessionCoordinator.swift `startPeer`, pass `signaling.iceServers(forSession: machine.sessionID)` instead of `signaling.iceServers`.
+    public var iceServers: [ICEServerSpec] { iceServers(forSession: sessionICE?.sessionID) }
+
+    public func iceServers(forSession sessionID: String?) -> [ICEServerSpec] {
+        if let sessionICE, sessionICE.sessionID == sessionID { return sessionICE.servers }
+        return lastHelloOK?.iceServers ?? []
+    }
+
+    private func adoptSessionICEServers(_ servers: [ICEServerSpec]?, sessionID: String) {
+        guard let servers else {
+            if sessionICE?.sessionID != sessionID { sessionICE = nil }
+            return
+        }
+        sessionICE = (sessionID, servers)
+    }
 
     public let config: RCConfig
     private let identity: IdentityStore
@@ -123,10 +140,10 @@ public final class SignalingClient {
                     return
                 }
 
-                let delay = backoff.next()
+                let delay = max(backoff.next(), TimeInterval((error as? WireError)?.retryAfterSec ?? 0))
                 state = .waitingToRetry(delay)
                 do {
-                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    try await Task.sleep(nanoseconds: WireBounds.nanoseconds(delay))
                 } catch {
                     return
                 }
@@ -142,7 +159,6 @@ public final class SignalingClient {
         configuration.waitsForConnectivity = false
         let session = URLSession(configuration: configuration)
         let task = session.webSocketTask(with: config.signalingURL)
-        // Frame cap must match the protocol's own limit or the two sides disagree on what fits in one message.
         task.maximumMessageSize = 256 * 1024
         self.urlSession = session
         self.socket = task
@@ -207,19 +223,22 @@ public final class SignalingClient {
         unclaimedChallenge = nil
 
         var nonce = try await nextChallengeNonce(what: "challenge")
+        var registeredOnThisSocket = false
         if !identity.isServerRegistered {
-            nonce = try await register(nonce: nonce, preferredDeviceID: nil)
+            nonce = try await register(nonce: nonce, afterUnknownDevice: false)
+            registeredOnThisSocket = true
         }
 
         let ok: HelloOKPayload
         do {
             ok = try await hello(nonce: nonce)
-        } catch let error as WireError where error.serverCode == Wire.ErrorCode.unknownDevice {
+        } catch let error as WireError where error.serverCode == Wire.ErrorCode.unknownDevice && !registeredOnThisSocket {
             RCLog.info("the server has no record of this Device ID; registering again with the same key")
             let retryNonce = try await nextChallengeNonce(what: "the challenge after unknown_device")
-            let registeredNonce = try await register(nonce: retryNonce, preferredDeviceID: identity.deviceID)
+            let registeredNonce = try await register(nonce: retryNonce, afterUnknownDevice: true)
             ok = try await hello(nonce: registeredNonce)
         }
+        identity.storeDeviceIDCertificate(ok.idCert)
         lastHelloOK = ok
         state = .authenticated(deviceID: ok.deviceId)
 
@@ -248,21 +267,26 @@ public final class SignalingClient {
         return try reply.decodePayload(HelloOKPayload.self)
     }
 
-    private func register(nonce: String, preferredDeviceID: String?) async throws -> String {
+    private func register(nonce: String, afterUnknownDevice: Bool) async throws -> String {
+        let plan = RegistrationRequest.make(deviceID: identity.deviceID,
+                                            certificate: identity.deviceIDCertificate,
+                                            afterUnknownDevice: afterUnknownDevice)
         let payload = RegisterPayload(
             pubkey: identity.publicKeyBase64,
             sig: try signature(.register, overNonce: nonce),
             label: config.deviceLabel,
-            preferredDeviceId: preferredDeviceID)
+            preferredDeviceId: plan.preferredDeviceId,
+            idCert: plan.idCert)
         let reply = try await request(type: Wire.MessageType.register, payload: payload,
                                       expect: [Wire.MessageType.registerOK],
                                       timeout: config.handshakeTimeout)
         let registered = try reply.decodePayload(RegisterOKPayload.self)
-        if let preferredDeviceID {
+        if let preferredDeviceID = plan.preferredDeviceId {
             try identity.adoptReassignedDeviceID(registered.deviceId, previous: preferredDeviceID)
         } else {
             try identity.adoptServerAssignedDeviceID(registered.deviceId)
         }
+        identity.storeDeviceIDCertificate(registered.idCert)
         identity.markServerRegistered()
         return try await nextChallengeNonce(what: "the post-registration challenge")
     }
@@ -279,9 +303,10 @@ public final class SignalingClient {
     }
 
     private func heartbeatLoop(on task: URLSessionWebSocketTask) async throws {
-        let interval = TimeInterval(lastHelloOK?.heartbeatSec ?? Int(config.heartbeatInterval))
+        let interval = lastHelloOK?.heartbeatInterval
+            ?? TimeInterval(WireBounds.heartbeatSeconds(WireBounds.int(config.heartbeatInterval)))
         while !Task.isCancelled {
-            try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            try await Task.sleep(nanoseconds: WireBounds.nanoseconds(interval))
             try await sendFireAndForget(type: Wire.MessageType.heartbeat, payload: EmptyPayload())
         }
     }
@@ -330,6 +355,11 @@ public final class SignalingClient {
         if envelope.type == Wire.MessageType.challenge {
             unclaimedChallenge = envelope
             return
+        }
+
+        if envelope.type == Wire.MessageType.sessionStart,
+           let grant = try? envelope.decodePayload(SessionGrantPayload.self) {
+            adoptSessionICEServers(grant.iceServers, sessionID: grant.sessionId)
         }
 
         if let protocolError = envelope.asProtocolError,
@@ -397,7 +427,7 @@ public final class SignalingClient {
         let token = waiterCounter
 
         let timeoutTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: WireBounds.nanoseconds(timeout))
             guard !Task.isCancelled else { return }
             await self?.timeOutWaiter(token: token, what: what)
         }
@@ -435,12 +465,31 @@ public final class SignalingClient {
                           expect: [Wire.MessageType.unwatchOK])
     }
 
-    public func connectRequest(deviceID: String) async throws -> SessionGrantPayload {
-        let reply = try await request(
-            type: Wire.MessageType.connectReq,
-            payload: ConnectReqPayload(deviceId: deviceID),
-            expect: [Wire.MessageType.connectOK])
-        return try reply.decodePayload(SessionGrantPayload.self)
+    public func connectRequest(deviceID: String, now: Date = Date()) async throws -> SessionGrantPayload {
+        if let wait = ConnectRateGate.remainingSeconds(until: connectAllowedAfter, now: now) {
+            throw WireError.protocolError(code: Wire.ErrorCode.rateLimited,
+                                          message: "waiting before the next connect request",
+                                          retryAfterSec: wait)
+        }
+        let reply: Envelope
+        do {
+            reply = try await request(
+                type: Wire.MessageType.connectReq,
+                payload: ConnectReqPayload(deviceId: deviceID),
+                expect: [Wire.MessageType.connectOK])
+        } catch let error as WireError where error.serverCode == Wire.ErrorCode.rateLimited {
+            connectAllowedAfter = ConnectRateGate.allowedAfter(retryAfterSec: error.retryAfterSec, now: now)
+            throw error
+        }
+        let grant = try reply.decodePayload(SessionGrantPayload.self)
+        adoptSessionICEServers(grant.iceServers, sessionID: grant.sessionId)
+        do {
+            try identity.hostKeyPins.admit(grant)
+        } catch {
+            try? await sendBye(sessionID: grant.sessionId, reason: Wire.ByeReason.peerAuthFailed)
+            throw error
+        }
+        return grant
     }
 
     public func resume(sessionID: String, sessionToken: String) async throws -> ResumeOKPayload {
@@ -456,7 +505,9 @@ public final class SignalingClient {
             type: Wire.MessageType.renew,
             payload: ResumePayload(sessionId: sessionID, sessionToken: sessionToken),
             expect: [Wire.MessageType.renewOK])
-        return try reply.decodePayload(RenewOKPayload.self)
+        let renewed = try reply.decodePayload(RenewOKPayload.self)
+        if let servers = renewed.iceServers { adoptSessionICEServers(servers, sessionID: renewed.sessionId) }
+        return renewed
     }
 
     public func sendSDP(sessionID: String, type: String, sdp: String, restart: Bool,
@@ -469,6 +520,7 @@ public final class SignalingClient {
                                 pubkey: signature?.pubkey,
                                 sig: signature?.signature,
                                 mac: signature?.mac))
+        if signature != nil { identity.hostKeyPins.confirm(sessionID: sessionID) }
     }
 
     public func sendICE(sessionID: String, candidate: String, sdpMid: String?, sdpMLineIndex: Int?) async throws {
@@ -494,9 +546,40 @@ public final class SignalingClient {
     }
 }
 
-// MARK: - AccessCodeSink
+public struct RegistrationRequest: Equatable {
+    public let preferredDeviceId: String?
+    public let idCert: String?
 
-extension IdentityStore: DeviceMessageSigner {}
+    public init(preferredDeviceId: String?, idCert: String?) {
+        self.preferredDeviceId = preferredDeviceId
+        self.idCert = idCert
+    }
+
+    public static func make(deviceID: String, certificate: String?, afterUnknownDevice: Bool) -> RegistrationRequest {
+        let certificate = (certificate?.isEmpty == false) ? certificate : nil
+        guard afterUnknownDevice || certificate != nil,
+              let canonical = DeviceID.canonicalize(deviceID) else {
+            return RegistrationRequest(preferredDeviceId: nil, idCert: nil)
+        }
+        return RegistrationRequest(preferredDeviceId: canonical, idCert: certificate)
+    }
+}
+
+public enum ConnectRateGate {
+
+    public static let fallbackSeconds = 60
+
+    public static func allowedAfter(retryAfterSec: Int?, now: Date) -> Date {
+        now.addingTimeInterval(TimeInterval(WireBounds.retryAfterSeconds(retryAfterSec ?? fallbackSeconds)))
+    }
+
+    public static func remainingSeconds(until allowedAfter: Date?, now: Date) -> Int? {
+        guard let allowedAfter, allowedAfter > now else { return nil }
+        return Int(allowedAfter.timeIntervalSince(now).rounded(.up))
+    }
+}
+
+// MARK: - AccessCodeSink
 
 extension SignalingClient: AccessCodeSink {
     public nonisolated func accessCodeDidChange(deviceID: String) async throws {

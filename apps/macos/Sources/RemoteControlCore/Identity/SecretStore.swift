@@ -7,6 +7,11 @@ public enum SecretAccount: String, CaseIterable {
     case peerCodes = "peer-codes"
     case trustedControllers = "trusted-controllers"
     case guessCounters = "guess-counters"
+    case deviceIDCertificate = "device-id-cert"
+    case hostKeyPins = "host-key-pins"
+    case hostSettings = "host-settings"
+
+    public static let survivesIdentityReset: Set<SecretAccount> = [.hostSettings]
 }
 
 public enum SecretStoreError: Error, LocalizedError {
@@ -87,6 +92,14 @@ public struct TrustedController: Codable, Equatable {
     }
 }
 
+public struct HostSettings: Codable, Equatable {
+    public var unattendedAccess: Bool
+
+    public init(unattendedAccess: Bool) {
+        self.unattendedAccess = unattendedAccess
+    }
+}
+
 public struct SecretStore {
 
     private let blobs: SecretBlobStore
@@ -134,6 +147,37 @@ public struct SecretStore {
         try write(codes, to: .peerCodes)
     }
 
+    // MARK: This Mac's Device ID certificate (PROTOCOL.md v4 §1)
+
+    public func deviceIDCertificate() throws -> String? {
+        try read(.deviceIDCertificate)
+    }
+
+    public func saveDeviceIDCertificate(_ certificate: String) throws {
+        guard !certificate.isEmpty else { return }
+        try write(certificate, to: .deviceIDCertificate)
+    }
+
+    // MARK: Host keys pinned per Device ID (controller side)
+
+    public func hostKeyPins() throws -> [String: String] {
+        try map(.hostKeyPins)
+    }
+
+    public func saveHostKeyPins(_ pins: [String: String]) throws {
+        try write(pins, to: .hostKeyPins)
+    }
+
+    // MARK: Host settings that decide who may connect
+
+    public func hostSettings() throws -> HostSettings? {
+        try read(.hostSettings)
+    }
+
+    public func saveHostSettings(_ settings: HostSettings) throws {
+        try write(settings, to: .hostSettings)
+    }
+
     // MARK: Controllers that have proved the code (host side)
 
     public func trustedControllers() throws -> [String: TrustedController] {
@@ -172,11 +216,19 @@ public struct SecretStore {
 
     public func revokeControllers() throws {
         try blobs.remove(.trustedControllers)
-        try blobs.remove(.guessCounters)
+    }
+
+    public func resetControllerGuessCounters() throws {
+        let counters: [String: GuessCounter] = try map(.guessCounters)
+        let hostWide = counters.filter { $0.key == GuessLedger.hostKey }
+        guard hostWide.count != counters.count else { return }
+        try write(hostWide, to: .guessCounters)
     }
 
     public func discardEverything() {
-        for account in SecretAccount.allCases { try? blobs.remove(account) }
+        for account in SecretAccount.allCases where !SecretAccount.survivesIdentityReset.contains(account) {
+            try? blobs.remove(account)
+        }
     }
 
     // MARK: Boundary

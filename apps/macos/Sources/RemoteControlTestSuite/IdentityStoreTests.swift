@@ -1,6 +1,6 @@
 import Foundation
 import RCTestKit
-import RemoteControlCore
+@_spi(DeviceSigning) import RemoteControlCore
 import SkipperCore
 
 @MainActor

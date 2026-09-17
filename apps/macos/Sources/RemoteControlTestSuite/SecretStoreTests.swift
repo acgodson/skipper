@@ -103,7 +103,7 @@ public let secretStoreSuite = TestSuite("SecretStore (PROTOCOL.md §4.5)", [
         try expect(try GuessPolicy.admit(ledger).isAllowed)
     },
 
-    TestCase("revoking clears the trusted list and the counters, not the codes") {
+    TestCase("revoking clears the trusted list, not the codes or any guess counter") {
         let store = SecretStore(blobs: InMemorySecretStore())
         let code = try AccessCode.generate()
         try store.saveAccessCode(code)
@@ -114,7 +114,8 @@ public let secretStoreSuite = TestSuite("SecretStore (PROTOCOL.md §4.5)", [
         try store.revokeControllers()
 
         try expect(try store.trustedControllers().isEmpty, "every trusted controller is gone")
-        try expectNil(try store.guessCounter(forController: otherKey), "and every counter with it")
+        try expectEqual(try store.guessCounter(forController: otherKey), GuessCounter(failures: 3),
+                        "revoking never resets a guess counter")
         try expectEqual(try store.accessCode(), code,
                         "revoking controllers does not by itself change this Mac's code")
         try expectNotNil(try store.peerCode(forHost: "482719351"),

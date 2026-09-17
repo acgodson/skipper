@@ -7,7 +7,7 @@ public enum DeviceKeyStorageError: Error, LocalizedError, Equatable {
         switch self {
         case .notStoredSecurely(let detail):
             return "SkipperDesk could not store its key securely. Neither the Secure Enclave nor the Keychain "
-                + "would hold it, and SkipperDesk never keeps its key in a file. Restart this Mac and open "
+                + "would hold it, and SkipperDesk never creates a key in a file. Restart this Mac and open "
                 + "SkipperDesk again. (\(detail))"
         }
     }
@@ -47,9 +47,11 @@ public enum DeviceKeyPolicy {
 
     public enum ExistingFileKey: Equatable {
         case moveToKeychain
-        case keepInFile(note: String)
+        case useFileForThisLaunch(note: String)
         case refuse(DeviceKeyRefusal)
     }
+
+    public static let keyNotMovedNote = "This Mac's key could not be moved to secure storage."
 
     public static func newKey(secureEnclaveFailure: Error?, keychainFailure: Error?) -> NewKey {
         guard let secureEnclaveFailure else { return .secureEnclave }
@@ -63,7 +65,8 @@ public enum DeviceKeyPolicy {
     public static func existingFileKey(migrationFailure: Error?) -> ExistingFileKey {
         guard let migrationFailure else { return .moveToKeychain }
         if case .unsigned = DeviceKeyRefusal.from(migrationFailure) { return .refuse(.unsigned) }
-        return .keepInFile(note: "This Mac's key could not be moved into the Keychain, so it stays in the "
-            + "identity file for now: \(migrationFailure.localizedDescription)")
+        RCLog.error("identity: the legacy file key could not be moved to the Keychain; "
+            + "using it for this launch only: \(migrationFailure.localizedDescription)")
+        return .useFileForThisLaunch(note: keyNotMovedNote)
     }
 }

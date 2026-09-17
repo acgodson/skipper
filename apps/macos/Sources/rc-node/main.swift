@@ -77,16 +77,23 @@ final class Node {
             emit("hello_ok", [
                 "deviceId": hello.deviceId,
                 "iceServers": hello.iceServers.count,
-                "turn": hello.iceServers.contains { $0.username != nil },
+                "turn": hello.iceServers.contains { $0.carriesCredentials },
                 "activeSessionId": hello.activeSessionId ?? "",
                 "heartbeatSec": hello.heartbeatSec,
                 "pubkey": identity.publicKeyBase64,
+                "idCert": identity.deviceIDCertificate != nil,
             ])
             signInOnce(signalingDeviceID: hello.deviceId)
         case .presence(let deviceID, let online):
             emit("presence", ["deviceId": deviceID, "online": online])
         case .sessionGranted(let sessionID, let grantedRole):
-            emit("session", ["sessionId": sessionID, "as": grantedRole.rawValue])
+            let servers = coordinator.signaling.iceServers(forSession: sessionID)
+            emit("session", [
+                "sessionId": sessionID,
+                "as": grantedRole.rawValue,
+                "iceServers": servers.count,
+                "turn": servers.contains { $0.carriesCredentials },
+            ])
         case .resumed(let sessionID, let peerAttached):
             emit("resumed", ["sessionId": sessionID, "peerAttached": peerAttached, "usedAccessCode": false])
         case .silentReconnect(let reason):
@@ -166,6 +173,14 @@ final class Node {
         default: break
         }
         emit("connect_error", fields)
+        if let mismatch = identity.hostKeyPins.mismatch, failure.code == HostKeyPins.changedCode {
+            emit("host_key_changed", [
+                "deviceId": mismatch.deviceID,
+                "presentedKey": mismatch.presentedKey ?? "",
+                "pinnedKey": identity.hostKeyPins.pinnedKey(forHost: mismatch.deviceID) ?? "",
+                "rememberedCode": ((try? identity.secrets.peerCode(forHost: mismatch.deviceID)) ?? nil) != nil,
+            ])
+        }
     }
 
     private func pointerEvent(x: Double, y: Double,
@@ -357,6 +372,23 @@ final class Node {
         case "trusted":
             let trusted = (try? identity.secrets.trustedControllers()) ?? [:]
             emit("trusted", ["count": trusted.count, "pubkeys": trusted.keys.sorted()])
+
+        case "pins":
+            let pins = (try? identity.secrets.hostKeyPins()) ?? [:]
+            emit("pins", ["count": pins.count, "pins": pins])
+
+        case "trust-new":
+            do {
+                try identity.hostKeyPins.trustNewMac()
+                emit("trusted_new_mac", [:])
+            } catch {
+                emit("error", ["message": "\(error)"])
+            }
+
+        case "remembered":
+            guard parts.count >= 2 else { return }
+            let code = (try? identity.secrets.peerCode(forHost: parts[1])) ?? nil
+            emit("remembered", ["deviceId": parts[1], "present": code != nil])
 
         case "refresh-code":
             Task {

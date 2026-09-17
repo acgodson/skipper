@@ -141,6 +141,11 @@ if wait_for "$WORK/ctrl.log" '"event":"session"' 30; then
 else
   fail "session opens" "$(tail -5 "$WORK/ctrl.log")"; exit 1
 fi
+if grep -q '"event":"session".*"turn":true' "$WORK/ctrl.log"; then
+  pass "TURN credentials arrived with the session, not with hello_ok (protocol v4)"
+else
+  fail "the session carries TURN credentials" "$(grep -E '"event":"(session|hello_ok)"' "$WORK/ctrl.log")"
+fi
 if wait_for "$WORK/ctrl.log" '"event":"ice","role":"controller","state":"connected"' 60; then
   pass "the peer connection reached ICE connected"
 else

@@ -6,6 +6,24 @@ public enum WireBounds {
     public static let scrollDelta: ClosedRange<Double> = -100_000...100_000
     public static let displayScale: ClosedRange<Double> = 0.25...16
     public static let displayDimension: ClosedRange<Int> = 1...32_768
+    public static let heartbeat: ClosedRange<Int> = 1...300
+    public static let defaultHeartbeatSeconds = 15
+    public static let retryAfter: ClosedRange<Int> = 0...86_400
+    public static let mediaLineIndex: ClosedRange<Int> = 0...65_535
+
+    public static func heartbeatSeconds(_ value: Int?) -> Int {
+        guard let value, heartbeat.contains(value) else { return defaultHeartbeatSeconds }
+        return value
+    }
+
+    public static func retryAfterSeconds(_ value: Int) -> Int {
+        min(max(value, retryAfter.lowerBound), retryAfter.upperBound)
+    }
+
+    public static func nanoseconds(_ seconds: TimeInterval) -> UInt64 {
+        guard seconds.isFinite, seconds > 0 else { return 0 }
+        return UInt64(min(seconds, TimeInterval(retryAfter.upperBound)) * 1_000_000_000)
+    }
 
     public struct OutOfRange: Error, CustomStringConvertible {
         public let field: String

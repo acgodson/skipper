@@ -134,6 +134,7 @@ final class AppModel: ObservableObject {
         bind(settings)
         bind(permissions)
         bind(identity)
+        bind(identity?.hostKeyPins)
         bind(launchAtLogin)
         bind(updates)
         bind(selfPresence)
@@ -264,7 +265,7 @@ final class AppModel: ObservableObject {
         case .roundTrip(let seconds):
             lastRoundTripMs = Int((seconds * 1000).rounded())
         case .connectFailed(let failure):
-            connectError = EntitlementPresentation.sentence(for: failure)
+            connectError = Self.bannerSentence(for: failure)
             isConnecting = false
         case .phase:
             sessionState = coordinator.state
@@ -440,6 +441,27 @@ final class AppModel: ObservableObject {
         try? identity?.secrets.forgetPeerCode(forHost: canonical)
     }
 
+    var hostKeyMismatch: HostKeyMismatch? {
+        settings.role == .controller ? identity?.hostKeyPins.mismatch : nil
+    }
+
+    func trustNewMac() {
+        do {
+            try identity?.hostKeyPins.trustNewMac()
+        } catch {
+            connectError = error.localizedDescription
+        }
+    }
+
+    func dismissHostKeyNotice() {
+        identity?.hostKeyPins.dismissMismatch()
+    }
+
+    private static func bannerSentence(for failure: ConnectFailure) -> String? {
+        guard failure.code != HostKeyPins.changedCode else { return nil }
+        return EntitlementPresentation.sentence(for: failure)
+    }
+
     func connect(deviceID: String, accessCode: String, remember: Bool, label: String) {
         connectError = nil
         isConnecting = true
@@ -459,7 +481,7 @@ final class AppModel: ObservableObject {
                 try await coordinator.connect(deviceID: deviceID, accessCode: accessCode, remember: remember)
                 sessionState = coordinator.state
             } catch {
-                connectError = (error as? ConnectFailure).map(EntitlementPresentation.sentence(for:))
+                connectError = (error as? ConnectFailure).map(Self.bannerSentence(for:))
                     ?? error.localizedDescription
                 sessionState = .idle
                 isConnecting = false
