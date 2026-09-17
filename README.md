@@ -38,8 +38,8 @@ current goal. Still v1: it predates protocol v2.
 - Local cursor is always an arrow (I-beam/resize shapes not sent over `ctrl`).
 - Main display only · text-only clipboard (≤ 192 KiB) · arm64 only.
 - No Developer ID build has been verified yet.
-- Real backend not built: Phase 5. Locally this is `rc-signal` (Go) plus `scripts/dev-web-stub.py`
-  standing in for the web sign-in flow.
+- Backend runs locally only (`rc-api` + `rc-signal` via `scripts/dev-backend.sh`); AWS deployment,
+  Cognito and the real skipperdesk.app sign-in page are Phase 5.
 
 ## Layout
 
@@ -73,10 +73,10 @@ cd apps/macos && swift run rc-tests              # 270 unit/scenario tests (swif
 ./scripts/package-dmg.sh                  # -> dist/SkipperDesk-<version>.dmg, self-verifying
 ```
 
-Local end-to-end (no real backend needed yet): `./scripts/smoke-signal.sh` and
-`./scripts/test-transport.sh` run `rc-signal` on `127.0.0.1:18443`; account linking is exercised
-against `scripts/dev-web-stub.py` standing in for the web sign-in page, with
-`SKIPPER_API_BASE_URL` pointed at it.
+Local backend: `./scripts/dev-backend.sh` builds and runs `rc-api` (REST, the `/link` sign-in
+page in dev mode, and a `/ws` pass-through) on `127.0.0.1:18080` in front of `rc-signal`; point the
+app at it with `SKIPPER_API_BASE_URL=http://127.0.0.1:18080`. `./scripts/smoke-signal.sh` and
+`./scripts/test-transport.sh` also work against a bare `rc-signal` on `127.0.0.1:18443`.
 
 Integration against the **live** server (two `rc-node` instances, real WebRTC):
 `test-transport.sh` (add `RC_ICE_POLICY=relay` to prove TURN), `test-media.sh`,
