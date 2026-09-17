@@ -19,34 +19,28 @@ import (
 	"rc-signal/internal/auth"
 	"rc-signal/internal/clockx"
 	"rc-signal/internal/entitlement"
+	"rc-signal/internal/envx"
 	"rc-signal/internal/hub"
 	"rc-signal/internal/store"
 	"rc-signal/internal/wsserver"
 )
 
-func env(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return def
-}
-
 func main() {
 	var (
-		addr       = flag.String("listen", env("RC_LISTEN", "0.0.0.0:8443"), "listen address (RC_LISTEN)")
-		tlsCert    = flag.String("tls-cert", env("RC_TLS_CERT", ""), "TLS certificate path (RC_TLS_CERT)")
-		tlsKey     = flag.String("tls-key", env("RC_TLS_KEY", ""), "TLS private key path (RC_TLS_KEY)")
-		insecure   = flag.Bool("insecure-http", env("RC_INSECURE_HTTP", "") == "1", "serve plain HTTP — LOCAL TESTING ONLY (RC_INSECURE_HTTP=1)")
-		dbPath     = flag.String("db", env("RC_DB", "rc-signal.db"), "SQLite path (RC_DB)")
-		turnSecret = flag.String("turn-secret", env("RC_TURN_SECRET", ""), "coturn static-auth-secret (RC_TURN_SECRET)")
-		turnURLs   = flag.String("turn-urls", env("RC_TURN_URLS", ""), "comma-separated TURN URLs (RC_TURN_URLS)")
-		stunURLs   = flag.String("stun-urls", env("RC_STUN_URLS", "stun:stun.l.google.com:19302"), "comma-separated STUN URLs (RC_STUN_URLS)")
-		tokenKey   = flag.String("token-secret", env("RC_TOKEN_SECRET", ""), "hex HMAC secret for session tokens; random if empty (RC_TOKEN_SECRET)")
-		logLevel   = flag.String("log-level", env("RC_LOG_LEVEL", "info"), "debug|info|warn|error (RC_LOG_LEVEL)")
-		entMode    = flag.String("entitlement", env("RC_ENTITLEMENT", ""), "static|http — how connect_req is authorised (RC_ENTITLEMENT)")
-		entDeny    = flag.String("entitlement-deny", env("RC_ENTITLEMENT_DENY", ""), "static mode only: comma-separated <deviceId>|label:<label>[=<reason>] deny list (RC_ENTITLEMENT_DENY)")
-		apiURL     = flag.String("api-internal-url", env("RC_API_INTERNAL_URL", ""), "http mode only: internal API base URL (RC_API_INTERNAL_URL)")
-		apiToken   = flag.String("internal-token", env("RC_INTERNAL_TOKEN", ""), "http mode only: shared bearer secret for the internal API (RC_INTERNAL_TOKEN)")
+		addr       = flag.String("listen", envx.Env("RC_LISTEN", "0.0.0.0:8443"), "listen address (RC_LISTEN)")
+		tlsCert    = flag.String("tls-cert", envx.Env("RC_TLS_CERT", ""), "TLS certificate path (RC_TLS_CERT)")
+		tlsKey     = flag.String("tls-key", envx.Env("RC_TLS_KEY", ""), "TLS private key path (RC_TLS_KEY)")
+		insecure   = flag.Bool("insecure-http", envx.Env("RC_INSECURE_HTTP", "") == "1", "serve plain HTTP — LOCAL TESTING ONLY (RC_INSECURE_HTTP=1)")
+		dbPath     = flag.String("db", envx.Env("RC_DB", "rc-signal.db"), "SQLite path (RC_DB)")
+		turnSecret = flag.String("turn-secret", envx.Env("RC_TURN_SECRET", ""), "coturn static-auth-secret (RC_TURN_SECRET)")
+		turnURLs   = flag.String("turn-urls", envx.Env("RC_TURN_URLS", ""), "comma-separated TURN URLs (RC_TURN_URLS)")
+		stunURLs   = flag.String("stun-urls", envx.Env("RC_STUN_URLS", "stun:stun.l.google.com:19302"), "comma-separated STUN URLs (RC_STUN_URLS)")
+		tokenKey   = flag.String("token-secret", envx.Env("RC_TOKEN_SECRET", ""), "hex HMAC secret for session tokens; random if empty (RC_TOKEN_SECRET)")
+		logLevel   = flag.String("log-level", envx.Env("RC_LOG_LEVEL", "info"), "debug|info|warn|error (RC_LOG_LEVEL)")
+		entMode    = flag.String("entitlement", envx.Env("RC_ENTITLEMENT", ""), "static|http — how connect_req is authorised (RC_ENTITLEMENT)")
+		entDeny    = flag.String("entitlement-deny", envx.Env("RC_ENTITLEMENT_DENY", ""), "static mode only: comma-separated <deviceId>|label:<label>[=<reason>] deny list (RC_ENTITLEMENT_DENY)")
+		apiURL     = flag.String("api-internal-url", envx.Env("RC_API_INTERNAL_URL", ""), "http mode only: internal API base URL (RC_API_INTERNAL_URL)")
+		apiToken   = flag.String("internal-token", envx.Env("RC_INTERNAL_TOKEN", ""), "http mode only: shared bearer secret for the internal API (RC_INTERNAL_TOKEN)")
 	)
 	flag.Parse()
 
