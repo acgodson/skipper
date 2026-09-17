@@ -145,7 +145,6 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
 | Missing permission | Host only, only when missing | attention banner per permission: Open Settings + Ask macOS |
 | Asking to connect | Host window overlay + menu panel (+ notification when in the background) | consent prompt with a 30 s countdown; no answer declines |
 | Waiting to be accepted | Controller hero | attention note "Waiting for the other Mac to accept…", pill "Waiting…"; after a decline the critical banner "The other Mac declined the connection." |
-| Device ID changed | Host, directly above the Device ID card | attention banner naming the old and new Device ID, "Got it" dismisses it for this run only |
 
 **Unattended access** is a toggle row whose detail follows its state — on: "Anyone with the code
 can connect without you here."; off: "You will be asked to allow each connection." It is off on a
@@ -165,14 +164,18 @@ confirmation), and "Remove All…" forgets them all after a confirmation (Refres
    other Mac." Not "auth_failed", "PAKE", "signaling", "TURN" in primary copy.
 3. **No fluctuating numbers** unless `RC_DEBUG=1`. Static facts (Device ID, a balance, a trial end
    date) are fine.
-4. **Sentence case** for titles, toggles and rows; Title Case only for button verbs ("Link this
-   Mac" is the exception that reads as a sentence). Ellipsis (…) on any button that asks again.
+4. **Sentence case** for titles, toggles and rows; Title Case only for button verbs. Ellipsis (…)
+   on any button that asks again.
 5. **Say the consequence before destroying**: every destructive confirmation states who loses access.
 6. **Account vocabulary:** say "sign in" / "sign out" / "plan". Never "link", "unlink", "token" or
    "device key" in user-facing text. The app never says "create account" or offers a sign-up
    action of its own — signing in always goes to the website, which decides whether the person
    is new.
 7. The product name is always "SkipperDesk"; the other computer is "the other Mac" / "this Mac".
+8. **Never narrate our own infrastructure.** Backend resets, re-registration, reassigned ids,
+   migrations and key moves are logged, not shown. The UI shows the current state (the Device ID
+   on screen is simply the right one); a notice appears only when the person must act and can
+   act. Messages that reveal how much the service can change on someone's Mac erode trust.
 
 ## 5. App icon
 

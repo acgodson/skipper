@@ -157,7 +157,7 @@ public let identitySuite = TestSuite("IdentityStore", [
         }
     },
 
-    TestCase("a re-registration that keeps the Device ID says nothing; one that moves it says so") {
+    TestCase("a server reassignment keeps the key and persists the new Device ID") {
         try await withIdentity { fileStore in
             let store = try IdentityStore(fileStore: fileStore)
             try store.adoptServerAssignedDeviceID("482719351")
@@ -165,17 +165,11 @@ public let identitySuite = TestSuite("IdentityStore", [
 
             try store.adoptReassignedDeviceID("482719351", previous: "482719351")
             try expectEqual(store.deviceID, "482719351")
-            try expectNil(store.identityNotice, "keeping the id is not news")
 
             try store.adoptReassignedDeviceID("913004287", previous: "482719351")
             try expectEqual(store.deviceID, "913004287")
-            let notice = try expectNotNil(store.identityNotice)
-            try expectEqual(notice, .deviceIDChanged(from: "482719351", to: "913004287"))
             try expectEqual(store.publicKeyBase64, key, "a new id must never mean a new key")
             try expectEqual(try IdentityStore(fileStore: fileStore).deviceID, "913004287", "must persist")
-
-            store.acknowledgeIdentityNotice()
-            try expectNil(store.identityNotice, "acknowledging clears it")
         }
     },
 

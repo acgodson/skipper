@@ -1,10 +1,6 @@
 import Foundation
 import SkipperCore
 
-public enum IdentityNotice: Equatable {
-    case deviceIDChanged(from: String, to: String)
-}
-
 @MainActor
 public final class IdentityStore: ObservableObject {
 
@@ -12,7 +8,6 @@ public final class IdentityStore: ObservableObject {
     @Published public private(set) var accessCode: String
     @Published public private(set) var lastRefreshError: String?
     @Published public private(set) var permissionWarning: String?
-    @Published public private(set) var identityNotice: IdentityNotice?
     @Published public private(set) var isServerRegistered: Bool
 
     public let keyStorage: DeviceKeyStorage
@@ -240,11 +235,7 @@ public final class IdentityStore: ObservableObject {
     public func adoptReassignedDeviceID(_ assigned: String, previous: String) throws {
         try adoptServerAssignedDeviceID(assigned)
         guard deviceID != previous else { return }
-        identityNotice = .deviceIDChanged(from: previous, to: deviceID)
-    }
-
-    public func acknowledgeIdentityNotice() {
-        identityNotice = nil
+        RCLog.info("identity: server reassigned device id \(previous) -> \(deviceID)")
     }
 
     public func markServerRegistered() {

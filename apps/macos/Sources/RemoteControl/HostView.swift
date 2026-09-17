@@ -20,10 +20,6 @@ struct HostView: View {
 
             PermissionsBanners()
 
-            if let identity = model.identity, let notice = identity.identityNotice {
-                IdentityNoticeBanner(notice: notice)
-            }
-
             if model.identity != nil {
                 HostHero()
             }
@@ -287,27 +283,6 @@ private struct PermissionsBanners: View {
                 message: kind.consequenceWhenMissing
             ) {
                 PermissionActions(kind: kind)
-            }
-        }
-    }
-}
-
-private struct IdentityNoticeBanner: View {
-
-    @EnvironmentObject private var model: AppModel
-    let notice: IdentityNotice
-
-    var body: some View {
-        switch notice {
-        case .deviceIDChanged(let from, let to):
-            SkipperBanner(
-                tone: .attention,
-                symbol: "arrow.triangle.2.circlepath",
-                title: "This Mac's Device ID changed from \(DeviceID.formatted(from)) to \(DeviceID.formatted(to)). "
-                    + "Give the new ID to anyone who connects to this Mac."
-            ) {
-                Button("Got it") { model.identity?.acknowledgeIdentityNotice() }
-                    .skipperButton(.secondary)
             }
         }
     }
