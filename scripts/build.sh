@@ -284,14 +284,20 @@ else
     echo "    no Team ID: hardened runtime off (development build only; not for distribution)"
 fi
 
-codesign --force --deep --sign "${SIGN_IDENTITY}" \
+# Inside-out, never --deep: the embedded framework is signed on its own with no
+# entitlements, then the app with its entitlements, so they never leak into WebRTC.
+codesign --force --sign "${SIGN_IDENTITY}" \
+    --options "${SIGN_OPTIONS}" \
+    "${TIMESTAMP_FLAG}" \
+    "${CONTENTS}/Frameworks/WebRTC.framework" 2>&1 | sed 's/^/    /'
+codesign --force --sign "${SIGN_IDENTITY}" \
     --entitlements "${ENTITLEMENTS}" \
     --options "${SIGN_OPTIONS}" \
     "${TIMESTAMP_FLAG}" \
     "${BUNDLE}" 2>&1 | sed 's/^/    /'
 rm -f "${ENTITLEMENTS}"
 
-codesign --verify --verbose=1 "${BUNDLE}" 2>&1 | sed 's/^/    /'
+codesign --verify --deep --strict --verbose=1 "${BUNDLE}" 2>&1 | sed 's/^/    /'
 
 # ---- Launch check -----------------------------------------------------------
 # codesign --verify says nothing about whether the dynamic linker can actually

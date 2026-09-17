@@ -1,7 +1,7 @@
 import Foundation
 
 public enum RCLog {
-    public static let enabled = ProcessInfo.processInfo.environment["RC_DEBUG"] == "1"
+    public static let enabled = DevelopmentHooks.diagnosticsRequested
 
     private static let logFileHandle: FileHandle? = {
         guard enabled,

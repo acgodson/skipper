@@ -29,7 +29,7 @@ public final class IdentityStore: ObservableObject {
 
     nonisolated public static func usesDevFileIdentity(fileStore: IdentityFileStore) -> Bool {
 #if DEBUG || SKIPPER_TEST_HOOKS
-        ProcessInfo.processInfo.environment["SKIPPER_DEV_FILE_IDENTITY"] == "1"
+        DevelopmentHooks.isOn(.devFileIdentity)
             || !fileStore.isDefaultLocation
 #else
         !fileStore.isDefaultLocation

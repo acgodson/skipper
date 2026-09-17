@@ -1,6 +1,6 @@
 import Foundation
 
-public struct BuildNumber: Comparable, CustomStringConvertible, Sendable {
+public struct BuildNumber: Comparable, Hashable, CustomStringConvertible, Sendable {
 
     public let components: [Int]
 
@@ -23,6 +23,18 @@ public struct BuildNumber: Comparable, CustomStringConvertible, Sendable {
 
     public var description: String { components.map(String.init).joined(separator: ".") }
 
+    public var canonical: [Int] {
+        var trimmed = components
+        while trimmed.count > 1, trimmed.last == 0 { trimmed.removeLast() }
+        return trimmed
+    }
+
+    public var canonicalKey: String { canonical.map(String.init).joined(separator: ".") }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(canonical)
+    }
+
     private static func padded(_ a: BuildNumber, _ b: BuildNumber) -> ([Int], [Int]) {
         let width = max(a.components.count, b.components.count)
         return (
@@ -43,5 +55,9 @@ public struct BuildNumber: Comparable, CustomStringConvertible, Sendable {
 
     public static var running: BuildNumber? {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String).flatMap(BuildNumber.init)
+    }
+
+    public static func floor(_ builds: BuildNumber?...) -> BuildNumber? {
+        builds.compactMap { $0 }.max()
     }
 }

@@ -1,46 +1,87 @@
 import AppKit
+import Darwin
 import Foundation
 
 public final class UpdateInstaller: @unchecked Sendable {
 
-    private let runningAppURL: URL
-    private let requirement: String
+    private let installURL: URL
+    private let policy: UpdateSignaturePolicy
     private let runningBuild: BuildNumber
+    private let workRoot: URL
     private let fileManager = FileManager.default
 
-    public init(requirement: String, runningBuild: BuildNumber, runningAppURL: URL = Bundle.main.bundleURL) {
-        self.requirement = requirement
-        self.runningBuild = runningBuild
-        self.runningAppURL = runningAppURL
+    public convenience init(requirement: String, runningBuild: BuildNumber, installURL: URL = Bundle.main.bundleURL) {
+        self.init(policy: UpdateSignaturePolicy(requirement: requirement), runningBuild: runningBuild,
+                  installURL: installURL, workRoot: UpdateInstaller.defaultWorkRoot)
     }
 
+    init(policy: UpdateSignaturePolicy, runningBuild: BuildNumber, installURL: URL, workRoot: URL) {
+        self.policy = policy
+        self.runningBuild = runningBuild
+        self.installURL = installURL
+        self.workRoot = workRoot
+    }
+
+    public static var defaultWorkRoot: URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return support
+            .appendingPathComponent(UpdateTrust.bundleIdentifier, isDirectory: true)
+            .appendingPathComponent("Updates", isDirectory: true)
+    }
+
+    public var installedBuild: BuildNumber? { UpdateVerifier.installedBuild(at: installURL) }
+
+    public var buildFloor: BuildNumber { BuildNumber.floor(runningBuild, installedBuild) ?? runningBuild }
+
     public func prepare(_ release: AppRelease) async throws -> StagedUpdate {
+        let floor = buildFloor
         let source = try UpdateTrust.requireSecureSource(release.url)
-        guard release.size > 0 else { throw UpdateRefusal.malformedRelease("size") }
-        _ = try UpdateTrust.requireNewer(candidate: release.build, running: runningBuild)
+        try UpdateTrust.requireAcceptableSize(release.size)
+        _ = try UpdateTrust.requireNewer(candidate: release.build, running: floor)
 
-        let work = fileManager.temporaryDirectory
-            .appendingPathComponent("SkipperDesk-update-\(UUID().uuidString)", isDirectory: true)
-        try fileManager.createDirectory(at: work, withIntermediateDirectories: true)
-        defer { try? fileManager.removeItem(at: work) }
-
-        let image = work.appendingPathComponent("update.dmg")
-        try await BoundedDownload(limit: release.size).fetch(source, to: image)
-        try UpdateVerifier.verifyDownload(at: image, sha256: release.sha256, size: release.size)
-
-        let staging = try stagingDirectory()
-        let staged = staging.appendingPathComponent(UpdateTrust.appName, isDirectory: true)
+        let work = try PrivateDirectory.create(under: workRoot)
         do {
-            let mounted = try MountedDiskImage.attach(image, under: work.appendingPathComponent("mnt"))
-            defer { mounted.detach() }
-            try fileManager.copyItem(at: try mounted.bundledApp(), to: staged)
-            let verified = try UpdateVerifier.verifyApp(at: staged, requirement: requirement, newerThan: runningBuild)
-            return StagedUpdate(appURL: staged, version: verified.version, build: verified.build,
-                                critical: release.critical)
+            let image = work.appendingPathComponent("update.dmg")
+            try await BoundedDownload(limit: UpdateTrust.downloadLimit(announced: release.size)).fetch(source, to: image)
+            try UpdateVerifier.verifyDownload(at: image, sha256: release.sha256, size: release.size)
+            let mountRoot = work.appendingPathComponent("mnt", isDirectory: true)
+            let mounted = try MountedDiskImage.attach(image, under: mountRoot)
+            defer {
+                mounted.detach()
+                try? fileManager.removeItem(at: mountRoot)
+                try? fileManager.removeItem(at: image)
+            }
+            return try stage(appAt: try mounted.bundledApp(), into: work, floor: floor, critical: release.critical)
         } catch {
-            try? fileManager.removeItem(at: staging)
+            try? fileManager.removeItem(at: work)
             throw error
         }
+    }
+
+#if DEBUG || SKIPPER_TEST_HOOKS
+    public static func forTesting(
+        policy: UpdateSignaturePolicy, runningBuild: BuildNumber, installURL: URL, workRoot: URL
+    ) -> UpdateInstaller {
+        UpdateInstaller(policy: policy, runningBuild: runningBuild, installURL: installURL, workRoot: workRoot)
+    }
+
+    public func stage(appAt source: URL, critical: Bool = false) throws -> StagedUpdate {
+        let work = try PrivateDirectory.create(under: workRoot)
+        do {
+            return try stage(appAt: source, into: work, floor: buildFloor, critical: critical)
+        } catch {
+            try? fileManager.removeItem(at: work)
+            throw error
+        }
+    }
+#endif
+
+    private func stage(appAt source: URL, into work: URL, floor: BuildNumber, critical: Bool) throws -> StagedUpdate {
+        let copy = work.appendingPathComponent(UpdateTrust.appName, isDirectory: true)
+        try fileManager.copyItem(at: source, to: copy)
+        let sealed = try UpdateVerifier.seal(appAt: copy, policy: policy, newerThan: floor)
+        return StagedUpdate(sealed: sealed, critical: critical)
     }
 
     public func discard(_ staged: StagedUpdate) {
@@ -48,14 +89,40 @@ public final class UpdateInstaller: @unchecked Sendable {
     }
 
     public func install(_ staged: StagedUpdate) throws {
-        guard runningAppURL.pathExtension == "app" else { throw UpdateRefusal.notAnAppBundle }
-        _ = try UpdateVerifier.verifyApp(at: staged.appURL, requirement: requirement, newerThan: runningBuild)
+        defer { discard(staged) }
+        guard installURL.pathExtension == "app" else { throw UpdateRefusal.notAnAppBundle }
+        let floor = buildFloor
+        try UpdateVerifier.recheck(staged.sealed, policy: policy, newerThan: floor)
+
+        let backupName = ".\(UpdateTrust.appName).previous-\(UUID().uuidString)"
+        let backup = installURL.deletingLastPathComponent().appendingPathComponent(backupName, isDirectory: true)
         do {
-            _ = try fileManager.replaceItemAt(runningAppURL, withItemAt: staged.appURL)
+            _ = try fileManager.replaceItemAt(
+                installURL, withItemAt: staged.appURL,
+                backupItemName: backupName, options: [.withoutDeletingBackupItem])
         } catch {
             throw UpdateRefusal.installFailed(error.localizedDescription)
         }
-        discard(staged)
+
+        do {
+            let installed = try UpdateVerifier.seal(appAt: installURL, policy: policy, newerThan: floor)
+            guard installed.build == staged.build else {
+                throw UpdateRefusal.notNewer(candidate: installed.build.description, running: staged.build.description)
+            }
+        } catch {
+            try rollBack(from: backup)
+            throw UpdateRefusal.installedCopyRejected(String(describing: error))
+        }
+        try? fileManager.removeItem(at: backup)
+    }
+
+    private func rollBack(from backup: URL) throws {
+        do {
+            _ = try fileManager.replaceItemAt(installURL, withItemAt: backup)
+        } catch {
+            try? fileManager.removeItem(at: installURL)
+            throw UpdateRefusal.installFailed("rollback failed: \(error.localizedDescription)")
+        }
     }
 
     @MainActor
@@ -63,16 +130,38 @@ public final class UpdateInstaller: @unchecked Sendable {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
         configuration.activates = false
-        NSWorkspace.shared.openApplication(at: runningAppURL, configuration: configuration) { _, error in
+        NSWorkspace.shared.openApplication(at: installURL, configuration: configuration) { _, error in
             if let error { RCLog.error("update: relaunch failed: \(error.localizedDescription)") }
             DispatchQueue.main.async { NSApp.terminate(nil) }
         }
     }
+}
 
-    private func stagingDirectory() throws -> URL {
-        try fileManager.url(
-            for: .itemReplacementDirectory, in: .userDomainMask,
-            appropriateFor: runningAppURL, create: true)
+enum PrivateDirectory {
+
+    static func create(under root: URL) throws -> URL {
+        try ensureOwned(root.deletingLastPathComponent(), requirePrivate: false)
+        try ensureOwned(root, requirePrivate: true)
+        let directory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        guard mkdir(directory.path, 0o700) == 0 else { throw UpdateRefusal.unsafeWorkDirectory(directory.path) }
+        try requireOwned(directory, requirePrivate: true)
+        return directory
+    }
+
+    private static func ensureOwned(_ directory: URL, requirePrivate: Bool) throws {
+        if mkdir(directory.path, 0o700) != 0, errno != EEXIST {
+            throw UpdateRefusal.unsafeWorkDirectory(directory.path)
+        }
+        try requireOwned(directory, requirePrivate: requirePrivate)
+    }
+
+    private static func requireOwned(_ directory: URL, requirePrivate: Bool) throws {
+        var info = stat()
+        guard lstat(directory.path, &info) == 0,
+              info.st_mode & S_IFMT == S_IFDIR,
+              info.st_uid == getuid(),
+              !requirePrivate || info.st_mode & 0o077 == 0
+        else { throw UpdateRefusal.unsafeWorkDirectory(directory.path) }
     }
 }
 
@@ -121,6 +210,8 @@ private final class BoundedDownload: NSObject, URLSessionDownloadDelegate, @unch
                 throw UpdateRefusal.imageUnusable("download answered HTTP \(status)")
             }
             guard let destination else { throw UpdateRefusal.imageUnusable("no destination") }
+            let size = ((try? FileManager.default.attributesOfItem(atPath: location.path))?[.size] as? NSNumber)?.int64Value ?? .max
+            guard size <= limit else { throw UpdateRefusal.tooLarge(expected: limit) }
             try FileManager.default.moveItem(at: location, to: destination)
         } catch {
             lock.withLock { if outcome == nil { outcome = error } }

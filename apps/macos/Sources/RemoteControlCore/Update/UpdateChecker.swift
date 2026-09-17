@@ -1,5 +1,23 @@
 import AppKit
 import Foundation
+import SkipperCore
+
+public struct UpdateInstallContext: Equatable, Sendable {
+    public let role: AppRole
+    public let phase: SessionPhase?
+
+    public init(role: AppRole, phase: SessionPhase?) {
+        self.role = role
+        self.phase = phase
+    }
+
+    public var sessionIsIdle: Bool {
+        switch phase {
+        case .none, .idle, .closed: return true
+        case .connecting, .awaitingConsent, .live, .reconnecting: return false
+        }
+    }
+}
 
 public enum UpdatePolicy {
 
@@ -13,10 +31,20 @@ public enum UpdatePolicy {
         checkInterval + (unit * 2 - 1) * checkJitter
     }
 
+    public static func isUnattendedWindowOpen(_ context: UpdateInstallContext?) -> Bool {
+        guard let context else { return false }
+        return context.role == .host && context.sessionIsIdle
+    }
+
+    public static func mayRestartToUpdate(_ context: UpdateInstallContext?) -> Bool {
+        context?.sessionIsIdle ?? false
+    }
+
     public static func shouldInstallUnattended(
-        at date: Date, calendar: Calendar = .current, installsAutomatically: Bool, sessionActive: Bool
+        at date: Date, calendar: Calendar = .current, installsAutomatically: Bool, context: UpdateInstallContext?
     ) -> Bool {
-        installsAutomatically && !sessionActive && quietHours.contains(calendar.component(.hour, from: date))
+        installsAutomatically && isUnattendedWindowOpen(context)
+            && quietHours.contains(calendar.component(.hour, from: date))
     }
 
     public static func shouldInstallOnQuit(installsAutomatically: Bool) -> Bool {
@@ -63,14 +91,13 @@ public final class UpdateChecker: ObservableObject {
 
     @Published public private(set) var status: UpdateStatus
 
-    public var isSessionActive: () -> Bool = { false }
+    public var installContext: () -> UpdateInstallContext? = { nil }
     public var installsAutomatically: () -> Bool = { true }
 
     private let api: APIClient
     private let track: ReleaseTrack
     private let installer: UpdateInstaller?
-    private let runningBuild: BuildNumber?
-    private var refusedBuilds: Set<String> = []
+    private var refusedBuilds = RefusedBuilds()
     private var periodic: Task<Void, Never>?
     private var quietHourTimer: Timer?
     private var terminateObserver: Any?
@@ -83,7 +110,6 @@ public final class UpdateChecker: ObservableObject {
     ) {
         self.api = api
         self.track = track
-        self.runningBuild = runningBuild
         if case .enabled(let requirement) = availability, let runningBuild {
             installer = UpdateInstaller(requirement: requirement, runningBuild: runningBuild)
             status = .idle
@@ -126,12 +152,13 @@ public final class UpdateChecker: ObservableObject {
     }
 
     public func restartToUpdate() {
-        guard let installer, let staged = status.staged, !isSessionActive() else { return }
+        guard let installer, let staged = status.staged,
+              UpdatePolicy.mayRestartToUpdate(installContext()) else { return }
         install(staged, with: installer, relaunch: true)
     }
 
     private func check() async {
-        guard let installer, let runningBuild, !status.isBusy, status.staged == nil else { return }
+        guard let installer, !status.isBusy, status.staged == nil else { return }
         status = .checking
         let release: AppRelease?
         do {
@@ -142,7 +169,7 @@ public final class UpdateChecker: ObservableObject {
             return
         }
         let os = BuildNumber(ProcessInfo.processInfo.operatingSystemVersion)
-        guard let release, UpdateTrust.isOffered(release, running: runningBuild, os: os),
+        guard let release, UpdateTrust.isOffered(release, running: installer.buildFloor, os: os),
               !refusedBuilds.contains(release.build) else {
             status = .upToDate
             return
@@ -163,7 +190,7 @@ public final class UpdateChecker: ObservableObject {
     private func installIfQuietHour() {
         guard let installer, let staged = status.staged,
               UpdatePolicy.shouldInstallUnattended(
-                at: Date(), installsAutomatically: installsAutomatically(), sessionActive: isSessionActive())
+                at: Date(), installsAutomatically: installsAutomatically(), context: installContext())
         else { return }
         install(staged, with: installer, relaunch: true)
     }
@@ -181,10 +208,29 @@ public final class UpdateChecker: ObservableObject {
             RCLog.info("update: installed \(staged.version)")
             if relaunch { installer.relaunch() }
         } catch {
-            installer.discard(staged)
-            refusedBuilds.insert(staged.build.description)
+            refusedBuilds.insert(staged.build)
             status = .upToDate
             RCLog.error("update: install of \(staged.version) abandoned: \(error)")
         }
+    }
+}
+
+public struct RefusedBuilds: Equatable, Sendable {
+    private var keys: Set<BuildNumber> = []
+
+    public init() {}
+
+    public mutating func insert(_ build: BuildNumber) {
+        keys.insert(build)
+    }
+
+    public mutating func insert(_ raw: String) {
+        guard let build = BuildNumber(raw) else { return }
+        keys.insert(build)
+    }
+
+    public func contains(_ raw: String) -> Bool {
+        guard let build = BuildNumber(raw) else { return true }
+        return keys.contains(build)
     }
 }

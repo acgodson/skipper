@@ -67,7 +67,9 @@ final class AppModel: ObservableObject {
     }
 
     private func startUpdates() {
-        updates.isSessionActive = { [weak self] in self?.sessionActive ?? false }
+        updates.installContext = { [weak self] in
+            self.map { UpdateInstallContext(role: $0.settings.role, phase: $0.coordinator?.phase) }
+        }
         updates.installsAutomatically = { [weak self] in self?.settings.installUpdatesAutomatically ?? false }
         updates.start()
     }

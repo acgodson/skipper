@@ -22,18 +22,31 @@ public enum UpdateTrust {
             + " and certificate leaf[subject.OU] = \"\(teamID)\""
     }
 
-    public static func requireSecureSource(_ raw: String) throws -> URL {
-        guard let url = URL(string: raw), let host = url.host, url.user == nil else {
+    public static let maximumDownloadBytes: Int64 = 512 * 1024 * 1024
+
+    public static func requireSecureSource(
+        _ raw: String, allowLoopback: Bool = DevelopmentHooks.areCompiledIn
+    ) throws -> URL {
+        guard let url = URL(string: raw), let host = url.host, !host.isEmpty, url.user == nil else {
             throw UpdateRefusal.insecureSource(raw)
         }
-        switch url.scheme {
+        switch url.scheme?.lowercased() {
         case "https":
             return url
-        case "http" where ["localhost", "127.0.0.1", "::1"].contains(host):
+        case "http" where allowLoopback && ["localhost", "127.0.0.1", "::1"].contains(host):
             return url
         default:
             throw UpdateRefusal.insecureSource(raw)
         }
+    }
+
+    public static func requireAcceptableSize(_ size: Int64) throws {
+        guard size > 0 else { throw UpdateRefusal.malformedRelease("size") }
+        guard size <= maximumDownloadBytes else { throw UpdateRefusal.exceedsSizeCap(size) }
+    }
+
+    public static func downloadLimit(announced size: Int64) -> Int64 {
+        min(size, maximumDownloadBytes)
     }
 
     public static func requireNewer(candidate: String?, running: BuildNumber) throws -> BuildNumber {
@@ -59,9 +72,10 @@ public enum UpdateAvailability: Equatable, Sendable {
     public static func resolve(
         teamID: String?,
         isAppBundle: Bool,
+        hooksCompiledIn: Bool,
         runningSatisfies: (String) -> Bool
     ) -> UpdateAvailability {
-        guard isAppBundle, let requirement = try? UpdateTrust.designatedRequirement(teamID: teamID),
+        guard !hooksCompiledIn, isAppBundle, let requirement = try? UpdateTrust.designatedRequirement(teamID: teamID),
               runningSatisfies(requirement) else {
             return .disabledInDevelopment
         }
@@ -72,6 +86,7 @@ public enum UpdateAvailability: Equatable, Sendable {
         resolve(
             teamID: RunningAppSignature.teamIdentifier(),
             isAppBundle: Bundle.main.bundleURL.pathExtension == "app",
+            hooksCompiledIn: DevelopmentHooks.areCompiledIn,
             runningSatisfies: RunningAppSignature.satisfies
         )
     }
@@ -101,6 +116,41 @@ public enum RunningAppSignature {
             return false
         }
         return SecCodeCheckValidity(code, [], requirement) == errSecSuccess
+    }
+}
+
+public struct UpdateSignaturePolicy: Sendable {
+    let publisher: String
+    let notarization: String?
+
+    public init(requirement: String) {
+        publisher = requirement
+        notarization = UpdateTrust.notarizationRequirement
+    }
+
+#if DEBUG || SKIPPER_TEST_HOOKS
+    public static func withoutNotarization(requirement: String) -> UpdateSignaturePolicy {
+        UpdateSignaturePolicy(publisher: requirement, notarization: nil)
+    }
+
+    private init(publisher: String, notarization: String?) {
+        self.publisher = publisher
+        self.notarization = notarization
+    }
+#endif
+}
+
+public final class SealedBundle: @unchecked Sendable {
+    public let url: URL
+    public let version: String
+    public let build: BuildNumber
+    let code: SecStaticCode
+
+    init(url: URL, version: String, build: BuildNumber, code: SecStaticCode) {
+        self.url = url
+        self.version = version
+        self.build = build
+        self.code = code
     }
 }
 
@@ -147,19 +197,15 @@ public enum UpdateVerifier {
         return code
     }
 
-    public static func verifySignature(ofAppAt app: URL, requirement text: String) throws {
-        let code = try staticCode(at: app)
+    private static func checkPublisher(_ code: SecStaticCode, requirement text: String) throws {
         let status = SecStaticCodeCheckValidity(code, strictFlags, try requirement(text))
         guard status == errSecSuccess else { throw UpdateRefusal.signatureInvalid(status) }
     }
 
-    // TODO: verify on a Developer-ID-signed build that a signed but un-notarized app is refused here.
-    public static func verifyNotarized(appAt app: URL) throws {
-        let code: SecStaticCode
+    private static func checkNotarized(_ code: SecStaticCode, requirement text: String) throws {
         let notarized: SecRequirement
         do {
-            code = try staticCode(at: app)
-            notarized = try requirement(UpdateTrust.notarizationRequirement)
+            notarized = try requirement(text)
         } catch UpdateRefusal.signatureInvalid(let status) {
             throw UpdateRefusal.notNotarized(status)
         }
@@ -167,25 +213,83 @@ public enum UpdateVerifier {
         guard status == errSecSuccess else { throw UpdateRefusal.notNotarized(status) }
     }
 
-    public static func verifyBundle(appAt app: URL, newerThan running: BuildNumber) throws -> (version: String, build: BuildNumber) {
-        let plist = app.appendingPathComponent("Contents/Info.plist")
-        guard let data = try? Data(contentsOf: plist),
-              let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
-        else {
-            throw UpdateRefusal.wrongBundleIdentifier(nil)
+    public static func verifySignature(ofAppAt app: URL, requirement text: String) throws {
+        try checkPublisher(try staticCode(at: app), requirement: text)
+    }
+
+    // TODO: verify on a Developer-ID-signed build that a signed but un-notarized app is refused here.
+    public static func verifyNotarized(appAt app: URL) throws {
+        let code: SecStaticCode
+        do {
+            code = try staticCode(at: app)
+        } catch UpdateRefusal.signatureInvalid(let status) {
+            throw UpdateRefusal.notNotarized(status)
         }
+        try checkNotarized(code, requirement: UpdateTrust.notarizationRequirement)
+    }
+
+    static func identity(fromInfo info: [String: Any], newerThan floor: BuildNumber) throws -> (version: String, build: BuildNumber) {
         let identifier = info["CFBundleIdentifier"] as? String
         guard identifier == UpdateTrust.bundleIdentifier else {
             throw UpdateRefusal.wrongBundleIdentifier(identifier)
         }
-        let build = try UpdateTrust.requireNewer(candidate: info["CFBundleVersion"] as? String, running: running)
+        let build = try UpdateTrust.requireNewer(candidate: info["CFBundleVersion"] as? String, running: floor)
         return ((info["CFBundleShortVersionString"] as? String) ?? build.description, build)
     }
 
+    private static func infoDictionary(atBundle app: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: app.appendingPathComponent("Contents/Info.plist")) else { return nil }
+        return (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any]
+    }
+
+    public static func verifyBundle(appAt app: URL, newerThan floor: BuildNumber) throws -> (version: String, build: BuildNumber) {
+        guard let info = infoDictionary(atBundle: app) else { throw UpdateRefusal.wrongBundleIdentifier(nil) }
+        return try identity(fromInfo: info, newerThan: floor)
+    }
+
+    public static func installedBuild(at app: URL) -> BuildNumber? {
+        guard let info = infoDictionary(atBundle: app),
+              info["CFBundleIdentifier"] as? String == UpdateTrust.bundleIdentifier,
+              let raw = info["CFBundleVersion"] as? String else { return nil }
+        return BuildNumber(raw)
+    }
+
+    private static func sealedInfo(of code: SecStaticCode) throws -> [String: Any] {
+        var information: CFDictionary?
+        let status = SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &information)
+        guard status == errSecSuccess,
+              let dictionary = information as? [String: Any],
+              let plist = dictionary[kSecCodeInfoPList as String] as? [String: Any]
+        else { throw UpdateRefusal.wrongBundleIdentifier(nil) }
+        return plist
+    }
+
+    private static func check(
+        _ code: SecStaticCode, policy: UpdateSignaturePolicy, newerThan floor: BuildNumber
+    ) throws -> (version: String, build: BuildNumber) {
+        try checkPublisher(code, requirement: policy.publisher)
+        if let notarization = policy.notarization {
+            try checkNotarized(code, requirement: notarization)
+        }
+        return try identity(fromInfo: try sealedInfo(of: code), newerThan: floor)
+    }
+
+    public static func seal(appAt app: URL, policy: UpdateSignaturePolicy, newerThan floor: BuildNumber) throws -> SealedBundle {
+        let code = try staticCode(at: app)
+        let identity = try check(code, policy: policy, newerThan: floor)
+        return SealedBundle(url: app, version: identity.version, build: identity.build, code: code)
+    }
+
+    public static func recheck(_ sealed: SealedBundle, policy: UpdateSignaturePolicy, newerThan floor: BuildNumber) throws {
+        let identity = try check(sealed.code, policy: policy, newerThan: floor)
+        guard identity.build == sealed.build else {
+            throw UpdateRefusal.notNewer(candidate: identity.build.description, running: sealed.build.description)
+        }
+    }
+
     // TODO: verify on a Developer-ID-signed build: signature and notarization cannot pass on a local build.
-    public static func verifyApp(at app: URL, requirement: String, newerThan running: BuildNumber) throws -> (version: String, build: BuildNumber) {
-        try verifySignature(ofAppAt: app, requirement: requirement)
-        try verifyNotarized(appAt: app)
-        return try verifyBundle(appAt: app, newerThan: running)
+    public static func verifyApp(at app: URL, requirement: String, newerThan floor: BuildNumber) throws -> (version: String, build: BuildNumber) {
+        let sealed = try seal(appAt: app, policy: UpdateSignaturePolicy(requirement: requirement), newerThan: floor)
+        return (sealed.version, sealed.build)
     }
 }

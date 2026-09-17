@@ -56,10 +56,16 @@ public struct ReleaseTrack: Equatable, Sendable {
 }
 
 public struct StagedUpdate: Equatable, Sendable {
-    public let appURL: URL
-    public let version: String
-    public let build: BuildNumber
+    public let sealed: SealedBundle
     public let critical: Bool
+
+    public var appURL: URL { sealed.url }
+    public var version: String { sealed.version }
+    public var build: BuildNumber { sealed.build }
+
+    public static func == (lhs: StagedUpdate, rhs: StagedUpdate) -> Bool {
+        lhs.sealed === rhs.sealed && lhs.critical == rhs.critical
+    }
 }
 
 public enum UpdateRefusal: Error, Equatable, CustomStringConvertible {
@@ -78,6 +84,9 @@ public enum UpdateRefusal: Error, Equatable, CustomStringConvertible {
     case wrongBundleIdentifier(String?)
     case notNewer(candidate: String?, running: String)
     case installFailed(String)
+    case exceedsSizeCap(Int64)
+    case unsafeWorkDirectory(String)
+    case installedCopyRejected(String)
 
     public var description: String {
         switch self {
@@ -96,6 +105,9 @@ public enum UpdateRefusal: Error, Equatable, CustomStringConvertible {
         case .wrongBundleIdentifier(let id): return "bundle identifier is \(id ?? "missing")"
         case .notNewer(let candidate, let running): return "build \(candidate ?? "missing") is not newer than \(running)"
         case .installFailed(let why): return "install failed: \(why)"
+        case .exceedsSizeCap(let size): return "announced size \(size) exceeds the \(UpdateTrust.maximumDownloadBytes)-byte cap"
+        case .unsafeWorkDirectory(let path): return "update work directory is not private: \(path)"
+        case .installedCopyRejected(let why): return "installed copy failed re-verification and was rolled back: \(why)"
         }
     }
 }

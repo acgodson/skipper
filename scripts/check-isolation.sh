@@ -4,7 +4,12 @@
 #
 # See AGENT.md "Browser and Network Isolation" and PLAN.md. This is not a style check —
 # a violation here changes what the product IS. Run it in CI and before any release.
+#
+# Usage: check-isolation.sh [path/to/SkipperDesk.app | path/to/binary]
+# With a path, exactly that artefact is checked. Without one, dist/SkipperDesk.app.
 set -uo pipefail
+TARGET="${1:-}"
+if [[ -n "$TARGET" && "$TARGET" != /* ]]; then TARGET="$PWD/$TARGET"; fi
 cd "$(dirname "$0")/.."
 fail=0
 report() { echo "  FAIL  $1"; fail=1; }
@@ -17,10 +22,12 @@ if [[ -n "$hits" ]]; then echo "$hits"; report "forbidden API referenced above";
 
 echo "== 2. No WebKit/JavaScriptCore linked into the built binary"
 BIN=""
-for candidate in dist/SkipperDesk.app/Contents/MacOS/SkipperDesk \
-                 /Applications/SkipperDesk.app/Contents/MacOS/SkipperDesk; do
-  [[ -f "$candidate" ]] && { BIN="$candidate"; break; }
-done
+if [[ -n "$TARGET" ]]; then
+  if [[ -d "$TARGET" ]]; then candidate="${TARGET%/}/Contents/MacOS/SkipperDesk"; else candidate="$TARGET"; fi
+  if [[ -f "$candidate" ]]; then BIN="$candidate"; else report "no SkipperDesk binary at the given path: $TARGET"; fi
+elif [[ -f dist/SkipperDesk.app/Contents/MacOS/SkipperDesk ]]; then
+  BIN="dist/SkipperDesk.app/Contents/MacOS/SkipperDesk"
+fi
 if [[ -n "$BIN" ]]; then
   echo "  bin   $BIN"
   n=$(otool -L "$BIN" | grep -ciE 'webkit|javascriptcore|safariservices' || true)
@@ -33,7 +40,7 @@ if [[ -n "$BIN" ]]; then
     report "WebRTC is not the app's embedded framework -- where is it coming from?"
   fi
 else
-  report "no built binary found in dist/ or /Applications -- cannot verify the shipped artefact"
+  [[ -z "$TARGET" ]] && report "no built binary in dist/ and no path given -- cannot verify the shipped artefact"
 fi
 
 echo "== 3. No system/browser proxy or VPN entitlements requested"
@@ -75,13 +82,27 @@ if [[ -n "$BIN" ]]; then
   if /usr/libexec/PlistBuddy -c 'Print :SkipperTestHooks' "$PLIST" >/dev/null 2>&1; then
     report "this bundle was built with --test-hooks and must not ship"
   fi
-  HOOK_VARS='RC_IDENTITY_DIR|RC_DUMP_FRAME|RC_INPUT_SELFTEST|RC_CAPTURE_SOURCE|RC_PASTEBOARD_NAME|RC_SETTINGS_SUITE|RC_AUTOLINK|RC_AUTOCONNECT|RC_LOG_FILE'
+  # Swift stores strings of 15 bytes or fewer inline in the code, so `strings` cannot see
+  # most hook names. The gate is the symbol that reads them, which exists only in a hooks build.
+  symbols=$(nm "$BIN" 2>/dev/null | swift demangle 2>/dev/null || true)
+  if ! grep -q 'DevelopmentHooks\.areCompiledIn' <<<"$symbols"; then
+    report "the binary has no DevelopmentHooks symbols at all (stripped?) -- cannot prove hooks are compiled out"
+  else
+    hook_symbols=$(grep -oE 'DevelopmentHooks\.(environmentValue|variableName)\([^)]*\)' <<<"$symbols" | sort -u || true)
+    if [[ -n "$hook_symbols" ]]; then
+      echo "$hook_symbols" | sed 's/^/        /'
+      report "the binary contains the development hook reader symbols above"
+    else
+      echo "  ok    no development hook reader symbol (DevelopmentHooks.environmentValue / variableName)"
+    fi
+  fi
+  HOOK_VARS='RC_IDENTITY_DIR|RC_DUMP_FRAME|RC_INPUT_SELFTEST|RC_CAPTURE_SOURCE|RC_SYNTHETIC_SIZE|RC_PASTEBOARD_NAME|RC_SETTINGS_SUITE|RC_AUTOLINK|RC_AUTOCONNECT|RC_LOG_FILE'
   present=$(strings -a "$BIN" | grep -oE "$HOOK_VARS" | sort -u || true)
   if [[ -n "$present" ]]; then
     echo "$present" | sed 's/^/        /'
-    report "the binary still reads the development variables above"
+    report "the binary still names the development variables above"
   else
-    echo "  ok    no development environment hook is present in the binary"
+    echo "  ok    no development variable name longer than the inline-string limit is present"
   fi
 fi
 

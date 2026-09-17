@@ -2,8 +2,9 @@ import CryptoKit
 import Foundation
 import RCTestKit
 import RemoteControlCore
+import SkipperCore
 
-private func expectRefusal(
+func expectRefusal(
     _ expected: (UpdateRefusal) -> Bool,
     file: StaticString = #file,
     line: UInt = #line,
@@ -20,11 +21,11 @@ private func expectRefusal(
     throw fail("expected the update to be refused", file: file, line: line)
 }
 
-private func build(_ raw: String) throws -> BuildNumber {
+func build(_ raw: String) throws -> BuildNumber {
     try expectNotNil(BuildNumber(raw))
 }
 
-private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {
+func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("rc-update-tests-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -32,7 +33,7 @@ private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {
     try body(directory)
 }
 
-private func makeUnsignedBundle(in directory: URL, identifier: String, build: String) throws -> URL {
+func makeUnsignedBundle(in directory: URL, identifier: String, build: String) throws -> URL {
     let app = directory.appendingPathComponent("SkipperDesk.app", isDirectory: true)
     let contents = app.appendingPathComponent("Contents", isDirectory: true)
     try FileManager.default.createDirectory(
@@ -50,9 +51,20 @@ private func makeUnsignedBundle(in directory: URL, identifier: String, build: St
     return app
 }
 
-private let teamID = "ABCDE12345"
+let teamID = "ABCDE12345"
 
-public let updateSuite = TestSuite("Self-update", [
+private let allPhases: [SessionPhase?] = [nil, .idle, .connecting, .awaitingConsent, .live, .reconnecting, .closed(reason: "x")]
+
+private func phaseIsIdle(_ phase: SessionPhase?) -> Bool {
+    switch phase {
+    case .none, .idle, .closed: return true
+    default: return false
+    }
+}
+
+public let updateSuite = TestSuite("Self-update", updatePolicyCases + updateInstallerCases)
+
+let updatePolicyCases: [TestCase] = [
 
     TestCase("build numbers compare numerically, component by component") {
         try expect(try build("4") > build("3"))
@@ -118,15 +130,15 @@ public let updateSuite = TestSuite("Self-update", [
     },
 
     TestCase("updates are disabled without a Team ID, an app bundle, or a self-consistent signature") {
-        try expectEqual(UpdateAvailability.resolve(teamID: nil, isAppBundle: true, runningSatisfies: { _ in true }),
-                        .disabledInDevelopment)
-        try expectEqual(UpdateAvailability.resolve(teamID: teamID, isAppBundle: false, runningSatisfies: { _ in true }),
-                        .disabledInDevelopment)
-        try expectEqual(UpdateAvailability.resolve(teamID: teamID, isAppBundle: true, runningSatisfies: { _ in false }),
-                        .disabledInDevelopment)
+        func resolve(_ team: String?, app: Bool = true, hooks: Bool = false, satisfies: @escaping (String) -> Bool) -> UpdateAvailability {
+            UpdateAvailability.resolve(teamID: team, isAppBundle: app, hooksCompiledIn: hooks, runningSatisfies: satisfies)
+        }
+        try expectEqual(resolve(nil, satisfies: { _ in true }), .disabledInDevelopment)
+        try expectEqual(resolve(teamID, app: false, satisfies: { _ in true }), .disabledInDevelopment)
+        try expectEqual(resolve(teamID, satisfies: { _ in false }), .disabledInDevelopment)
         let requirement = try UpdateTrust.designatedRequirement(teamID: teamID)
-        try expectEqual(UpdateAvailability.resolve(teamID: teamID, isAppBundle: true, runningSatisfies: { $0 == requirement }),
-                        .enabled(requirement: requirement))
+        try expectEqual(resolve(teamID, satisfies: { $0 == requirement }), .enabled(requirement: requirement))
+        try expectEqual(resolve(teamID, hooks: true, satisfies: { $0 == requirement }), .disabledInDevelopment)
         try expectEqual(UpdateStatus.disabledInDevelopment.sentence, "Updates are disabled in development builds.")
     },
 
@@ -136,16 +148,72 @@ public let updateSuite = TestSuite("Self-update", [
         try expectEqual(checker.status, .disabledInDevelopment)
     },
 
-    TestCase("only https, or http on loopback, is an acceptable download source") {
-        _ = try UpdateTrust.requireSecureSource("https://downloads.skipperdesk.app/SkipperDesk-1.0.1.dmg")
-        _ = try UpdateTrust.requireSecureSource("http://127.0.0.1:18080/SkipperDesk.dmg")
-        _ = try UpdateTrust.requireSecureSource("http://localhost/SkipperDesk.dmg")
-        for bad in ["http://downloads.skipperdesk.app/a.dmg", "ftp://x/a.dmg", "file:///tmp/a.dmg",
-                    "https://user@x/a.dmg", "not a url"] {
+    TestCase("release builds accept only https downloads and redirects; loopback http is a test-hook exception") {
+        func refused(_ raw: String, allowLoopback: Bool) throws {
             try expectRefusal({ if case .insecureSource = $0 { return true }; return false }) {
-                _ = try UpdateTrust.requireSecureSource(bad)
+                _ = try UpdateTrust.requireSecureSource(raw, allowLoopback: allowLoopback)
             }
         }
+        for allowLoopback in [false, true] {
+            _ = try UpdateTrust.requireSecureSource("https://downloads.skipperdesk.app/SkipperDesk-1.0.1.dmg",
+                                                    allowLoopback: allowLoopback)
+            _ = try UpdateTrust.requireSecureSource("HTTPS://downloads.skipperdesk.app/a.dmg", allowLoopback: allowLoopback)
+            for bad in ["http://downloads.skipperdesk.app/a.dmg", "ftp://x/a.dmg", "file:///tmp/a.dmg",
+                        "https://user@x/a.dmg", "https:///a.dmg", "not a url", "http://127.0.0.2/a.dmg"] {
+                try refused(bad, allowLoopback: allowLoopback)
+            }
+        }
+        for loopback in ["http://127.0.0.1:18080/SkipperDesk.dmg", "http://localhost/SkipperDesk.dmg"] {
+            try refused(loopback, allowLoopback: false)
+            _ = try UpdateTrust.requireSecureSource(loopback, allowLoopback: true)
+        }
+        try expectEqual((try? UpdateTrust.requireSecureSource("http://localhost/SkipperDesk.dmg")) != nil,
+                        DevelopmentHooks.areCompiledIn)
+    },
+
+    TestCase("downloads are capped at 512 MiB and at the announced size") {
+        try expectEqual(UpdateTrust.maximumDownloadBytes, 536_870_912)
+        try UpdateTrust.requireAcceptableSize(1)
+        try UpdateTrust.requireAcceptableSize(UpdateTrust.maximumDownloadBytes)
+        try expectRefusal({ $0 == .exceedsSizeCap(UpdateTrust.maximumDownloadBytes + 1) }) {
+            try UpdateTrust.requireAcceptableSize(UpdateTrust.maximumDownloadBytes + 1)
+        }
+        for bad: Int64 in [0, -1, .min] {
+            try expectRefusal({ $0 == .malformedRelease("size") }) { try UpdateTrust.requireAcceptableSize(bad) }
+        }
+        try expectEqual(UpdateTrust.downloadLimit(announced: 70_000), 70_000)
+        try expectEqual(UpdateTrust.downloadLimit(announced: .max), UpdateTrust.maximumDownloadBytes)
+    },
+
+    TestCase("refused builds are keyed on the numeric build, not its spelling") {
+        var refused = RefusedBuilds()
+        refused.insert("3")
+        for spelling in ["3", "3.0", "03", "3.0.0", "003.0.0.0"] {
+            try expect(refused.contains(spelling), "\(spelling) dodged the refusal")
+        }
+        try expectFalse(refused.contains("3.0.1"))
+        try expectFalse(refused.contains("4"))
+        try expect(refused.contains("3b"), "an unparseable build is never retried")
+        refused.insert(try build("4.1.0"))
+        try expect(refused.contains("04.1"))
+        try expectEqual(try build("3.0.0").canonicalKey, "3")
+        try expectEqual(try build("1.0.2.0").canonicalKey, "1.0.2")
+        try expectEqual(try build("0").canonicalKey, "0")
+        try expectEqual(Set([try build("3"), try build("3.0"), try build("03.0.0")]).count, 1)
+    },
+
+    TestCase("the unattended install window opens only for an idle host") {
+        for role in AppRole.allCases {
+            for phase in allPhases {
+                let context = UpdateInstallContext(role: role, phase: phase)
+                try expectEqual(UpdatePolicy.isUnattendedWindowOpen(context), role == .host && phaseIsIdle(phase),
+                                "role \(role) phase \(String(describing: phase))")
+                try expectEqual(UpdatePolicy.mayRestartToUpdate(context), phaseIsIdle(phase),
+                                "restart for role \(role) phase \(String(describing: phase))")
+            }
+        }
+        try expectFalse(UpdatePolicy.isUnattendedWindowOpen(nil))
+        try expectFalse(UpdatePolicy.mayRestartToUpdate(nil))
     },
 
     TestCase("a download must match both the announced size and sha256") {
@@ -225,23 +293,30 @@ public let updateSuite = TestSuite("Self-update", [
         }
     },
 
-    TestCase("unattended installs happen only in quiet hours, with no session, when allowed") {
+    TestCase("unattended installs happen only in quiet hours, on an idle host, when allowed") {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try expectNotNil(TimeZone(identifier: "UTC"))
         func at(_ hour: Int, _ minute: Int) throws -> Date {
             try expectNotNil(calendar.date(from: DateComponents(year: 2026, month: 9, day: 17, hour: hour, minute: minute)))
         }
-        func allowed(_ date: Date, auto: Bool = true, session: Bool = false) -> Bool {
-            UpdatePolicy.shouldInstallUnattended(at: date, calendar: calendar,
-                                                 installsAutomatically: auto, sessionActive: session)
+        func allowed(
+            _ date: Date, auto: Bool = true, role: AppRole = .host, phase: SessionPhase? = .idle
+        ) -> Bool {
+            UpdatePolicy.shouldInstallUnattended(at: date, calendar: calendar, installsAutomatically: auto,
+                                                 context: UpdateInstallContext(role: role, phase: phase))
         }
         try expect(allowed(try at(3, 0)))
         try expect(allowed(try at(4, 59)))
         try expectFalse(allowed(try at(2, 59)))
         try expectFalse(allowed(try at(5, 0)))
         try expectFalse(allowed(try at(15, 30)))
-        try expectFalse(allowed(try at(3, 30), session: true))
+        for busy: SessionPhase in [.connecting, .awaitingConsent, .live, .reconnecting] {
+            try expectFalse(allowed(try at(3, 30), phase: busy), "installed during \(busy)")
+        }
+        try expectFalse(allowed(try at(3, 30), role: .controller))
         try expectFalse(allowed(try at(3, 30), auto: false))
+        try expectFalse(UpdatePolicy.shouldInstallUnattended(at: try at(3, 30), calendar: calendar,
+                                                             installsAutomatically: true, context: nil))
         try expectFalse(UpdatePolicy.shouldInstallOnQuit(installsAutomatically: false))
         try expect(UpdatePolicy.shouldInstallOnQuit(installsAutomatically: true))
     },
@@ -251,4 +326,4 @@ public let updateSuite = TestSuite("Self-update", [
         try expectEqual(UpdatePolicy.nextCheckDelay(unit: 1), 25 * 3600)
         try expectEqual(UpdatePolicy.nextCheckDelay(unit: 0.5), 24 * 3600)
     },
-])
+]

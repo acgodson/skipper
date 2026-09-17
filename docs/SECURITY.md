@@ -83,21 +83,38 @@ gate, not just a style check.
 
 A handful of environment variables exist only so scripts can drive the app:
 `RC_IDENTITY_DIR`, `SKIPPER_DEV_FILE_IDENTITY`, `RC_DUMP_FRAME`, `RC_INPUT_SELFTEST`,
-`RC_CAPTURE_SOURCE`, `RC_PASTEBOARD_NAME`, `RC_SETTINGS_SUITE`, `RC_AUTOLINK`,
-`RC_AUTOCONNECT` and `RC_LOG_FILE`. Every read of them is compiled only under
-`#if DEBUG || SKIPPER_TEST_HOOKS` (centrally in `DevelopmentHooks`), so a release
-build of SkipperDesk.app does not contain the code that reads them — no runtime
-flag, bundle check or environment value can switch them back on, and
-`check-isolation.sh` confirms their names are absent from the shipped binary
-(except `SKIPPER_DEV_FILE_IDENTITY`, which also appears in an error message).
-`rc-node` and `rc-tests` are built in debug by every script, so they keep them; the
+`RC_CAPTURE_SOURCE`, `RC_SYNTHETIC_SIZE`, `RC_PASTEBOARD_NAME`, `RC_SETTINGS_SUITE`,
+`RC_AUTOLINK`, `RC_AUTOCONNECT` and `RC_LOG_FILE`. Every read of them goes through
+`DevelopmentHooks`, whose environment reader (`DevelopmentHooks.environmentValue` and
+`DevelopmentHooks.variableName`) is compiled only under `#if DEBUG || SKIPPER_TEST_HOOKS`.
+A release build of SkipperDesk.app does not contain the code that reads them, so no
+runtime flag, bundle check or environment value can switch them back on.
+
+`check-isolation.sh` proves this on the artefact. Swift stores strings of 15 bytes or
+fewer inside the code, where `strings` cannot find them, so the gate does not rely on
+variable names. It fails when the binary's symbol table contains either reader symbol,
+or when the symbol table is missing (a stripped binary cannot be checked). It also still
+fails on any longer hook name that `strings` can see, and on the `SkipperTestHooks`
+Info.plist marker. The script checks exactly the path it is given
+(`check-isolation.sh path/to/SkipperDesk.app`) and fails if nothing is there. With no
+path, it checks `dist/SkipperDesk.app`.
+
+`rc-node` and `rc-tests` are built in debug by every script, so they keep the hooks. The
 on-device `scripts/verify-*.sh` checks need `./scripts/build.sh --test-hooks`, which
-defines `SKIPPER_TEST_HOOKS`, marks the bundle `SkipperTestHooks` in Info.plist, and
-is refused by `check-isolation.sh`. `SKIPPER_API_BASE_URL` and `SKIPPER_WEB_BASE_URL`
-stay available in release (self-hosting and the two-Mac test need them); both are
-validated by one rule (https only, plain http only for localhost/127.0.0.1) and the
-app shows a permanent "Using a development server" banner whenever either points
-away from the shipped backend.
+defines `SKIPPER_TEST_HOOKS` and marks the bundle `SkipperTestHooks`. `check-isolation.sh`
+refuses that bundle, and such a build never updates itself (see Updates).
+
+`RC_DEBUG=1` is not a hook and stays available in release, because the product rule is
+"diagnostics hidden unless `RC_DEBUG`". In release it does two things only: it shows the
+extra diagnostic readouts in the UI (capture size, frame rate, display scale, round-trip
+time), and it turns on the app's log lines on standard error. Those lines carry state and error reasons, never
+access codes, keys, tokens or SDP bodies. The log file (`RC_LOG_FILE`) is a hook and does
+not exist in release.
+
+`SKIPPER_API_BASE_URL` and `SKIPPER_WEB_BASE_URL` also stay available in release
+(self-hosting and the two-Mac test need them). Both are validated by one rule (https
+only, plain http only for localhost/127.0.0.1), and the app shows a permanent "Using a
+development server" banner whenever either points away from the shipped backend.
 
 ## Signing
 
@@ -143,11 +160,19 @@ The Mac app updates itself with no third-party updater. The release feed
 compromised API, CDN or DNS can point the app at any file. The app installs it
 only if every check below passes:
 
-1. **Integrity.** The downloaded `.dmg` matches the announced `size` and `sha256`.
-   The download is cut off as soon as it exceeds `size`, and a redirect to
-   anything other than https is refused.
-2. **Publisher.** The `SkipperDesk.app` inside the image is copied out first. The
-   copy is then checked with `SecStaticCodeCheckValidity` (strict validation, all
+1. **Integrity.** The announced `size` must be between 1 byte and 512 MiB. The
+   download is cut off as soon as it exceeds the announced `size`, and the finished
+   `.dmg` must match both `size` and `sha256`. The download URL and every redirect
+   must be https. Plain http is never accepted, loopback included (only the debug
+   and `--test-hooks` builds used by tests allow http to loopback, and those builds
+   never update themselves).
+2. **Publisher.** The `SkipperDesk.app` inside the image is copied into a fresh
+   directory that the app creates with mode 0700 under
+   `~/Library/Application Support/app.skipperdesk.desktop/Updates/`. The app refuses
+   the directory if it, or its parent, is a symlink, belongs to another user, or (for
+   `Updates` and the fresh directory) is readable or writable by anyone else. The copy
+   is opened once with `SecStaticCodeCreateWithPath`, and the app keeps that code
+   object. It is checked with `SecStaticCodeCheckValidity` (strict validation, all
    architectures, nested code, no symlinks that escape the bundle) against:
    `anchor apple generic and identifier "app.skipperdesk.desktop" and certificate
    1[field.1.2.840.113635.100.6.2.6] exists and certificate
@@ -156,34 +181,51 @@ only if every check below passes:
    "Apple Development" certificate from the same team does not pass. The app reads
    `TEAMID` at runtime from **its own** code signature. The feed cannot choose the
    team.
-3. **Notarization.** The same copy must also satisfy `anchor apple generic and
+3. **Notarization.** The same code object must also satisfy `anchor apple generic and
    notarized`. This check uses the public Security.framework API.
    `SecAssessmentCreate` has no public header in the macOS SDK.
-4. **No downgrade.** The copy's `CFBundleIdentifier` must be the app's own. Its
-   `CFBundleVersion` must be strictly greater than the running build. The app
-   reads both from the sealed `Info.plist` after the signature check passes.
+4. **No downgrade.** The bundle identifier and `CFBundleVersion` are read from the
+   sealed `Info.plist` of that same code object. The identifier must be the app's own.
+   The build must be strictly greater than both the running build and the build of
+   the copy currently at the install location, so a newer copy the user installed
+   by hand is never replaced by an older one.
 
-The app checks the copy it will install, not the mounted image. It checks the copy
-again right before the swap. If any check fails, the app discards the download
-and logs the reason. The user sees nothing alarming, and the app does not retry
-that build during this run.
+The app never checks a path and then acts on a path that someone else can change.
+Right before the swap, it checks the kept code object again. It then swaps with
+`FileManager.replaceItemAt` and keeps a hidden backup of the previous app next to it.
+After the swap, it opens the bundle **now at the install location** and runs checks 2
+to 4 on it again, and the build must equal the staged build. If any of that fails, the
+app restores the backup, deletes the staged copy, and logs the reason. The check after
+the swap is the one that matters: in a 1,000-iteration race where another process kept
+swapping the staged bundle with an unsigned one, the check before the swap never
+caught the switch (the code object had already cached the signature). The check after
+the swap caught all 481 switched installs and rolled them back, and no unverified
+bundle was ever left installed. The same race against the old flow, which checked a
+path and then swapped it, left an unsigned bundle installed.
 
-A build without a Developer ID Team ID (ad-hoc or locally signed) turns the
-updater off entirely and says "Updates are disabled in development builds." The
-updater also stays off when the running app does not satisfy its own pinned
-requirement.
+If any check fails, the app discards the download and logs the reason. The user sees
+nothing alarming. The app does not retry that build during this run. Builds are
+compared by their numeric value, so `4`, `4.0` and `04` count as the same build.
+
+The updater is off entirely, with "Updates are disabled in development builds.", in
+these cases:
+
+- The build has no Developer ID Team ID (ad-hoc or locally signed).
+- The running app does not satisfy its own pinned requirement.
+- The build has development hooks compiled in (debug or `--test-hooks`).
 
 The app installs a verified update in three situations:
 
 - When SkipperDesk quits.
-- When the user chooses "Restart to Update". This is not offered while a remote
-  session is open.
-- On unattended hosts, between 03:00 and 05:00 local time with no session open,
-  when "Install updates automatically" is on (the default).
+- When the user chooses "Restart to Update". This only works when the session phase
+  is idle, not while a session is connecting, waiting for consent, live or
+  reconnecting.
+- Between 03:00 and 05:00 local time, when "Install updates automatically" is on (the
+  default), only if this Mac is in the host role and the session phase is idle.
+  Controllers never install on this schedule.
 
-The swap uses `FileManager.replaceItemAt` on the same volume. Because the
-designated requirement does not change between versions, macOS keeps the Screen
-Recording and Accessibility grants.
+Because the designated requirement does not change between versions, macOS keeps the
+Screen Recording and Accessibility grants.
 
 This page will be updated as Phase 4 (client security pass) and Phase 5 (backend)
 land. Last updated 2026-09-17.
