@@ -4,8 +4,19 @@
 #![forbid(unsafe_code)]
 
 pub mod input;
+pub mod relay;
 
 pub use input::InputError;
+
+use rand_core::{OsRng, RngCore};
+
+const PROMPT_ID_BYTES: usize = 16;
+
+fn new_prompt_id() -> Option<String> {
+    let mut bytes = [0u8; PROMPT_ID_BYTES];
+    OsRng.try_fill_bytes(&mut bytes).ok()?;
+    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IceLinkState {
@@ -76,6 +87,8 @@ pub enum SessionAction {
     },
     PromptForConsent {
         expires_at_ms: i64,
+        prompt_id: String,
+        replaces_previous: bool,
     },
     DismissConsentPrompt {
         outcome: ConsentOutcome,
@@ -158,6 +171,7 @@ pub struct SessionStateMachine {
     failed_since: Option<i64>,
     ice_restart_requested: bool,
     relay_only: bool,
+    relay_only_baseline: bool,
     last_renew: Option<i64>,
     resume_wanted: bool,
 
@@ -166,6 +180,8 @@ pub struct SessionStateMachine {
 
     consent_deadline: Option<i64>,
     consent_allow_after: Option<i64>,
+    consent_prompt_id: Option<String>,
+    prompt_replaced: bool,
     peer_start_since: Option<i64>,
     peer_started: bool,
     last_rejection: Option<InputError>,
@@ -195,12 +211,15 @@ impl SessionStateMachine {
             failed_since: None,
             ice_restart_requested: false,
             relay_only: false,
+            relay_only_baseline: false,
             last_renew: None,
             resume_wanted: false,
             server_advertised_session_id: None,
             cleared_stale_session: false,
             consent_deadline: None,
             consent_allow_after: None,
+            consent_prompt_id: None,
+            prompt_replaced: false,
             peer_start_since: None,
             peer_started: false,
             last_rejection: None,
@@ -234,7 +253,10 @@ impl SessionStateMachine {
     pub fn relay_only(&self) -> bool {
         self.relay_only
     }
+    /// The relay policy every session starts with (a forced relay, for
+    /// example); a session's own fallback to relay ends with the session.
     pub fn set_relay_only(&mut self, relay_only: bool) {
+        self.relay_only_baseline = relay_only;
         self.relay_only = relay_only;
     }
 
@@ -254,6 +276,12 @@ impl SessionStateMachine {
         self.peer_started
     }
 
+    /// The local, random name of the open consent prompt. It is never the
+    /// server's session id, so the server cannot aim an answer at a prompt.
+    pub fn consent_prompt_id(&self) -> Option<&str> {
+        self.consent_prompt_id.as_deref()
+    }
+
     /// Why the last event was refused, if it was. A refused event performs
     /// no action.
     pub fn take_rejection(&mut self) -> Option<InputError> {
@@ -267,6 +295,7 @@ impl SessionStateMachine {
 
     fn leave_consent(&mut self, outcome: ConsentOutcome) -> Vec<SessionAction> {
         self.consent_allow_after = None;
+        self.consent_prompt_id = None;
         match self.consent_deadline.take() {
             Some(_) => vec![SessionAction::DismissConsentPrompt { outcome }],
             None => vec![],
@@ -309,7 +338,9 @@ impl SessionStateMachine {
             return self.reject(error);
         }
         let mut actions = vec![SessionAction::TeardownPeerConnection];
-        actions.extend(self.leave_consent(ConsentOutcome::Cancelled));
+        let dismissed = self.leave_consent(ConsentOutcome::Cancelled);
+        self.prompt_replaced = !dismissed.is_empty();
+        actions.extend(dismissed);
         self.session_id = Some(grant.session_id.clone());
         self.session_token = Some(grant.session_token.clone());
         self.peer_device_id = match self.role {
@@ -328,6 +359,7 @@ impl SessionStateMachine {
         self.disconnected_since = None;
         self.failed_since = None;
         self.ice_restart_requested = false;
+        self.relay_only = self.relay_only_baseline;
         self.resume_in_flight = false;
         self.resume_wanted = false;
         self.phase = SessionPhase::Connecting;
@@ -346,33 +378,43 @@ impl SessionStateMachine {
             return vec![];
         }
         if self.role == Role::Host && self.consent_required {
+            let Some(prompt_id) = new_prompt_id() else {
+                return self.user_ended(rc_proto::consts::bye::DECLINED);
+            };
             let expires_at_ms = now_ms.saturating_add(self.consent_timeout_ms);
             self.consent_deadline = Some(expires_at_ms);
             self.consent_allow_after = Some(now_ms.saturating_add(self.consent_allow_delay_ms));
+            self.consent_prompt_id = Some(prompt_id.clone());
             self.phase = SessionPhase::AwaitingConsent;
-            return vec![SessionAction::PromptForConsent { expires_at_ms }];
+            return vec![SessionAction::PromptForConsent {
+                expires_at_ms,
+                prompt_id,
+                replaces_previous: std::mem::take(&mut self.prompt_replaced),
+            }];
         }
         self.start_peer(now_ms)
     }
 
-    /// Decline works whenever a prompt is open; Allow only while the machine
-    /// is still waiting, and not before the prompt has been on screen for
-    /// `consent_allow_delay_ms`. `session_id` names the prompt being answered.
+    /// `prompt_id` names the prompt being answered (`consent_prompt_id`); an
+    /// answer for any other prompt changes nothing. Allow needs that name, the
+    /// machine still waiting, and the prompt on screen for at least
+    /// `consent_allow_delay_ms`; an earlier Allow is refused, not deferred.
+    /// Decline without a name is this machine's own decision.
     pub fn consent_answered(
         &mut self,
         allow: bool,
-        session_id: Option<&str>,
+        prompt_id: Option<&str>,
         now_ms: i64,
     ) -> Vec<SessionAction> {
-        if self.consent_deadline.is_none() {
+        let Some(open) = self.consent_prompt_id.as_deref() else {
             return vec![];
-        }
-        if session_id.is_some_and(|id| Some(id) != self.session_id.as_deref()) {
+        };
+        if prompt_id.is_some_and(|id| id != open) {
             return vec![];
         }
         if allow {
             let too_early = self.consent_allow_after.is_some_and(|at| now_ms < at);
-            if self.phase != SessionPhase::AwaitingConsent || too_early {
+            if prompt_id.is_none() || self.phase != SessionPhase::AwaitingConsent || too_early {
                 return vec![];
             }
             let mut actions = self.leave_consent(ConsentOutcome::Allowed);
@@ -662,6 +704,28 @@ impl SessionStateMachine {
         }
     }
 
+    /// The server's `ice_servers` push (protocol v5): this session's relay
+    /// credentials arrived. A relay-only offerer whose link never came up
+    /// gathered nothing without them, so it restarts ICE once they are here.
+    pub fn ice_servers_arrived(&mut self, session_id: &str) -> Vec<SessionAction> {
+        if let Err(error) = input::session_id(session_id) {
+            return self.reject(error);
+        }
+        if self.session_id.as_deref() != Some(session_id) {
+            return self.reject(InputError::SessionMismatch);
+        }
+        let waiting_on_relay = self.relay_only
+            && self.is_offerer()
+            && self.peer_started
+            && !self.ice_state.is_up()
+            && !self.ice_restart_requested;
+        if !waiting_on_relay {
+            return vec![];
+        }
+        self.ice_restart_requested = true;
+        vec![SessionAction::RestartIce { relay_only: true }]
+    }
+
     pub fn tick(&mut self, now_ms: i64) -> Vec<SessionAction> {
         let mut actions = vec![];
         if !self.has_session() {
@@ -759,7 +823,8 @@ impl SessionStateMachine {
         self.disconnected_since = None;
         self.failed_since = None;
         self.ice_restart_requested = false;
-        self.relay_only = false;
+        self.relay_only = self.relay_only_baseline;
+        self.prompt_replaced = false;
         self.ice_state = IceLinkState::Closed;
         self.phase = SessionPhase::Closed {
             reason: reason.to_string(),

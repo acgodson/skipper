@@ -12,7 +12,7 @@ pub const STEP_CONTROLLER_START: u32 = 1;
 pub const STEP_HOST_REPLY: u32 = 2;
 pub const STEP_CONTROLLER_CONFIRM: u32 = 3;
 
-pub const MAX_PAYLOAD_BASE64: usize = 4096;
+pub const MAX_PAYLOAD_BASE64: usize = rc_session::relay::PAKE_PAYLOAD_MAX_BASE64;
 pub const SESSION_KEY_LEN: usize = 32;
 pub const CONFIRM_LEN: usize = 32;
 

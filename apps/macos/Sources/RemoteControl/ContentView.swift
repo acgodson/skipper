@@ -15,7 +15,7 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay { ConsentOverlay() }
-        .animation(SkipperMotion.standard, value: model.consentRequest?.sessionID)
+        .animation(SkipperMotion.standard, value: model.consentRequest?.promptID)
     }
 
     private var screen: some View {

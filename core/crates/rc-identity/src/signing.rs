@@ -8,6 +8,7 @@ use base64::Engine;
 use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::{DerSignature, VerifyingKey};
 use p256::pkcs8::{DecodePublicKey, EncodePublicKey};
+use sha2::{Digest, Sha256};
 
 pub const NONCE_LEN: usize = 32;
 
@@ -107,6 +108,27 @@ pub fn canonical_public_key(pubkey_base64: &str) -> Result<String, VerifyError> 
         .to_public_key_der()
         .map_err(|_| VerifyError::BadPubkey)?;
     Ok(B64.encode(canonical.as_bytes()))
+}
+
+pub const FINGERPRINT_GROUPS: usize = 4;
+pub const FINGERPRINT_GROUP_LEN: usize = 4;
+
+/// What a person compares between two Macs: the first
+/// [`FINGERPRINT_GROUPS`] groups of [`FINGERPRINT_GROUP_LEN`] uppercase hex
+/// digits of SHA-256 over the canonical DER SPKI, separated by spaces.
+pub fn public_key_fingerprint(pubkey_base64: &str) -> Result<String, VerifyError> {
+    let der = B64
+        .decode(canonical_public_key(pubkey_base64)?.as_bytes())
+        .map_err(|_| VerifyError::BadPubkey)?;
+    let hex: String = Sha256::digest(&der)
+        .iter()
+        .take(FINGERPRINT_GROUPS * FINGERPRINT_GROUP_LEN / 2)
+        .map(|byte| format!("{byte:02X}"))
+        .collect();
+    let groups: Vec<&str> = (0..FINGERPRINT_GROUPS)
+        .map(|index| &hex[index * FINGERPRINT_GROUP_LEN..(index + 1) * FINGERPRINT_GROUP_LEN])
+        .collect();
+    Ok(groups.join(" "))
 }
 
 /// Refuses any spelling of a key other than its canonical one.

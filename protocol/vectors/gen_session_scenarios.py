@@ -23,6 +23,12 @@ Conventions:
   expectRejected  the core refused the event's input; absent means false
   expectPeerStarted whether the machine has ordered a peer connection
   expectPeerDeviceId the peer Device ID the UI may show (empty: "another Mac")
+  promptForConsent  carries a random promptId the file cannot know; runners
+                  compare expiresAt and replacesPrevious, and remember each
+                  promptId in order
+  consentAnswered prompt: "current" (the newest remembered promptId) or
+                  "previous" (the one before it); promptId: a literal name;
+                  neither: no name (the host's own decision)
 
 The peer connection starts only once the access-code exchange (§2.17) has
 verified (`pakeSucceeded`). A host with `consentRequired` asks its owner first
@@ -68,14 +74,20 @@ def offer(v=True):
 PAKE_OK = {"event": "pakeSucceeded"}
 REQUIRE_CONSENT = {"event": "setConsentRequired", "required": True}
 
-def answer(allow, sess=None):
+def answer(allow, prompt="current"):
     e = {"event": "consentAnswered", "allow": allow}
-    if sess is not None:
-        e["sessionId"] = sess
+    if prompt in ("current", "previous"):
+        e["prompt"] = prompt
+    elif prompt is not None:
+        e["promptId"] = prompt
     return e
 
-def a_prompt(expires_at):
-    return {"action": "promptForConsent", "expiresAt": expires_at}
+def a_prompt(expires_at, replaces=False):
+    return {"action": "promptForConsent", "expiresAt": expires_at,
+            "replacesPrevious": replaces}
+
+def servers(sess=SESS):
+    return {"event": "iceServersArrived", "sessionId": sess}
 
 def a_dismiss(outcome):
     return {"action": "dismissConsentPrompt", "outcome": outcome}
@@ -236,7 +248,7 @@ scen("ending_the_session_locally_during_the_wait_cancels_the_prompt", [
 scen("a_new_session_start_replaces_the_open_prompt", [
     *consenting_host(),
     step(4, grant(sess=STALE, tok=TOK2), [A_TEARDOWN, a_dismiss("cancelled")], "connecting"),
-    step(5, PAKE_OK, [a_prompt(35)], "awaitingConsent"),
+    step(5, PAKE_OK, [a_prompt(35, replaces=True)], "awaitingConsent"),
     step(34, {"event": "tick"}, [], "awaitingConsent"),
     step(35, {"event": "tick"},
          [a_dismiss("timedOut"), a_bye(STALE, "declined"), *CLOSE_SET], "closed:declined"),
@@ -283,7 +295,7 @@ scen("a_leftover_peer_never_turns_a_new_prompt_into_a_live_session", [
     step(12, ice("disconnected"), [], "awaitingConsent"),
     step(13, ice("connected"), [], "awaitingConsent", expectPeerStarted=False),
     step(14, ice("completed"), [], "awaitingConsent"),
-    step(15, answer(False, OTHER),
+    step(15, answer(False),
          [a_dismiss("declined"), a_bye(OTHER, "declined"), *CLOSE_SET],
          "closed:declined", expectPeerStarted=False, expectHasSession=False),
     step(16, ice("connected"), [], "closed:declined"),
@@ -317,7 +329,43 @@ scen("an_answer_meant_for_another_prompt_changes_nothing", [
     *consenting_host(),
     step(5, answer(True, STALE), [], "awaitingConsent"),
     step(6, answer(False, STALE), [], "awaitingConsent"),
-    step(7, answer(True, SESS), [a_dismiss("allowed"), offer(False)], "connecting"),
+    step(7, answer(True), [a_dismiss("allowed"), offer(False)], "connecting"),
+], role="host")
+
+scen("a_prompt_is_named_locally_never_by_the_server_session_id", [
+    *consenting_host(),
+    step(5, answer(True, SESS), [], "awaitingConsent"),
+    step(5, answer(False, SESS), [], "awaitingConsent"),
+    step(6, answer(True, None), [], "awaitingConsent"),
+    step(7, answer(True), [a_dismiss("allowed"), offer(False)], "connecting"),
+], role="host", note="review C2: the server chooses session ids, so an answer carries the "
+                     "prompt's local random name; Allow without a name is refused")
+
+scen("the_hosts_own_decline_needs_no_name", [
+    *consenting_host(),
+    step(2, answer(False, None),
+         [a_dismiss("declined"), a_bye(SESS, "declined"), *CLOSE_SET], "closed:declined"),
+], role="host")
+
+scen("an_allow_for_a_replaced_prompt_never_admits_the_new_controller", [
+    *consenting_host(),
+    step(4, grant(tok=TOK2, ctrl="739000588"), [A_TEARDOWN, a_dismiss("cancelled")], "connecting"),
+    step(5, PAKE_OK, [a_prompt(35, replaces=True)], "awaitingConsent"),
+    step(5.5, answer(True, "previous"), [], "awaitingConsent"),
+    step(6, answer(True), [], "awaitingConsent"),
+    step(6.6, {"event": "tick"}, [], "awaitingConsent", expectPeerStarted=False),
+    step(7, answer(True, "previous"), [], "awaitingConsent"),
+    step(7, answer(True), [a_dismiss("allowed"), offer(False)], "connecting"),
+], role="host", note="review C2: a compromised server re-sends session_start with the same "
+                     "session id for controller B; the owner's click on A's prompt, or an Allow "
+                     "inside B's 1.5 s delay, is refused and never queued")
+
+scen("a_prompt_after_a_finished_session_is_not_a_replacement", [
+    *consenting_host(),
+    step(3, answer(False),
+         [a_dismiss("declined"), a_bye(SESS, "declined"), *CLOSE_SET], "closed:declined"),
+    step(10, grant(sess=OTHER, tok=TOK2), [A_TEARDOWN], "connecting"),
+    step(11, PAKE_OK, [a_prompt(41)], "awaitingConsent"),
 ], role="host")
 
 # ---- server-supplied values are checked before use ------------------------
@@ -659,6 +707,70 @@ scen("a_resume_while_relay_only_restarts_on_relay", [
          [A_WATCHES, A_RESET, A_RESTART_RELAY], "reconnecting"),
 ])
 
+scen("a_relay_fallback_ends_with_its_session", [
+    *live_controller(),
+    step(10, ice("failed"), [A_RESET, A_RESTART_RELAY], "reconnecting", expectRelayOnly=True),
+    step(11, grant(sess=OTHER, tok=TOK2), [A_TEARDOWN], "connecting", expectRelayOnly=False),
+    step(12, PAKE_OK, [offer(True)], "connecting"),
+    step(13, ice("connected"), [A_RESET], "live"),
+    step(20, ice("failed"), [A_RESET, A_RESTART_RELAY], "reconnecting", expectRelayOnly=True),
+    step(21, {"event": "closeLocally", "reason": "user_ended"}, CLOSE_SET, "closed:user_ended",
+         expectRelayOnly=False),
+], note="review leftover: relay_only no longer carries into the next session")
+
+scen("a_forced_relay_holds_for_every_session", [
+    step(0, {"event": "setRelayOnly", "relayOnly": True}, [], "idle", expectRelayOnly=True),
+    *live_controller(),
+    step(5, {"event": "closeLocally", "reason": "user_ended"}, CLOSE_SET, "closed:user_ended",
+         expectRelayOnly=True),
+    step(6, grant(sess=OTHER, tok=TOK2), [A_TEARDOWN], "connecting", expectRelayOnly=True),
+])
+
+# ---- protocol v5: TURN arrives with the ice_servers push -------------------
+
+scen("turn_credentials_restart_a_forced_relay_offer_that_found_nothing", [
+    step(0, {"event": "setRelayOnly", "relayOnly": True}, [], "idle"),
+    step(0, auth(), [], "idle"),
+    step(0, {"event": "connectRequested", "deviceId": HOSTID,
+             "accessCode": CODE, "remember": False}, [a_connect()], "connecting"),
+    *granted(0, True),
+    step(1, ice("checking"), [], "connecting"),
+    step(2, servers(OTHER), [], "connecting", expectRejected=True),
+    step(2, servers(), [A_RESTART_RELAY], "connecting"),
+    step(2, servers(), [], "connecting"),
+    step(3, ice("connected"), [A_RESET], "live"),
+    step(4, servers(), [], "live"),
+], note="connect_ok carries STUN only, so a relay-only offer gathers nothing until "
+        "ice_servers arrives; one restart, not one per push")
+
+scen("turn_credentials_change_nothing_for_a_direct_offer", [
+    *live_controller(),
+    step(1, servers(), [], "live"),
+])
+
+scen("turn_credentials_before_the_peer_starts_change_nothing", [
+    step(0, {"event": "setRelayOnly", "relayOnly": True}, [], "idle"),
+    step(0, auth(), [], "idle"),
+    step(0, {"event": "connectRequested", "deviceId": HOSTID,
+             "accessCode": CODE, "remember": False}, [a_connect()], "connecting"),
+    step(0, grant(), [A_TEARDOWN], "connecting"),
+    step(1, servers(), [], "connecting"),
+    step(2, PAKE_OK, [offer(True)], "connecting"),
+])
+
+scen("a_host_never_restarts_for_turn_credentials", [
+    step(0, {"event": "setRelayOnly", "relayOnly": True}, [], "idle"),
+    step(0, auth(), [], "idle"),
+    *granted(0, False),
+    step(1, servers(), [], "connecting"),
+], role="host", note="only the offerer restarts ICE; the host answers the restart offer")
+
+scen("turn_credentials_without_a_session_are_refused", [
+    step(0, auth(), [], "idle"),
+    step(1, servers(), [], "idle", expectRejected=True),
+    step(1, servers("S|offer"), [], "idle", expectRejected=True),
+])
+
 scen("recovering_inside_the_grace_window_keeps_the_session", [
     *live_controller(),
     step(10, ice("failed"), [A_RESET, A_RESTART_RELAY], "reconnecting"),
@@ -743,7 +855,7 @@ scen("a_deliberately_closed_session_is_not_resurrected", [
     step(9, auth(SESS), [], "closed:user_ended", expectHasSession=False),
 ], note="the regression the first stale-session fix caused: closed is closed")
 
-out = {"version": 2, "clockNote": "at is seconds from scenario start",
+out = {"version": 3, "clockNote": "at is seconds from scenario start",
        "scenarios": S}
 path = sys.argv[1] if len(sys.argv) > 1 else "session-scenarios.json"
 with open(path, "w") as f:

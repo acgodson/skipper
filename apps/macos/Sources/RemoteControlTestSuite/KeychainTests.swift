@@ -118,7 +118,7 @@ public let legacyKeychainMigrationSuite = TestSuite("LegacyKeychainMigration", [
         try expectEqual(Set(LegacyKeychainMigration.accounts), [
             "device-key", "device-key-software", "access-code", "peer-codes",
             "trusted-controllers", "guess-counters", "device-id-cert", "host-key-pins",
-            "host-settings", "device-token",
+            "host-settings", "device-token", "pending-host-keys",
         ])
     },
 

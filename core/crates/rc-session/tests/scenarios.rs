@@ -74,6 +74,8 @@ fn action_from_json(v: &Value) -> SessionAction {
         },
         "promptForConsent" => SessionAction::PromptForConsent {
             expires_at_ms: (v["expiresAt"].as_f64().expect("expiresAt") * 1000.0).round() as i64,
+            prompt_id: String::new(),
+            replaces_previous: v["replacesPrevious"].as_bool().expect("replacesPrevious"),
         },
         "dismissConsentPrompt" => SessionAction::DismissConsentPrompt {
             outcome: ConsentOutcome::from_name(&s("outcome"))
@@ -83,11 +85,46 @@ fn action_from_json(v: &Value) -> SessionAction {
     }
 }
 
+fn without_prompt_ids(actions: &[SessionAction]) -> Vec<SessionAction> {
+    actions
+        .iter()
+        .cloned()
+        .map(|action| match action {
+            SessionAction::PromptForConsent {
+                expires_at_ms,
+                replaces_previous,
+                ..
+            } => SessionAction::PromptForConsent {
+                expires_at_ms,
+                prompt_id: String::new(),
+                replaces_previous,
+            },
+            other => other,
+        })
+        .collect()
+}
+
+fn prompt_id_for(event: &Value, prompt_ids: &[String]) -> Option<String> {
+    let nth_from_end = |n: usize| {
+        prompt_ids
+            .len()
+            .checked_sub(n)
+            .map(|index| prompt_ids[index].clone())
+            .or_else(|| Some("0".repeat(32)))
+    };
+    match event["prompt"].as_str() {
+        Some("current") => nth_from_end(1),
+        Some("previous") => nth_from_end(2),
+        Some(other) => panic!("unknown prompt reference {other:?}"),
+        None => event["promptId"].as_str().map(str::to_string),
+    }
+}
+
 #[test]
 fn every_shared_scenario_passes_against_the_rust_machine() {
     let file: Value = serde_json::from_str(SCENARIOS).expect("scenarios parse");
     let scenarios = file["scenarios"].as_array().expect("scenarios array");
-    assert!(scenarios.len() >= 30, "scenario file looks truncated");
+    assert!(scenarios.len() >= 80, "scenario file looks truncated");
 
     let mut steps_run = 0usize;
     for scenario in scenarios {
@@ -98,6 +135,7 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
             other => panic!("{name}: unknown role {other:?}"),
         };
         let mut machine = SessionStateMachine::new(role);
+        let mut prompt_ids: Vec<String> = vec![];
 
         for (i, step) in scenario["steps"]
             .as_array()
@@ -163,11 +201,17 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
                 "closeLocally" => Some(machine.close_locally(e["reason"].as_str().unwrap())),
                 "userEnded" => Some(machine.user_ended(e["reason"].as_str().unwrap())),
                 "pakeSucceeded" => Some(machine.pake_succeeded(now_ms)),
-                "consentAnswered" => Some(machine.consent_answered(
-                    e["allow"].as_bool().unwrap(),
-                    e["sessionId"].as_str(),
-                    now_ms,
-                )),
+                "consentAnswered" => {
+                    let prompt_id = prompt_id_for(e, &prompt_ids);
+                    Some(machine.consent_answered(
+                        e["allow"].as_bool().unwrap(),
+                        prompt_id.as_deref(),
+                        now_ms,
+                    ))
+                }
+                "iceServersArrived" => {
+                    Some(machine.ice_servers_arrived(e["sessionId"].as_str().unwrap()))
+                }
                 "setConsentRequired" => {
                     machine.consent_required = e["required"].as_bool().unwrap();
                     Some(vec![])
@@ -175,6 +219,22 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
                 other => panic!("{}: unknown event {other:?}", ctx()),
             };
 
+            for action in actions.iter().flatten() {
+                if let SessionAction::PromptForConsent { prompt_id, .. } = action {
+                    assert_eq!(prompt_id.len(), 32, "{}: prompt id {prompt_id:?}", ctx());
+                    assert!(
+                        machine.session_id() != Some(prompt_id.as_str()),
+                        "{}: a prompt is never named by the session id",
+                        ctx()
+                    );
+                    assert!(
+                        !prompt_ids.contains(prompt_id),
+                        "{}: reused prompt id",
+                        ctx()
+                    );
+                    prompt_ids.push(prompt_id.clone());
+                }
+            }
             let rejected = machine.take_rejection();
             let expect_rejected = step
                 .get("expectRejected")
@@ -193,12 +253,13 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
                     .iter()
                     .map(action_from_json)
                     .collect();
-                let actions = actions
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("{}: expectActions on a non-action event", ctx()));
+                let actions =
+                    without_prompt_ids(actions.as_ref().unwrap_or_else(|| {
+                        panic!("{}: expectActions on a non-action event", ctx())
+                    }));
                 assert_eq!(
                     actions,
-                    &expected,
+                    expected,
                     "{}: actions differ\n  got:      {actions:?}\n  expected: {expected:?}",
                     ctx()
                 );
@@ -239,7 +300,7 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
         }
     }
     assert!(
-        steps_run >= 200,
+        steps_run >= 550,
         "only {steps_run} steps ran; file looks truncated"
     );
 }

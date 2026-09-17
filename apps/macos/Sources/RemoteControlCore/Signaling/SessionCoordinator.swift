@@ -88,6 +88,7 @@ public enum CoordinatorEvent {
     case authenticated(HelloOKPayload)
     case presence(deviceID: String, online: Bool)
     case sessionGranted(sessionID: String, role: Wire.Role)
+    case iceServers(sessionID: String, count: Int, turn: Bool)
     case resumed(sessionID: String, peerAttached: Bool)
     case silentReconnect(reason: String)
     case phase(SessionPhase)
@@ -339,10 +340,9 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         case .sendConnectReq(let deviceID, let accessCode):
             do {
                 let grant = try await signaling.connectRequest(deviceID: deviceID)
-                expectPeerPublicKey(grant.hostPubkey)
-                emit(.sessionGranted(sessionID: grant.sessionId, role: .controller))
-                armPake(for: grant)
-                await perform(machine.sessionGranted(grant))
+                guard await beginSession(grant, as: .controller) else {
+                    throw WireError.badPayload("connect_ok named a session this Mac cannot use")
+                }
                 await startControllerPake(grant: grant, accessCode: accessCode)
             } catch {
                 let failure = ConnectFailure(error)
@@ -369,7 +369,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
         case .scheduleResume(let afterSec):
             Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(afterSec) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: WireBounds.nanoseconds(TimeInterval(afterSec)))
                 guard let self else { return }
                 await self.perform(self.machine.tick())
             }
@@ -378,6 +378,9 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             do {
                 let ok = try await signaling.renew(sessionID: sessionID, sessionToken: token)
                 machine.renewSucceeded(ok)
+                if let servers = ok.iceServers, ok.sessionId == machine.sessionID {
+                    await applySessionICEServers(servers, sessionID: ok.sessionId)
+                }
             } catch let error as WireError {
                 await perform(machine.renewFailed(code: error.serverCode ?? "network"))
             } catch {
@@ -418,6 +421,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             iceState = .closed
 
         case .clearStoredSession:
+            signaling.dropSessionICEServers()
             negotiating = false
             clearConsentState()
             expectedPeerPublicKey = nil
@@ -432,8 +436,8 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             try? await signaling.sendBye(sessionID: sessionID, reason: reason)
             if role == .controller, reason == Wire.ByeReason.timeout { reportEnded(.noAnswer) }
 
-        case .promptForConsent(let expiresAt):
-            await presentConsent(expiresAt: expiresAt)
+        case .promptForConsent(let expiresAt, let promptID, let replacesPrevious):
+            await presentConsent(expiresAt: expiresAt, promptID: promptID, replacesPrevious: replacesPrevious)
 
         case .dismissConsentPrompt(let outcome):
             dismissConsent(outcome)
@@ -456,11 +460,40 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
     func refusePeerFromPake(reason: String) async { await refusePeer(reason: reason) }
 
+    /// A grant the state machine refuses (a malformed id, say) changes
+    /// nothing: the current session keeps its exchange and its prompt.
+    private func beginSession(_ grant: SessionGrantPayload, as grantedRole: Wire.Role) async -> Bool {
+        let actions = machine.sessionGranted(grant)
+        guard machine.lastRejection == nil else {
+            RCLog.error("ignored a session grant: \(machine.lastRejection ?? "")")
+            return false
+        }
+        signaling.dropSessionICEServers()
+        if grantedRole == .controller { expectPeerPublicKey(grant.hostPubkey) }
+        emit(.sessionGranted(sessionID: grant.sessionId, role: grantedRole))
+        armPake(for: grant)
+        await perform(actions)
+        return true
+    }
+
+    /// Protocol v5 `ice_servers` (and `renew_ok.iceServers`): this session's
+    /// relay credentials. They go to the live peer connection at once and are
+    /// dropped with the session.
+    func applySessionICEServers(_ servers: [ICEServerSpec], sessionID: String) async {
+        let actions = machine.iceServersArrived(sessionID: sessionID)
+        guard machine.lastRejection == nil else { return }
+        signaling.adoptSessionICEServers(servers, sessionID: sessionID)
+        peer?.updateICEServers(servers)
+        emit(.iceServers(sessionID: sessionID, count: servers.count,
+                         turn: servers.contains { $0.carriesCredentials }))
+        await perform(actions)
+    }
+
     private func startPeer(offerer: Bool) {
         peer?.close()
         let session = PeerSession(iceServers: signaling.iceServers(forSession: machine.sessionID), isOfferer: offerer,
                                   mediaRole: role == .host ? .sendScreen : .receiveScreen,
-                                  forceTURNRelay: config.forceTURNRelay)
+                                  forceTURNRelay: machine.relayOnly)
         session.delegate = self
         peer = session
         do {
@@ -551,12 +584,14 @@ extension SessionCoordinator: SignalingClientDelegate {
             emit(.presence(deviceID: presence.deviceId, online: presence.online))
 
         case Wire.MessageType.sessionStart:
-            guard let grant = try? envelope.decodePayload(SessionGrantPayload.self) else { return }
+            guard role == .host, let grant = try? envelope.decodePayload(SessionGrantPayload.self) else { return }
             RCLog.info("session_start received")
-            emit(.sessionGranted(sessionID: grant.sessionId, role: .host))
-            armPake(for: grant)
-            await perform(machine.sessionGranted(grant))
+            guard await beginSession(grant, as: .host) else { return }
             await startHostPake(grant: grant)
+
+        case Wire.MessageType.iceServers:
+            guard let push = try? envelope.decodePayload(ICEServersPayload.self) else { return }
+            await applySessionICEServers(push.iceServers, sessionID: push.sessionId)
 
         case Wire.MessageType.pake:
             guard let frame = try? envelope.decodePayload(PakePayload.self) else { return }

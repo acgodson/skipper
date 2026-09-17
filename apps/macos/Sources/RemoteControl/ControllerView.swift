@@ -149,6 +149,13 @@ struct ControllerView: View {
                     title: error
                 )
             }
+
+            if let fingerprint = model.ownFingerprint {
+                Text("This Mac\u{2019}s fingerprint \(fingerprint)")
+                    .font(SkipperFont.codeCaption)
+                    .foregroundStyle(SkipperColor.textTertiary)
+                    .textSelection(.enabled)
+            }
         }
     }
 

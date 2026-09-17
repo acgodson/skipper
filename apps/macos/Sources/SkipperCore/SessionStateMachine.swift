@@ -19,6 +19,8 @@ private struct CoreAction: Decodable {
     let relayOnly: Bool?
     let reason: String?
     let expiresAtMs: Int64?
+    let promptId: String?
+    let replacesPrevious: Bool?
     let outcome: String?
 }
 
@@ -39,6 +41,7 @@ private struct CoreState: Decodable {
     let serverAdvertisedSessionId: String?
     let consentRequired: Bool
     let consentExpiresAtMs: Int64?
+    let consentPromptId: String?
     let peerStarted: Bool
 }
 
@@ -67,6 +70,7 @@ public final class SessionStateMachine {
     public private(set) var isOfferer = false
     public private(set) var serverAdvertisedSessionID: String?
     public private(set) var consentExpiresAt: Date?
+    public private(set) var consentPromptID: String?
     public private(set) var peerStarted = false
 
     public var consentRequired: Bool {
@@ -135,13 +139,17 @@ public final class SessionStateMachine {
         call { skipper_session_pake_succeeded(handle, CoreBoundary.milliseconds(now)) }
     }
 
-    /// `sessionID` names the prompt being answered; an answer meant for an
-    /// earlier prompt changes nothing.
-    public func consentAnswered(allow: Bool, sessionID: String? = nil, now: Date = Date()) -> [SessionAction] {
-        call([sessionID]) {
+    /// `promptID` is the name the core gave the prompt being answered; an
+    /// answer for any other prompt, or an Allow without a name, changes nothing.
+    public func consentAnswered(allow: Bool, promptID: String?, now: Date = Date()) -> [SessionAction] {
+        call([promptID]) {
             skipper_session_consent_answered(handle, allow, $0[0].base, $0[0].count,
                                              CoreBoundary.milliseconds(now))
         }
+    }
+
+    public func iceServersArrived(sessionID: String) -> [SessionAction] {
+        call([sessionID]) { skipper_session_ice_servers_arrived(handle, $0[0].base, $0[0].count) }
     }
 
     public func connectFailed(code: String) -> [SessionAction] {
@@ -265,6 +273,7 @@ public final class SessionStateMachine {
         serverAdvertisedSessionID = state.serverAdvertisedSessionId
         storedConsentRequired = state.consentRequired
         consentExpiresAt = state.consentExpiresAtMs.map(Self.date)
+        consentPromptID = state.consentPromptId
         peerStarted = state.peerStarted
     }
 
@@ -309,7 +318,9 @@ public final class SessionStateMachine {
             return .sendBye(sessionID: need(raw.sessionId, "sessionId"),
                             reason: need(raw.reason, "reason"))
         case "promptForConsent":
-            return .promptForConsent(expiresAt: date(need(raw.expiresAtMs, "expiresAtMs")))
+            return .promptForConsent(expiresAt: date(need(raw.expiresAtMs, "expiresAtMs")),
+                                     promptID: need(raw.promptId, "promptId"),
+                                     replacesPrevious: need(raw.replacesPrevious, "replacesPrevious"))
         case "dismissConsentPrompt":
             let name = need(raw.outcome, "outcome")
             guard let outcome = ConsentOutcome(rawValue: name) else {

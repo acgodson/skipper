@@ -32,8 +32,9 @@
 #   n. (dev-backend.sh with id-cert keys) a host holding a Device ID certificate
 #      keeps its Device ID after the backend's database is wiped
 #
-# Protocol v4: TURN credentials arrive with a session (connect_ok /
-# session_start), never with hello_ok.
+# Protocol v5: hello_ok, connect_ok and session_start carry STUN only. TURN
+# credentials arrive in the `ice_servers` push once the session is metered
+# (the host's first sdp), reach both Macs, and are dropped when the session ends.
 # Against rc-api (scripts/dev-backend.sh), the host signs in first with the
 # real API.md §1 flow (rc-node --dev-sign-in), and the Device ID the sign-in
 # returns must be the one signaling assigned: rc-api owns the one registry.
@@ -250,7 +251,7 @@ else
   exit 1
 fi
 if grep -q '"event":"hello_ok".*"turn":false' "$WORK/bootstrap.log"; then
-  pass "hello_ok carried no TURN credentials (protocol v4: they come with a session)"
+  pass "hello_ok carried no TURN credentials (protocol v5: they come with ice_servers)"
 else
   fail "hello_ok carries no TURN credentials" "$(grep hello_ok "$WORK/bootstrap.log")"
 fi
@@ -334,11 +335,11 @@ if wait_for "$WORK/host.log" '"event":"session"' 20 "$HOST_MARK"; then
 else
   fail "host receives session_start" "$(tail -5 "$WORK/host.log")"
 fi
-if tail -n "+$MARK" "$WORK/ctrl.log" | grep -q '"event":"session".*"turn":true' &&
-   tail -n "+$HOST_MARK" "$WORK/host.log" | grep -q '"event":"session".*"turn":true'; then
-  pass "connect_ok and session_start each carried server-minted TURN credentials (never hardcoded)"
+if tail -n "+$MARK" "$WORK/ctrl.log" | grep -q '"event":"session".*"turn":false' &&
+   tail -n "+$HOST_MARK" "$WORK/host.log" | grep -q '"event":"session".*"turn":false'; then
+  pass "connect_ok and session_start carried no TURN credentials (protocol v5: STUN only before metering)"
 else
-  fail "the session carries TURN credentials to both sides" \
+  fail "connect_ok and session_start carry STUN only" \
        "$(tail -n "+$MARK" "$WORK/ctrl.log" | grep '"event":"session"'; tail -n "+$HOST_MARK" "$WORK/host.log" | grep '"event":"session"')"
 fi
 if wait_for "$WORK/ctrl.log" '"event":"pake_ok"' 25 "$MARK" &&
@@ -365,6 +366,13 @@ echo
 # c. peer connection + both data channels
 # ---------------------------------------------------------------------------
 echo "== c. WebRTC"
+if wait_for "$WORK/ctrl.log" "\"event\":\"ice_servers\".*\"sessionId\":\"$SESSION_ID\",\"turn\":true" 60 "$MARK" &&
+   wait_for "$WORK/host.log" "\"event\":\"ice_servers\".*\"sessionId\":\"$SESSION_ID\",\"turn\":true" 30 "$HOST_MARK"; then
+  pass "the ice_servers push delivered server-minted TURN credentials to both Macs once metering started"
+else
+  fail "ice_servers delivers TURN to both sides" \
+       "$(tail -n "+$MARK" "$WORK/ctrl.log" | grep ice_servers; tail -n "+$HOST_MARK" "$WORK/host.log" | grep ice_servers)"
+fi
 if wait_for "$WORK/ctrl.log" '"event":"ice","role":"controller","state":"connected"' 60; then
   pass "RTCPeerConnection reached ICE state connected (controller)"
 else
@@ -529,6 +537,17 @@ if wait_for "$WORK/host.log" '"phase":"closed:user_ended"' 20 "$BYE_MARK_H"; the
   pass "the host is back to a closed session with no stuck state"
 else
   fail "host returns to closed" "$(tail -n "+$BYE_MARK_H" "$WORK/host.log")"
+fi
+STATUS_MARK_C=$(( $(lines_in "$WORK/ctrl.log") + 1 ))
+STATUS_MARK_H=$(( $(lines_in "$WORK/host.log") + 1 ))
+say ctrl status
+say host status
+if wait_for "$WORK/ctrl.log" '"sessionTurn":false' 10 "$STATUS_MARK_C" &&
+   wait_for "$WORK/host.log" '"sessionTurn":false' 10 "$STATUS_MARK_H"; then
+  pass "both Macs dropped the session's TURN credentials when it ended"
+else
+  fail "session TURN credentials are dropped at session end" \
+       "$(tail -n "+$STATUS_MARK_C" "$WORK/ctrl.log" | grep status; tail -n "+$STATUS_MARK_H" "$WORK/host.log" | grep status)"
 fi
 
 echo

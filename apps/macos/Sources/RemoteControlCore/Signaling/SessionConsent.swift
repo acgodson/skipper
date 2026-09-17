@@ -1,20 +1,28 @@
 import Foundation
 import SkipperCore
 
+/// One prompt on screen. `promptID` is the shared core's local random name
+/// for it, never the server's session id; an answer carries it back.
 public struct ConsentRequest: Equatable, Sendable {
     public static let allowDelay: TimeInterval = 1.5
+    public static let replacedNotice = "A different request replaced the previous one."
 
-    public let sessionID: String
+    public let promptID: String
     public let controllerLabel: String?
     public let controllerDeviceID: String?
+    public let controllerFingerprint: String?
+    public let replacesPrevious: Bool
     public let presentedAt: Date
     public let expiresAt: Date
 
-    public init(sessionID: String, controllerLabel: String?, controllerDeviceID: String?,
+    public init(promptID: String, controllerLabel: String?, controllerDeviceID: String?,
+                controllerFingerprint: String? = nil, replacesPrevious: Bool = false,
                 presentedAt: Date = Date(), expiresAt: Date) {
-        self.sessionID = sessionID
+        self.promptID = promptID
         self.controllerLabel = controllerLabel
         self.controllerDeviceID = controllerDeviceID
+        self.controllerFingerprint = controllerFingerprint
+        self.replacesPrevious = replacesPrevious
         self.presentedAt = presentedAt
         self.expiresAt = expiresAt
     }
@@ -31,6 +39,17 @@ public struct ConsentRequest: Equatable, Sendable {
 
     /// Says nothing about which Mac is asking, so it is safe on a locked screen.
     public static let notificationBody = "A Mac entered this Mac\u{2019}s code and is asking to connect."
+
+    public var deviceIDLine: String? {
+        controllerDeviceID.map { "Device ID \(DeviceID.formatted($0))" }
+    }
+
+    /// The same four groups the other Mac shows as "This Mac\u{2019}s fingerprint".
+    public var fingerprintLine: String? {
+        controllerFingerprint.map { "Fingerprint \($0)" }
+    }
+
+    public var notice: String? { replacesPrevious ? Self.replacedNotice : nil }
 
     public var allowsAnswerAt: Date { presentedAt.addingTimeInterval(Self.allowDelay) }
 
@@ -71,21 +90,12 @@ extension SessionCoordinator {
 
     // MARK: - Answering
 
-    /// Answers the prompt on screen. Allow takes effect no earlier than
-    /// `ConsentRequest.allowDelay` after the prompt appeared.
-    public func answerConsent(allow: Bool) async {
-        guard let request = consentRequest else { return }
-        await answerConsent(allow: allow, sessionID: request.sessionID)
-    }
-
-    public func answerConsent(allow: Bool, sessionID: String) async {
-        guard let request = consentRequest, request.sessionID == sessionID else { return }
-        let wait = request.allowsAnswerAt.timeIntervalSinceNow
-        if allow, wait > 0 {
-            try? await Task.sleep(nanoseconds: UInt64((min(wait, ConsentRequest.allowDelay) * 1e9).rounded()))
-            guard consentRequest?.sessionID == sessionID else { return }
-        }
-        await perform(machine.consentAnswered(allow: allow, sessionID: sessionID))
+    /// Answers the prompt named `promptID`. An answer for a prompt that is no
+    /// longer on screen, or an Allow earlier than `ConsentRequest.allowDelay`
+    /// after its prompt appeared, is refused by the core and never deferred.
+    public func answerConsent(allow: Bool, promptID: String) async {
+        guard consentRequest?.promptID == promptID else { return }
+        await perform(machine.consentAnswered(allow: allow, promptID: promptID))
     }
 
     func admitPeer(pubkey: String) async {
@@ -106,17 +116,21 @@ extension SessionCoordinator {
 
     // MARK: - The prompt
 
-    func presentConsent(expiresAt: Date) async {
-        guard let sessionID = machine.sessionID, let pubkey = expectedPeerPublicKey else {
-            await perform(machine.consentAnswered(allow: false))
+    func presentConsent(expiresAt: Date, promptID: String, replacesPrevious: Bool) async {
+        guard machine.consentPromptID == promptID else { return }
+        guard machine.sessionID != nil, let pubkey = expectedPeerPublicKey,
+              let fingerprint = try? DevicePublicKey.fingerprint(pubkey) else {
+            await perform(machine.consentAnswered(allow: false, promptID: promptID))
             return
         }
         consentControllerKey = pubkey
         updateConsentLedger { try ConsentPolicy.prompted($0) }
         let request = ConsentRequest(
-            sessionID: sessionID,
+            promptID: promptID,
             controllerLabel: trustedLabel(for: pubkey),
             controllerDeviceID: machine.peerDeviceID,
+            controllerFingerprint: fingerprint,
+            replacesPrevious: replacesPrevious,
             expiresAt: expiresAt)
         consentRequest = request
         emit(.consentRequested(request))

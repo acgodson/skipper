@@ -4,6 +4,7 @@ use std::ffi::c_char;
 use rc_identity::consent;
 use rc_identity::ledger;
 use rc_identity::pake::{GuessCounter, GuessLedger};
+use rc_identity::signing;
 use serde_json::json;
 
 use crate::pake::ledger_from_json;
@@ -66,6 +67,18 @@ pub unsafe extern "C" fn skipper_pubkey_canonical(
         let pubkey = unsafe { required_text(pubkey, pubkey_len, "pubkey") }?;
         let key = ledger::controller_key(pubkey).map_err(|e| e.to_string())?;
         Ok(json!({ "key": key, "canonical": key == pubkey }))
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn skipper_pubkey_fingerprint(
+    pubkey: *const u8,
+    pubkey_len: usize,
+) -> *mut c_char {
+    crate::respond("device key fingerprint panicked", || {
+        let pubkey = unsafe { required_text(pubkey, pubkey_len, "pubkey") }?;
+        let fingerprint = signing::public_key_fingerprint(pubkey).map_err(|e| e.to_string())?;
+        Ok(json!({ "fingerprint": fingerprint }))
     })
 }
 

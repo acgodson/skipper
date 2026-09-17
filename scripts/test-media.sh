@@ -141,10 +141,16 @@ if wait_for "$WORK/ctrl.log" '"event":"session"' 30; then
 else
   fail "session opens" "$(tail -5 "$WORK/ctrl.log")"; exit 1
 fi
-if grep -q '"event":"session".*"turn":true' "$WORK/ctrl.log"; then
-  pass "TURN credentials arrived with the session, not with hello_ok (protocol v4)"
+if grep -q '"event":"session".*"turn":false' "$WORK/ctrl.log"; then
+  pass "connect_ok carried STUN only, like hello_ok (protocol v5)"
 else
-  fail "the session carries TURN credentials" "$(grep -E '"event":"(session|hello_ok)"' "$WORK/ctrl.log")"
+  fail "connect_ok carries no TURN credentials" "$(grep -E '"event":"(session|hello_ok)"' "$WORK/ctrl.log")"
+fi
+if wait_for "$WORK/ctrl.log" '"event":"ice_servers".*"turn":true' 60 &&
+   wait_for "$WORK/host.log" '"event":"ice_servers".*"turn":true' 30; then
+  pass "TURN credentials arrived with the ice_servers push on both Macs (protocol v5)"
+else
+  fail "ice_servers carries TURN credentials" "$(grep ice_servers "$WORK/ctrl.log" "$WORK/host.log")"
 fi
 if wait_for "$WORK/ctrl.log" '"event":"ice","role":"controller","state":"connected"' 60; then
   pass "the peer connection reached ICE connected"

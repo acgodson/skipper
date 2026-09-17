@@ -62,17 +62,23 @@ public final class SignalingClient {
 
     public var iceServers: [ICEServerSpec] { iceServers(forSession: sessionICE?.sessionID) }
 
+    /// The session's own list (relay credentials included) once `ice_servers`
+    /// delivered it, otherwise the STUN-only list from `hello_ok`.
     public func iceServers(forSession sessionID: String?) -> [ICEServerSpec] {
         if let sessionICE, sessionICE.sessionID == sessionID { return sessionICE.servers }
         return lastHelloOK?.iceServers ?? []
     }
 
-    private func adoptSessionICEServers(_ servers: [ICEServerSpec]?, sessionID: String) {
-        guard let servers else {
-            if sessionICE?.sessionID != sessionID { sessionICE = nil }
-            return
-        }
+    public var holdsSessionICECredentials: Bool {
+        sessionICE?.servers.contains { $0.carriesCredentials } == true
+    }
+
+    public func adoptSessionICEServers(_ servers: [ICEServerSpec], sessionID: String) {
         sessionICE = (sessionID, servers)
+    }
+
+    public func dropSessionICEServers() {
+        sessionICE = nil
     }
 
     public let config: RCConfig
@@ -237,7 +243,7 @@ public final class SignalingClient {
             let registeredNonce = try await register(nonce: retryNonce, afterUnknownDevice: true)
             ok = try await hello(nonce: registeredNonce)
         }
-        identity.storeDeviceIDCertificate(ok.idCert)
+        identity.storeDeviceIDCertificate(ok.idCert, forDeviceID: ok.deviceId)
         lastHelloOK = ok
         state = .authenticated(deviceID: ok.deviceId)
 
@@ -267,8 +273,9 @@ public final class SignalingClient {
     }
 
     private func register(nonce: String, afterUnknownDevice: Bool) async throws -> String {
-        let plan = RegistrationRequest.make(deviceID: identity.deviceID,
-                                            certificate: identity.deviceIDCertificate,
+        let presentation = identity.certificatePresentation
+        let plan = RegistrationRequest.make(deviceID: presentation?.deviceID ?? identity.deviceID,
+                                            certificate: presentation?.certificate,
                                             afterUnknownDevice: afterUnknownDevice)
         let payload = RegisterPayload(
             pubkey: identity.publicKeyBase64,
@@ -280,13 +287,13 @@ public final class SignalingClient {
                                       expect: [Wire.MessageType.registerOK],
                                       timeout: config.handshakeTimeout)
         let registered = try reply.decodePayload(RegisterOKPayload.self)
-        if let preferredDeviceID = plan.preferredDeviceId {
-            try identity.adoptReassignedDeviceID(registered.deviceId, previous: preferredDeviceID)
-        } else {
-            try identity.adoptServerAssignedDeviceID(registered.deviceId)
+        do {
+            try identity.recordRegistration(deviceID: registered.deviceId,
+                                            certificate: registered.idCert,
+                                            presentedDeviceID: plan.idCert == nil ? nil : plan.preferredDeviceId)
+        } catch {
+            throw SignalingError.handshakeFailed(error.localizedDescription)
         }
-        identity.storeDeviceIDCertificate(registered.idCert)
-        identity.markServerRegistered()
         return try await nextChallengeNonce(what: "the post-registration challenge")
     }
 
@@ -354,11 +361,6 @@ public final class SignalingClient {
         if envelope.type == Wire.MessageType.challenge {
             unclaimedChallenge = envelope
             return
-        }
-
-        if envelope.type == Wire.MessageType.sessionStart,
-           let grant = try? envelope.decodePayload(SessionGrantPayload.self) {
-            adoptSessionICEServers(grant.iceServers, sessionID: grant.sessionId)
         }
 
         if let protocolError = envelope.asProtocolError,
@@ -481,7 +483,6 @@ public final class SignalingClient {
             throw error
         }
         let grant = try reply.decodePayload(SessionGrantPayload.self)
-        adoptSessionICEServers(grant.iceServers, sessionID: grant.sessionId)
         do {
             try identity.hostKeyPins.admit(grant)
         } catch {
@@ -504,9 +505,7 @@ public final class SignalingClient {
             type: Wire.MessageType.renew,
             payload: ResumePayload(sessionId: sessionID, sessionToken: sessionToken),
             expect: [Wire.MessageType.renewOK])
-        let renewed = try reply.decodePayload(RenewOKPayload.self)
-        if let servers = renewed.iceServers { adoptSessionICEServers(servers, sessionID: renewed.sessionId) }
-        return renewed
+        return try reply.decodePayload(RenewOKPayload.self)
     }
 
     public func sendSDP(sessionID: String, type: String, sdp: String, restart: Bool,
@@ -519,7 +518,6 @@ public final class SignalingClient {
                                 pubkey: signature?.pubkey,
                                 sig: signature?.signature,
                                 mac: signature?.mac))
-        if signature != nil { identity.hostKeyPins.confirm(sessionID: sessionID) }
     }
 
     public func sendICE(sessionID: String, candidate: String, sdpMid: String?, sdpMLineIndex: Int?) async throws {

@@ -224,35 +224,65 @@ public final class IdentityStore: ObservableObject {
         return fresh
     }
 
-    public func adoptServerAssignedDeviceID(_ assigned: String) throws {
-        guard let canonical = DeviceID.canonicalize(assigned) else { return }
-        guard canonical != deviceID else { return }
-        try persist(deviceID: canonical, serverRegistered: isServerRegistered)
-        deviceID = canonical
+    private func adopt(deviceID assigned: String) throws {
+        guard DeviceIDCertificates.isDeviceID(assigned) else {
+            throw IdentityRegistrationError.malformedDeviceID
+        }
+        guard assigned != deviceID else { return }
+        RCLog.info("identity: the server assigned device id \(deviceID) -> \(assigned)")
+        try persist(deviceID: assigned, serverRegistered: isServerRegistered)
+        deviceID = assigned
     }
 
-    public func adoptReassignedDeviceID(_ assigned: String, previous: String) throws {
-        try adoptServerAssignedDeviceID(assigned)
-        guard deviceID != previous else { return }
-        RCLog.info("identity: server reassigned device id \(previous) -> \(deviceID)")
-    }
-
-    public var deviceIDCertificate: String? {
+    private var certificates: DeviceIDCertificates {
         do {
-            return try secrets.deviceIDCertificate()
+            return try secrets.deviceIDCertificates(currentDeviceID: deviceID)
         } catch {
-            RCLog.error("identity: the stored Device ID certificate could not be read: \(error.localizedDescription)")
-            return nil
+            RCLog.error("identity: the stored Device ID certificates could not be read: \(error.localizedDescription)")
+            return DeviceIDCertificates()
         }
     }
 
-    public func storeDeviceIDCertificate(_ certificate: String?) {
-        guard let certificate, !certificate.isEmpty, certificate != deviceIDCertificate else { return }
+    public var deviceIDCertificate: String? { certificates.certificate(for: deviceID) }
+
+    /// The (Device ID, certificate) a re-registration presents, if any.
+    public var certificatePresentation: (deviceID: String, certificate: String)? {
+        certificates.presentation(currentDeviceID: deviceID)
+    }
+
+    /// `register_ok`: the id is adopted only when it is 9 digits and the
+    /// certificate only when it is well formed; `DeviceIDCertificates` says
+    /// what is kept when the server answers with a different id.
+    public func recordRegistration(deviceID assigned: String, certificate: String?,
+                                   presentedDeviceID: String?) throws {
+        if let certificate, !certificate.isEmpty, !DeviceIDCertificates.isWellFormed(certificate) {
+            throw IdentityRegistrationError.malformedCertificate
+        }
+        try adopt(deviceID: assigned)
+        var book = certificates
+        book.registered(deviceID: assigned, certificate: certificate, presented: presentedDeviceID)
+        save(book)
+        markServerRegistered()
+    }
+
+    /// `hello_ok` for this Mac's own id.
+    public func storeDeviceIDCertificate(_ certificate: String?, forDeviceID owner: String) {
+        guard owner == deviceID, let certificate, !certificate.isEmpty,
+              certificate != deviceIDCertificate else { return }
+        guard DeviceIDCertificates.isWellFormed(certificate) else {
+            RCLog.error("identity: ignored a malformed Device ID certificate")
+            return
+        }
+        var book = certificates
+        book.confirmed(deviceID: deviceID, certificate: certificate)
+        save(book)
+    }
+
+    private func save(_ book: DeviceIDCertificates) {
         do {
-            try secrets.saveDeviceIDCertificate(certificate)
-            RCLog.info("identity: stored the Device ID certificate for \(deviceID)")
+            try secrets.saveDeviceIDCertificates(book)
         } catch {
-            RCLog.error("identity: the Device ID certificate could not be stored: \(error.localizedDescription)")
+            RCLog.error("identity: the Device ID certificates could not be stored: \(error.localizedDescription)")
         }
     }
 
@@ -284,6 +314,18 @@ public final class IdentityStore: ObservableObject {
         }
         (secrets ?? SecretStore.forThisMac(fileStore: fileStore)).discardEverything()
         try fileStore.reset()
+    }
+}
+
+public enum IdentityRegistrationError: Error, LocalizedError, Equatable {
+    case malformedDeviceID
+    case malformedCertificate
+
+    public var errorDescription: String? {
+        switch self {
+        case .malformedDeviceID: return "The server assigned a Device ID that is not 9 digits."
+        case .malformedCertificate: return "The server sent a malformed Device ID certificate."
+        }
     }
 }
 
