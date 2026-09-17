@@ -17,20 +17,26 @@ protocol are open source; a hosted backend and paid tiers (see `docs/SCOPE.md`) 
 
 ## Status (2026-09-17)
 
-**Phases 1–2 implemented, green locally, awaiting two-Mac verification.** Protocol v2:
+**Phases 1–2 implemented, green locally, awaiting two-Mac verification.** Protocol **v4**:
 backend-agnostic client (one config value, the API domain), browser sign-in / account link,
-entitlement-gated connect, Secure Enclave/Keychain device keys, SPAKE2 access-code exchange
-between peers (server relays opaque bytes only), signed SDP fingerprints, trusted-controller
-list, Refresh revokes everything. All carried over from V1: screen, mouse (incl. true drag +
-pixel scroll), keyboard with capture mode, gesture palette, two-way text clipboard, menu-bar
-background operation, launch at login, reconnect/resume across network wobbles, TURN fallback.
-Per `docs/DECISIONS.md`, a phase counts only once observed working between two real Macs — that
-observation hasn't happened yet for Phase 1–2, so treat this as tested in isolation (unit tests,
-local server, shared vectors), not as field-verified.
+entitlement-gated connect, hardware-backed device keys where available (Secure Enclave, Keychain
+fallback), SPAKE2 access-code exchange between peers (server relays opaque bytes and learns only
+whether an attempt failed, never the code or the session key), signed SDP fingerprints,
+registry-signed device-ID certificates, session-scoped TURN credentials, server-side rate limits
+and role enforcement, trusted-controller list, Refresh Code revokes everything. All carried over
+from V1: screen, mouse (incl. true drag + pixel scroll), keyboard with capture mode, gesture
+palette, two-way text clipboard, menu-bar background operation, launch at login, reconnect/resume
+across network wobbles, TURN fallback. The protocol has been through two internal security
+reviews since v2, and every finding either fixed in code or turned into a `TODO:` named in
+PROTOCOL.md/API.md. Per `docs/DECISIONS.md`, a phase counts only once observed working between
+two real Macs — that observation hasn't happened yet for Phase 1–2, so treat this as tested in
+isolation (unit tests, local server, shared vectors, two structured security reviews), not as
+field-verified. Pending before Phase 1–2 closes: a Developer ID build, the two-Mac verification
+checklist (`docs/VERIFY.md`), and a third, lighter review pass.
 
 **Windows host: parked.** A Rust port lives in `apps/windows/` (shared crates in `core/crates/`); it builds and passes its tests from
 macOS but crashed on real Windows and has never been debugged on a Windows machine. Not the
-current goal. Still v1: it predates protocol v2.
+current goal. Still v1: it predates the current wire protocol.
 
 ### Known gaps
 - The **automatic relay-only retry** (first ICE `failed` → one ICE restart with a relay-only
@@ -39,9 +45,11 @@ current goal. Still v1: it predates protocol v2.
 - Cursor shapes: a Mac host reports only the shapes public AppKit can name (no busy or
   diagonal-resize cursor on macOS 14); anything else is drawn as the arrow.
 - Main display only · text-only clipboard (≤ 192 KiB) · arm64 only.
-- No Developer ID build has been verified yet.
-- Backend runs locally only (`rc-api` + `rc-signal` via `scripts/dev-backend.sh`); AWS deployment,
-  Cognito and the real skipperdesk.app sign-in page are Phase 5.
+- No Developer ID build has been verified yet; the two-Mac checklist (`docs/VERIFY.md`) has not
+  been run.
+- A third, lighter security review is planned before Phase 4 closes.
+- Backend runs locally only (`rc-api` + `rc-signal` via `scripts/dev-backend.sh`); the real AWS
+  account, Cognito and the skipperdesk.app sign-in page are Phase 5 — nothing is provisioned yet.
 
 ## Layout
 
@@ -110,10 +118,13 @@ is attributed to the *responsible process* — always launch the bundle with `op
 inner binary from a shell.
 
 ## Security invariants
-- The server never sees the access code in any form: it is proved peer-to-peer by a SPAKE2
-  exchange, and the server only relays opaque bytes between the two peers.
-- SDP is signed by each side's hardware-held device key (Secure Enclave, Keychain fallback), so a
-  compromised server cannot MITM the media.
+- The server never sees the access code or the session key it produces: the code is proved
+  peer-to-peer by a SPAKE2 exchange, and the server only relays opaque bytes between the two
+  peers. It does learn whether an attempt failed (the host relays `bye{auth_failed}` in
+  cleartext), never the code itself.
+- SDP is signed by each side's device key — Secure Enclave when a new identity is created on a
+  Mac that has one, a Keychain-held software key otherwise — so a compromised server cannot MITM
+  the media.
 - `connect_req` is authorised by server-checked entitlement, not by the access code.
 - No session payload (SDP, ICE, clipboard, input) is ever logged or persisted.
 - Refresh Code revokes everything at once: every session, every token, and both peers' trusted-

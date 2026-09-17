@@ -16,11 +16,13 @@ at the remote Mac. No session time limit.
 - **Access Code** — secret, persists across restarts/reboots, changes **only** on manual
   *Refresh*; the old code is invalid immediately. The code itself never reaches the server;
   it is proved peer-to-peer by a SPAKE2 exchange the server only relays.
-- Device keypair (P-256), hardware-held (Secure Enclave, Keychain fallback) — never shown in the
-  UI. Signs the SDP fingerprint and the SPAKE2 transcript so a compromised server cannot forge
-  either side.
-- Trusted controllers list: hosts remember a controller's public key after a successful code, so
-  later connects from it are key-only. Refresh Code clears the list.
+- Device keypair (P-256) — Secure Enclave for a new identity on a Mac that has one, a Keychain-held
+  software key otherwise — never shown in the UI. Signs the SDP fingerprint and the SPAKE2
+  transcript so a compromised server cannot forge either side.
+- Trusted controllers list: hosts remember a controller's public key after a successful code, as an
+  informational record of who has connected. It does not skip the code exchange — every connect
+  still runs the full SPAKE2 proof; what a remembered controller skips is only its own user being
+  asked to retype the code. Refresh Code clears the list.
 - Online/offline status · Unattended access on/off · Clipboard sync on/off.
 - Unattended access off (the default on a new install): after a controller proves the code, the
   host asks "Allow … to control this Mac?" and waits up to 30 s; no answer declines. On: the code

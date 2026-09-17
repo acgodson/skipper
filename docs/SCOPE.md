@@ -1,7 +1,9 @@
 # SkipperDesk — Project Scope
 
-Status: research and planning, no product code yet. Baseline: the working Mac↔Mac
-RemoteControl V1 in this repo (see README.md, docs/DECISIONS.md). Written 2026-09-16.
+Status: Phases 1–2 (backend-agnostic client, security core) implemented and protocol v4,
+pending Developer ID build and two-Mac verification (see README.md "Status"). Baseline: the
+working Mac↔Mac RemoteControl V1 in this repo (see README.md, docs/DECISIONS.md). Written
+2026-09-16, updated 2026-09-17.
 
 ---
 
@@ -96,9 +98,9 @@ vectors (`protocol/vectors/`) before shipping.
 
 | Layer | Mechanism | Notes |
 |---|---|---|
-| Device identity | ECDSA **P-256** key, hardware-held: **Secure Enclave** (Mac), **TPM** (Windows; DPAPI-wrapped software key as honest fallback) | Same bytes on the wire from either. Requires Apple Developer account |
-| Access code | **PAKE** — decided: **SPAKE2** (RustCrypto `spake2` 0.4) | Server relays opaque messages, learns nothing. Host rate-limits guesses itself |
-| Trusted controllers | Host remembers a controller's public key after a successful code; later connects are key-only | **Refresh Code** revokes the list too — one button revokes everyone |
+| Device identity | ECDSA **P-256** key: **Secure Enclave** for a new identity on a Mac that has one, otherwise a Keychain-held software key; Windows (parked) uses TPM or a DPAPI-wrapped software fallback | Same bytes on the wire from either. Secure Enclave requires an Apple Developer account |
+| Access code | **PAKE** — decided: **SPAKE2** (RustCrypto `spake2` 0.4) | Server relays opaque messages and never learns the code or session key; it does learn whether an attempt failed. Host rate-limits guesses itself |
+| Trusted controllers | Every connect runs the full SPAKE2 exchange. "Trusted controllers" is an informational host-side list of who has proved a code; controllers separately remember a code locally | **Refresh Code** clears the list and every per-controller guess counter, and ends any session — one button revokes everyone |
 | Session transport | WebRTC DTLS-SRTP (AES-GCM) | Already E2E vs outsiders; SDP fingerprints now **signed by the device key** so a compromised server cannot MITM |
 | Signaling/API | TLS from a public CA on skipperdesk.app | Replaces self-signed pin; `NSAllowsArbitraryLoads` removed |
 | Concurrency | **One controller per host at any time**; one active pair per subscription | Enforced server-side at connect |
@@ -175,10 +177,10 @@ The credit ledger (§7) is designed now so any payment rail just credits it.
 | # | Phase | Deliverable / exit check |
 |---|---|---|
 | 0 | **Foundations** | git repo; Apple Developer account; skipperdesk.app; licence chosen; API contract (REST + existing WS) written beside PROTOCOL.md |
-| 1 | **Backend-agnostic client** | App runs against a *local* backend by config; IP/pin removed; browser sign-in handoff; device linked to account; entitlement gate at connect — **implemented 2026-09-17, pending two-Mac verification** |
-| 2 | **Security core** | Secure Enclave keys; PAKE access code; signed SDP fingerprints; trusted controllers; Refresh revokes all. Cross-language vectors green. Decide shared Rust core vs native — **implemented 2026-09-17, pending two-Mac verification** |
+| 1 | **Backend-agnostic client** | App runs against a *local* backend by config; IP/pin removed; browser sign-in handoff; device linked to account; entitlement gate at connect — **implemented, protocol v4, pending Developer ID build + two-Mac verification (`docs/VERIFY.md`)** |
+| 2 | **Security core** | Device keys (Secure Enclave/Keychain); PAKE access code; signed SDP fingerprints; device-ID certificates; trusted controllers; Refresh revokes all. Cross-language vectors green. Shared Rust core, decided — **implemented, protocol v4, pending Developer ID build + two-Mac verification (`docs/VERIFY.md`)** |
 | 3 | **SkipperDesk UI** | Design system documented; new host/controller/session screens; state-only UI; notarized, signed, auto-updating build |
-| 4 | **Client security pass** | Third-party or structured review of the open-source surface; supply-chain gates; security page; then go public |
+| 4 | **Client security pass** | Structured review of the open-source surface; supply-chain gates; security page — **two internal reviews done (protocol v3, then v4); a third, lighter pass and a Developer ID build remain before going public** |
 | 5 | **Backend on fresh AWS** | Cognito, API, signaling, relays, presence store, metering ledger; migrate off the shared box; load and cost measured |
 | 6 | **Business logic** | Trial, metering rates, lock-outs, credits, gifting, tiers; launch plan |
 | 7 | **Skipper agent v1** | Observability + liveness for paid tier |
