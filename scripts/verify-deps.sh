@@ -101,28 +101,16 @@ else
 fi
 
 echo
-echo "== Optional: vulnerability scanners =="
-tools_ok=1
-if command -v cargo-audit >/dev/null 2>&1 || timeout 60 cargo install cargo-audit --locked >/tmp/cargo-audit-install.log 2>&1; then
-    echo "  running cargo audit"
-    if ! cargo audit; then
-        report "cargo audit reported vulnerabilities (see above)"
+echo "== Go toolchain =="
+ci_go=$(sed -n 's/^  GO_VERSION: *//p' .github/workflows/ci.yml | head -n1)
+for mod in server/go.mod protocol/go.mod; do
+    pinned=$(sed -n 's/^toolchain go//p' "$mod")
+    if [[ -n "$ci_go" && "$pinned" == "$ci_go" ]]; then
+        echo "  ok    ${mod} toolchain go${pinned} matches CI"
+    else
+        report "${mod} toolchain '${pinned:-none}' does not match CI GO_VERSION '${ci_go:-none}'"
     fi
-else
-    echo "  note  cargo-audit did not install within 60s; skipping (non-fatal)"
-    tools_ok=0
-fi
-
-if command -v govulncheck >/dev/null 2>&1 || timeout 60 go install golang.org/x/vuln/cmd/govulncheck@latest >/tmp/govulncheck-install.log 2>&1; then
-    echo "  running govulncheck"
-    if ! (cd server && govulncheck ./...); then
-        report "govulncheck reported vulnerabilities (see above)"
-    fi
-else
-    echo "  note  govulncheck did not install within 60s; skipping (non-fatal)"
-    tools_ok=0
-fi
-[[ "$tools_ok" -eq 1 ]] || echo "  note  scanner install timeouts never fail this gate; only actual findings do"
+done
 
 echo
 if [[ $fail -eq 0 ]]; then

@@ -67,9 +67,11 @@ Every push and PR to `main` runs, before anything else builds:
 
 - `scripts/verify-deps.sh` — fails the build if a lockfile is missing, if a git
   dependency isn't pinned to an exact commit, if the Swift WebRTC package isn't
-  pinned to an exact version, or if `go.sum` is out of sync with `go.mod`. Also
-  runs `cargo audit` / `govulncheck` when they install in time; findings are
-  fatal, a slow tool install is not.
+  pinned to an exact version, if `go.sum` is out of sync with `go.mod`, or if the
+  Go toolchain in `go.mod` differs from the one CI builds with.
+- `cargo audit` and `govulncheck`, pinned to exact versions. Any finding fails
+  the build. The server builds on a current, patched Go toolchain (pinned via the
+  `toolchain` directive) because most Go advisories are in the standard library.
 - `cargo fmt --check` and `cargo clippy -D warnings` on every crate in the shared
   core.
 - The full cross-language protocol test vectors (`protocol/vectors/`).
