@@ -1,4 +1,4 @@
-pub const VERSION: i32 = 2;
+pub const VERSION: i32 = 3;
 
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 

@@ -376,7 +376,9 @@ impl SignalConnection {
             .ok_or(SignalError::Timeout("challenge before register"))?;
         let payload = sig::Register {
             pubkey: key.public_key_spki_base64(),
-            sig: key.sign_nonce_base64(&nonce),
+            sig: key
+                .sign(rc_identity::SigningPurpose::Register, &nonce)
+                .map_err(|e| SignalError::Protocol(e.to_string()))?,
             label: label.to_string(),
             code: code.clone(),
         };
@@ -406,7 +408,9 @@ impl SignalConnection {
         let payload = sig::Hello {
             device_id: device_id.to_string(),
             pubkey: key.public_key_spki_base64(),
-            sig: key.sign_nonce_base64(&nonce),
+            sig: key
+                .sign(rc_identity::SigningPurpose::Hello, &nonce)
+                .map_err(|e| SignalError::Protocol(e.to_string()))?,
             role: role.to_string(),
         };
         self.request(msg::HELLO, &payload, msg::HELLO_OK).await

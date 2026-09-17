@@ -404,7 +404,15 @@ struct VectorCase {
     step3: String,
     #[serde(rename = "sessionKey")]
     session_key: String,
+    #[serde(rename = "sdpMacKey")]
+    sdp_mac_key: String,
+    #[serde(rename = "sdpOfferFp")]
+    sdp_offer_fp: String,
+    #[serde(rename = "sdpOfferMac")]
+    sdp_offer_mac: String,
 }
+
+const VECTOR_FP: &str = "sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A";
 
 fn vector_case(name: &str, code: &str, device: &str, session: &str, seeds: (u8, u8)) -> VectorCase {
     let (controller_pubkey, host_pubkey) = (pubkey(seeds.0), pubkey(seeds.1));
@@ -431,18 +439,26 @@ fn vector_case(name: &str, code: &str, device: &str, session: &str, seeds: (u8, 
         step2: step2.to_base64(),
         step3: step3.to_base64(),
         session_key: B64.encode(controller.session_key().unwrap()),
+        sdp_mac_key: B64.encode(controller.sdp_mac_key().unwrap()),
+        sdp_offer_fp: VECTOR_FP.to_string(),
+        sdp_offer_mac: crate::sdp::mac_base64(
+            &host.sdp_mac_key().unwrap(),
+            &crate::sdp::message_to_sign(session, "offer", VECTOR_FP).unwrap(),
+        ),
     }
 }
 
 #[test]
 fn matches_the_shared_vectors() {
     let produced = VectorFile {
-        version: 1,
+        version: 2,
         note: "SPAKE2 access-code exchange, PROTOCOL.md 2.17. Ephemeral scalars come from a \
                test-only SHA-256 counter stream seeded with controllerSeed / hostSeed; \
                production uses the OS CSPRNG. step1 and step2 carry the sender's device \
                pubkey as a len32-prefixed DER SPKI blob, and both pubkeys are in the \
-               transcript."
+               transcript. sdpMacKey = HKDF-SHA256(salt empty, ikm sessionKey, \
+               info \"skipperdesk/sdp-mac/v1\"); sdpOfferMac is its HMAC-SHA256 over \
+               \"skipperdesk/sdp/v1|\" sessionId \"|offer|\" sdpOfferFp."
             .to_string(),
         cases: vec![
             vector_case("typical", "K7FM3Q8PW2XY", "482719351", "sess-0001", (1, 2)),
@@ -470,4 +486,136 @@ fn matches_the_shared_vectors() {
     let committed: VectorFile =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(committed, produced);
+}
+
+const HOUR: i64 = 60 * 60 * 1000;
+
+fn ledger_after_abandoned_replies(times: &[i64]) -> GuessLedger {
+    times.iter().fold(GuessLedger::default(), |ledger, &at| {
+        assert!(ledger.admit(at).is_allowed(), "attempt at {at} was refused");
+        GuessLedger {
+            controller: GuessCounter::default(),
+            ..ledger.reply_sent(at)
+        }
+    })
+}
+
+#[test]
+fn an_exchange_abandoned_after_step_two_counts_as_a_failure() {
+    let ledger = GuessLedger::default().reply_sent(1_000);
+    assert_eq!(ledger.controller.failures, 1);
+    assert_eq!(ledger.host.failures, 1);
+    assert_eq!(ledger.host.failure_times_ms, vec![1_000]);
+}
+
+#[test]
+fn a_verified_step_three_withdraws_only_its_own_failure() {
+    let earlier = GuessLedger::default().reply_sent(1_000);
+    let confirmed = earlier.reply_sent(2_000).confirmed();
+    assert_eq!(confirmed.controller, GuessCounter::default());
+    assert_eq!(confirmed.host.failure_times_ms, vec![1_000]);
+    assert_eq!(confirmed.host.failures, 1);
+}
+
+#[test]
+fn nineteen_host_wide_failures_still_admit_the_twentieth_attempt() {
+    let times: Vec<i64> = (0..19).map(|i| i * 1_000).collect();
+    let ledger = ledger_after_abandoned_replies(&times);
+    assert_eq!(ledger.host.failures, 19);
+    assert!(ledger.admit(19_000).is_allowed());
+}
+
+#[test]
+fn twenty_failures_from_twenty_different_keys_lock_every_controller_out() {
+    let times: Vec<i64> = (0..20).map(|i| i * 1_000).collect();
+    let ledger = ledger_after_abandoned_replies(&times);
+    let fresh_key = GuessLedger {
+        controller: GuessCounter::default(),
+        host: ledger.host.clone(),
+    };
+    assert_eq!(
+        fresh_key.admit(20_000),
+        GuessDecision::Locked {
+            retry_after_ms: HOUR - 20_000
+        }
+    );
+    assert_eq!(fresh_key.host.locked_until_ms, HOUR);
+    assert!(!fresh_key.admit(HOUR - 1).is_allowed());
+    assert!(
+        fresh_key.admit(HOUR).is_allowed(),
+        "the oldest failure left the window"
+    );
+}
+
+#[test]
+fn the_host_budget_rolls_rather_than_resetting() {
+    let times: Vec<i64> = (0..20).map(|i| i * 10 * 60 * 1000 / 20).collect();
+    let ledger = ledger_after_abandoned_replies(&times[..19]);
+    let full = ledger.reply_sent(times[19]);
+    let reopened_at = HOUR + 1;
+    assert!(full.admit(reopened_at).is_allowed());
+    let again = GuessLedger {
+        controller: GuessCounter::default(),
+        ..full.reply_sent(reopened_at)
+    };
+    assert!(
+        !again.admit(reopened_at).is_allowed(),
+        "one slot reopened, one failure spent it"
+    );
+    assert_eq!(again.host.failure_times_ms.len(), 20);
+}
+
+#[test]
+fn a_refused_attempt_adds_no_failure() {
+    let times: Vec<i64> = (0..20).collect();
+    let locked = ledger_after_abandoned_replies(&times);
+    assert!(!locked.admit(100).is_allowed());
+    assert_eq!(locked.host.failures, 20, "admit is a pure check");
+}
+
+#[test]
+fn the_ledger_reads_counters_written_before_the_host_budget_existed() {
+    let legacy: GuessLedger = serde_json::from_str(
+        r#"{"controller":{"failures":2,"lastFailureMs":5,"lockedUntilMs":0},"host":{}}"#,
+    )
+    .unwrap();
+    assert_eq!(legacy.controller.failures, 2);
+    assert!(legacy.controller.failure_times_ms.is_empty());
+    let written = serde_json::to_value(&legacy.controller).unwrap();
+    assert!(
+        written.get("failureTimesMs").is_none(),
+        "a per-controller counter keeps its old shape"
+    );
+}
+
+#[test]
+fn only_a_failed_confirmation_is_an_authentication_failure() {
+    assert!(PakeError::ConfirmationFailed.is_authentication());
+    for other in [
+        PakeError::BadPayload,
+        PakeError::BadPeerMessage,
+        PakeError::UnexpectedStep {
+            got: 3,
+            expected: 1,
+        },
+    ] {
+        assert!(!other.is_authentication(), "{other:?}");
+    }
+}
+
+#[test]
+fn both_sides_derive_the_same_sdp_mac_key_and_it_is_not_the_session_key() {
+    let mut pair = pair(CODE, CODE);
+    let step1 = pair.controller.step(None).unwrap().unwrap();
+    assert_eq!(
+        pair.controller.sdp_mac_key().unwrap_err(),
+        PakeError::NotComplete
+    );
+    let step2 = pair.host.step(Some(&step1)).unwrap().unwrap();
+    assert_eq!(pair.host.sdp_mac_key().unwrap_err(), PakeError::NotComplete);
+    let step3 = pair.controller.step(Some(&step2)).unwrap().unwrap();
+    pair.host.step(Some(&step3)).unwrap();
+    let key = pair.controller.sdp_mac_key().unwrap();
+    assert_eq!(key, pair.host.sdp_mac_key().unwrap());
+    assert_ne!(key, pair.controller.session_key().unwrap());
 }

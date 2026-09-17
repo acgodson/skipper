@@ -370,7 +370,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             applyLocalInputReset()
 
         case .startPeerConnection(let offerer):
-            guard !pakeRequired || pakeComplete else {
+            guard pakeComplete else {
                 deferredPeerStart = offerer
                 return
             }
@@ -463,11 +463,11 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
     private func sendSignedSDP(sessionID: String, type: String, sdp: String,
                                restart: Bool) async throws {
-        let signable = try SdpAuth.signable(sessionID: sessionID, sdpType: type, sdp: sdp)
-        let signature = SdpSignature(
-            fingerprints: signable.fingerprints,
-            pubkey: identity.publicKeyBase64,
-            signature: try identity.signatureBase64(for: signable.message))
+        guard pakeComplete, let pake = pakeExchange else {
+            throw SkipperCoreError("an sdp is never sent before the access-code exchange completes")
+        }
+        let signature = try SdpAuth.sign(pake: pake, sessionID: sessionID, sdpType: type, sdp: sdp,
+                                         with: identity, pubkey: identity.publicKeyBase64)
         try await signaling.sendSDP(sessionID: sessionID, type: type, sdp: sdp,
                                     restart: restart, signature: signature)
     }
@@ -559,17 +559,18 @@ extension SessionCoordinator: SignalingClientDelegate {
 
     private func handleRemoteSDP(_ sdp: SDPPayload) async {
         guard sdp.sessionId == machine.sessionID else { return }
-        guard !pakeRequired || pakeComplete else {
+        guard pakeComplete, let pake = pakeExchange else {
             RCLog.error("dropped an sdp that arrived before the access code was proved")
             return
         }
         guard let signature = sdp.signature else {
-            await refusePeer(reason: "the sdp carried no signature")
+            await refusePeer(reason: "the sdp carried no signature or no mac")
             return
         }
         do {
-            try SdpAuth.verify(sessionID: sdp.sessionId, sdpType: sdp.sdpType, sdp: sdp.sdp,
-                               signature: signature, expectedPubkey: expectedPeerPublicKey)
+            try SdpAuth.verify(pake: pake, sessionID: sdp.sessionId, sdpType: sdp.sdpType,
+                               sdp: sdp.sdp, signature: signature,
+                               expectedPubkey: expectedPeerPublicKey)
         } catch {
             await refusePeer(reason: error.localizedDescription)
             return
@@ -577,7 +578,17 @@ extension SessionCoordinator: SignalingClientDelegate {
         if peer == nil { startPeer(offerer: machine.isOfferer) }
         guard let peer else { return }
         do {
-            try await peer.setRemoteDescription(type: sdp.sdpType, sdp: sdp.sdp)
+            try await peer.setRemoteDescription(type: sdp.sdpType, sdp: sdp.sdp,
+                                                verifiedFingerprints: signature.fingerprints)
+        } catch PeerSessionError.installedFingerprintsRejected(let why) {
+            await refusePeer(reason: why)
+            return
+        } catch {
+            RCLog.error("remote \(sdp.sdpType) failed: \(error.localizedDescription)")
+            lastError = error.localizedDescription
+            return
+        }
+        do {
             emit(.remoteDescription(type: sdp.sdpType, restart: sdp.restart ?? false))
             if sdp.sdpType == "offer" {
                 let answer = try await peer.createAnswer()

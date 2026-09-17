@@ -34,9 +34,12 @@ public let pakeSuite = TestSuite("PakeExchange", [
         try expectNil(try host.step(step3), "the host sends nothing back")
 
         try expect(controller.isComplete && host.isComplete)
-        let key = try expectNotNil(controller.sessionKey, "the controller has a session key")
-        try expectEqual(key.count, 32)
-        try expectEqual(key, host.sessionKey)
+        let offer = "v=0\r\na=fingerprint:sha-256 AA:01\r\n"
+        let signable = try SdpAuth.signable(pake: controller, sessionID: sessionID,
+                                            sdpType: "offer", sdp: offer)
+        let hostView = try SdpAuth.signable(pake: host, sessionID: sessionID,
+                                            sdpType: "offer", sdp: offer)
+        try expectEqual(signable.mac, hostView.mac, "both sides derived the same sdp MAC key")
 
         try expectEqual(host.peerPublicKey, controllerPubkey,
                         "the host learned the controller's device key from step 1")
@@ -55,8 +58,11 @@ public let pakeSuite = TestSuite("PakeExchange", [
         let step1 = try expectNotNil(try controller.step(nil))
         let step2 = try expectNotNil(try host.step(step1))
 
-        try await expectThrows("the controller's confirmation check") {
+        do {
             _ = try controller.step(step2)
+            throw TestFailure(message: "the controller confirmation check did not throw")
+        } catch let refused as SkipperCoreError {
+            try expect(refused.isAuthenticationFailure, "a wrong code is an authentication failure")
         }
 
         let forged = PakeMessage(step: 3, payload: Data(repeating: 0, count: 32).base64EncodedString())
@@ -64,7 +70,10 @@ public let pakeSuite = TestSuite("PakeExchange", [
             _ = try host.step(forged)
         }
         try expectFalse(host.isComplete)
-        try expectNil(host.sessionKey)
+        try await expectThrows("an sdp before the exchange completes") {
+            _ = try SdpAuth.signable(pake: host, sessionID: sessionID, sdpType: "offer",
+                                     sdp: "v=0\r\na=fingerprint:sha-256 AA:01\r\n")
+        }
     },
 
     TestCase("a code the core cannot use is rejected at construction") {

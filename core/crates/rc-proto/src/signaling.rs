@@ -294,6 +294,9 @@ pub struct Sdp {
     /// base64 DER ECDSA-SHA256 over `"skipperdesk/sdp/v1|" session_id "|" sdp_type "|" fp`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sig: String,
+    /// v3: base64 HMAC-SHA256 under the PAKE-derived `sdpMacKey`, over the same bytes as `sig`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mac: String,
 }
 
 fn is_false(v: &bool) -> bool {

@@ -4,7 +4,7 @@
 
 #![allow(clippy::missing_safety_doc)]
 
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use rc_session::{
@@ -14,8 +14,11 @@ use serde_json::{json, Value};
 
 mod pake;
 mod sdp;
+mod signing;
+mod text;
 
 pub use pake::SkipperPake;
+pub(crate) use text::{optional_text, payload_bytes, required_text};
 
 pub struct SkipperSession {
     machine: SessionStateMachine,
@@ -118,9 +121,38 @@ fn state_json(machine: &SessionStateMachine) -> Value {
     })
 }
 
+pub(crate) struct FfiError {
+    message: String,
+    kind: Option<&'static str>,
+}
+
+impl FfiError {
+    pub(crate) fn with_kind(message: impl Into<String>, kind: &'static str) -> Self {
+        Self {
+            message: message.into(),
+            kind: Some(kind),
+        }
+    }
+}
+
+impl From<String> for FfiError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            kind: None,
+        }
+    }
+}
+
+impl From<&str> for FfiError {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
 pub(crate) fn respond<F>(panic_message: &str, body: F) -> *mut c_char
 where
-    F: FnOnce() -> Result<Value, String>,
+    F: FnOnce() -> Result<Value, FfiError>,
 {
     let outcome = catch_unwind(AssertUnwindSafe(|| match body() {
         Ok(mut value) => {
@@ -129,9 +161,9 @@ where
             }
             value.to_string()
         }
-        Err(message) => error_string(&message),
+        Err(error) => error_string(&error),
     }));
-    into_c_string(outcome.unwrap_or_else(|_| error_string(panic_message)))
+    into_c_string(outcome.unwrap_or_else(|_| error_string(&panic_message.into())))
 }
 
 pub(crate) fn into_c_string(value: String) -> *mut c_char {
@@ -144,26 +176,12 @@ pub(crate) fn into_c_string(value: String) -> *mut c_char {
     }
 }
 
-pub(crate) fn error_string(message: &str) -> String {
-    json!({ "ok": false, "error": message }).to_string()
-}
-
-// SAFETY: `pointer` is either null or an outliving NUL-terminated C string.
-pub(crate) unsafe fn optional_str<'a>(pointer: *const c_char) -> Result<Option<&'a str>, String> {
-    if pointer.is_null() {
-        return Ok(None);
+pub(crate) fn error_string(error: &FfiError) -> String {
+    match error.kind {
+        Some(kind) => json!({ "ok": false, "error": error.message, "kind": kind }),
+        None => json!({ "ok": false, "error": error.message }),
     }
-    unsafe { CStr::from_ptr(pointer) }
-        .to_str()
-        .map(Some)
-        .map_err(|_| "argument is not valid UTF-8".to_string())
-}
-
-pub(crate) unsafe fn required_str<'a>(
-    pointer: *const c_char,
-    name: &str,
-) -> Result<&'a str, String> {
-    unsafe { optional_str(pointer) }?.ok_or_else(|| format!("argument {name} must not be null"))
+    .to_string()
 }
 
 fn dispatch<F>(session: *mut SkipperSession, body: F) -> *mut c_char
@@ -172,7 +190,7 @@ where
 {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         let Some(session) = (unsafe { session.as_mut() }) else {
-            return error_string("session handle is null");
+            return error_string(&"session handle is null".into());
         };
         match body(&mut session.machine) {
             Ok(actions) => json!({
@@ -181,10 +199,10 @@ where
                 "state": state_json(&session.machine),
             })
             .to_string(),
-            Err(message) => error_string(&message),
+            Err(message) => error_string(&message.into()),
         }
     }));
-    into_c_string(outcome.unwrap_or_else(|_| error_string("the state machine panicked")))
+    into_c_string(outcome.unwrap_or_else(|_| error_string(&"the state machine panicked".into())))
 }
 
 #[no_mangle]
@@ -234,13 +252,15 @@ pub unsafe extern "C" fn skipper_session_state(session: *mut SkipperSession) -> 
 #[no_mangle]
 pub unsafe extern "C" fn skipper_session_connect_requested(
     session: *mut SkipperSession,
-    device_id: *const c_char,
-    access_code: *const c_char,
+    device_id: *const u8,
+    device_id_len: usize,
+    access_code: *const u8,
+    access_code_len: usize,
     remember: bool,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        let device_id = unsafe { required_str(device_id, "device_id") }?;
-        let access_code = unsafe { required_str(access_code, "access_code") }?;
+        let device_id = unsafe { required_text(device_id, device_id_len, "device_id") }?;
+        let access_code = unsafe { required_text(access_code, access_code_len, "access_code") }?;
         Ok(machine.connect_requested(device_id, access_code, remember))
     })
 }
@@ -248,19 +268,34 @@ pub unsafe extern "C" fn skipper_session_connect_requested(
 #[no_mangle]
 pub unsafe extern "C" fn skipper_session_granted(
     session: *mut SkipperSession,
-    session_id: *const c_char,
-    session_token: *const c_char,
-    host_device_id: *const c_char,
-    controller_device_id: *const c_char,
+    session_id: *const u8,
+    session_id_len: usize,
+    session_token: *const u8,
+    session_token_len: usize,
+    host_device_id: *const u8,
+    host_device_id_len: usize,
+    controller_device_id: *const u8,
+    controller_device_id_len: usize,
     now_ms: i64,
 ) -> *mut c_char {
     dispatch(session, |machine| {
         let grant = SessionGrant {
-            session_id: unsafe { required_str(session_id, "session_id") }?.to_string(),
-            session_token: unsafe { required_str(session_token, "session_token") }?.to_string(),
-            host_device_id: unsafe { required_str(host_device_id, "host_device_id") }?.to_string(),
+            session_id: unsafe { required_text(session_id, session_id_len, "session_id") }?
+                .to_string(),
+            session_token: unsafe {
+                required_text(session_token, session_token_len, "session_token")
+            }?
+            .to_string(),
+            host_device_id: unsafe {
+                required_text(host_device_id, host_device_id_len, "host_device_id")
+            }?
+            .to_string(),
             controller_device_id: unsafe {
-                required_str(controller_device_id, "controller_device_id")
+                required_text(
+                    controller_device_id,
+                    controller_device_id_len,
+                    "controller_device_id",
+                )
             }?
             .to_string(),
         };
@@ -271,10 +306,11 @@ pub unsafe extern "C" fn skipper_session_granted(
 #[no_mangle]
 pub unsafe extern "C" fn skipper_session_connect_failed(
     session: *mut SkipperSession,
-    code: *const c_char,
+    code: *const u8,
+    code_len: usize,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        Ok(machine.connect_failed(unsafe { required_str(code, "code") }?))
+        Ok(machine.connect_failed(unsafe { required_text(code, code_len, "code") }?))
     })
 }
 
@@ -288,26 +324,46 @@ pub unsafe extern "C" fn skipper_session_signaling_lost(
 #[no_mangle]
 pub unsafe extern "C" fn skipper_session_signaling_authenticated(
     session: *mut SkipperSession,
-    active_session_id: *const c_char,
+    active_session_id: *const u8,
+    active_session_id_len: usize,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        let active = unsafe { optional_str(active_session_id) }?;
+        let active = unsafe {
+            optional_text(
+                active_session_id,
+                active_session_id_len,
+                "active_session_id",
+            )
+        }?;
         Ok(machine.signaling_authenticated(active))
+    })
+}
+
+unsafe fn resume_ok(
+    session_id: *const u8,
+    session_id_len: usize,
+    session_token: *const u8,
+    session_token_len: usize,
+) -> Result<ResumeOk, String> {
+    Ok(ResumeOk {
+        session_id: unsafe { required_text(session_id, session_id_len, "session_id") }?.to_string(),
+        session_token: unsafe { required_text(session_token, session_token_len, "session_token") }?
+            .to_string(),
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn skipper_session_resume_succeeded(
     session: *mut SkipperSession,
-    session_id: *const c_char,
-    session_token: *const c_char,
+    session_id: *const u8,
+    session_id_len: usize,
+    session_token: *const u8,
+    session_token_len: usize,
     now_ms: i64,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        let ok = ResumeOk {
-            session_id: unsafe { required_str(session_id, "session_id") }?.to_string(),
-            session_token: unsafe { required_str(session_token, "session_token") }?.to_string(),
-        };
+        let ok =
+            unsafe { resume_ok(session_id, session_id_len, session_token, session_token_len) }?;
         Ok(machine.resume_succeeded(&ok, now_ms))
     })
 }
@@ -315,11 +371,12 @@ pub unsafe extern "C" fn skipper_session_resume_succeeded(
 #[no_mangle]
 pub unsafe extern "C" fn skipper_session_resume_failed(
     session: *mut SkipperSession,
-    code: *const c_char,
+    code: *const u8,
+    code_len: usize,
     retry_after_sec: i32,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        let code = unsafe { required_str(code, "code") }?;
+        let code = unsafe { required_text(code, code_len, "code") }?;
         Ok(machine.resume_failed(code, retry_after_sec))
     })
 }
@@ -327,15 +384,15 @@ pub unsafe extern "C" fn skipper_session_resume_failed(
 #[no_mangle]
 pub unsafe extern "C" fn skipper_session_renew_succeeded(
     session: *mut SkipperSession,
-    session_id: *const c_char,
-    session_token: *const c_char,
+    session_id: *const u8,
+    session_id_len: usize,
+    session_token: *const u8,
+    session_token_len: usize,
     now_ms: i64,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        let ok = ResumeOk {
-            session_id: unsafe { required_str(session_id, "session_id") }?.to_string(),
-            session_token: unsafe { required_str(session_token, "session_token") }?.to_string(),
-        };
+        let ok =
+            unsafe { resume_ok(session_id, session_id_len, session_token, session_token_len) }?;
         machine.renew_succeeded(&ok, now_ms);
         Ok(vec![])
     })
@@ -344,22 +401,24 @@ pub unsafe extern "C" fn skipper_session_renew_succeeded(
 #[no_mangle]
 pub unsafe extern "C" fn skipper_session_renew_failed(
     session: *mut SkipperSession,
-    code: *const c_char,
+    code: *const u8,
+    code_len: usize,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        Ok(machine.renew_failed(unsafe { required_str(code, "code") }?))
+        Ok(machine.renew_failed(unsafe { required_text(code, code_len, "code") }?))
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn skipper_session_ice_state_changed(
     session: *mut SkipperSession,
-    ice_state: *const c_char,
+    ice_state: *const u8,
+    ice_state_len: usize,
     now_ms: i64,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        let state = ice_state_from_name(unsafe { required_str(ice_state, "ice_state") }?)?;
-        Ok(machine.ice_state_changed(state, now_ms))
+        let name = unsafe { required_text(ice_state, ice_state_len, "ice_state") }?;
+        Ok(machine.ice_state_changed(ice_state_from_name(name)?, now_ms))
     })
 }
 
@@ -374,20 +433,22 @@ pub unsafe extern "C" fn skipper_session_tick(
 #[no_mangle]
 pub unsafe extern "C" fn skipper_session_close_locally(
     session: *mut SkipperSession,
-    reason: *const c_char,
+    reason: *const u8,
+    reason_len: usize,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        Ok(machine.close_locally(unsafe { required_str(reason, "reason") }?))
+        Ok(machine.close_locally(unsafe { required_text(reason, reason_len, "reason") }?))
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn skipper_session_user_ended(
     session: *mut SkipperSession,
-    reason: *const c_char,
+    reason: *const u8,
+    reason_len: usize,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        Ok(machine.user_ended(unsafe { required_str(reason, "reason") }?))
+        Ok(machine.user_ended(unsafe { required_text(reason, reason_len, "reason") }?))
     })
 }
 
@@ -405,10 +466,13 @@ pub unsafe extern "C" fn skipper_session_set_relay_only(
 #[no_mangle]
 pub unsafe extern "C" fn skipper_session_set_remembered_access_code(
     session: *mut SkipperSession,
-    access_code: *const c_char,
+    access_code: *const u8,
+    access_code_len: usize,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        machine.remembered_access_code = unsafe { optional_str(access_code) }?.map(str::to_string);
+        machine.remembered_access_code =
+            unsafe { optional_text(access_code, access_code_len, "access_code") }?
+                .map(str::to_string);
         Ok(vec![])
     })
 }

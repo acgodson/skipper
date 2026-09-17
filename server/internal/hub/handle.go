@@ -130,14 +130,14 @@ func (h *Hub) sendRegistryErrLocked(c *Client, re, what string, err error) {
 	h.sendErrLocked(c, re, protocol.ErrInternal, what+" failed", 0)
 }
 
-func (h *Hub) checkNonceLocked(c *Client, pubkey, sig string) bool {
+func (h *Hub) checkNonceLocked(c *Client, purpose protocol.SigningPurpose, pubkey, sig string) bool {
 	now := h.clock.Now()
 	if len(c.nonce) == 0 || !now.Before(c.nonceExp) {
 		return false
 	}
 	nonce := c.nonce
 	c.nonce = nil
-	return auth.VerifyDeviceSig(pubkey, sig, nonce) == nil
+	return auth.VerifyDeviceSig(purpose, pubkey, sig, nonce) == nil
 }
 
 func (h *Hub) acceptRegisterLocked(c *Client, e protocol.Envelope) (protocol.Register, bool) {
@@ -156,7 +156,7 @@ func (h *Hub) acceptRegisterLocked(c *Client, e protocol.Envelope) (protocol.Reg
 	if len(p.Label) > protocol.MaxLabelLen {
 		p.Label = p.Label[:protocol.MaxLabelLen]
 	}
-	if !h.checkNonceLocked(c, p.Pubkey, p.Sig) {
+	if !h.checkNonceLocked(c, protocol.PurposeRegister, p.Pubkey, p.Sig) {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadSignature, "challenge signature rejected", 0)
 		h.issueChallengeLocked(c)
 		return p, false
@@ -240,7 +240,7 @@ func (h *Hub) handleHello(c *Client, e protocol.Envelope) {
 		return
 	}
 
-	if p.Pubkey != dev.Pubkey || !h.checkNonceLocked(c, p.Pubkey, p.Sig) {
+	if p.Pubkey != dev.Pubkey || !h.checkNonceLocked(c, protocol.PurposeHello, p.Pubkey, p.Sig) {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadSignature, "challenge signature rejected", 0)
 		h.issueChallengeLocked(c)
 		return

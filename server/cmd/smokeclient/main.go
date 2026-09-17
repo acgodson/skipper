@@ -178,12 +178,16 @@ func (c *client) buffered(typ string) (env, bool) {
 	return env{}, false
 }
 
-func (c *client) sig() string {
+func (c *client) sig(purpose protocol.SigningPurpose) string {
 	nb, err := base64.StdEncoding.DecodeString(c.nonce)
 	if err != nil {
 		fatal("%s: bad nonce: %v", c.name, err)
 	}
-	sum := sha256.Sum256(nb)
+	message, err := protocol.SigningMessage(purpose, nb)
+	if err != nil {
+		fatal("%s: %v", c.name, err)
+	}
+	sum := sha256.Sum256(message)
 	sig, err := ecdsa.SignASN1(rand.Reader, c.priv, sum[:])
 	if err != nil {
 		fatal("%s: sign: %v", c.name, err)
@@ -206,7 +210,7 @@ const (
 
 func (c *client) register(label string) string {
 	c.send(protocol.TypeRegister, protocol.Register{
-		Pubkey: c.pub, Sig: c.sig(), Label: label})
+		Pubkey: c.pub, Sig: c.sig(protocol.PurposeRegister), Label: label})
 	ok := decode[protocol.RegisterOK](c.mustGet(protocol.TypeRegisterOK))
 	c.deviceID = ok.DeviceID
 	c.mustGet(protocol.TypeChallenge)
@@ -215,7 +219,7 @@ func (c *client) register(label string) string {
 
 func (c *client) hello(role string) protocol.HelloOK {
 	c.send(protocol.TypeHello, protocol.Hello{
-		DeviceID: c.deviceID, Pubkey: c.pub, Sig: c.sig(), Role: role})
+		DeviceID: c.deviceID, Pubkey: c.pub, Sig: c.sig(protocol.PurposeHello), Role: role})
 	e, ok := c.wait(protocol.TypeHelloOK, protocol.TypeError)
 	if !ok || e.Type == protocol.TypeError {
 		fatal("%s: hello failed: %v", c.name, e.Type)

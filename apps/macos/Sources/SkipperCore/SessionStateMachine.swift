@@ -64,9 +64,13 @@ public final class SessionStateMachine {
 
     public var rememberedAccessCode: String? {
         get { storedRememberedAccessCode }
-        set { _ = call { skipper_session_set_remembered_access_code(handle, newValue) } }
+        set { _ = call([newValue]) { skipper_session_set_remembered_access_code(handle, $0[0].base, $0[0].count) } }
     }
     private var storedRememberedAccessCode: String?
+
+    /// Why the core last refused an event (for example a server-supplied value
+    /// with a NUL byte); a refused event changes nothing.
+    public private(set) var lastRejection: String?
 
     public init(
         role: SessionRole,
@@ -99,20 +103,23 @@ public final class SessionStateMachine {
     }
 
     public func connectRequested(deviceID: String, accessCode: String, remember: Bool) -> [SessionAction] {
-        call { skipper_session_connect_requested(handle, deviceID, accessCode, remember) }
+        call([deviceID, accessCode]) {
+            skipper_session_connect_requested(handle, $0[0].base, $0[0].count,
+                                              $0[1].base, $0[1].count, remember)
+        }
     }
 
     @discardableResult
     public func sessionGranted(_ grant: SessionGrantLike, now: Date = Date()) -> [SessionAction] {
-        call {
-            skipper_session_granted(handle, grant.sessionId, grant.sessionToken,
-                                    grant.hostDeviceId, grant.controllerDeviceId,
+        call([grant.sessionId, grant.sessionToken, grant.hostDeviceId, grant.controllerDeviceId]) {
+            skipper_session_granted(handle, $0[0].base, $0[0].count, $0[1].base, $0[1].count,
+                                    $0[2].base, $0[2].count, $0[3].base, $0[3].count,
                                     Self.milliseconds(now))
         }
     }
 
     public func connectFailed(code: String) -> [SessionAction] {
-        call { skipper_session_connect_failed(handle, code) }
+        call([code]) { skipper_session_connect_failed(handle, $0[0].base, $0[0].count) }
     }
 
     // MARK: - Signaling transitions (PROTOCOL.md §4.3)
@@ -122,35 +129,42 @@ public final class SessionStateMachine {
     }
 
     public func signalingAuthenticated(activeSessionID: String?) -> [SessionAction] {
-        call { skipper_session_signaling_authenticated(handle, activeSessionID) }
+        call([activeSessionID]) {
+            skipper_session_signaling_authenticated(handle, $0[0].base, $0[0].count)
+        }
     }
 
     public func resumeSucceeded(_ ok: SessionTokenLike, now: Date = Date()) -> [SessionAction] {
-        call {
-            skipper_session_resume_succeeded(handle, ok.sessionId, ok.sessionToken,
-                                             Self.milliseconds(now))
+        call([ok.sessionId, ok.sessionToken]) {
+            skipper_session_resume_succeeded(handle, $0[0].base, $0[0].count,
+                                             $0[1].base, $0[1].count, Self.milliseconds(now))
         }
     }
 
     public func resumeFailed(code: String, retryAfterSec: Int) -> [SessionAction] {
-        call { skipper_session_resume_failed(handle, code, Int32(clamping: retryAfterSec)) }
+        call([code]) {
+            skipper_session_resume_failed(handle, $0[0].base, $0[0].count,
+                                          Int32(clamping: retryAfterSec))
+        }
     }
 
     public func renewSucceeded(_ ok: SessionTokenLike, now: Date = Date()) {
-        _ = call {
-            skipper_session_renew_succeeded(handle, ok.sessionId, ok.sessionToken,
-                                            Self.milliseconds(now))
+        _ = call([ok.sessionId, ok.sessionToken]) {
+            skipper_session_renew_succeeded(handle, $0[0].base, $0[0].count,
+                                            $0[1].base, $0[1].count, Self.milliseconds(now))
         }
     }
 
     public func renewFailed(code: String, now: Date = Date()) -> [SessionAction] {
-        call { skipper_session_renew_failed(handle, code) }
+        call([code]) { skipper_session_renew_failed(handle, $0[0].base, $0[0].count) }
     }
 
     // MARK: - ICE transitions (PLAN.md §2.1)
 
     public func iceStateChanged(to newState: ICELinkState, now: Date = Date()) -> [SessionAction] {
-        call { skipper_session_ice_state_changed(handle, newState.rawValue, Self.milliseconds(now)) }
+        call([newState.rawValue]) {
+            skipper_session_ice_state_changed(handle, $0[0].base, $0[0].count, Self.milliseconds(now))
+        }
     }
 
     public func tick(now: Date = Date()) -> [SessionAction] {
@@ -160,11 +174,11 @@ public final class SessionStateMachine {
     // MARK: - Endings
 
     public func closeLocally(reason: String) -> [SessionAction] {
-        call { skipper_session_close_locally(handle, reason) }
+        call([reason]) { skipper_session_close_locally(handle, $0[0].base, $0[0].count) }
     }
 
     public func userEnded(reason: String = "user_ended") -> [SessionAction] {
-        call { skipper_session_user_ended(handle, reason) }
+        call([reason]) { skipper_session_user_ended(handle, $0[0].base, $0[0].count) }
     }
 
     // MARK: - Boundary
@@ -177,6 +191,13 @@ public final class SessionStateMachine {
         Int64((interval * 1000).rounded())
     }
 
+    private func call(
+        _ text: [String?],
+        _ body: ([CoreBytes]) -> UnsafeMutablePointer<CChar>?
+    ) -> [SessionAction] {
+        CoreBoundary.withText(text) { arguments in call { body(arguments) } }
+    }
+
     private func call(_ body: () -> UnsafeMutablePointer<CChar>?) -> [SessionAction] {
         guard let raw = body() else {
             preconditionFailure("the shared core could not allocate a result")
@@ -187,7 +208,8 @@ public final class SessionStateMachine {
             preconditionFailure("the shared core returned an undecodable result")
         }
         guard response.ok, let state = response.state else {
-            preconditionFailure("the shared core rejected a call: \(response.error ?? "unknown")")
+            lastRejection = response.error ?? "the shared core rejected the event"
+            return []
         }
         apply(state)
         return (response.actions ?? []).map(Self.action)

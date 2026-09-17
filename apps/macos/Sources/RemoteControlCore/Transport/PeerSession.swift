@@ -33,12 +33,14 @@ public enum PeerSessionError: Swift.Error, LocalizedError {
     case factoryUnavailable
     case noPeerConnection
     case channelNotOpen(String)
+    case installedFingerprintsRejected(String)
 
     public var errorDescription: String? {
         switch self {
         case .factoryUnavailable: return "The WebRTC peer connection factory could not be created."
         case .noPeerConnection: return "There is no peer connection."
         case .channelNotOpen(let label): return "The '\(label)' data channel is not open."
+        case .installedFingerprintsRejected(let why): return why
         }
     }
 }
@@ -346,7 +348,10 @@ public final class PeerSession {
         return RTCSessionDescription(type: description.type, sdp: rewritten)
     }
 
-    public func setRemoteDescription(type: String, sdp: String) async throws {
+    /// `verifiedFingerprints` is the `fp` that passed PROTOCOL.md §2.12. The
+    /// fingerprints libwebrtc installed are compared with it before any remote
+    /// candidate is applied; on a mismatch the connection is closed at once.
+    public func setRemoteDescription(type: String, sdp: String, verifiedFingerprints: String) async throws {
         guard let connection else { throw PeerSessionError.noPeerConnection }
         let sdpType: RTCSdpType
         switch type {
@@ -360,6 +365,12 @@ public final class PeerSession {
             RCLog.info("transport: remote \(type) prefers \(codec) [\(SDPCodecPreference.videoPayloadOrder(in: sdp).prefix(6).joined(separator: " "))]")
         }
         try await connection.setRemoteDescription(RTCSessionDescription(type: sdpType, sdp: sdp))
+        do {
+            try SdpAuth.requireInstalled(verified: verifiedFingerprints, installedSDP: installedRemoteSDP)
+        } catch {
+            close()
+            throw PeerSessionError.installedFingerprintsRejected(error.localizedDescription)
+        }
         hasRemoteDescription = true
         let queued = bufferedCandidates
         bufferedCandidates.removeAll()
@@ -367,6 +378,9 @@ public final class PeerSession {
             try? await addCandidate(candidate.sdp, sdpMid: candidate.mid, sdpMLineIndex: candidate.index)
         }
     }
+
+    /// The remote description as libwebrtc parsed and re-serialised it.
+    public var installedRemoteSDP: String? { connection?.remoteDescription?.sdp }
 
     public func addCandidate(_ candidate: String, sdpMid: String?, sdpMLineIndex: Int?) async throws {
         guard let connection else { throw PeerSessionError.noPeerConnection }

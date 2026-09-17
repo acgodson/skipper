@@ -252,6 +252,7 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
                                     fp: String::new(),
                                     pubkey: String::new(),
                                     sig: String::new(),
+                                    mac: String::new(),
                                 },
                             )
                             .await;

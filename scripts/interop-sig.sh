@@ -6,7 +6,7 @@
 # byte-for-byte on two encodings, and neither side's own unit tests can prove it.
 #
 #   pubkey  base64(DER SPKI)          -- NOT the X9.63 raw point
-#   sig     base64(ASN.1 DER ECDSA)   -- NOT raw r||s, over sha256(raw nonce bytes)
+#   sig     base64(ASN.1 DER ECDSA)   -- NOT raw r||s, over sha256("skipperdesk/hello/v1|" + raw nonce bytes)
 #
 # If they disagree, Phase 3 dies at the handshake with a useless "bad_signature".
 # So: Swift emits a real public key and a real signature over a nonce this script

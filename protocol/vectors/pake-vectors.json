@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "note": "SPAKE2 access-code exchange, PROTOCOL.md 2.17. Ephemeral scalars come from a test-only SHA-256 counter stream seeded with controllerSeed / hostSeed; production uses the OS CSPRNG. step1 and step2 carry the sender's device pubkey as a len32-prefixed DER SPKI blob, and both pubkeys are in the transcript.",
+  "version": 2,
+  "note": "SPAKE2 access-code exchange, PROTOCOL.md 2.17. Ephemeral scalars come from a test-only SHA-256 counter stream seeded with controllerSeed / hostSeed; production uses the OS CSPRNG. step1 and step2 carry the sender's device pubkey as a len32-prefixed DER SPKI blob, and both pubkeys are in the transcript. sdpMacKey = HKDF-SHA256(salt empty, ikm sessionKey, info \"skipperdesk/sdp-mac/v1\"); sdpOfferMac is its HMAC-SHA256 over \"skipperdesk/sdp/v1|\" sessionId \"|offer|\" sdpOfferFp.",
   "cases": [
     {
       "name": "typical",
@@ -14,7 +14,10 @@
       "step1": "AAAAWzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABG/wO5SSQc4drdQ1GeaWDgqFtBppoFwygQOqK84VlMoWPE91OlW/AdxT9sCwx+7ni0DG/30lqW4igrmJzvccFEpTtj1NapAp/22tykDQ+UOY7/LHe+B75IwIMlUSJyqtXAI=",
       "step2": "AAAAWzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABLgRhotg4H2hWcrbef3rInUD90Hd6c3SFAtjDfPzszpfprm7QppdAzjYiRq7VK4apzu13BRlA8f4DaU903bbC7hT79xI2K2bF3BOYH1fFTOrDslTwiWudD51nxAf1tFMIKFK5BtwNe7D0y5E7h6VD24S41qhN0mugnH85sV3jb+r2g==",
       "step3": "JUkYZsi8ZhXzXB9Ac3t9RhmxLLd42SiBTC2LVK5DnYA=",
-      "sessionKey": "8ucL3B0a37eJsX8PI7EJflS/dxuPK/uzFMmEYmtXcmA="
+      "sessionKey": "8ucL3B0a37eJsX8PI7EJflS/dxuPK/uzFMmEYmtXcmA=",
+      "sdpMacKey": "OjItVHJ6IGKKDDyywLMotu2L7CASRlL5N7d5yzEW3Qw=",
+      "sdpOfferFp": "sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A",
+      "sdpOfferMac": "L25hl5uGH7tZKUBc6NrfasYK09SUpI51hQzPNZIfXyk="
     },
     {
       "name": "other-session",
@@ -28,7 +31,10 @@
       "step1": "AAAAWzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABEtfArxpGPIWGmYKjTqG/hjSglxZbkaJgD/olNVifcXePB+fd61DYft7JhihUWfbkLkQ1WG/IYL/TROxE1OyEqFTRwQ+vB3PBFL0O8/zRTpRgFuNH/Df+uHrJIeDq788OGE=",
       "step2": "AAAAWzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABMILSHAa1+9gEQQG212Mbi4yDM9kIXIQjUnf19IGdbVLXkXNDbGVXpTQtt/k9THXOKbWCpAJreKUr7Q7mmyNiMlT1MsovOlOdmn10t85alEw3J4GoPX27GZ5b2IM4ABFJR7NpWnlCeJrA0JmbVE+B+SP0BqyhXFXmNEvVrqLAOkOPg==",
       "step3": "LP3xIkMR0ckva0736L0vUUxnKAyUgQnO7z39jtxQ2Mw=",
-      "sessionKey": "tu2vm7h5SPBVaUDSloqT97PocbehNe8z9UUPsxllhdo="
+      "sessionKey": "tu2vm7h5SPBVaUDSloqT97PocbehNe8z9UUPsxllhdo=",
+      "sdpMacKey": "nryV2QUbtwl5knWOd6DdFqG///rH1d52Q12dfv4jr1A=",
+      "sdpOfferFp": "sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A",
+      "sdpOfferMac": "mWtiSw/RrUFPdrejfx5EFCK1QiiIgDHVQNLkUj8hEIA="
     },
     {
       "name": "all-zero-code",
@@ -42,7 +48,10 @@
       "step1": "AAAAWzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABOCR/GfyqZVLWp/RkE/eHUtR7D/zp2PTWNAS8Qf2AyMShx7DItF5qVGp5PiHqJlebJH/bl9MYie5h25f+AWPqbhTpYoydxsvQmJPg4UefxYEd90PMqr1hgAdI505FALFQSc=",
       "step2": "AAAAWzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABIFpdGtRoSiLi/ead/OHYueLtDezFXobUjUJYjNAcfJUhMv5gUiCWjCnLM5cINCE4GGtVVxZ/qfwY0DzlYmx5NZTN2x50hYVzlxFQ9P1zsQkC/VVXtkZz7fcqX121kUSjLl2uiTNOee6rC+2tHaThAjNQqHH6trxLahppJEmexyh+w==",
       "step3": "0jDimqXkFn+pqfTE39EirdGQYvJcY5RZ0uq7TRKBHwk=",
-      "sessionKey": "8toudISjIcI5MTBxqJX8u/4WnBjaOIyQYwrdaVPsebM="
+      "sessionKey": "8toudISjIcI5MTBxqJX8u/4WnBjaOIyQYwrdaVPsebM=",
+      "sdpMacKey": "vEMa3yVD6/gH8xzKE+hRLajDEHX1nPaeFwHUmnkWS9s=",
+      "sdpOfferFp": "sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A",
+      "sdpOfferMac": "bOb98x3+VV+HcUZGMZtE3U73DVN4tOwhnFchjJvpfI4="
     }
   ]
 }

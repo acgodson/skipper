@@ -3,7 +3,7 @@ import Foundation
 
 public enum Wire {
 
-    public static let version = 2
+    public static let version = 3
 
     public enum MessageType {
         public static let challenge = "challenge"
@@ -401,17 +401,19 @@ public struct SDPPayload: Codable, Equatable {
     public var fp: String?
     public var pubkey: String?
     public var sig: String?
+    public var mac: String?
     public init(sessionId: String, sdpType: String, sdp: String, restart: Bool? = nil,
-                fp: String? = nil, pubkey: String? = nil, sig: String? = nil) {
+                fp: String? = nil, pubkey: String? = nil, sig: String? = nil, mac: String? = nil) {
         self.sessionId = sessionId; self.sdpType = sdpType; self.sdp = sdp; self.restart = restart
-        self.fp = fp; self.pubkey = pubkey; self.sig = sig
+        self.fp = fp; self.pubkey = pubkey; self.sig = sig; self.mac = mac
     }
 
     public var signature: SdpSignature? {
-        guard let fp, let pubkey, let sig, !fp.isEmpty, !pubkey.isEmpty, !sig.isEmpty else {
+        guard let fp, let pubkey, let sig, let mac,
+              !fp.isEmpty, !pubkey.isEmpty, !sig.isEmpty, !mac.isEmpty else {
             return nil
         }
-        return SdpSignature(fingerprints: fp, pubkey: pubkey, signature: sig)
+        return SdpSignature(fingerprints: fp, pubkey: pubkey, signature: sig, mac: mac)
     }
 }
 

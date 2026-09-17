@@ -1,6 +1,11 @@
 import Foundation
 import SkipperCore
 
+private struct PakeRefusal: Error, LocalizedError {
+    let reason: String
+    var errorDescription: String? { reason }
+}
+
 extension SessionCoordinator {
 
     static let pakeTimeoutSeconds: UInt64 = 10
@@ -36,26 +41,20 @@ extension SessionCoordinator {
     func startHostPake(grant: SessionGrantPayload) async {
         guard role == .host else { return }
         let controllerPubkey = grant.controllerPubkey ?? ""
-        guard !controllerPubkey.isEmpty else {
-            await pakeFailed(reason: "session_start carried no controller key", authentication: true)
+        guard !controllerPubkey.isEmpty, controllerPubkey != GuessLedger.hostKey else {
+            await pakeFailed(reason: "session_start carried no usable controller key", authentication: true)
             return
         }
         do {
-            let counter = try identity.secrets.guessCounter(forController: controllerPubkey)
-            let decision = try GuessPolicy.check(counter)
-            guard decision.isAllowed else {
-                let seconds = Int((decision.retryAfter).rounded(.up))
-                await pakeFailed(reason: "this controller is locked out for another \(seconds)s",
-                                 authentication: true)
-                return
-            }
+            try requireAdmitted(try guessLedger(for: controllerPubkey))
             pakeExchange = try PakeExchange.host(
                 accessCode: identity.accessCode,
                 deviceID: grant.hostDeviceId,
                 sessionID: grant.sessionId,
                 ownPublicKey: identity.publicKeyBase64)
         } catch {
-            await pakeFailed(reason: error.localizedDescription, authentication: true)
+            await pakeFailed(reason: error.localizedDescription,
+                             authentication: Self.isAuthenticationFailure(error))
         }
     }
 
@@ -69,10 +68,12 @@ extension SessionCoordinator {
         do {
             let outgoing = try exchange.step(frame.message)
             if let outgoing {
+                if role == .host { try recordHostReply(exchange) }
                 try await send(outgoing, sessionID: frame.sessionId)
             }
         } catch {
-            await pakeFailed(reason: error.localizedDescription, authentication: true)
+            await pakeFailed(reason: error.localizedDescription,
+                             authentication: Self.isAuthenticationFailure(error))
             return
         }
         if exchange.isComplete { await pakeSucceeded(exchange) }
@@ -81,6 +82,29 @@ extension SessionCoordinator {
     private func send(_ message: PakeMessage, sessionID: String) async throws {
         try await signaling.sendPake(sessionID: sessionID, message: message)
         emit(.pake(step: message.step, outgoing: true))
+    }
+
+    /// Step 2 carries the host's confirmation, which lets whoever sent step 1
+    /// check one guess offline; the guess is paid for before it leaves.
+    private func recordHostReply(_ exchange: PakeExchange) throws {
+        guard let announced = pakeControllerPubkey, exchange.peerPublicKey == announced else {
+            throw PakeRefusal(reason: "the controller key in step 1 is not the one session_start named")
+        }
+        let ledger = try guessLedger(for: announced)
+        try requireAdmitted(ledger)
+        try saveGuessLedger(try GuessPolicy.replySent(ledger).ledger, for: announced)
+    }
+
+    private func requireAdmitted(_ ledger: GuessLedger) throws {
+        let decision = try GuessPolicy.admit(ledger)
+        guard decision.isAllowed else {
+            let seconds = Int(decision.retryAfter.rounded(.up))
+            throw PakeRefusal(reason: "access-code attempts are locked out for another \(seconds)s")
+        }
+    }
+
+    private static func isAuthenticationFailure(_ error: Error) -> Bool {
+        error is PakeRefusal || (error as? SkipperCoreError)?.isAuthenticationFailure == true
     }
 
     // MARK: - Ending
@@ -94,7 +118,7 @@ extension SessionCoordinator {
             await refusePeerFromPake(reason: "the host key in the exchange is not the one connect_ok named")
             return
         }
-        if role == .host, let announced = pakeControllerPubkey, announced != peerPubkey {
+        if role == .host, pakeControllerPubkey != peerPubkey {
             await pakeFailed(reason: "the controller key in step 1 is not the one session_start named",
                              authentication: true)
             return
@@ -115,10 +139,9 @@ extension SessionCoordinator {
     private func recordPakeSuccess(peerPubkey: String) {
         switch role {
         case .host:
-            let cleared = try? GuessPolicy.recordSuccess(
-                try identity.secrets.guessCounter(forController: peerPubkey))
-            if let cleared {
-                try? identity.secrets.saveGuessCounter(cleared.counter, forController: peerPubkey)
+            if let ledger = try? guessLedger(for: peerPubkey),
+               let confirmed = try? GuessPolicy.confirmed(ledger) {
+                try? saveGuessLedger(confirmed.ledger, for: peerPubkey)
             }
             try? identity.secrets.recordTrustedController(
                 pubkey: peerPubkey, label: machine.peerDeviceID.map(DeviceID.formatted) ?? "")
@@ -128,13 +151,16 @@ extension SessionCoordinator {
         }
     }
 
+    /// `authentication` picks the `bye` reason (PROTOCOL.md §2.14): a wrong
+    /// code, a key that is not the announced one, or a lockout is
+    /// `auth_failed`; anything else is `failed`. The host's guess ledger is not
+    /// touched here: a reply that left the host was already counted.
     func pakeFailed(reason: String, authentication: Bool) async {
         guard pakeRequired, !pakeComplete else { return }
         cancelPakeTimeout()
         RCLog.error("access-code exchange failed: \(reason)")
         emit(.pakeFailed(reason: reason, authentication: authentication))
-        if role == .host { recordPakeFailure() }
-        if role == .controller {
+        if role == .controller, authentication {
             lastError = SessionCoordinator.wrongAccessCodeMessage
             emit(.connectFailed(.authFailed))
             forgetRememberedPeerCode()
@@ -143,34 +169,34 @@ extension SessionCoordinator {
         await perform(machine.userEnded(reason: byeReason))
     }
 
-    private func recordPakeFailure() {
-        guard let pubkey = pakeControllerPubkey, !pubkey.isEmpty else { return }
-        guard let decision = try? GuessPolicy.recordFailure(
-            try identity.secrets.guessCounter(forController: pubkey)) else { return }
-        try? identity.secrets.saveGuessCounter(decision.counter, forController: pubkey)
-    }
-
     func peerEndedExchange(byeReason: String) {
         guard pakeRequired, !pakeComplete else { return }
         cancelPakeTimeout()
         let authentication = byeReason == Wire.ByeReason.authFailed
         emit(.pakeFailed(reason: "the peer ended the exchange (\(byeReason))",
                          authentication: authentication))
-        switch role {
-        case .host:
-            recordPakeFailure()
-        case .controller:
-            guard authentication else { return }
-            lastError = SessionCoordinator.wrongAccessCodeMessage
-            emit(.connectFailed(.authFailed))
-            forgetRememberedPeerCode()
-        }
+        guard role == .controller, authentication else { return }
+        lastError = SessionCoordinator.wrongAccessCodeMessage
+        emit(.connectFailed(.authFailed))
+        forgetRememberedPeerCode()
     }
 
     private func forgetRememberedPeerCode() {
         guard let host = machine.peerDeviceID else { return }
         try? identity.secrets.forgetPeerCode(forHost: host)
         machine.rememberedAccessCode = nil
+    }
+
+    // MARK: - The host's guess ledger (PROTOCOL.md §2.17 Guessing)
+
+    private func guessLedger(for controllerPubkey: String) throws -> GuessLedger {
+        GuessLedger(controller: try identity.secrets.guessCounter(forController: controllerPubkey),
+                    host: try identity.secrets.guessCounter(forController: GuessLedger.hostKey))
+    }
+
+    private func saveGuessLedger(_ ledger: GuessLedger, for controllerPubkey: String) throws {
+        try identity.secrets.saveGuessCounter(ledger.controller, forController: controllerPubkey)
+        try identity.secrets.saveGuessCounter(ledger.host, forController: GuessLedger.hostKey)
     }
 
     // MARK: - Bookkeeping
