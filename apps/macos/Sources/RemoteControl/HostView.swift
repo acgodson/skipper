@@ -70,18 +70,26 @@ private struct HostHero: View {
                 CodeDisplay(
                     label: "Access Code",
                     value: identity.formattedAccessCode,
-                    maskedValue: codeVisible ? nil : "\u{2022}\u{2022}\u{2022}\u{2022}-\u{2022}\u{2022}\u{2022}\u{2022}-\u{2022}\u{2022}\u{2022}\u{2022}",
-                    copyValue: identity.formattedAccessCode
+                    maskedValue: revealed ? nil : "\u{2022}\u{2022}\u{2022}\u{2022}-\u{2022}\u{2022}\u{2022}\u{2022}-\u{2022}\u{2022}\u{2022}\u{2022}",
+                    copyValue: identity.formattedAccessCode,
+                    copyDisabled: sessionOpen,
+                    copyAction: { ConcealedPasteboard.write($0) }
                 ) {
                     SkipperIconButton(
-                        symbol: codeVisible ? "eye.slash" : "eye",
-                        help: codeVisible ? "Hide access code" : "Show access code"
+                        symbol: revealed ? "eye.slash" : "eye",
+                        help: revealed ? "Hide access code" : "Show access code"
                     ) {
                         withAnimation(SkipperMotion.quick) { codeVisible.toggle() }
                     }
+                    .disabled(sessionOpen)
+                    .opacity(sessionOpen ? 0.4 : 1)
                     SkipperIconButton(symbol: "arrow.clockwise", help: "Refresh the access code") {
                         confirmingRefresh = true
                     }
+                }
+
+                if sessionOpen {
+                    SkipperNote(AccessCodeExposure.hiddenWhileSessionOpen)
                 }
 
                 SkipperNote(model.selfPresence.explanation)
@@ -92,15 +100,22 @@ private struct HostHero: View {
             }
             .confirmationDialog("Refresh the access code?", isPresented: $confirmingRefresh) {
                 Button("Refresh Access Code", role: .destructive) {
+                    codeVisible = false
                     model.refreshAccessCode()
-                    codeVisible = true
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("The current code stops working immediately, and every controller this Mac already trusts is forgotten. Any Mac that saved the old code will have to be given the new one before it can connect again.")
+                Text("Any open session ends first. The current code stops working immediately, and every controller this Mac already trusts is forgotten. Any Mac that saved the old code will have to be given the new one before it can connect again.")
+            }
+            .onChange(of: sessionOpen) { open in
+                if open { codeVisible = false }
             }
         }
     }
+
+    private var sessionOpen: Bool { model.hostSessionIsOpen }
+
+    private var revealed: Bool { codeVisible && !sessionOpen }
 }
 
 private struct AccessSection: View {

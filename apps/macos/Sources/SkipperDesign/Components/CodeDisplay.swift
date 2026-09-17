@@ -7,6 +7,8 @@ public struct CodeDisplay<Trailing: View>: View {
     private let value: String
     private let maskedValue: String?
     private let copyValue: String
+    private let copyAction: ((String) -> Void)?
+    private let copyDisabled: Bool
     private let trailing: Trailing
 
     @State private var copied = false
@@ -16,12 +18,16 @@ public struct CodeDisplay<Trailing: View>: View {
         value: String,
         maskedValue: String? = nil,
         copyValue: String? = nil,
+        copyDisabled: Bool = false,
+        copyAction: ((String) -> Void)? = nil,
         @ViewBuilder trailing: () -> Trailing
     ) {
         self.label = label
         self.value = value
         self.maskedValue = maskedValue
         self.copyValue = copyValue ?? value
+        self.copyDisabled = copyDisabled
+        self.copyAction = copyAction
         self.trailing = trailing()
     }
 
@@ -57,6 +63,8 @@ public struct CodeDisplay<Trailing: View>: View {
 
                 HStack(spacing: SkipperSpace.xs) {
                     SkipperIconButton(symbol: "doc.on.doc", help: "Copy \(label)") { copy() }
+                        .disabled(copyDisabled)
+                        .opacity(copyDisabled ? 0.4 : 1)
                     trailing
                 }
             }
@@ -65,8 +73,13 @@ public struct CodeDisplay<Trailing: View>: View {
     }
 
     private func copy() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(copyValue, forType: .string)
+        guard !copyDisabled else { return }
+        if let copyAction {
+            copyAction(copyValue)
+        } else {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(copyValue, forType: .string)
+        }
         withAnimation(SkipperMotion.quick) { copied = true }
         Task {
             try? await Task.sleep(nanoseconds: 1_500_000_000)

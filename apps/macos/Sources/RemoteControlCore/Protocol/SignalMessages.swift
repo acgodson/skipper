@@ -197,57 +197,12 @@ public struct EmptyPayload: Codable, Equatable {
 
 // MARK: - Signaling payloads (PROTOCOL.md §2)
 
+// TODO: core agent: delete rc_identity::build_verifier (protocol v1 Argon2id verifier, unused since v2 except by the parked apps/windows host).
+
 public struct ChallengePayload: Codable, Equatable {
     public var nonce: String
     public var serverTime: Int64
     public init(nonce: String, serverTime: Int64) { self.nonce = nonce; self.serverTime = serverTime }
-}
-
-public struct CodeVerifier: Codable, Equatable {
-    public var alg: String
-    public var salt: String
-    public var hash: String
-    public var time: UInt32
-    public var memKiB: UInt32
-    public var par: UInt32
-    public var len: UInt32
-
-    public init(alg: String = "argon2id", salt: String, hash: String,
-                time: UInt32, memKiB: UInt32, par: UInt32, len: UInt32) {
-        self.alg = alg; self.salt = salt; self.hash = hash
-        self.time = time; self.memKiB = memKiB; self.par = par; self.len = len
-    }
-
-    public static func make(for plaintextCode: String) throws -> CodeVerifier {
-        let salt = try SecureRandom.data(16)
-        let digest = try Argon2id.hash(
-            password: plaintextCode, salt: salt,
-            iterations: Argon2id.recommendedTime,
-            memoryKiB: Argon2id.recommendedMemoryKiB,
-            parallelism: Argon2id.recommendedParallelism,
-            length: Argon2id.recommendedLength)
-        return CodeVerifier(
-            salt: salt.base64EncodedString(),
-            hash: digest.base64EncodedString(),
-            time: Argon2id.recommendedTime,
-            memKiB: Argon2id.recommendedMemoryKiB,
-            par: Argon2id.recommendedParallelism,
-            len: Argon2id.recommendedLength)
-    }
-
-    public func verify(_ plaintextCode: String) -> Bool {
-        guard alg == "argon2id",
-              let saltBytes = Data(base64Encoded: salt),
-              let expected = Data(base64Encoded: hash),
-              let got = try? Argon2id.hash(password: plaintextCode, salt: saltBytes,
-                                           iterations: time, memoryKiB: memKiB,
-                                           parallelism: par, length: len)
-        else { return false }
-        guard got.count == expected.count else { return false }
-        var diff: UInt8 = 0
-        for (a, b) in zip(got, expected) { diff |= a ^ b }
-        return diff == 0
-    }
 }
 
 public struct RegisterPayload: Codable, Equatable {
@@ -496,6 +451,13 @@ public struct DisplayInfoPayload: Codable, Equatable {
     public var h: Int
     public var scale: Double
     public init(w: Int, h: Int, scale: Double) { self.w = w; self.h = h; self.scale = scale }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        w = try container.decodeBounded(.w, in: WireBounds.displayDimension)
+        h = try container.decodeBounded(.h, in: WireBounds.displayDimension)
+        scale = try container.decodeBounded(.scale, in: WireBounds.displayScale)
+    }
 }
 
 public struct SessionClosePayload: Codable, Equatable {
@@ -508,4 +470,11 @@ public struct MouseMovePayload: Codable, Equatable {
     public var y: Double
     public var seq: Int64
     public init(x: Double, y: Double, seq: Int64) { self.x = x; self.y = y; self.seq = seq }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        x = try container.decodeBounded(.x, in: WireBounds.normalizedCoordinate)
+        y = try container.decodeBounded(.y, in: WireBounds.normalizedCoordinate)
+        seq = try container.decode(Int64.self, forKey: .seq)
+    }
 }

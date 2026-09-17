@@ -49,7 +49,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-[[ -x "$APP" ]] || { echo "build the app first: ./scripts/build.sh" >&2; exit 1; }
+[[ -x "$APP" ]] || { echo "build the app first: ./scripts/build.sh --test-hooks" >&2; exit 1; }
+/usr/libexec/PlistBuddy -c 'Print :SkipperTestHooks' "$APP_BUNDLE/Contents/Info.plist" >/dev/null 2>&1 || {
+  echo "this script drives the app through development hooks, which release builds ignore." >&2
+  echo "rebuild with: ./scripts/build.sh --test-hooks   (and never ship that build)" >&2
+  exit 1
+}
 [[ -x "$NODE" ]] || (cd "$ROOT/apps/macos" && swift build --product rc-node >/dev/null)
 
 field() {

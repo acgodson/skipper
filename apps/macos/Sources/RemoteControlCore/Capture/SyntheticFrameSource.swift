@@ -19,7 +19,7 @@ public final class SyntheticFrameSource: VideoFrameProducer {
     private let startTime = Date()
 
     public static var defaultSize: (width: Int, height: Int) {
-        let raw = ProcessInfo.processInfo.environment["RC_SYNTHETIC_SIZE"] ?? "1920x1200"
+        let raw = DevelopmentHooks.value(.syntheticSize) ?? "1920x1200"
         let parts = raw.lowercased().split(separator: "x").compactMap { Int($0) }
         guard parts.count == 2, parts[0] > 0, parts[1] > 0 else { return (1920, 1200) }
         return (parts[0], parts[1])

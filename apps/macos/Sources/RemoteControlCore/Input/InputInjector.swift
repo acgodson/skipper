@@ -27,7 +27,7 @@ public final class InputInjector {
     // MARK: - Pointer
 
     public func mouseMove(_ payload: MouseMovePayload) -> [InjectedEvent] {
-        guard moveGate.accept(payload.seq) else { return [] }
+        guard Self.withinBounds(payload.x, payload.y), moveGate.accept(payload.seq) else { return [] }
         let point = target.point(normalizedX: payload.x, y: payload.y)
         lastPoint = point
         if let button = heldButtons.first {
@@ -39,7 +39,7 @@ public final class InputInjector {
     }
 
     public func mouseDown(_ payload: MouseButtonPayload) -> [InjectedEvent] {
-        guard let button = payload.mouseButton else { return [] }
+        guard let button = payload.mouseButton, Self.withinBounds(payload.x, payload.y) else { return [] }
         let point = target.point(normalized: payload.normalized)
         lastPoint = point
         heldButtons.insert(button)
@@ -48,7 +48,7 @@ public final class InputInjector {
     }
 
     public func mouseUp(_ payload: MouseButtonPayload) -> [InjectedEvent] {
-        guard let button = payload.mouseButton else { return [] }
+        guard let button = payload.mouseButton, Self.withinBounds(payload.x, payload.y) else { return [] }
         let point = target.point(normalized: payload.normalized)
         lastPoint = point
         heldButtons.remove(button)
@@ -57,7 +57,7 @@ public final class InputInjector {
     }
 
     public func mouseDrag(_ payload: MouseButtonPayload) -> [InjectedEvent] {
-        guard let button = payload.mouseButton else { return [] }
+        guard let button = payload.mouseButton, Self.withinBounds(payload.x, payload.y) else { return [] }
         let point = target.point(normalized: payload.normalized)
         lastPoint = point
         guard heldButtons.contains(button) else {
@@ -69,7 +69,7 @@ public final class InputInjector {
     }
 
     public func click(_ payload: ClickPayload) -> [InjectedEvent] {
-        guard let button = payload.mouseButton else { return [] }
+        guard let button = payload.mouseButton, Self.withinBounds(payload.x, payload.y) else { return [] }
         let point = target.point(normalized: payload.normalized)
         lastPoint = point
         let flags = derivedModifiers
@@ -84,8 +84,13 @@ public final class InputInjector {
     }
 
     public func scroll(_ payload: ScrollPayload) -> [InjectedEvent] {
-        [.scroll(.init(dx: payload.dx, dy: payload.dy,
+        guard WireBounds.accepts(payload.dx, payload.dy, in: WireBounds.scrollDelta) else { return [] }
+        return [.scroll(.init(dx: payload.dx, dy: payload.dy,
                        phase: payload.scrollPhase, flags: derivedModifiers))]
+    }
+
+    private static func withinBounds(_ x: Double, _ y: Double) -> Bool {
+        WireBounds.accepts(x, y, in: WireBounds.normalizedCoordinate)
     }
 
     // MARK: - Keyboard

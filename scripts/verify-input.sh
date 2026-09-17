@@ -39,7 +39,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-[[ -x "$APP" ]] || { echo "build the app first: ./scripts/build.sh" >&2; exit 1; }
+[[ -x "$APP" ]] || { echo "build the app first: ./scripts/build.sh --test-hooks" >&2; exit 1; }
+/usr/libexec/PlistBuddy -c 'Print :SkipperTestHooks' "$APP_BUNDLE/Contents/Info.plist" >/dev/null 2>&1 || {
+  echo "this script drives the app through development hooks, which release builds ignore." >&2
+  echo "rebuild with: ./scripts/build.sh --test-hooks   (and never ship that build)" >&2
+  exit 1
+}
 
 echo "== launching SkipperDesk.app with RC_INPUT_SELFTEST=1"
 echo "   (it will move this Mac's cursor for a few seconds — that is the test)"

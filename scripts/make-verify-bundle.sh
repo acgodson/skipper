@@ -12,7 +12,7 @@ DIST="$ROOT/dist"
 BUNDLE_DIR="$DIST/verify-bundle"
 
 "$ROOT/scripts/build.sh"
-"$ROOT/scripts/package-dmg.sh"
+"$ROOT/scripts/package-dmg.sh" "$@"
 
 DMG="$(ls -t "$DIST"/SkipperDesk-*.dmg 2>/dev/null | head -1)"
 [[ -n "$DMG" ]] || { echo "FAIL  no dmg found in $DIST after package-dmg.sh" >&2; exit 1; }

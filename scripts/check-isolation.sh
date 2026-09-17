@@ -44,6 +44,47 @@ if [[ -n "$BIN" && -f "$PLIST" ]]; then
   else echo "  ok    none requested"; fi
 else report "no bundle Info.plist to inspect"; fi
 
+echo "== 3b. Signed entitlements carry no code-injection or networking-extension rights"
+BUNDLE="${BIN%/Contents/MacOS/SkipperDesk}"
+if [[ -n "$BIN" ]]; then
+  ents=$(codesign -d --entitlements - --xml "$BUNDLE" 2>/dev/null || true)
+  if [[ -z "$ents" ]]; then
+    report "could not read the bundle's signed entitlements"
+  else
+    FORBIDDEN_ENTS='com\.apple\.security\.cs\.disable-library-validation|com\.apple\.security\.get-task-allow|get-task-allow|com\.apple\.security\.cs\.allow-jit|com\.apple\.security\.cs\.allow-unsigned-executable-memory|com\.apple\.security\.cs\.allow-dyld-environment-variables|com\.apple\.security\.cs\.disable-executable-page-protection|com\.apple\.developer\.networking|com\.apple\.developer\.system-extension|com\.apple\.security\.network\.server'
+    bad=$(grep -oE "$FORBIDDEN_ENTS" <<<"$ents" | sort -u || true)
+    if [[ -n "$bad" ]]; then
+      echo "$bad" | sed 's/^/        /'
+      report "the signed bundle requests the entitlements above"
+    else
+      echo "  ok    none of: disable-library-validation, get-task-allow, allow-jit, unsigned memory, dyld env, networking/system extensions, network.server"
+    fi
+  fi
+  sig=$(codesign -dvv "$BUNDLE" 2>&1 || true)
+  if grep -q '^TeamIdentifier=not set' <<<"$sig"; then
+    echo "  note  no Team ID: a development build, signed without the hardened runtime; never distribute it"
+  elif grep -qE '^CodeDirectory .*flags=.*runtime' <<<"$sig"; then
+    echo "  ok    Team ID build runs under the hardened runtime (library validation on)"
+  else
+    report "a Team ID build must be signed with the hardened runtime"
+  fi
+fi
+
+echo "== 3c. Development environment hooks are compiled out of the shipped binary"
+if [[ -n "$BIN" ]]; then
+  if /usr/libexec/PlistBuddy -c 'Print :SkipperTestHooks' "$PLIST" >/dev/null 2>&1; then
+    report "this bundle was built with --test-hooks and must not ship"
+  fi
+  HOOK_VARS='RC_IDENTITY_DIR|RC_DUMP_FRAME|RC_INPUT_SELFTEST|RC_CAPTURE_SOURCE|RC_PASTEBOARD_NAME|RC_SETTINGS_SUITE|RC_AUTOLINK|RC_AUTOCONNECT|RC_LOG_FILE'
+  present=$(strings -a "$BIN" | grep -oE "$HOOK_VARS" | sort -u || true)
+  if [[ -n "$present" ]]; then
+    echo "$present" | sed 's/^/        /'
+    report "the binary still reads the development variables above"
+  else
+    echo "  ok    no development environment hook is present in the binary"
+  fi
+fi
+
 echo "== 4. WebRTC must be the NATIVE xcframework, never a webview's RTCPeerConnection"
 # Strip comments first — a mention of WebRTC in a comment is not a dependency.
 # The `[^:]` guard matters: a naive s|//.*|| also eats the "//" in

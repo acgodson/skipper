@@ -134,10 +134,12 @@ public struct IdentityFileStore {
     }
 
     public static var defaultDirectory: URL {
+#if DEBUG || SKIPPER_TEST_HOOKS
         if let override = ProcessInfo.processInfo.environment["RC_IDENTITY_DIR"],
            !override.isEmpty {
             return URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
         }
+#endif
         return systemDefaultDirectory
     }
 

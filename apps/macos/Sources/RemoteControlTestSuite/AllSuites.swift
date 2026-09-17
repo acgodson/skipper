@@ -1,7 +1,6 @@
 import RCTestKit
 
 public let allSuites: [TestSuite] = [
-    cryptoSuite,
     crockfordSuite,
     accessCodeSuite,
     pakeSuite,
@@ -41,4 +40,8 @@ public let allSuites: [TestSuite] = [
     cgEventConstructionSuite,
     appKitModifierSuite,
     updateSuite,
+    clipboardPrivacySuite,
+    wireClampSuite,
+    codeRotationSuite,
+    backendOverrideSuite,
 ]

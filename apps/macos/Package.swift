@@ -11,7 +11,8 @@ let repoRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
     .deletingLastPathComponent()
 let coreLibraryDirectory = repoRoot.appendingPathComponent("core/target/release").path
-if !FileManager.default.fileExists(atPath: coreLibraryDirectory + "/librc_ffi.a") {
+let coreLibrary = coreLibraryDirectory + "/librc_ffi.a"
+if !FileManager.default.fileExists(atPath: coreLibrary) {
     fatalError("""
 
         The shared Rust core is not built.
@@ -36,10 +37,10 @@ let package = Package(
         .library(name: "RemoteControlCore", targets: ["RemoteControlCore"]),
         .executable(name: "rc-tests", targets: ["rc-tests"]),
     ],
-    // Exactly one third-party dependency: Google's libwebrtc, shipped as a binary
-    // xcframework. SwiftPM consumes it under Command Line Tools alone (no Xcode).
+    // Exactly one third-party dependency: Google's libwebrtc, prebuilt as a binary
+    // xcframework by stasel/WebRTC and pinned to one exact version and checksum.
     dependencies: [
-        .package(url: "https://github.com/stasel/WebRTC.git", from: "125.0.0"),
+        .package(url: "https://github.com/stasel/WebRTC.git", exact: "125.0.0"),
     ],
     targets: [
         .executableTarget(
@@ -53,16 +54,6 @@ let package = Package(
             name: "SkipperDesign",
             path: "Sources/SkipperDesign"
         ),
-        // BLAKE2b + Argon2id. Its own target for exactly one reason: it is
-        // compiled with -O even in debug builds. Argon2id at the protocol's
-        // parameters (64 MiB, 3 passes) takes ~30 s per call under -Onone, which
-        // would make both `swift run rc-tests` and a debug app unusable. Nothing
-        // in here is platform-specific, so the flag is safe.
-        .target(
-            name: "RCCrypto",
-            path: "Sources/RCCrypto",
-            swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]
-        ),
         // The C ABI of the shared Rust core. Nothing but the module map lives
         // here; the header itself stays next to the crate that implements it.
         .systemLibrary(name: "CSkipperCore", path: "Sources/CSkipperCore"),
@@ -75,13 +66,12 @@ let package = Package(
             dependencies: ["CSkipperCore"],
             path: "Sources/SkipperCore",
             linkerSettings: [
-                .unsafeFlags(["-L", coreLibraryDirectory]),
-                .linkedLibrary("rc_ffi"),
+                .unsafeFlags([coreLibrary]),
             ]
         ),
         .target(
             name: "RemoteControlCore",
-            dependencies: ["RCCrypto", "SkipperCore", .product(name: "WebRTC", package: "WebRTC")],
+            dependencies: ["SkipperCore", .product(name: "WebRTC", package: "WebRTC")],
             path: "Sources/RemoteControlCore"
         ),
 

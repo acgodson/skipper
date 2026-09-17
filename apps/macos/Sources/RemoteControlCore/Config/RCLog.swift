@@ -5,8 +5,7 @@ public enum RCLog {
 
     private static let logFileHandle: FileHandle? = {
         guard enabled,
-              let path = ProcessInfo.processInfo.environment["RC_LOG_FILE"],
-              !path.isEmpty else { return nil }
+              let path = DevelopmentHooks.value(.logFile) else { return nil }
         if !FileManager.default.fileExists(atPath: path) {
             FileManager.default.createFile(atPath: path, contents: nil)
         }

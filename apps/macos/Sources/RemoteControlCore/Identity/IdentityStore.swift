@@ -28,8 +28,12 @@ public final class IdentityStore: ObservableObject {
     public var keyStorageLabel: String { keyStorage.label }
 
     nonisolated public static func usesDevFileIdentity(fileStore: IdentityFileStore) -> Bool {
+#if DEBUG || SKIPPER_TEST_HOOKS
         ProcessInfo.processInfo.environment["SKIPPER_DEV_FILE_IDENTITY"] == "1"
             || !fileStore.isDefaultLocation
+#else
+        !fileStore.isDefaultLocation
+#endif
     }
 
     public init(

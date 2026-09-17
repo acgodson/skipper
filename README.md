@@ -47,7 +47,7 @@ current goal. Still v1: it predates protocol v2.
 
 | Path | What lives there |
 |---|---|
-| `apps/macos/` | SwiftPM package (no Xcode needed). Targets: `RemoteControl` (app), `RemoteControlCore`, `SkipperCore` + `CSkipperCore` (the shared Rust core, as Swift sees it), `RCCrypto`, `rc-node` (headless driver for scripts), `rc-tests` (test runner). WebRTC = `stasel/WebRTC` 125.0.0 |
+| `apps/macos/` | SwiftPM package (no Xcode needed). Targets: `RemoteControl` (app), `RemoteControlCore`, `SkipperCore` + `CSkipperCore` (the shared Rust core, as Swift sees it), `SkipperDesign`, `rc-node` (headless driver for scripts), `rc-tests` (test runner). WebRTC = `stasel/WebRTC` exactly 125.0.0 |
 | `apps/windows/` | Parked Windows host: `rc-host`, `rc-input`, `rc-transport`, `rc-signal-client` crates, plus `WINDOWS-HOST.md`. Still speaks protocol v1 |
 | `core/crates/` | Shared Rust core: `rc-proto`, `rc-session`, `rc-identity`, `rc-ffi` |
 | `Cargo.toml` | Single root Cargo workspace over `core/crates/*` and `apps/windows/crates/*` |
@@ -72,7 +72,7 @@ cargo test --workspace                    # from the repo root
 cd apps/macos && swift run rc-tests              # 271 unit/scenario tests (swift test needs Xcode)
 ./scripts/make-signing-cert.sh            # once: stable identity so TCC grants survive rebuilds
 ./scripts/build.sh                        # -> dist/SkipperDesk.app
-./scripts/package-dmg.sh                  # -> dist/SkipperDesk-<version>.dmg, self-verifying
+./scripts/package-dmg.sh                  # -> dist/SkipperDesk-<version>.dmg (Developer ID only; --dev for a local image)
 ```
 
 Local backend: `./scripts/dev-backend.sh` builds and runs `rc-api` (REST, the `/link` sign-in
