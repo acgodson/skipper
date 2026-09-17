@@ -250,3 +250,208 @@ fn an_sdp_is_refused_before_the_exchange_completes_and_under_another_exchange() 
         "{relayed}"
     );
 }
+
+#[test]
+fn verify_refuses_a_missing_or_empty_peer_pin_and_a_foreign_session_id() {
+    let (pair, _) = completed_pair("K7FM3Q8PW2XY", "K7FM3Q8PW2XY");
+    let peer = DeviceKey::generate();
+    let body = media_sdp(FP);
+    let sent = signing_message(pair.controller, "offer", &body);
+    let fp = sent["fp"].as_str().unwrap();
+    let mac = sent["mac"].as_str().unwrap();
+    let payload = rc_identity::sdp::payload(SESSION, "offer", fp).unwrap();
+    let sig = peer.sign(SigningPurpose::Sdp, &payload).unwrap();
+    let pubkey = peer.public_key_spki_base64();
+    let call = |session: &str, expected: Option<&str>| {
+        let (expected, expected_len) = expected.map_or((std::ptr::null(), 0), text);
+        take(unsafe {
+            skipper_sdp_verify(
+                pair.host,
+                session.as_ptr(),
+                session.len(),
+                "offer".as_ptr(),
+                5,
+                body.as_ptr(),
+                body.len(),
+                fp.as_ptr(),
+                fp.len(),
+                pubkey.as_ptr(),
+                pubkey.len(),
+                sig.as_ptr(),
+                sig.len(),
+                mac.as_ptr(),
+                mac.len(),
+                expected,
+                expected_len,
+            )
+        })
+    };
+    assert_eq!(call(SESSION, Some(&pubkey))["verified"], true);
+    for refused in [
+        call(SESSION, None),
+        call(SESSION, Some("")),
+        call("S|offer", Some(&pubkey)),
+    ] {
+        assert_eq!(refused["ok"], false, "{refused}");
+    }
+    let sent_bad = signing_message(pair.controller, "pranswer", &body);
+    assert_eq!(sent_bad["ok"], false, "{sent_bad}");
+}
+
+#[test]
+fn candidates_are_stripped_through_the_boundary() {
+    let body = format!(
+        "{}a=candidate:1 1 udp 1 203.0.113.9 9 typ host\r\n",
+        media_sdp(FP)
+    );
+    let stripped =
+        take(unsafe { crate::sdp::skipper_sdp_without_candidates(body.as_ptr(), body.len()) });
+    assert_eq!(stripped["sdp"], media_sdp(FP));
+    let padded = "a=candidate:1\0\r\n";
+    let refused =
+        take(unsafe { crate::sdp::skipper_sdp_without_candidates(padded.as_ptr(), padded.len()) });
+    assert_eq!(refused["ok"], false);
+}
+
+fn session_call(
+    body: impl FnOnce(*mut crate::SkipperSession) -> *mut std::ffi::c_char,
+    session: *mut crate::SkipperSession,
+) -> Value {
+    take(body(session))
+}
+
+#[test]
+fn a_malformed_grant_is_an_error_and_changes_nothing() {
+    let session = crate::skipper_session_new(crate::ROLE_HOST, 3_000, 45_000, 300_000);
+    let grant = |id: &str, host: &str, ctrl: &str| {
+        session_call(
+            |s| unsafe {
+                crate::skipper_session_granted(
+                    s,
+                    id.as_ptr(),
+                    id.len(),
+                    "t".as_ptr(),
+                    1,
+                    host.as_ptr(),
+                    host.len(),
+                    ctrl.as_ptr(),
+                    ctrl.len(),
+                    0,
+                )
+            },
+            session,
+        )
+    };
+    for (id, host) in [("S|offer", "739000587"), (SESSION, "739 000 587")] {
+        let refused = grant(id, host, "481930275");
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert!(refused.get("actions").is_none());
+    }
+    let state = session_call(|s| unsafe { crate::skipper_session_state(s) }, session);
+    assert_eq!(state["state"]["hasSession"], false);
+
+    let granted = grant(SESSION, "739000587", "Evil <b>Mac</b>");
+    assert_eq!(granted["ok"], true, "{granted}");
+    assert_eq!(granted["actions"][0]["action"], "teardownPeerConnection");
+    assert_eq!(granted["state"]["peerDeviceId"], Value::Null);
+    unsafe { crate::skipper_session_free(session) };
+}
+
+#[test]
+fn consent_answers_name_their_prompt_and_allow_waits() {
+    let session = crate::skipper_session_new(crate::ROLE_HOST, 3_000, 45_000, 300_000);
+    let answer = |allow: bool, id: Option<&str>, now: i64| {
+        let (pointer, len) = id.map_or((std::ptr::null(), 0), text);
+        session_call(
+            |s| unsafe { crate::skipper_session_consent_answered(s, allow, pointer, len, now) },
+            session,
+        )
+    };
+    session_call(
+        |s| unsafe { crate::skipper_session_set_consent_required(s, true) },
+        session,
+    );
+    session_call(
+        |s| unsafe {
+            crate::skipper_session_granted(
+                s,
+                SESSION.as_ptr(),
+                SESSION.len(),
+                "t".as_ptr(),
+                1,
+                "739000587".as_ptr(),
+                9,
+                "481930275".as_ptr(),
+                9,
+                0,
+            )
+        },
+        session,
+    );
+    let prompt = session_call(
+        |s| unsafe { crate::skipper_session_pake_succeeded(s, 1_000) },
+        session,
+    );
+    assert_eq!(prompt["actions"][0]["action"], "promptForConsent");
+    assert_eq!(
+        answer(true, Some(SESSION), 2_000)["actions"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        answer(true, Some("feedfacefeedfacefeedfacefeedface"), 2_500)["actions"],
+        serde_json::json!([])
+    );
+    let allowed = answer(true, Some(SESSION), 2_500);
+    assert_eq!(
+        allowed["actions"][1]["action"], "startPeerConnection",
+        "{allowed}"
+    );
+    unsafe { crate::skipper_session_free(session) };
+}
+
+#[test]
+fn the_consent_budget_and_ledger_keys_cross_the_boundary() {
+    let key = DeviceKey::generate().public_key_spki_base64();
+    let canonical =
+        take(unsafe { crate::consent::skipper_pubkey_canonical(key.as_ptr(), key.len()) });
+    assert_eq!(canonical["key"], key.as_str());
+    assert_eq!(canonical["canonical"], true);
+    let refused = take(unsafe { crate::consent::skipper_pubkey_canonical("host".as_ptr(), 4) });
+    assert_eq!(refused["ok"], false);
+
+    let mut host = serde_json::json!({});
+    for minute in 0..3 {
+        let now = minute * 60_000;
+        let new_controller = serde_json::json!({ "host": host }).to_string();
+        let (pointer, len) = text(&new_controller);
+        let admitted = take(unsafe { crate::consent::skipper_consent_admit(pointer, len, now) });
+        assert_eq!(admitted["prompt"], true, "{admitted}");
+        let opened = take(unsafe { crate::consent::skipper_consent_prompted(pointer, len, now) });
+        host = opened["ledger"]["host"].clone();
+    }
+    let fourth = serde_json::json!({ "host": host }).to_string();
+    let (pointer, len) = text(&fourth);
+    let refused = take(unsafe { crate::consent::skipper_consent_admit(pointer, len, 180_000) });
+    assert_eq!(refused["prompt"], false);
+    assert_eq!(refused["retryAfterMs"], 420_000);
+
+    let counters = serde_json::json!({
+        key.clone(): { "failures": 1, "lastFailureMs": 1 },
+        "junk": { "failures": 1, "lastFailureMs": 1 },
+        "host": { "failures": 0, "lastFailureMs": 0, "lockedUntilMs": 0, "promptTimesMs": [5] },
+    })
+    .to_string();
+    let pruned = take(unsafe {
+        crate::consent::skipper_ledger_prune(counters.as_ptr(), counters.len(), 10)
+    });
+    let mut kept: Vec<&str> = pruned["counters"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    kept.sort_unstable();
+    let mut expected = vec!["host", key.as_str()];
+    expected.sort_unstable();
+    assert_eq!(kept, expected);
+}

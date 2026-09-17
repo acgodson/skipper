@@ -73,7 +73,7 @@ a=fingerprint:sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A\r\n";
             sig: &signature,
             mac: &signable.mac,
         },
-        Some(&pubkey),
+        &pubkey,
     )
     .unwrap();
 

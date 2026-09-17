@@ -12,6 +12,7 @@ public struct SkipperConsentPrompt: View {
     private let detail: String?
     private let countdown: String
     private let style: SkipperConsentPromptStyle
+    private let allowEnabled: Bool
     private let allow: () -> Void
     private let decline: () -> Void
 
@@ -21,6 +22,7 @@ public struct SkipperConsentPrompt: View {
         detail: String? = nil,
         countdown: String,
         style: SkipperConsentPromptStyle = .window,
+        allowEnabled: Bool = true,
         allow: @escaping () -> Void,
         decline: @escaping () -> Void
     ) {
@@ -29,6 +31,7 @@ public struct SkipperConsentPrompt: View {
         self.detail = detail
         self.countdown = countdown
         self.style = style
+        self.allowEnabled = allowEnabled
         self.allow = allow
         self.decline = decline
     }
@@ -65,6 +68,7 @@ public struct SkipperConsentPrompt: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Allow", action: allow)
                     .skipperButton(.primary)
+                    .disabled(!allowEnabled)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -4,7 +4,7 @@ import RemoteControlCore
 import SkipperCore
 
 private let deviceID = "482719351"
-private let sessionID = "sess-ffi-1"
+private let sessionID = "5e550000000000000000000000000ff1"
 private let controllerKey = DeviceKey()
 private let hostKey = DeviceKey()
 private let controllerPubkey = ((try? controllerKey.publicKeyDER()) ?? Data()).base64EncodedString()

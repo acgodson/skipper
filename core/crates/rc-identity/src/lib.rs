@@ -11,11 +11,15 @@ use rc_proto::signaling::CodeVerifier;
 use serde::{Deserialize, Serialize};
 
 pub mod consent;
+pub mod ledger;
 pub mod pake;
 pub mod sdp;
 pub mod signing;
 
-pub use signing::{signing_message, SigningError, SigningPurpose};
+pub use signing::{
+    canonical_public_key, require_canonical_public_key, signing_message, SigningError,
+    SigningPurpose,
+};
 
 /// Crockford base32 alphabet.
 pub const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";

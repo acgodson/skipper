@@ -91,7 +91,7 @@ public enum SdpAuth {
         sdpType: String,
         sdp: String,
         signature: SdpSignature,
-        expectedPubkey: String?
+        expectedPubkey: String
     ) throws {
         try requireWellFormed(sdp)
         let arguments = [sessionID, sdpType, sdp, signature.fingerprints, signature.pubkey,
@@ -109,6 +109,19 @@ public enum SdpAuth {
         guard result.verified else {
             throw SkipperCoreError("the shared core did not verify the SDP signature")
         }
+    }
+
+    private struct StrippedResult: Decodable {
+        let sdp: String
+    }
+
+    /// What `setRemoteDescription` receives: the verified SDP without any
+    /// candidate line, since candidates arrive only as `ice` messages.
+    public static func withoutCandidates(_ sdp: String) throws -> String {
+        let result: StrippedResult = try CoreBoundary.withText([sdp]) { text in
+            Result { try CoreBoundary.call { skipper_sdp_without_candidates(text[0].base, text[0].count) } }
+        }.get()
+        return result.sdp
     }
 
     /// After `setRemoteDescription`: the fingerprints libwebrtc actually

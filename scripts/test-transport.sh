@@ -562,23 +562,33 @@ echo
 echo "== k. host consent: allow, decline, auto-decline and no answer"
 CONSENT_CODE="${NEW_CODE:-$HOST_CODE}"
 
+# The controller node the consent checks drive; the budget is persisted per
+# controller key, so a second controller is used once the first is spent.
+CNODE=ctrl
+
+first_line() {  # first_line <file> <start-line> <pattern>  -> absolute line number, or 0
+  local n
+  n="$(tail -n "+$2" "$1" | grep -n -m1 -- "$3" | cut -d: -f1)"
+  echo $(( ${n:-0} > 0 ? n + $2 - 1 : 0 ))
+}
+
 # consent_attempt <host-node> <label>: one connect; sets CMARK/HMARK for the checks.
 consent_attempt() {
-  CMARK=$(( $(lines_in "$WORK/ctrl.log") + 1 ))
+  CMARK=$(( $(lines_in "$WORK/$CNODE.log") + 1 ))
   HMARK=$(( $(lines_in "$WORK/$1.log") + 1 ))
-  say ctrl "connect $HOST_ID $CONSENT_CODE"
-  if wait_for "$WORK/ctrl.log" '"event":"pake_ok"' 30 "$CMARK"; then
+  say "$CNODE" "connect $HOST_ID $CONSENT_CODE"
+  if wait_for "$WORK/$CNODE.log" '"event":"pake_ok"' 30 "$CMARK"; then
     info "$2: the controller proved the code"
   else
-    fail "$2: the exchange completes" "$(tail -n "+$CMARK" "$WORK/ctrl.log")"
+    fail "$2: the exchange completes" "$(tail -n "+$CMARK" "$WORK/$CNODE.log")"
   fi
 }
 
 expect_declined() {  # expect_declined <host-node> <label> <timeout>
-  if wait_for "$WORK/ctrl.log" '"code":"declined"' "$3" "$CMARK"; then
-    pass "$2: the controller is told \"$(field_after "$WORK/ctrl.log" "$CMARK" connect_error sentence)\""
+  if wait_for "$WORK/$CNODE.log" '"code":"declined"' "$3" "$CMARK"; then
+    pass "$2: the controller is told \"$(field_after "$WORK/$CNODE.log" "$CMARK" connect_error sentence)\""
   else
-    fail "$2: the controller is told it was declined" "$(tail -n "+$CMARK" "$WORK/ctrl.log")"
+    fail "$2: the controller is told it was declined" "$(tail -n "+$CMARK" "$WORK/$CNODE.log")"
   fi
   if wait_for "$WORK/$1.log" '"phase":"closed:declined"' 10 "$HMARK" &&
      must_not_appear "$WORK/$1.log" '"event":"ice"' "$HMARK"; then
@@ -624,20 +634,27 @@ sleep 2
 start_node ahost host "$WORK/id-host" --consent allow
 wait_for "$WORK/ahost.log" '"event":"hello_ok"' 30 || fail "the allowing host comes online" "see $WORK/ahost.log"
 sleep 1
+consent_attempt ahost "after a host restart"
+if wait_for "$WORK/ahost.log" '"automatic":true,"event":"consent_ended"' 15 "$HMARK" &&
+   must_not_appear "$WORK/ahost.log" '"event":"consent_prompt"' "$HMARK"; then
+  pass "after a host restart: the declined controller is still refused without a prompt"
+else
+  fail "the consent ledger survives a relaunch" "$(tail -n "+$HMARK" "$WORK/ahost.log")"
+fi
+expect_declined ahost "after a host restart" 20
+
+start_node ctrl3 controller "$WORK/id-ctrl3"
+wait_for "$WORK/ctrl3.log" '"event":"hello_ok"' 30 || fail "a second consent controller comes online" "see $WORK/ctrl3.log"
+CNODE=ctrl3
 consent_attempt ahost "allow"
 if wait_for "$WORK/ahost.log" '"event":"consent_prompt"' 15 "$HMARK" &&
    wait_for "$WORK/ahost.log" '"event":"consent_ended","outcome":"allowed"' 15 "$HMARK" &&
-   wait_for "$WORK/ctrl.log" '"event":"phase","phase":"live"' 30 "$CMARK" &&
+   wait_for "$WORK/$CNODE.log" '"event":"phase","phase":"live"' 30 "$CMARK" &&
    wait_for "$WORK/ahost.log" '"event":"phase","phase":"live"' 30 "$HMARK"; then
   pass "allow: the held peer start was released and both sides went live"
 else
-  fail "allow releases the peer" "$(tail -n "+$CMARK" "$WORK/ctrl.log")"
+  fail "allow releases the peer" "$(tail -n "+$CMARK" "$WORK/$CNODE.log")"
 fi
-first_line() {  # first_line <file> <start-line> <pattern>  -> absolute line number, or 0
-  local n
-  n="$(tail -n "+$2" "$1" | grep -n -m1 -- "$3" | cut -d: -f1)"
-  echo $(( ${n:-0} > 0 ? n + $2 - 1 : 0 ))
-}
 ANSWERED_AT="$(first_line "$WORK/ahost.log" "$HMARK" '"event":"consent_ended"')"
 FIRST_ICE_AT="$(first_line "$WORK/ahost.log" "$HMARK" '"event":"ice"')"
 if [[ "$ANSWERED_AT" -gt 0 && "$FIRST_ICE_AT" -gt "$ANSWERED_AT" ]]; then
@@ -645,7 +662,7 @@ if [[ "$ANSWERED_AT" -gt 0 && "$FIRST_ICE_AT" -gt "$ANSWERED_AT" ]]; then
 else
   fail "allow: the peer waits for the answer" "$(tail -n "+$HMARK" "$WORK/ahost.log")"
 fi
-say ctrl bye
+say "$CNODE" bye
 sleep 2
 say ahost quit
 sleep 2
@@ -657,10 +674,10 @@ consent_attempt thost "no answer"
 if wait_for "$WORK/thost.log" '"event":"consent_prompt"' 15 "$HMARK"; then
   pass "no answer: the host asked and nobody answered"
 fi
-if wait_for "$WORK/ctrl.log" '"event":"awaiting_acceptance"' 10 "$CMARK"; then
-  pass "no answer: the controller shows \"$(field_after "$WORK/ctrl.log" "$CMARK" awaiting_acceptance message)\""
+if wait_for "$WORK/$CNODE.log" '"event":"awaiting_acceptance"' 10 "$CMARK"; then
+  pass "no answer: the controller shows \"$(field_after "$WORK/$CNODE.log" "$CMARK" awaiting_acceptance message)\""
 else
-  fail "the controller says it is waiting" "$(tail -n "+$CMARK" "$WORK/ctrl.log")"
+  fail "the controller says it is waiting" "$(tail -n "+$CMARK" "$WORK/$CNODE.log")"
 fi
 if wait_for "$WORK/thost.log" '"event":"consent_ended","outcome":"timedOut"' 40 "$HMARK"; then
   pass "no answer: the prompt declined itself after 30 s"
@@ -669,6 +686,8 @@ else
 fi
 expect_declined thost "no answer" 10
 say thost quit
+say "$CNODE" quit
+CNODE=ctrl
 sleep 2
 start_node host host "$WORK/id-host"
 wait_for "$WORK/host.log" '"event":"hello_ok"' 30

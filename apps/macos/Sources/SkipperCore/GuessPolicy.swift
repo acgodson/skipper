@@ -7,13 +7,35 @@ public struct GuessCounter: Codable, Equatable, Sendable {
     public var lastFailureMs: Int64
     public var lockedUntilMs: Int64
     public var failureTimesMs: [Int64]?
+    public var declineTimesMs: [Int64]?
+    public var promptTimesMs: [Int64]?
 
     public init(failures: Int = 0, lastFailureMs: Int64 = 0, lockedUntilMs: Int64 = 0,
-                failureTimesMs: [Int64]? = nil) {
+                failureTimesMs: [Int64]? = nil, declineTimesMs: [Int64]? = nil,
+                promptTimesMs: [Int64]? = nil) {
         self.failures = failures
         self.lastFailureMs = lastFailureMs
         self.lockedUntilMs = lockedUntilMs
         self.failureTimesMs = failureTimesMs
+        self.declineTimesMs = declineTimesMs
+        self.promptTimesMs = promptTimesMs
+    }
+}
+
+/// The host's stored map of counters, keyed by canonical controller key plus
+/// `GuessLedger.hostKey`.
+public enum GuessLedgerBook {
+
+    private struct Pruned: Decodable {
+        let counters: [String: GuessCounter]
+    }
+
+    /// Drops what is a day old, merges spellings of one key and caps the map.
+    public static func pruned(_ counters: [String: GuessCounter], now: Date = Date()) throws -> [String: GuessCounter] {
+        let result: Pruned = try CoreBoundary.callWithJSON(counters) {
+            skipper_ledger_prune($0.base, $0.count, CoreBoundary.milliseconds(now))
+        }
+        return result.counters
     }
 }
 

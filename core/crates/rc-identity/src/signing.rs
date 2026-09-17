@@ -7,7 +7,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::{DerSignature, VerifyingKey};
-use p256::pkcs8::DecodePublicKey;
+use p256::pkcs8::{DecodePublicKey, EncodePublicKey};
 
 pub const NONCE_LEN: usize = 32;
 
@@ -100,6 +100,30 @@ pub enum VerifyError {
     Message(#[from] SigningError),
 }
 
+/// The one spelling of a device key: base64 of the DER SPKI encoding of a
+/// valid P-256 point, as [`crate::DeviceKey::public_key_spki_base64`] writes it.
+pub fn canonical_public_key(pubkey_base64: &str) -> Result<String, VerifyError> {
+    let canonical = parse_public_key(pubkey_base64)?
+        .to_public_key_der()
+        .map_err(|_| VerifyError::BadPubkey)?;
+    Ok(B64.encode(canonical.as_bytes()))
+}
+
+/// Refuses any spelling of a key other than its canonical one.
+pub fn require_canonical_public_key(pubkey_base64: &str) -> Result<(), VerifyError> {
+    match canonical_public_key(pubkey_base64)? == pubkey_base64 {
+        true => Ok(()),
+        false => Err(VerifyError::BadPubkey),
+    }
+}
+
+fn parse_public_key(pubkey_base64: &str) -> Result<VerifyingKey, VerifyError> {
+    let der = B64
+        .decode(pubkey_base64.as_bytes())
+        .map_err(|_| VerifyError::BadPubkey)?;
+    VerifyingKey::from_public_key_der(&der).map_err(|_| VerifyError::BadPubkey)
+}
+
 pub fn verify(
     purpose: SigningPurpose,
     payload: &[u8],
@@ -107,10 +131,7 @@ pub fn verify(
     sig_base64: &str,
 ) -> Result<(), VerifyError> {
     let message = signing_message(purpose, payload)?;
-    let der = B64
-        .decode(pubkey_base64.as_bytes())
-        .map_err(|_| VerifyError::BadPubkey)?;
-    let key = VerifyingKey::from_public_key_der(&der).map_err(|_| VerifyError::BadPubkey)?;
+    let key = parse_public_key(pubkey_base64)?;
     let raw_sig = B64
         .decode(sig_base64.as_bytes())
         .map_err(|_| VerifyError::BadSignature)?;
@@ -120,4 +141,4 @@ pub fn verify(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

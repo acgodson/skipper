@@ -34,6 +34,7 @@ public enum PeerSessionError: Swift.Error, LocalizedError {
     case noPeerConnection
     case channelNotOpen(String)
     case installedFingerprintsRejected(String)
+    case invalidRemoteSignal(String)
 
     public var errorDescription: String? {
         switch self {
@@ -41,6 +42,7 @@ public enum PeerSessionError: Swift.Error, LocalizedError {
         case .noPeerConnection: return "There is no peer connection."
         case .channelNotOpen(let label): return "The '\(label)' data channel is not open."
         case .installedFingerprintsRejected(let why): return why
+        case .invalidRemoteSignal(let why): return why
         }
     }
 }
@@ -50,6 +52,8 @@ public final class PeerSession {
 
     public static let ctrlLabel = "ctrl"
     public static let hiLabel = "hi"
+    public static let mLineIndexRange = 0...64
+    static let maxBufferedCandidates = 64
 
     public weak var delegate: PeerSessionDelegate?
 
@@ -357,14 +361,13 @@ public final class PeerSession {
         switch type {
         case "offer": sdpType = .offer
         case "answer": sdpType = .answer
-        case "pranswer": sdpType = .prAnswer
-        case "rollback": sdpType = .rollback
-        default: sdpType = .offer
+        default: throw PeerSessionError.invalidRemoteSignal("sdpType \(type) is neither offer nor answer")
         }
-        if let codec = SDPCodecPreference.firstVideoCodecName(in: sdp) {
-            RCLog.info("transport: remote \(type) prefers \(codec) [\(SDPCodecPreference.videoPayloadOrder(in: sdp).prefix(6).joined(separator: " "))]")
+        let applied = try SdpAuth.withoutCandidates(sdp)
+        if let codec = SDPCodecPreference.firstVideoCodecName(in: applied) {
+            RCLog.info("transport: remote \(type) prefers \(codec) [\(SDPCodecPreference.videoPayloadOrder(in: applied).prefix(6).joined(separator: " "))]")
         }
-        try await connection.setRemoteDescription(RTCSessionDescription(type: sdpType, sdp: sdp))
+        try await connection.setRemoteDescription(RTCSessionDescription(type: sdpType, sdp: applied))
         do {
             try SdpAuth.requireInstalled(verified: verifiedFingerprints, installedSDP: installedRemoteSDP)
         } catch {
@@ -385,12 +388,19 @@ public final class PeerSession {
     public func addCandidate(_ candidate: String, sdpMid: String?, sdpMLineIndex: Int?) async throws {
         guard let connection else { throw PeerSessionError.noPeerConnection }
         guard !candidate.isEmpty else { return }
+        let index = sdpMLineIndex ?? 0
+        guard Self.mLineIndexRange.contains(index) else {
+            throw PeerSessionError.invalidRemoteSignal("sdpMLineIndex \(index) is outside \(Self.mLineIndexRange)")
+        }
         guard hasRemoteDescription else {
-            bufferedCandidates.append((candidate, sdpMid, sdpMLineIndex))
+            guard bufferedCandidates.count < Self.maxBufferedCandidates else {
+                throw PeerSessionError.invalidRemoteSignal("too many candidates before the remote description")
+            }
+            bufferedCandidates.append((candidate, sdpMid, index))
             return
         }
         let ice = RTCIceCandidate(sdp: candidate,
-                                  sdpMLineIndex: Int32(sdpMLineIndex ?? 0),
+                                  sdpMLineIndex: Int32(index),
                                   sdpMid: sdpMid)
         try await connection.add(ice)
     }

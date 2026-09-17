@@ -187,7 +187,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
     // MARK: Host consent (PROTOCOL.md §2.17 Consent) — see SessionConsent.swift
 
-    var consentLedgers: [String: ConsentLedger] = [:]
+    var consentControllerKey: String?
     var heldRemoteSDP: SDPPayload?
     var heldCandidates: [ICEPayload] = []
     var acceptanceWatch: Task<Void, Never>?
@@ -433,7 +433,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             if role == .controller, reason == Wire.ByeReason.timeout { reportEnded(.noAnswer) }
 
         case .promptForConsent(let expiresAt):
-            presentConsent(expiresAt: expiresAt)
+            await presentConsent(expiresAt: expiresAt)
 
         case .dismissConsentPrompt(let outcome):
             dismissConsent(outcome)
@@ -572,8 +572,7 @@ extension SessionCoordinator: SignalingClientDelegate {
 
         case Wire.MessageType.ice:
             guard let ice = try? envelope.decodePayload(ICEPayload.self) else { return }
-            guard !holdWhileAwaitingConsent(ice) else { return }
-            try? await peer?.addCandidate(ice.candidate, sdpMid: ice.sdpMid, sdpMLineIndex: ice.sdpMLineIndex)
+            await handleRemoteICE(ice)
 
         case Wire.MessageType.bye:
             guard let bye = try? envelope.decodePayload(ByePayload.self) else { return }
@@ -591,10 +590,26 @@ extension SessionCoordinator: SignalingClientDelegate {
         }
     }
 
+    func handleRemoteICE(_ ice: ICEPayload) async {
+        switch disposition(of: ice.sessionId) {
+        case .drop:
+            return
+        case .hold:
+            hold(ice)
+        case .apply:
+            do {
+                try await peer?.addCandidate(ice.candidate, sdpMid: ice.sdpMid, sdpMLineIndex: ice.sdpMLineIndex)
+            } catch {
+                RCLog.error("dropped a remote candidate: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// A remote description is applied only to the peer connection the state
+    /// machine started for this session; nothing here ever creates one.
     func handleRemoteSDP(_ sdp: SDPPayload) async {
-        guard sdp.sessionId == machine.sessionID else { return }
-        guard !holdWhileAwaitingConsent(sdp) else { return }
-        guard pakeComplete, let pake = pakeExchange else {
+        guard disposition(of: sdp.sessionId) != .drop else { return }
+        guard pakeComplete, let pake = pakeExchange, let expectedPubkey = expectedPeerPublicKey else {
             RCLog.error("dropped an sdp that arrived before the access code was proved")
             return
         }
@@ -605,13 +620,15 @@ extension SessionCoordinator: SignalingClientDelegate {
         do {
             try SdpAuth.verify(pake: pake, sessionID: sdp.sessionId, sdpType: sdp.sdpType,
                                sdp: sdp.sdp, signature: signature,
-                               expectedPubkey: expectedPeerPublicKey)
+                               expectedPubkey: expectedPubkey)
         } catch {
             await refusePeer(reason: error.localizedDescription)
             return
         }
-        if peer == nil { startPeer(offerer: machine.isOfferer) }
-        guard let peer else { return }
+        guard disposition(of: sdp.sessionId) == .apply, let peer else {
+            hold(sdp)
+            return
+        }
         do {
             try await peer.setRemoteDescription(type: sdp.sdpType, sdp: sdp.sdp,
                                                 verifiedFingerprints: signature.fingerprints)
@@ -642,6 +659,7 @@ extension SessionCoordinator: SignalingClientDelegate {
 extension SessionCoordinator: PeerSessionDelegate {
 
     public func peerSession(_ session: PeerSession, didCreateLocalDescription type: String, sdp: String, restart: Bool) {
+        guard session === peer else { return }
         guard let sessionID = machine.sessionID else { return }
         Task { [weak self] in
             try? await self?.sendSignedSDP(sessionID: sessionID, type: type, sdp: sdp,
@@ -650,6 +668,7 @@ extension SessionCoordinator: PeerSessionDelegate {
     }
 
     public func peerSession(_ session: PeerSession, didGatherCandidate candidate: String, sdpMid: String?, sdpMLineIndex: Int?) {
+        guard session === peer else { return }
         guard let sessionID = machine.sessionID else { return }
         Task {
             try? await signaling.sendICE(sessionID: sessionID, candidate: candidate,
@@ -658,12 +677,14 @@ extension SessionCoordinator: PeerSessionDelegate {
     }
 
     public func peerSession(_ session: PeerSession, didChangeICEState state: ICELinkState) {
+        guard session === peer else { return }
         iceState = state
         emit(.ice(state))
         Task { await perform(machine.iceStateChanged(to: state)) }
     }
 
     public func peerSession(_ session: PeerSession, didOpenDataChannel label: String) {
+        guard session === peer else { return }
         dataChannelsOpen = session.isReady
         emit(.dataChannel(label: label, allOpen: session.isReady))
         guard label == PeerSession.ctrlLabel else { return }
@@ -681,6 +702,7 @@ extension SessionCoordinator: PeerSessionDelegate {
     }
 
     public func peerSessionDidReceiveRemoteVideo(_ session: PeerSession) {
+        guard session === peer else { return }
         let present = session.remoteVideoTrack != nil
         guard present != hasRemoteVideo else { return }
         hasRemoteVideo = present
@@ -688,6 +710,7 @@ extension SessionCoordinator: PeerSessionDelegate {
     }
 
     public func peerSession(_ session: PeerSession, didReceiveCtrl envelope: Envelope) {
+        guard session === peer else { return }
         applyInput(envelope)
         applyClipboard(envelope)
         if envelope.type == CtrlType.quality, role == .host,
@@ -706,17 +729,20 @@ extension SessionCoordinator: PeerSessionDelegate {
     }
 
     public func peerSession(_ session: PeerSession, didReceiveMouseMove move: MouseMovePayload) {
+        guard session === peer else { return }
         guard role == .host else { return }
         let events = injector.mouseMove(move)
         deliver(events, type: CtrlType.mouseMove)
     }
 
     public func peerSession(_ session: PeerSession, didMeasureRoundTrip seconds: TimeInterval) {
+        guard session === peer else { return }
         lastRoundTrip = seconds
         emit(.roundTrip(seconds))
     }
 
     public func peerSession(_ session: PeerSession, didReceiveDisplayInfo info: DisplayInfoPayload) {
+        guard session === peer else { return }
         remoteDisplay = info
     }
 }

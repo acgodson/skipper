@@ -17,6 +17,31 @@ public enum SigningPurpose: Sendable {
     }
 }
 
+/// The one spelling of a device key: base64 of the DER SPKI of a P-256 point.
+/// Counters are stored under it, and a key that arrives spelled any other way
+/// is refused.
+public enum DevicePublicKey {
+
+    private struct Result: Decodable {
+        let key: String
+        let canonical: Bool
+    }
+
+    public static func canonical(_ pubkey: String) throws -> String {
+        try parse(pubkey).key
+    }
+
+    public static func isCanonical(_ pubkey: String) -> Bool {
+        (try? parse(pubkey))?.canonical == true
+    }
+
+    private static func parse(_ pubkey: String) throws -> Result {
+        try CoreBoundary.withText([pubkey]) { text in
+            Swift.Result { try CoreBoundary.call { skipper_pubkey_canonical(text[0].base, text[0].count) } }
+        }.get()
+    }
+}
+
 /// Bytes the shared core built for a device key to sign. Only the core can
 /// produce one, so no caller can have arbitrary bytes signed.
 public struct SigningMessage: Equatable, Sendable {

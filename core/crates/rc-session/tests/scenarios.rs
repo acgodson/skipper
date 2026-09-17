@@ -163,9 +163,11 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
                 "closeLocally" => Some(machine.close_locally(e["reason"].as_str().unwrap())),
                 "userEnded" => Some(machine.user_ended(e["reason"].as_str().unwrap())),
                 "pakeSucceeded" => Some(machine.pake_succeeded(now_ms)),
-                "consentAnswered" => {
-                    Some(machine.consent_answered(e["allow"].as_bool().unwrap(), now_ms))
-                }
+                "consentAnswered" => Some(machine.consent_answered(
+                    e["allow"].as_bool().unwrap(),
+                    e["sessionId"].as_str(),
+                    now_ms,
+                )),
                 "setConsentRequired" => {
                     machine.consent_required = e["required"].as_bool().unwrap();
                     Some(vec![])
@@ -173,6 +175,17 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
                 other => panic!("{}: unknown event {other:?}", ctx()),
             };
 
+            let rejected = machine.take_rejection();
+            let expect_rejected = step
+                .get("expectRejected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            assert_eq!(
+                rejected.is_some(),
+                expect_rejected,
+                "{}: rejection {rejected:?}",
+                ctx()
+            );
             if let Some(expected) = step.get("expectActions") {
                 let expected: Vec<SessionAction> = expected
                     .as_array()
@@ -209,6 +222,18 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
             }
             if let Some(v) = step.get("expectRelayOnly").and_then(Value::as_bool) {
                 assert_eq!(machine.relay_only(), v, "{}: relayOnly", ctx());
+            }
+            if let Some(v) = step.get("expectPeerStarted").and_then(Value::as_bool) {
+                assert_eq!(machine.peer_started(), v, "{}: peerStarted", ctx());
+            }
+            if let Some(v) = step.get("expectPeerDeviceId") {
+                let expected = v.as_str().filter(|id| !id.is_empty());
+                assert_eq!(
+                    machine.peer_device_id(),
+                    expected,
+                    "{}: peerDeviceId",
+                    ctx()
+                );
             }
             steps_run += 1;
         }

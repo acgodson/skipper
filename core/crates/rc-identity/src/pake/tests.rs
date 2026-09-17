@@ -461,15 +461,27 @@ fn matches_the_shared_vectors() {
                \"skipperdesk/sdp/v1|\" sessionId \"|offer|\" sdpOfferFp."
             .to_string(),
         cases: vec![
-            vector_case("typical", "K7FM3Q8PW2XY", "482719351", "sess-0001", (1, 2)),
+            vector_case(
+                "typical",
+                "K7FM3Q8PW2XY",
+                "482719351",
+                "5e55000000000000000000000000c001",
+                (1, 2),
+            ),
             vector_case(
                 "other-session",
                 "K7FM3Q8PW2XY",
                 "482719351",
-                "sess-0002",
+                "5e55000000000000000000000000c002",
                 (3, 4),
             ),
-            vector_case("all-zero-code", "000000000000", "100000009", "s", (5, 6)),
+            vector_case(
+                "all-zero-code",
+                "000000000000",
+                "100000009",
+                "00000000000000000000000000000000",
+                (5, 6),
+            ),
         ],
     };
     let path = concat!(

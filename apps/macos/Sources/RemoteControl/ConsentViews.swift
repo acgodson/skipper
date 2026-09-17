@@ -11,15 +11,16 @@ struct ConsentPromptView: View {
     let style: SkipperConsentPromptStyle
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(.periodic(from: .now, by: 0.25)) { context in
             SkipperConsentPrompt(
                 title: request.title,
                 message: ConsentRequest.message,
                 detail: request.controllerDeviceID.map { "Device ID \(DeviceID.formatted($0))" },
                 countdown: request.countdown(now: context.date),
                 style: style,
-                allow: { model.answerConsent(allow: true) },
-                decline: { model.answerConsent(allow: false) }
+                allowEnabled: request.allowEnabled(now: context.date),
+                allow: { model.answerConsent(allow: true, sessionID: request.sessionID) },
+                decline: { model.answerConsent(allow: false, sessionID: request.sessionID) }
             )
         }
     }
@@ -43,10 +44,13 @@ struct ConsentOverlay: View {
     }
 }
 
+/// Tells the owner a Mac is asking without taking focus from whatever they
+/// are doing: the prompt itself lives in the window and the menu-bar panel.
 @MainActor
 final class ConsentNotifier {
 
     private static let identifier = "skipperdesk.consent"
+    private static let category = "skipperdesk.consent.request"
     private var authorizationRequested = false
 
     private var center: UNUserNotificationCenter? {
@@ -54,19 +58,12 @@ final class ConsentNotifier {
         return UNUserNotificationCenter.current()
     }
 
-    func bringForward() {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.windows
-            .first { $0.identifier?.rawValue.hasPrefix(WindowID.main) == true }?
-            .makeKeyAndOrderFront(nil)
-    }
-
-    func post(_ request: ConsentRequest) {
-        guard !NSApp.isActive, let center else { return }
+    func post() {
+        guard let center else { return }
         let content = UNMutableNotificationContent()
-        content.title = request.title
-        content.body = "Open SkipperDesk to allow or decline. \(request.countdown())."
+        content.title = "SkipperDesk"
+        content.body = ConsentRequest.notificationBody
+        content.categoryIdentifier = Self.category
         content.interruptionLevel = .timeSensitive
         let note = UNNotificationRequest(identifier: Self.identifier, content: content, trigger: nil)
         guard !authorizationRequested else {
@@ -74,6 +71,11 @@ final class ConsentNotifier {
             return
         }
         authorizationRequested = true
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: Self.category, actions: [], intentIdentifiers: [],
+                                   hiddenPreviewsBodyPlaceholder: ConsentRequest.notificationBody,
+                                   options: [])
+        ])
         center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
             guard granted else { return }
             center.add(note)

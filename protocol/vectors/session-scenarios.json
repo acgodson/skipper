@@ -1,5 +1,5 @@
 {
- "version": 1,
+ "version": 2,
  "clockNote": "at is seconds from scenario start",
  "scenarios": [
   {
@@ -41,7 +41,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting",
      "expectHasSession": true
     },
@@ -104,7 +108,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -161,7 +169,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -243,7 +255,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting",
      "expectHasSession": true
     },
@@ -301,7 +317,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -378,7 +398,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -427,7 +451,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -482,7 +510,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -598,7 +630,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -695,7 +731,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -791,7 +831,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -883,7 +927,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -957,7 +1005,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -1036,7 +1088,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -1063,6 +1119,9 @@
       "controllerDeviceId": "481930275"
      },
      "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      },
       {
        "action": "dismissConsentPrompt",
        "outcome": "cancelled"
@@ -1153,7 +1212,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -1262,7 +1325,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -1365,7 +1432,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -1394,6 +1465,971 @@
       }
      ],
      "expectPhase": "awaitingConsent"
+    }
+   ]
+  },
+  {
+   "name": "a_leftover_peer_never_turns_a_new_prompt_into_a_live_session",
+   "role": "host",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "setConsentRequired",
+      "required": true
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 1,
+     "do": {
+      "event": "pakeSucceeded"
+     },
+     "expectActions": [
+      {
+       "action": "promptForConsent",
+       "expiresAt": 31
+      }
+     ],
+     "expectPhase": "awaitingConsent"
+    },
+    {
+     "at": 3,
+     "do": {
+      "event": "consentAnswered",
+      "allow": true
+     },
+     "expectActions": [
+      {
+       "action": "dismissConsentPrompt",
+       "outcome": "allowed"
+      },
+      {
+       "action": "startPeerConnection",
+       "offerer": false
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 4,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "live",
+     "expectPeerStarted": true
+    },
+    {
+     "at": 10,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "0123456789abcdef0123456789abcdef",
+      "sessionToken": "tok-2",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
+     "expectPhase": "connecting",
+     "expectPeerStarted": false
+    },
+    {
+     "at": 11,
+     "do": {
+      "event": "pakeSucceeded"
+     },
+     "expectActions": [
+      {
+       "action": "promptForConsent",
+       "expiresAt": 41
+      }
+     ],
+     "expectPhase": "awaitingConsent"
+    },
+    {
+     "at": 12,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "disconnected"
+     },
+     "expectActions": [],
+     "expectPhase": "awaitingConsent"
+    },
+    {
+     "at": 13,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [],
+     "expectPhase": "awaitingConsent",
+     "expectPeerStarted": false
+    },
+    {
+     "at": 14,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "completed"
+     },
+     "expectActions": [],
+     "expectPhase": "awaitingConsent"
+    },
+    {
+     "at": 15,
+     "do": {
+      "event": "consentAnswered",
+      "allow": false,
+      "sessionId": "0123456789abcdef0123456789abcdef"
+     },
+     "expectActions": [
+      {
+       "action": "dismissConsentPrompt",
+       "outcome": "declined"
+      },
+      {
+       "action": "sendBye",
+       "sessionId": "0123456789abcdef0123456789abcdef",
+       "reason": "declined"
+      },
+      {
+       "action": "sendInputReset"
+      },
+      {
+       "action": "teardownPeerConnection"
+      },
+      {
+       "action": "clearStoredSession"
+      }
+     ],
+     "expectPhase": "closed:declined",
+     "expectPeerStarted": false,
+     "expectHasSession": false
+    },
+    {
+     "at": 16,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [],
+     "expectPhase": "closed:declined"
+    },
+    {
+     "at": 45,
+     "do": {
+      "event": "tick"
+     },
+     "expectActions": [],
+     "expectPhase": "closed:declined"
+    }
+   ],
+   "note": "review M-A: a compromised server pushes session_start for B while A's peer is up, then bounces A's ICE; B must never reach live, and Decline must still end B"
+  },
+  {
+   "name": "link_events_before_the_peer_starts_are_ignored",
+   "role": "host",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [],
+     "expectPhase": "connecting",
+     "expectPeerStarted": false
+    },
+    {
+     "at": 1,
+     "do": {
+      "event": "pakeSucceeded"
+     },
+     "expectActions": [
+      {
+       "action": "startPeerConnection",
+       "offerer": false
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 2,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "live"
+    }
+   ],
+   "note": "only the peer connection the machine ordered can move the phase"
+  },
+  {
+   "name": "allow_is_ignored_for_the_first_1_5_s_of_a_prompt",
+   "role": "host",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "setConsentRequired",
+      "required": true
+     },
+     "expectActions": [],
+     "expectPhase": "idle",
+     "expectConsentRequired": true
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 1,
+     "do": {
+      "event": "pakeSucceeded"
+     },
+     "expectActions": [
+      {
+       "action": "promptForConsent",
+       "expiresAt": 31
+      }
+     ],
+     "expectPhase": "awaitingConsent",
+     "expectHasSession": true
+    },
+    {
+     "at": 1,
+     "do": {
+      "event": "consentAnswered",
+      "allow": true
+     },
+     "expectActions": [],
+     "expectPhase": "awaitingConsent"
+    },
+    {
+     "at": 2.499,
+     "do": {
+      "event": "consentAnswered",
+      "allow": true
+     },
+     "expectActions": [],
+     "expectPhase": "awaitingConsent"
+    },
+    {
+     "at": 2.5,
+     "do": {
+      "event": "consentAnswered",
+      "allow": true
+     },
+     "expectActions": [
+      {
+       "action": "dismissConsentPrompt",
+       "outcome": "allowed"
+      },
+      {
+       "action": "startPeerConnection",
+       "offerer": false
+      }
+     ],
+     "expectPhase": "connecting"
+    }
+   ],
+   "note": "a click aimed at something else cannot land on Allow"
+  },
+  {
+   "name": "decline_is_accepted_at_once",
+   "role": "host",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "setConsentRequired",
+      "required": true
+     },
+     "expectActions": [],
+     "expectPhase": "idle",
+     "expectConsentRequired": true
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 1,
+     "do": {
+      "event": "pakeSucceeded"
+     },
+     "expectActions": [
+      {
+       "action": "promptForConsent",
+       "expiresAt": 31
+      }
+     ],
+     "expectPhase": "awaitingConsent",
+     "expectHasSession": true
+    },
+    {
+     "at": 1,
+     "do": {
+      "event": "consentAnswered",
+      "allow": false
+     },
+     "expectActions": [
+      {
+       "action": "dismissConsentPrompt",
+       "outcome": "declined"
+      },
+      {
+       "action": "sendBye",
+       "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+       "reason": "declined"
+      },
+      {
+       "action": "sendInputReset"
+      },
+      {
+       "action": "teardownPeerConnection"
+      },
+      {
+       "action": "clearStoredSession"
+      }
+     ],
+     "expectPhase": "closed:declined"
+    }
+   ]
+  },
+  {
+   "name": "an_answer_meant_for_another_prompt_changes_nothing",
+   "role": "host",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "setConsentRequired",
+      "required": true
+     },
+     "expectActions": [],
+     "expectPhase": "idle",
+     "expectConsentRequired": true
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 1,
+     "do": {
+      "event": "pakeSucceeded"
+     },
+     "expectActions": [
+      {
+       "action": "promptForConsent",
+       "expiresAt": 31
+      }
+     ],
+     "expectPhase": "awaitingConsent",
+     "expectHasSession": true
+    },
+    {
+     "at": 5,
+     "do": {
+      "event": "consentAnswered",
+      "allow": true,
+      "sessionId": "feedfacefeedfacefeedfacefeedface"
+     },
+     "expectActions": [],
+     "expectPhase": "awaitingConsent"
+    },
+    {
+     "at": 6,
+     "do": {
+      "event": "consentAnswered",
+      "allow": false,
+      "sessionId": "feedfacefeedfacefeedfacefeedface"
+     },
+     "expectActions": [],
+     "expectPhase": "awaitingConsent"
+    },
+    {
+     "at": 7,
+     "do": {
+      "event": "consentAnswered",
+      "allow": true,
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7"
+     },
+     "expectActions": [
+      {
+       "action": "dismissConsentPrompt",
+       "outcome": "allowed"
+      },
+      {
+       "action": "startPeerConnection",
+       "offerer": false
+      }
+     ],
+     "expectPhase": "connecting"
+    }
+   ]
+  },
+  {
+   "name": "a_grant_with_a_malformed_session_or_host_id_is_refused",
+   "role": "host",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "S|offer",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [],
+     "expectPhase": "idle",
+     "expectRejected": true,
+     "expectHasSession": false
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8C7F1A2B3C4D5E6F708192A3B4C5D6E7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [],
+     "expectPhase": "idle",
+     "expectRejected": true
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e70",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [],
+     "expectPhase": "idle",
+     "expectRejected": true
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "73900058",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [],
+     "expectPhase": "idle",
+     "expectRejected": true
+    },
+    {
+     "at": 1,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
+     "expectPhase": "connecting",
+     "expectHasSession": true,
+     "expectPeerDeviceId": "481930275"
+    }
+   ]
+  },
+  {
+   "name": "a_malformed_controller_device_id_is_shown_as_another_mac",
+   "role": "host",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "Evil Mac 123"
+     },
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
+     "expectPhase": "connecting",
+     "expectPeerDeviceId": ""
+    },
+    {
+     "at": 1,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "0123456789abcdef0123456789abcdef",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "48193027"
+     },
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
+     "expectPhase": "connecting",
+     "expectPeerDeviceId": ""
+    },
+    {
+     "at": 2,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "feedfacefeedfacefeedfacefeedface",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
+     "expectPhase": "connecting",
+     "expectPeerDeviceId": "481930275"
+    }
+   ],
+   "note": "the prompt names only a well-formed Device ID"
+  },
+  {
+   "name": "a_connect_to_a_malformed_device_id_is_refused",
+   "role": "controller",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "connectRequested",
+      "deviceId": "739 000 587",
+      "accessCode": "K7M2QX9P",
+      "remember": false
+     },
+     "expectActions": [],
+     "expectPhase": "idle",
+     "expectRejected": true
+    }
+   ]
+  },
+  {
+   "name": "a_malformed_advertised_session_is_ignored",
+   "role": "controller",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "connectRequested",
+      "deviceId": "739000587",
+      "accessCode": "K7M2QX9P",
+      "remember": false
+     },
+     "expectActions": [],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 1,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": "x|y"
+     },
+     "expectActions": [
+      {
+       "action": "sendConnectReq",
+       "deviceId": "739000587",
+       "accessCode": "K7M2QX9P"
+      }
+     ],
+     "expectPhase": "connecting"
+    }
+   ]
+  },
+  {
+   "name": "a_resume_ok_for_another_session_is_refused_and_retried",
+   "role": "controller",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "connectRequested",
+      "deviceId": "739000587",
+      "accessCode": "K7M2QX9P",
+      "remember": true
+     },
+     "expectActions": [
+      {
+       "action": "sendConnectReq",
+       "deviceId": "739000587",
+       "accessCode": "K7M2QX9P"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "pakeSucceeded"
+     },
+     "expectActions": [
+      {
+       "action": "startPeerConnection",
+       "offerer": true
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "live"
+    },
+    {
+     "at": 5,
+     "do": {
+      "event": "signalingLost"
+     },
+     "expectActions": []
+    },
+    {
+     "at": 8,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7"
+     },
+     "expectActions": [
+      {
+       "action": "sendResume",
+       "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+       "sessionToken": "tok-1"
+      }
+     ]
+    },
+    {
+     "at": 8,
+     "do": {
+      "event": "resumeSucceeded",
+      "sessionId": "0123456789abcdef0123456789abcdef",
+      "sessionToken": "tok-2"
+     },
+     "expectActions": [],
+     "expectPhase": "live",
+     "expectRejected": true,
+     "expectResumeInFlight": false
+    },
+    {
+     "at": 9,
+     "do": {
+      "event": "tick"
+     },
+     "expectActions": [
+      {
+       "action": "sendResume",
+       "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+       "sessionToken": "tok-1"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "renew_ok_with_a_malformed_session_id_is_refused",
+   "role": "controller",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "connectRequested",
+      "deviceId": "739000587",
+      "accessCode": "K7M2QX9P",
+      "remember": true
+     },
+     "expectActions": [
+      {
+       "action": "sendConnectReq",
+       "deviceId": "739000587",
+       "accessCode": "K7M2QX9P"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "pakeSucceeded"
+     },
+     "expectActions": [
+      {
+       "action": "startPeerConnection",
+       "offerer": true
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "live"
+    },
+    {
+     "at": 1,
+     "do": {
+      "event": "renewSucceeded",
+      "sessionId": "not-our-session",
+      "sessionToken": "evil"
+     },
+     "expectRejected": true
+    },
+    {
+     "at": 2,
+     "do": {
+      "event": "signalingLost"
+     },
+     "expectActions": []
+    },
+    {
+     "at": 3,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7"
+     },
+     "expectActions": [
+      {
+       "action": "sendResume",
+       "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+       "sessionToken": "tok-1"
+      }
+     ]
     }
    ]
   },
@@ -1436,7 +2472,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -1534,7 +2574,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -1621,7 +2665,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -1722,7 +2770,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -1802,7 +2854,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -1867,7 +2923,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -1961,7 +3021,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -2053,7 +3117,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -2153,7 +3221,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -2269,7 +3341,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -2398,7 +3474,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -2496,7 +3576,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -2529,7 +3613,7 @@
      "at": 1,
      "do": {
       "event": "renewSucceeded",
-      "sessionId": "not-our-session",
+      "sessionId": "0123456789abcdef0123456789abcdef",
       "sessionToken": "evil"
      }
     },
@@ -2595,7 +3679,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -2686,7 +3774,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -2766,7 +3858,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -2879,7 +3975,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -2991,7 +4091,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -3088,7 +4192,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -3188,7 +4296,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -3294,7 +4406,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -3399,7 +4515,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -3507,7 +4627,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -3615,7 +4739,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -3736,7 +4864,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -3847,7 +4979,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -3957,7 +5093,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -4077,7 +5217,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -4209,7 +5353,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -4335,7 +5483,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -4403,7 +5555,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -4511,7 +5667,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -4638,7 +5798,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -4767,7 +5931,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -4876,7 +6044,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -4956,7 +6128,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -5051,7 +6227,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -5395,7 +6575,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {
@@ -5488,7 +6672,11 @@
       "hostDeviceId": "739000587",
       "controllerDeviceId": "481930275"
      },
-     "expectActions": [],
+     "expectActions": [
+      {
+       "action": "teardownPeerConnection"
+      }
+     ],
      "expectPhase": "connecting"
     },
     {

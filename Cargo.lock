@@ -1346,11 +1346,14 @@ dependencies = [
  "p256",
  "rand_core",
  "rc-proto",
+ "rc-session",
  "serde",
  "serde_json",
  "sha2",
  "spake2",
+ "subtle",
  "thiserror 2.0.20",
+ "zeroize",
 ]
 
 [[package]]

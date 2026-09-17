@@ -271,9 +271,8 @@ final class AppModel: ObservableObject {
             if case .connecting = coordinator.phase {} else { isConnecting = false }
         case .silentReconnect:
             connectError = nil
-        case .consentRequested(let request):
-            consentNotifier.bringForward()
-            consentNotifier.post(request)
+        case .consentRequested:
+            consentNotifier.post()
         case .consentEnded:
             consentNotifier.withdraw()
         default:
@@ -358,9 +357,9 @@ final class AppModel: ObservableObject {
         settings.role == .controller && coordinator?.awaitingPeerAcceptance == true
     }
 
-    func answerConsent(allow: Bool) {
+    func answerConsent(allow: Bool, sessionID: String) {
         guard let coordinator else { return }
-        Task { await coordinator.answerConsent(allow: allow) }
+        Task { await coordinator.answerConsent(allow: allow, sessionID: sessionID) }
     }
 
     // MARK: - Host
