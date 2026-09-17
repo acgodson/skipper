@@ -165,7 +165,7 @@ Source PNGs: `apps/macos/Resources/AppIcon.iconset` (compiled by `scripts/build.
 | Session | ![](design/session-light.png) | ![](design/session-dark.png) |
 
 Host: hero (Device ID, access code with Copy/Show/Refresh, status pill), permission banners when
-needed, Account (sign in), Access toggles (unattended, clipboard, launch at login), Screen sharing state,
+needed, Account (sign in), Access toggles (unattended, clipboard, launch at login, install updates automatically), the "ready to update" banner when a verified update is staged, Screen sharing state,
 Trusted controllers, Quality, key-storage footer. Controller: hero form (Device ID, access code,
 label, Remember, Connect, state pill, failure banner), Saved devices with presence, Quality.
 Session: full-window desktop with the floating toolbar and gesture palette.

@@ -40,6 +40,7 @@ var (
 	limitGiftCreate      = rule{"gift_create", 10, day}
 	limitGiftList        = rule{"gift_list", 60, hour}
 	limitGiftAct         = rule{"gift_act", 20, day}
+	limitReleaseLatest   = rule{"release_latest", 60, hour}
 )
 
 type bucket struct {

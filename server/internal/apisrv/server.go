@@ -83,6 +83,7 @@ func (s *Server) routes() {
 	m := s.mux
 	m.HandleFunc("GET /v1/health", s.health)
 	m.HandleFunc("GET /healthz", s.healthz)
+	m.HandleFunc("GET "+protocol.PathAppReleasesLatest, s.latestRelease)
 
 	m.HandleFunc("POST /v1/auth/link", s.authLink)
 	m.HandleFunc("POST /v1/auth/device/challenge", s.authChallenge)
@@ -102,6 +103,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /v1/credits/ledger", s.creditsLedger)
 	m.HandleFunc("POST /v1/credits/dev-topup", s.devTopup)
 	m.HandleFunc("POST /v1/dev/expire-trial", s.devExpireTrial)
+	m.HandleFunc("POST "+protocol.PathDevReleases, s.devPublishRelease)
 	m.HandleFunc("POST /v1/credits/gifts", s.createGift)
 	m.HandleFunc("GET /v1/credits/gifts", s.listGifts)
 	m.HandleFunc("POST /v1/credits/gifts/{giftId}/accept", s.acceptGift)

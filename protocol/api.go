@@ -19,6 +19,8 @@ const (
 	PathCreditsLedger       = APIBasePath + "/credits/ledger"
 	PathCreditsGifts        = APIBasePath + "/credits/gifts"
 	PathHealth              = APIBasePath + "/health"
+	PathAppReleasesLatest   = APIBasePath + "/app/releases/latest"
+	PathDevReleases         = APIBasePath + "/dev/releases"
 
 	PathInternalSessionStart = "/internal/sessions/start"
 	PathInternalSessionStop  = "/internal/sessions/stop"
@@ -61,6 +63,9 @@ const (
 	DefaultHistoryPageLimit  = 100
 	MaxActivePairs           = 1
 	RevocationEffectiveInSec = 5
+	ReleaseCacheSec          = 300
+	MaxReleaseNotesLen       = 4000
+	MaxReleaseURLLen         = 2048
 )
 
 const (
@@ -100,6 +105,16 @@ const (
 const (
 	PlatformMacOS   = "macos"
 	PlatformWindows = "windows"
+)
+
+const (
+	ArchARM64  = "arm64"
+	ArchX86_64 = "x86_64"
+)
+
+const (
+	ChannelStable = "stable"
+	ChannelBeta   = "beta"
 )
 
 const (
@@ -294,6 +309,35 @@ type CreateGiftRequest struct {
 type Health struct {
 	Status     string `json:"status"`
 	ServerTime int64  `json:"serverTime"`
+}
+
+// AppRelease says WHAT to install. The client never takes it as proof that the
+// download is safe: see docs/SECURITY.md "Updates".
+type AppRelease struct {
+	Version     string `json:"version"`
+	Build       string `json:"build"`
+	MinimumOS   string `json:"minimumOS"`
+	URL         string `json:"url"`
+	SHA256      string `json:"sha256"`
+	Size        int64  `json:"size"`
+	Notes       string `json:"notes,omitempty"`
+	PublishedAt int64  `json:"publishedAt"`
+	Critical    bool   `json:"critical"`
+}
+
+// TODO: replace with a signed publish step in Phase 5; development identity provider only.
+type DevReleaseRequest struct {
+	Platform  string `json:"platform"`
+	Arch      string `json:"arch"`
+	Channel   string `json:"channel"`
+	Version   string `json:"version"`
+	Build     string `json:"build"`
+	MinimumOS string `json:"minimumOS"`
+	URL       string `json:"url"`
+	SHA256    string `json:"sha256"`
+	Size      int64  `json:"size"`
+	Notes     string `json:"notes,omitempty"`
+	Critical  bool   `json:"critical,omitempty"`
 }
 
 type SessionStartReport struct {

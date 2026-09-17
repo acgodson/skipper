@@ -37,4 +37,5 @@ public let allSuites: [TestSuite] = [
     controllerInputSuite,
     cgEventConstructionSuite,
     appKitModifierSuite,
+    updateSuite,
 ]

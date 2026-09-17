@@ -35,6 +35,7 @@ final class AppModel: ObservableObject {
     private var appIsActive = true
 
     let launchAtLogin = LaunchAtLogin()
+    let updates = UpdateChecker()
     private let stayAwake = StayAwake()
     private let fileStore = IdentityFileStore()
     private let browserOpener = AccountBrowserOpener()
@@ -57,7 +58,18 @@ final class AppModel: ObservableObject {
         rewireObservation()
         configureKeyboardCapture()
         applyStayAwake()
+        startUpdates()
     }
+
+    private func startUpdates() {
+        updates.isSessionActive = { [weak self] in self?.sessionActive ?? false }
+        updates.installsAutomatically = { [weak self] in self?.settings.installUpdatesAutomatically ?? false }
+        updates.start()
+    }
+
+    func checkForUpdates() { updates.checkNow() }
+
+    func restartToUpdate() { updates.restartToUpdate() }
 
     private func applyStayAwake() {
         stayAwake.update(enabled: settings.role == .host && settings.unattendedAccess)
@@ -109,6 +121,7 @@ final class AppModel: ObservableObject {
         bind(permissions)
         bind(identity)
         bind(launchAtLogin)
+        bind(updates)
         bind(selfPresence)
         bind(coordinator)
         bind(account)

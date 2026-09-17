@@ -10,7 +10,10 @@ cd "$(dirname "$0")/.."
 
 APP="dist/SkipperDesk.app"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist" 2>/dev/null || echo 0.0.0)"
+BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist" 2>/dev/null || echo 0)"
+MINIMUM_OS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist" 2>/dev/null || echo 13.0)"
 DMG="dist/SkipperDesk-${VERSION}.dmg"
+RELEASE_JSON="dist/SkipperDesk-${VERSION}.release.json"
 STAGE="$(mktemp -d -t rc-dmg)"
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -117,6 +120,12 @@ else
 NOTE
 fi
 
+SHA256="$(shasum -a 256 "$DMG" | awk '{print $1}')"
+SIZE="$(stat -f %z "$DMG")"
+printf '{"version":"%s","build":"%s","minimumOS":"%s","sha256":"%s","size":%s}\n' \
+  "$VERSION" "$BUILD" "$MINIMUM_OS" "$SHA256" "$SIZE" > "$RELEASE_JSON"
+
 echo
 echo "==> $DMG  ($(du -h "$DMG" | cut -f1))"
-echo "    sha256 $(shasum -a 256 "$DMG" | awk '{print $1}')"
+echo "==> Release fields for GET /v1/app/releases/latest (protocol/API.md §10), saved to $RELEASE_JSON"
+cat "$RELEASE_JSON"

@@ -49,6 +49,7 @@ public final class AppSettings: ObservableObject {
         public static let savedPeerLabel = "rc.savedPeer.label"
         public static let savedPeerDeviceID = "rc.savedPeer.deviceID"
         public static let rememberPeerCode = "rc.savedPeer.rememberCode"
+        public static let installUpdatesAutomatically = "rc.installUpdatesAutomatically"
     }
 
     private let defaults: UserDefaults
@@ -60,6 +61,9 @@ public final class AppSettings: ObservableObject {
     @Published public var savedPeerLabel: String { didSet { defaults.set(savedPeerLabel, forKey: Key.savedPeerLabel) } }
     @Published public var savedPeerDeviceID: String { didSet { defaults.set(savedPeerDeviceID, forKey: Key.savedPeerDeviceID) } }
     @Published public var rememberPeerCode: Bool { didSet { defaults.set(rememberPeerCode, forKey: Key.rememberPeerCode) } }
+    @Published public var installUpdatesAutomatically: Bool {
+        didSet { defaults.set(installUpdatesAutomatically, forKey: Key.installUpdatesAutomatically) }
+    }
 
     public init(defaults: UserDefaults? = nil) {
         let resolved: UserDefaults
@@ -80,6 +84,7 @@ public final class AppSettings: ObservableObject {
             Key.savedPeerLabel: "",
             Key.savedPeerDeviceID: "",
             Key.rememberPeerCode: false,
+            Key.installUpdatesAutomatically: true,
         ])
         self.role = AppRole(rawValue: resolved.string(forKey: Key.role) ?? "") ?? .host
         self.unattendedAccess = resolved.bool(forKey: Key.unattendedAccess)
@@ -88,6 +93,7 @@ public final class AppSettings: ObservableObject {
         self.savedPeerLabel = resolved.string(forKey: Key.savedPeerLabel) ?? ""
         self.savedPeerDeviceID = resolved.string(forKey: Key.savedPeerDeviceID) ?? ""
         self.rememberPeerCode = resolved.bool(forKey: Key.rememberPeerCode)
+        self.installUpdatesAutomatically = resolved.bool(forKey: Key.installUpdatesAutomatically)
     }
 
     public var hasSavedPeer: Bool { DeviceID.canonicalize(savedPeerDeviceID) != nil }

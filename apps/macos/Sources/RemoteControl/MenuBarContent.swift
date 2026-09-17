@@ -86,6 +86,8 @@ struct MenuBarContent: View {
                 }
                 .disabled(!model.sessionActive)
 
+                CheckForUpdatesMenuItem()
+
                 SkipperMenuAction(title: "Quit SkipperDesk", symbol: "power") {
                     NSApp.terminate(nil)
                 }

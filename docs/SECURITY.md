@@ -86,5 +86,55 @@ wants to verify a build matches its source. The one component that cannot be
 reproduced bit-for-bit is `WebRTC.framework`: it is Google's prebuilt binary
 xcframework (via `stasel/WebRTC`), not something this repo compiles.
 
+## Updates
+
+The Mac app updates itself with no third-party updater. The release feed
+(`GET /v1/app/releases/latest`, `protocol/API.md` §10) arrives over TLS and says
+**what** to install. It is never trusted to say that the download is **safe**. A
+compromised API, CDN or DNS can point the app at any file. The app installs it
+only if every check below passes:
+
+1. **Integrity.** The downloaded `.dmg` matches the announced `size` and `sha256`.
+   The download is cut off as soon as it exceeds `size`, and a redirect to
+   anything other than https is refused.
+2. **Publisher.** The `SkipperDesk.app` inside the image is copied out first. The
+   copy is then checked with `SecStaticCodeCheckValidity` (strict validation, all
+   architectures, nested code, no symlinks that escape the bundle) against:
+   `anchor apple generic and identifier "app.skipperdesk.desktop" and certificate
+   1[field.1.2.840.113635.100.6.2.6] exists and certificate
+   leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] =
+   "<TEAMID>"`. The two `field` terms limit this to Developer ID certificates, so an
+   "Apple Development" certificate from the same team does not pass. The app reads
+   `TEAMID` at runtime from **its own** code signature. The feed cannot choose the
+   team.
+3. **Notarization.** The same copy must also satisfy `anchor apple generic and
+   notarized`. This check uses the public Security.framework API.
+   `SecAssessmentCreate` has no public header in the macOS SDK.
+4. **No downgrade.** The copy's `CFBundleIdentifier` must be the app's own. Its
+   `CFBundleVersion` must be strictly greater than the running build. The app
+   reads both from the sealed `Info.plist` after the signature check passes.
+
+The app checks the copy it will install, not the mounted image. It checks the copy
+again right before the swap. If any check fails, the app discards the download
+and logs the reason. The user sees nothing alarming, and the app does not retry
+that build during this run.
+
+A build without a Developer ID Team ID (ad-hoc or locally signed) turns the
+updater off entirely and says "Updates are disabled in development builds." The
+updater also stays off when the running app does not satisfy its own pinned
+requirement.
+
+The app installs a verified update in three situations:
+
+- When SkipperDesk quits.
+- When the user chooses "Restart to Update". This is not offered while a remote
+  session is open.
+- On unattended hosts, between 03:00 and 05:00 local time with no session open,
+  when "Install updates automatically" is on (the default).
+
+The swap uses `FileManager.replaceItemAt` on the same volume. Because the
+designated requirement does not change between versions, macOS keeps the Screen
+Recording and Accessibility grants.
+
 This page will be updated as Phase 4 (client security pass) and Phase 5 (backend)
 land. Last updated 2026-09-17.
