@@ -1,5 +1,6 @@
 use rc_session::{
-    IceLinkState, ResumeOk, Role, SessionAction, SessionGrant, SessionPhase, SessionStateMachine,
+    ConsentOutcome, IceLinkState, ResumeOk, Role, SessionAction, SessionGrant, SessionPhase,
+    SessionStateMachine,
 };
 use serde_json::Value;
 
@@ -22,6 +23,7 @@ fn phase_matches(phase: &SessionPhase, expected: &str) -> bool {
     match (phase, expected) {
         (SessionPhase::Idle, "idle") => true,
         (SessionPhase::Connecting, "connecting") => true,
+        (SessionPhase::AwaitingConsent, "awaitingConsent") => true,
         (SessionPhase::Live, "live") => true,
         (SessionPhase::Reconnecting, "reconnecting") => true,
         (SessionPhase::Closed { reason }, e) => {
@@ -69,6 +71,13 @@ fn action_from_json(v: &Value) -> SessionAction {
         "sendBye" => SessionAction::SendBye {
             session_id: s("sessionId"),
             reason: s("reason"),
+        },
+        "promptForConsent" => SessionAction::PromptForConsent {
+            expires_at_ms: (v["expiresAt"].as_f64().expect("expiresAt") * 1000.0).round() as i64,
+        },
+        "dismissConsentPrompt" => SessionAction::DismissConsentPrompt {
+            outcome: ConsentOutcome::from_name(&s("outcome"))
+                .unwrap_or_else(|| panic!("unknown consent outcome in {v}")),
         },
         other => panic!("unknown action {other:?} in scenarios"),
     }
@@ -153,6 +162,14 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
                 }
                 "closeLocally" => Some(machine.close_locally(e["reason"].as_str().unwrap())),
                 "userEnded" => Some(machine.user_ended(e["reason"].as_str().unwrap())),
+                "pakeSucceeded" => Some(machine.pake_succeeded(now_ms)),
+                "consentAnswered" => {
+                    Some(machine.consent_answered(e["allow"].as_bool().unwrap(), now_ms))
+                }
+                "setConsentRequired" => {
+                    machine.consent_required = e["required"].as_bool().unwrap();
+                    Some(vec![])
+                }
                 other => panic!("{}: unknown event {other:?}", ctx()),
             };
 
@@ -186,6 +203,9 @@ fn every_shared_scenario_passes_against_the_rust_machine() {
             }
             if let Some(v) = step.get("expectResumeInFlight").and_then(Value::as_bool) {
                 assert_eq!(machine.resume_in_flight(), v, "{}: resumeInFlight", ctx());
+            }
+            if let Some(v) = step.get("expectConsentRequired").and_then(Value::as_bool) {
+                assert_eq!(machine.consent_required, v, "{}: consentRequired", ctx());
             }
             if let Some(v) = step.get("expectRelayOnly").and_then(Value::as_bool) {
                 assert_eq!(machine.relay_only(), v, "{}: relayOnly", ctx());

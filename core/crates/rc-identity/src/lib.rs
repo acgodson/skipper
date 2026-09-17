@@ -10,6 +10,7 @@ use rand_core::{OsRng, RngCore};
 use rc_proto::signaling::CodeVerifier;
 use serde::{Deserialize, Serialize};
 
+pub mod consent;
 pub mod pake;
 pub mod sdp;
 pub mod signing;

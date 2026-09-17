@@ -49,31 +49,24 @@ public enum GuessPolicy {
     }
 
     public static func admit(_ ledger: GuessLedger, now: Date = Date()) throws -> GuessDecision {
-        try decide(ledger) { skipper_pake_guess_admit($0.base, $0.count, milliseconds(now)) }
+        try decide(ledger) { skipper_pake_guess_admit($0.base, $0.count, CoreBoundary.milliseconds(now)) }
     }
 
     public static func replySent(_ ledger: GuessLedger, now: Date = Date()) throws -> GuessDecision {
-        try decide(ledger) { skipper_pake_guess_reply_sent($0.base, $0.count, milliseconds(now)) }
+        try decide(ledger) { skipper_pake_guess_reply_sent($0.base, $0.count, CoreBoundary.milliseconds(now)) }
     }
 
     public static func confirmed(_ ledger: GuessLedger, now: Date = Date()) throws -> GuessDecision {
-        try decide(ledger) { skipper_pake_guess_confirmed($0.base, $0.count, milliseconds(now)) }
+        try decide(ledger) { skipper_pake_guess_confirmed($0.base, $0.count, CoreBoundary.milliseconds(now)) }
     }
 
     private static func decide(
         _ ledger: GuessLedger,
         _ body: (CoreBytes) -> UnsafeMutablePointer<CChar>?
     ) throws -> GuessDecision {
-        let json = try JSONEncoder().encode(ledger)
-        let result: Result = try CoreBoundary.withBytes([json]) { arguments in
-            Swift.Result { try CoreBoundary.call { body(arguments[0]) } }
-        }.get()
+        let result: Result = try CoreBoundary.callWithJSON(ledger, body)
         return GuessDecision(isAllowed: result.allowed,
                              retryAfterMs: result.retryAfterMs,
                              ledger: result.ledger)
-    }
-
-    private static func milliseconds(_ date: Date) -> Int64 {
-        Int64((date.timeIntervalSince1970 * 1000).rounded())
     }
 }

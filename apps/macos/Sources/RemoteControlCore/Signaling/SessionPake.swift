@@ -14,6 +14,7 @@ extension SessionCoordinator {
 
     func armPake(for grant: SessionGrantPayload) {
         clearPake()
+        clearConsentState()
         pakeRequired = true
         pakeControllerPubkey = grant.controllerPubkey
         startPakeTimeout()
@@ -129,11 +130,7 @@ extension SessionCoordinator {
         expectPeerPublicKey(peerPubkey)
         emit(.pakeCompleted(peerPubkey: peerPubkey))
         recordPakeSuccess(peerPubkey: peerPubkey)
-
-        if let offerer = deferredPeerStart {
-            deferredPeerStart = nil
-            startPeerAfterPake(offerer: offerer)
-        }
+        await admitPeer(pubkey: peerPubkey)
     }
 
     private func recordPakeSuccess(peerPubkey: String) {
@@ -143,8 +140,6 @@ extension SessionCoordinator {
                let confirmed = try? GuessPolicy.confirmed(ledger) {
                 try? saveGuessLedger(confirmed.ledger, for: peerPubkey)
             }
-            try? identity.secrets.recordTrustedController(
-                pubkey: peerPubkey, label: machine.peerDeviceID.map(DeviceID.formatted) ?? "")
         case .controller:
             guard let code = machine.rememberedAccessCode, let host = machine.peerDeviceID else { return }
             try? identity.secrets.rememberPeerCode(code, forHost: host)
@@ -206,7 +201,6 @@ extension SessionCoordinator {
         pakeExchange = nil
         pakeComplete = false
         pakeRequired = false
-        deferredPeerStart = nil
         pakeControllerPubkey = nil
     }
 

@@ -11,6 +11,8 @@ public enum ConnectFailure: Swift.Error, LocalizedError, Equatable {
     case unknownDevice
     case selfConnect
     case notConnectedToServer
+    case declined
+    case noAnswer
     case other(code: String, message: String)
 
     public init(_ error: Swift.Error) {
@@ -20,6 +22,8 @@ public enum ConnectFailure: Swift.Error, LocalizedError, Equatable {
         }
         switch code {
         case Wire.ByeReason.authFailed: self = .authFailed
+        case Wire.ByeReason.declined: self = .declined
+        case Wire.ByeReason.timeout: self = .noAnswer
         case Wire.ErrorCode.offline: self = .offline
         case Wire.ErrorCode.busy: self = .busy
         case Wire.ErrorCode.entitlement:
@@ -42,6 +46,8 @@ public enum ConnectFailure: Swift.Error, LocalizedError, Equatable {
         case .unknownDevice: return Wire.ErrorCode.unknownDevice
         case .selfConnect: return Wire.ErrorCode.selfConnect
         case .notConnectedToServer: return "no_server"
+        case .declined: return Wire.ByeReason.declined
+        case .noAnswer: return Wire.ByeReason.timeout
         case .other(let code, _): return code
         }
     }
@@ -66,6 +72,10 @@ public enum ConnectFailure: Swift.Error, LocalizedError, Equatable {
             return "That is this Mac's own Device ID."
         case .notConnectedToServer:
             return "Not connected to the signaling server yet. Try again in a moment."
+        case .declined:
+            return "The other Mac declined the connection."
+        case .noAnswer:
+            return "The other Mac did not answer in time."
         case .other(let code, let message):
             return "\(message) (\(code))"
         }
@@ -93,6 +103,9 @@ public enum CoordinatorEvent {
     case pake(step: Int, outgoing: Bool)
     case pakeCompleted(peerPubkey: String)
     case pakeFailed(reason: String, authentication: Bool)
+    case consentRequested(ConsentRequest)
+    case consentEnded(ConsentOutcome, automatic: Bool)
+    case awaitingPeerAcceptance
     case captureState(CaptureState)
     case remoteVideo(present: Bool)
     case accessibility(granted: Bool)
@@ -128,16 +141,10 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     @Published public private(set) var canInjectInput = true
     @Published public private(set) var injectedEventCount = 0
     @Published public private(set) var remoteCursorShape: CursorShape = .arrow
+    @Published public internal(set) var consentRequest: ConsentRequest?
+    @Published public internal(set) var awaitingPeerAcceptance = false
 
-    public var state: SessionState {
-        switch phase {
-        case .idle: return .idle
-        case .connecting: return .connecting
-        case .live: return machine.sessionID.map { .connected(sessionID: $0) } ?? .connecting
-        case .reconnecting: return .reconnecting
-        case .closed(let reason): return reason == Wire.ByeReason.userEnded ? .idle : .failed(reason)
-        }
-    }
+    public var state: SessionState { SessionState(phase: phase, sessionID: machine.sessionID) }
 
     public var sessionID: String? { machine.sessionID }
     public var isRelayOnly: Bool { peer?.isRelayOnly ?? machine.relayOnly }
@@ -175,9 +182,20 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     var pakeExchange: PakeExchange?
     var pakeComplete = false
     var pakeRequired = false
-    var deferredPeerStart: Bool?
     var pakeControllerPubkey: String?
     var pakeTimeout: Task<Void, Never>?
+
+    // MARK: Host consent (PROTOCOL.md §2.17 Consent) — see SessionConsent.swift
+
+    var consentLedgers: [String: ConsentLedger] = [:]
+    var heldRemoteSDP: SDPPayload?
+    var heldCandidates: [ICEPayload] = []
+    var acceptanceWatch: Task<Void, Never>?
+
+    public var consentRequired: Bool {
+        get { machine.consentRequired }
+        set { machine.consentRequired = newValue }
+    }
 
     public let presence = SignalingPresenceSource()
 
@@ -371,10 +389,12 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
         case .startPeerConnection(let offerer):
             guard pakeComplete else {
-                deferredPeerStart = offerer
+                RCLog.error("refused to start a peer before the access-code exchange completed")
                 return
             }
+            peerStarting()
             startPeer(offerer: offerer)
+            await releaseHeldSignals()
 
         case .restartICE(let relayOnly):
             if relayOnly { peer?.switchToRelayOnly() }
@@ -399,6 +419,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
         case .clearStoredSession:
             negotiating = false
+            clearConsentState()
             expectedPeerPublicKey = nil
             clearPake()
 
@@ -409,18 +430,29 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
 
         case .sendBye(let sessionID, let reason):
             try? await signaling.sendBye(sessionID: sessionID, reason: reason)
+            if role == .controller, reason == Wire.ByeReason.timeout { reportEnded(.noAnswer) }
+
+        case .promptForConsent(let expiresAt):
+            presentConsent(expiresAt: expiresAt)
+
+        case .dismissConsentPrompt(let outcome):
+            dismissConsent(outcome)
         }
     }
 
     private func syncPhase() {
         guard machine.phase != phase else { return }
         phase = machine.phase
+        if phase != .connecting { stopAwaitingAcceptance() }
         emit(.phase(phase))
     }
 
-    // MARK: - Peer connection
+    func reportEnded(_ failure: ConnectFailure) {
+        lastError = failure.localizedDescription
+        emit(.connectFailed(failure))
+    }
 
-    func startPeerAfterPake(offerer: Bool) { startPeer(offerer: offerer) }
+    // MARK: - Peer connection
 
     func refusePeerFromPake(reason: String) async { await refusePeer(reason: reason) }
 
@@ -540,6 +572,7 @@ extension SessionCoordinator: SignalingClientDelegate {
 
         case Wire.MessageType.ice:
             guard let ice = try? envelope.decodePayload(ICEPayload.self) else { return }
+            guard !holdWhileAwaitingConsent(ice) else { return }
             try? await peer?.addCandidate(ice.candidate, sdpMid: ice.sdpMid, sdpMLineIndex: ice.sdpMLineIndex)
 
         case Wire.MessageType.bye:
@@ -547,6 +580,7 @@ extension SessionCoordinator: SignalingClientDelegate {
             guard bye.sessionId == machine.sessionID else { return }
             emit(.bye(reason: bye.reason))
             peerEndedExchange(byeReason: bye.reason)
+            if role == .controller, bye.reason == Wire.ByeReason.declined { reportEnded(.declined) }
             await perform(machine.closeLocally(reason: bye.reason))
 
         case Wire.MessageType.error:
@@ -557,8 +591,9 @@ extension SessionCoordinator: SignalingClientDelegate {
         }
     }
 
-    private func handleRemoteSDP(_ sdp: SDPPayload) async {
+    func handleRemoteSDP(_ sdp: SDPPayload) async {
         guard sdp.sessionId == machine.sessionID else { return }
+        guard !holdWhileAwaitingConsent(sdp) else { return }
         guard pakeComplete, let pake = pakeExchange else {
             RCLog.error("dropped an sdp that arrived before the access code was proved")
             return

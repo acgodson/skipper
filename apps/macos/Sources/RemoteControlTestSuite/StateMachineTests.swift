@@ -101,6 +101,50 @@ public let stateMachineSuite = TestSuite("Session state machine (the coordinator
         try expect(renews(machine.tick(now: t0.addingTimeInterval(61))))
     },
 
+    TestCase("the consent deadline and flag cross the FFI as the coordinator reads them") {
+        let t0 = Date(timeIntervalSince1970: 1_756_000_000)
+        let machine = SessionStateMachine(role: .host)
+        try expectFalse(machine.consentRequired, "the core's own default is the code-only path")
+        machine.consentRequired = true
+        try expect(machine.consentRequired)
+        _ = machine.signalingAuthenticated(activeSessionID: nil)
+        _ = machine.sessionGranted(grant(), now: t0)
+
+        let prompt = machine.pakeSucceeded(now: t0)
+        try expectEqual(prompt, [.promptForConsent(expiresAt: t0.addingTimeInterval(30))])
+        try expectEqual(machine.phase, .awaitingConsent)
+        try expectEqual(machine.consentExpiresAt, t0.addingTimeInterval(30))
+        try expectEqual(SessionState(phase: machine.phase, sessionID: machine.sessionID), .connecting,
+                        "waiting for the owner is not a session anyone is in yet")
+
+        let allowed = machine.consentAnswered(allow: true, now: t0.addingTimeInterval(3))
+        try expectEqual(allowed, [.dismissConsentPrompt(outcome: .allowed), .startPeerConnection(offerer: false)])
+        try expectEqual(machine.consentExpiresAt, nil)
+    },
+
+    TestCase("only a declined or unanswered prompt counts against the controller") {
+        try expect(ConsentOutcome.declined.countsAsDecline)
+        try expect(ConsentOutcome.timedOut.countsAsDecline)
+        try expectFalse(ConsentOutcome.allowed.countsAsDecline)
+        try expectFalse(ConsentOutcome.cancelled.countsAsDecline, "a controller that hung up was not refused")
+    },
+
+    TestCase("the consent ledger round-trips through the core's policy") {
+        let t0 = Date(timeIntervalSince1970: 1_756_000_000)
+        var ledger = ConsentLedger()
+        try expect(try ConsentPolicy.admit(ledger, now: t0).shouldPrompt)
+        ledger = try ConsentPolicy.declined(ledger, now: t0).ledger
+        try expect(try ConsentPolicy.admit(ledger, now: t0).shouldPrompt, "one decline still asks")
+        let second = try ConsentPolicy.declined(ledger, now: t0.addingTimeInterval(60))
+        try expectFalse(second.shouldPrompt, "two declines in ten minutes stop the prompts")
+        try expectEqual(second.retryAfterMs, 9 * 60 * 1000)
+        try expect(try ConsentPolicy.admit(second.ledger, now: t0.addingTimeInterval(600)).shouldPrompt,
+                   "the window is ten minutes from the first decline")
+        let cleared = try ConsentPolicy.allowed(second.ledger, now: t0.addingTimeInterval(61))
+        try expect(cleared.shouldPrompt)
+        try expectEqual(cleared.ledger, ConsentLedger())
+    },
+
     TestCase("input_reset is a no-op at the transport when no channel is open") {
         let peer = PeerSession(iceServers: [], isOfferer: true)
         try expectFalse(peer.sendInputReset(),

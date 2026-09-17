@@ -61,6 +61,20 @@ enum CoreBoundary {
         return body(arguments)
     }
 
+    static func callWithJSON<Input: Encodable, Output: Decodable>(
+        _ input: Input,
+        _ body: (CoreBytes) -> UnsafeMutablePointer<CChar>?
+    ) throws -> Output {
+        let json = try JSONEncoder().encode(input)
+        return try withBytes([json]) { arguments in
+            Swift.Result { try call { body(arguments[0]) } }
+        }.get()
+    }
+
+    static func milliseconds(_ date: Date) -> Int64 {
+        Int64((date.timeIntervalSince1970 * 1000).rounded())
+    }
+
     static func withText<R>(_ values: [String?], _ body: ([CoreBytes]) -> R) -> R {
         withBytes(values.map { $0.map { Data($0.utf8) } }, body)
     }

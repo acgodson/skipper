@@ -94,6 +94,10 @@ private struct HostHero: View {
 
                 SkipperNote(model.selfPresence.explanation)
 
+                if !model.settings.unattendedAccess {
+                    SkipperNote("Leaving this Mac on its own? Turn on Unattended access below so connections do not wait for someone to click Allow.")
+                }
+
                 if let refreshError = identity.lastRefreshError {
                     SkipperNote(refreshError, tone: .attention)
                 }
@@ -126,7 +130,9 @@ private struct AccessSection: View {
         SkipperCard(title: "Access") {
             SkipperToggleRow(
                 title: "Unattended access",
-                detail: "Lets a controller with the correct code connect while nobody is at this Mac.",
+                detail: model.settings.unattendedAccess
+                    ? "Anyone with the code can connect without you here."
+                    : "You will be asked to allow each connection.",
                 isOn: Binding(
                     get: { model.settings.unattendedAccess },
                     set: { model.settings.unattendedAccess = $0 }

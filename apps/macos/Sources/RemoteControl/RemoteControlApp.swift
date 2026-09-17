@@ -28,9 +28,31 @@ struct RemoteControlApp: App {
                 .environmentObject(model)
                 .tint(SkipperColor.accent)
         } label: {
-            Image(systemName: model.sessionActive ? "display.and.arrow.down" : "display")
+            MenuBarLabel()
+                .environmentObject(model)
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+private struct MenuBarLabel: View {
+
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Image(systemName: symbol)
+            .onChange(of: model.consentRequest?.sessionID) { sessionID in
+                guard sessionID != nil else { return }
+                NSApp.setActivationPolicy(.regular)
+                openWindow(id: WindowID.main)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+    }
+
+    private var symbol: String {
+        if model.consentRequest != nil { return "hand.raised.fill" }
+        return model.sessionActive ? "display.and.arrow.down" : "display"
     }
 }
 

@@ -47,6 +47,12 @@ public enum EntitlementPresentation {
 
     public static let wrongCodeSentence = "Wrong access code. Check it on the other Mac."
 
+    public static let declinedSentence = "The other Mac declined the connection."
+
+    public static let noAnswerSentence = "The other Mac did not answer in time. Ask someone there to allow the connection, or turn on unattended access on that Mac."
+
+    public static let awaitingAcceptanceSentence = "Waiting for the other Mac to accept\u{2026}"
+
     public static func entitlementSentence(reason: String?, fallback: String) -> String {
         switch reason {
         case "unlinked": return "That Mac isn't linked to a SkipperDesk account yet."
@@ -74,6 +80,8 @@ public enum EntitlementPresentation {
         switch code {
         case "busy": return busySentence
         case "auth_failed": return wrongCodeSentence
+        case Wire.ByeReason.declined: return declinedSentence
+        case Wire.ByeReason.timeout: return noAnswerSentence
         case "entitlement": return entitlementSentence(reason: reason, fallback: fallback)
         case "rate_limited": return retryAfterSec.map(rateLimitedSentence) ?? fallback
         case Wire.ErrorCode.unavailable: return unavailableSentence
@@ -95,6 +103,10 @@ public enum EntitlementPresentation {
             return connectFailureSentence(
                 code: Wire.ErrorCode.entitlement, reason: reason, retryAfterSec: nil,
                 fallback: message)
+        case .declined, .noAnswer:
+            return connectFailureSentence(
+                code: failure.code, reason: nil, retryAfterSec: nil,
+                fallback: failure.errorDescription ?? "")
         case .rateLimited(let retryAfterSec):
             return connectFailureSentence(
                 code: Wire.ErrorCode.rateLimited, reason: nil, retryAfterSec: retryAfterSec,

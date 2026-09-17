@@ -128,6 +128,55 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
             EntitlementPresentation.wrongCodeSentence)
     },
 
+    // MARK: - Host consent (PROTOCOL.md §2.17 Consent)
+
+    TestCase("a declined or unanswered connection says so, never the raw reason") {
+        try expectEqual(
+            EntitlementPresentation.connectFailureSentence(
+                code: Wire.ByeReason.declined, reason: nil, retryAfterSec: nil, fallback: "declined"),
+            "The other Mac declined the connection.")
+        try expectEqual(EntitlementPresentation.sentence(for: .declined),
+                        "The other Mac declined the connection.")
+        try expectEqual(EntitlementPresentation.sentence(for: .noAnswer),
+                        EntitlementPresentation.noAnswerSentence)
+        try expectFalse(EntitlementPresentation.noAnswerSentence.contains("timeout"))
+    },
+
+    TestCase("a bye{declined} read off the wire becomes the declined failure") {
+        let wire = WireError.protocolError(code: Wire.ByeReason.declined, message: "the session ended",
+                                           retryAfterSec: 0)
+        try expectEqual(ConnectFailure(wire), .declined)
+        try expectEqual(ConnectFailure.declined.code, "declined")
+        try expectEqual(EntitlementPresentation.sentence(for: ConnectFailure(wire)),
+                        EntitlementPresentation.declinedSentence)
+        let timeout = WireError.protocolError(code: Wire.ByeReason.timeout, message: "m", retryAfterSec: 0)
+        try expectEqual(ConnectFailure(timeout), .noAnswer)
+    },
+
+    TestCase("the consent prompt names a known controller and falls back to another Mac") {
+        let expires = Date(timeIntervalSince1970: 1_756_000_030)
+        let known = ConsentRequest(sessionID: "s", controllerLabel: "481 930 275",
+                                   controllerDeviceID: "481930275", expiresAt: expires)
+        try expectEqual(known.title, "Allow 481 930 275 to control this Mac?")
+        for label in [nil, "", "   "] as [String?] {
+            let unknown = ConsentRequest(sessionID: "s", controllerLabel: label,
+                                         controllerDeviceID: nil, expiresAt: expires)
+            try expectEqual(unknown.title, "Allow another Mac to control this Mac?")
+        }
+    },
+
+    TestCase("the consent countdown rounds up, pluralises, and never goes negative") {
+        let expires = Date(timeIntervalSince1970: 1_756_000_030)
+        let request = ConsentRequest(sessionID: "s", controllerLabel: nil,
+                                     controllerDeviceID: nil, expiresAt: expires)
+        try expectEqual(request.countdown(now: expires.addingTimeInterval(-30)), "Declines in 30 seconds")
+        try expectEqual(request.countdown(now: expires.addingTimeInterval(-0.2)), "Declines in 1 second")
+        try expectEqual(request.secondsRemaining(now: expires.addingTimeInterval(-29.5)), 30)
+        try expectEqual(request.secondsRemaining(now: expires.addingTimeInterval(-30.0004)), 30,
+                        "sub-millisecond clock jitter never shows 31 on a 30-second prompt")
+        try expectEqual(request.secondsRemaining(now: expires.addingTimeInterval(5)), 0)
+    },
+
     // MARK: - API.md §4.1 host status line
 
     TestCase("trial shows a relative end date, active shows tier and an optional balance") {
