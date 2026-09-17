@@ -6,7 +6,7 @@ use rc_identity::pake::{
     GuessDecision, GuessLedger, PakeExchange, PakeMessage, MAX_PAYLOAD_BASE64,
 };
 use rc_identity::sdp::MAC_KEY_LEN;
-use rc_session::relay;
+use rc_proto::consts::relay::{PAKE_STEP_FIRST, PAKE_STEP_LAST};
 use serde_json::json;
 
 use crate::{optional_text, required_text, FfiError, ROLE_HOST};
@@ -90,11 +90,11 @@ pub unsafe extern "C" fn skipper_pake_step(
         let incoming = match (step, payload) {
             (0, None) => None,
             (step, Some(payload)) => {
-                let step = relay::pake_step(i64::from(step)).map_err(|e| e.to_string())?;
-                Some(
-                    PakeMessage::from_base64(u32::from(step), payload)
-                        .map_err(|e| e.to_string())?,
-                )
+                let step = u32::try_from(step)
+                    .ok()
+                    .filter(|_| (PAKE_STEP_FIRST..=PAKE_STEP_LAST).contains(&step))
+                    .ok_or("pake step must be an integer from 1 to 3")?;
+                Some(PakeMessage::from_base64(step, payload).map_err(|e| e.to_string())?)
             }
             _ => return Err("a step above zero must carry a payload".into()),
         };

@@ -1310,6 +1310,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "rc-identity",
+ "rc-proto",
  "rc-session",
  "serde",
  "serde_json",

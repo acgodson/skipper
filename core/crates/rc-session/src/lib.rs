@@ -4,7 +4,6 @@
 #![forbid(unsafe_code)]
 
 pub mod input;
-pub mod relay;
 
 pub use input::InputError;
 

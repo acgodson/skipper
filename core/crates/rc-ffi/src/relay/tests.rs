@@ -114,7 +114,7 @@ fn a_frame_that_is_not_a_relayed_type_is_refused() {
 
 #[test]
 fn field_bounds_apply_inside_each_schema() {
-    let long_sdp = format!("v=0{}", "a".repeat(relay::SDP_MAX_BYTES));
+    let long_sdp = format!("v=0{}", "a".repeat(rc_proto::consts::relay::MAX_SDP_BYTES));
     for payload in [
         format!(r#"{{"sessionId":"{SESSION}","sdpType":"offer","sdp":"{long_sdp}"}}"#),
         format!(r#"{{"sessionId":"{SESSION}","sdpType":"offer","sdp":"o=-"}}"#),
@@ -122,7 +122,7 @@ fn field_bounds_apply_inside_each_schema() {
         r#"{"sessionId":"S|x","sdpType":"offer","sdp":"v=0"}"#.to_string(),
         format!(
             r#"{{"sessionId":"{SESSION}","sdpType":"offer","sdp":"v=0","mac":"{}"}}"#,
-            "A".repeat(relay::MAC_MAX_BYTES + 1)
+            "A".repeat(rc_proto::consts::relay::MAX_MAC_CHARS + 1)
         ),
         format!(r#"{{"sessionId":"{SESSION}","sdpType":"offer","sdp":"v=0","restart":"yes"}}"#),
     ] {
@@ -132,13 +132,16 @@ fn field_bounds_apply_inside_each_schema() {
         format!(r#"{{"sessionId":"{SESSION}","candidate":"c"}}"#),
         format!(r#"{{"sessionId":"{SESSION}","candidate":"{CANDIDATE}","sdpMid":null}}"#),
         format!(r#"{{"sessionId":"{SESSION}","candidate":"{CANDIDATE}\r\na=x"}}"#),
-        format!(r#"{{"sessionId":"{SESSION}","candidate":"{CANDIDATE}","sdpMLineIndex":65536}}"#),
+        format!(
+            r#"{{"sessionId":"{SESSION}","candidate":"{CANDIDATE}","sdpMLineIndex":2147483648}}"#
+        ),
         format!(r#"{{"sessionId":"{SESSION}","candidate":"{CANDIDATE}","sdpMLineIndex":0.5}}"#),
+        format!(r#"{{"sessionId":"{SESSION}","candidate":"{CANDIDATE}","sdpMLineIndex":-1}}"#),
         format!(r#"{{"sessionId":"{SESSION}","candidate":"{CANDIDATE}","sdpMid":"a b"}}"#),
     ] {
         assert!(check(&ice(&payload)).is_err(), "{payload}");
     }
-    let big_payload = "A".repeat(relay::PAKE_PAYLOAD_MAX_BASE64 + 1);
+    let big_payload = "A".repeat(rc_proto::consts::MAX_PAKE_PAYLOAD_BYTES + 1);
     let frame = pake(&format!(
         r#"{{"sessionId":"{SESSION}","step":1,"payload":"{big_payload}"}}"#
     ));

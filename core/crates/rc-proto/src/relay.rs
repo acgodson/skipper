@@ -237,3 +237,6 @@ fn is_ext_name_byte(c: u8) -> bool {
 fn is_ext_value_byte(c: u8) -> bool {
     c.is_ascii_alphanumeric() || b"+/=.:_-".contains(&c)
 }
+
+#[cfg(test)]
+mod tests;
