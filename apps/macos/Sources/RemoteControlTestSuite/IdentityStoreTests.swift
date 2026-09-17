@@ -166,8 +166,8 @@ public let identitySuite = TestSuite("IdentityStore", [
             try expect(store.verify(signature, for: message))
             try expectFalse(store.verify(signature, for: Data("a different challenge".utf8)),
                             "a signature must not verify against different data")
-            try expectEqual(try store.signatureBase64(for: message).isEmpty, false)
-            try expectNotNil(Data(base64Encoded: try store.signatureBase64(for: message)))
+            let nonce = Data(repeating: 7, count: 32)
+            try expectNotNil(Data(base64Encoded: try store.signatureBase64(purpose: .apiChallenge, nonce: nonce)))
         }
     },
 

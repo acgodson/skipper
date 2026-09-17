@@ -161,7 +161,7 @@ func (s *Server) verifySignedNonce(code, deviceID, pubkey, sig string) error {
 	if err != nil {
 		return auth.ErrBadSignature
 	}
-	return auth.VerifyDeviceSig(pubkey, sig, rawNonce)
+	return auth.VerifyDeviceSig(protocol.PurposeAPIChallenge, pubkey, sig, rawNonce)
 }
 
 func (s *Server) issueToken(device *apidb.Device) (protocol.DeviceTokenResponse, error) {

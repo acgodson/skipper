@@ -157,7 +157,11 @@ func (d device) sign(t *testing.T, nonceB64 string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256(raw)
+	msg, err := protocol.SigningMessage(protocol.PurposeAPIChallenge, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(msg)
 	sig, err := ecdsa.SignASN1(rand.Reader, d.key, sum[:])
 	if err != nil {
 		t.Fatal(err)

@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import IOKit
+import SkipperCore
 
 public enum AccountState: Equatable {
     case unlinked
@@ -202,12 +203,11 @@ public final class AccountLinker: ObservableObject {
                 state = .error(message: "The server's sign-in challenge was not readable.")
                 return
             }
-            // TODO: sign as purpose api-challenge once SkipperCore exposes signing_message
             let grant = try await client.deviceToken(
                 code: code,
                 nonce: nonce,
                 pubkey: identity.publicKeyBase64,
-                signature: try identity.signatureBase64(for: nonceBytes),
+                signature: try identity.signatureBase64(purpose: .apiChallenge, nonce: nonceBytes),
                 platform: "macos",
                 hardwareId: hardwareIdentifier(),
                 label: RCConfig.current.deviceLabel
@@ -235,7 +235,7 @@ public final class AccountLinker: ObservableObject {
         let grant = try await client.refreshDeviceToken(
             deviceId: current.deviceId,
             pubkey: identity.publicKeyBase64,
-            signature: try identity.signatureBase64(for: nonceBytes)
+            signature: try identity.signatureBase64(purpose: .apiChallenge, nonce: nonceBytes)
         )
         let fresh = DeviceToken(grant: grant)
         try tokens.save(fresh)

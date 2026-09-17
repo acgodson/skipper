@@ -206,10 +206,6 @@ public final class IdentityStore: ObservableObject {
         try key.sign(message)
     }
 
-    public func signatureBase64(for message: Data) throws -> String {
-        try key.signatureBase64(for: message)
-    }
-
     public static func discardStoredKeys(blobStore: DeviceKeyBlobStore = KeychainBlobs<DeviceKeyAccount>()) {
         try? blobStore.remove(.secureEnclave)
         try? blobStore.remove(.software)

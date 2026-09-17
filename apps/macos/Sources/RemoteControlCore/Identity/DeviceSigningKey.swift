@@ -62,10 +62,6 @@ extension DeviceSigningKey {
         publicKeyX963.map { String(format: "%02x", $0) }.joined()
     }
 
-    public func signatureBase64(for message: Data) throws -> String {
-        try sign(message).base64EncodedString()
-    }
-
     public func verify(_ signature: Data, for message: Data) -> Bool {
         guard let publicKey = try? P256.Signing.PublicKey(derRepresentation: publicKeyDER),
               let parsed = try? P256.Signing.ECDSASignature(derRepresentation: signature) else { return false }
