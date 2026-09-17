@@ -86,6 +86,7 @@ const (
 	ReasonBodyMismatch    = "body_mismatch"
 	ReasonInProgress      = "in_progress"
 	ReasonLinkedElsewhere = "linked_elsewhere"
+	ReasonNonceMismatch   = "nonce_mismatch"
 	ReasonRevoked         = "revoked"
 	ReasonUnregistered    = "unregistered"
 )
@@ -183,6 +184,7 @@ type DeviceChallengeResponse struct {
 // DeviceTokenRequest.HardwareID is the raw platform serial; the server keeps only its salted HMAC and discards the raw value.
 type DeviceTokenRequest struct {
 	Code       string `json:"code"`
+	Nonce      string `json:"nonce"`
 	Pubkey     string `json:"pubkey"`
 	Sig        string `json:"sig"`
 	Platform   string `json:"platform"`

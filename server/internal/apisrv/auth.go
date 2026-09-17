@@ -2,6 +2,7 @@ package apisrv
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -45,7 +46,7 @@ func (s *Server) mintLinkCode(account *apidb.Account, req protocol.LinkRequest) 
 	}
 	expiresAt := s.now().Add(protocol.LinkCodeTTLSec * time.Second).UnixMilli()
 	record := apidb.LinkCode{
-		Code: code, Nonce: req.Nonce, Pubkey: req.Pubkey, Platform: req.Platform,
+		Code: code, NonceHash: tokenHash(req.Nonce), Pubkey: req.Pubkey, Platform: req.Platform,
 		Label: trimmedLabel(req.Label), AccountID: account.AccountID, ExpiresAt: expiresAt,
 	}
 	if err := s.opt.DB.PutLinkCode(record); err != nil {
@@ -95,6 +96,13 @@ func (s *Server) authLink(w http.ResponseWriter, r *http.Request) {
 		}
 		s.writeJSON(w, r, http.StatusCreated, answer)
 	})
+}
+
+func linkNonceMatches(storedHash, presented string) bool {
+	if presented == "" || storedHash == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(storedHash), []byte(tokenHash(presented))) == 1
 }
 
 func (s *Server) authChallenge(w http.ResponseWriter, r *http.Request) {
@@ -202,6 +210,12 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 		pending, err := s.opt.DB.LinkCodeByCode(req.Code)
 		if err != nil || pending.Used || pending.ExpiresAt < s.nowMS() {
 			s.fail(w, r, http.StatusUnauthorized, protocol.APIErrUnauthenticated, "that sign-in code is not usable")
+			return
+		}
+		if !linkNonceMatches(pending.NonceHash, req.Nonce) {
+			_ = s.opt.DB.UseLinkCode(req.Code)
+			s.fail(w, r, http.StatusBadRequest, protocol.APIErrBadRequest,
+				"that code was issued for a different link attempt", withReason(protocol.ReasonNonceMismatch))
 			return
 		}
 		if pending.Pubkey != req.Pubkey {

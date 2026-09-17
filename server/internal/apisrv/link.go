@@ -140,7 +140,7 @@ func (s *Server) linkSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderLink(w, http.StatusConflict, data)
 		return
 	}
-	target := callbackScheme + "?code=" + url.QueryEscape(answer.Code)
+	target := callbackScheme + "?code=" + url.QueryEscape(answer.Code) + "&nonce=" + url.QueryEscape(data.Nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = handoffTemplate.Execute(w, linkPageData{Handoff: template.URL(target), Email: session.Email})

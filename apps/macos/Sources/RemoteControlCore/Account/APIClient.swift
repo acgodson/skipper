@@ -170,6 +170,7 @@ public final class APIClient: @unchecked Sendable {
 
     public func deviceToken(
         code: String,
+        nonce: String,
         pubkey: String,
         signature: String,
         platform: String,
@@ -179,6 +180,7 @@ public final class APIClient: @unchecked Sendable {
     ) async throws -> DeviceTokenGrant {
         var body: [String: String] = [
             "code": code,
+            "nonce": nonce,
             "pubkey": pubkey,
             "sig": signature,
             "platform": platform,

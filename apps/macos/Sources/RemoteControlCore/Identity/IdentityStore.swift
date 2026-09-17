@@ -35,7 +35,7 @@ public final class IdentityStore: ObservableObject {
     public init(
         fileStore: IdentityFileStore = IdentityFileStore(),
         sink: AccessCodeSink? = nil,
-        blobStore: DeviceKeyBlobStore = DeviceKeyKeychain(),
+        blobStore: DeviceKeyBlobStore = KeychainBlobs<DeviceKeyAccount>(),
         secrets: SecretStore? = nil,
         devFileIdentity: Bool? = nil
     ) throws {
@@ -46,6 +46,9 @@ public final class IdentityStore: ObservableObject {
 
         let loaded = try fileStore.load()
         let devFileIdentity = devFileIdentity ?? Self.usesDevFileIdentity(fileStore: fileStore)
+        if !devFileIdentity, let keychain = blobStore as? KeychainBlobs<DeviceKeyAccount> {
+            LegacyKeychainMigration.run(identityCreatedAt: loaded?.record.createdAt, accessGroup: keychain.accessGroup)
+        }
 
         let storedCode = try secrets.accessCode()
         let migratedCode = storedCode == nil ? loaded?.record.accessCode : nil
@@ -132,6 +135,8 @@ public final class IdentityStore: ObservableObject {
                     rewriteRecord: true,
                     note: nil
                 )
+            } catch KeychainError.unsigned {
+                throw KeychainError.unsigned
             } catch {
                 return ResolvedKey(
                     key: FileDeviceKey(key: existing, url: fileStore.fileURL),
@@ -174,6 +179,8 @@ public final class IdentityStore: ObservableObject {
                 rewriteRecord: true,
                 note: firstFailure.map { "The Secure Enclave is not usable in this build: \($0)" }
             )
+        } catch KeychainError.unsigned {
+            throw KeychainError.unsigned
         } catch {
             return ResolvedKey(
                 key: FileDeviceKey(key: DeviceKey(), url: fileStore.fileURL),
@@ -199,7 +206,7 @@ public final class IdentityStore: ObservableObject {
         try key.signatureBase64(for: message)
     }
 
-    public static func discardStoredKeys(blobStore: DeviceKeyBlobStore = DeviceKeyKeychain()) {
+    public static func discardStoredKeys(blobStore: DeviceKeyBlobStore = KeychainBlobs<DeviceKeyAccount>()) {
         try? blobStore.remove(.secureEnclave)
         try? blobStore.remove(.software)
     }
@@ -258,7 +265,7 @@ public final class IdentityStore: ObservableObject {
 
     public static func resetIdentity(
         fileStore: IdentityFileStore = IdentityFileStore(),
-        blobStore: DeviceKeyBlobStore = DeviceKeyKeychain(),
+        blobStore: DeviceKeyBlobStore = KeychainBlobs<DeviceKeyAccount>(),
         secrets: SecretStore? = nil
     ) throws {
         if !usesDevFileIdentity(fileStore: fileStore) {

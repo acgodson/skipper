@@ -19,15 +19,24 @@ public enum AccountState: Equatable {
     }
 }
 
+public enum LinkCallbackVerdict: Equatable {
+    case notOurs
+    case noAttempt
+    case expired
+    case nonceMismatch
+    case missingCode
+    case accepted(code: String, nonce: String)
+}
+
 @MainActor
 public final class AccountLinker: ObservableObject {
 
     @Published public private(set) var state: AccountState = .unlinked
     @Published public private(set) var entitlement: CachedEntitlement?
 
-    public static let linkAttemptLifetime: TimeInterval = 120
-    public static let callbackScheme = "skipperdesk"
-    public static let callbackHost = "link"
+    nonisolated public static let linkAttemptLifetime: TimeInterval = 120
+    nonisolated public static let callbackScheme = "skipperdesk"
+    nonisolated public static let callbackHost = "link"
 
     private struct LinkAttempt {
         let nonce: String
@@ -43,6 +52,8 @@ public final class AccountLinker: ObservableObject {
 
     private var attempt: LinkAttempt?
     private var token: DeviceToken?
+
+    public var hasPendingLink: Bool { attempt != nil }
 
     public init(
         identity: IdentityStore,
@@ -128,26 +139,62 @@ public final class AccountLinker: ObservableObject {
 
     @discardableResult
     public func handleCallback(_ url: URL) -> Bool {
-        guard url.scheme == Self.callbackScheme, url.host == Self.callbackHost else { return false }
-        RCLog.info("account: received a \(Self.callbackScheme)://\(Self.callbackHost) callback")
-        guard let code = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?.first(where: { $0.name == "code" })?.value, !code.isEmpty else {
-            state = .error(message: "The sign-in page came back without a code. Try linking this Mac again.")
-            return true
-        }
-        guard let started = attempt, Date().timeIntervalSince(started.startedAt) < Self.linkAttemptLifetime else {
+        let verdict = Self.verdict(
+            for: url, pendingNonce: attempt?.nonce, startedAt: attempt?.startedAt, now: Date())
+        switch verdict {
+        case .notOurs:
+            return false
+        case .noAttempt:
+            RCLog.error("account: ignored a link callback; no sign-in is in progress")
+        case .expired:
             attempt = nil
-            state = .error(message: "This Mac did not start that sign-in, or it took too long. Try again.")
-            return true
+            state = .error(message: "That sign-in took too long. Try linking this Mac again.")
+        case .nonceMismatch:
+            RCLog.error("account: rejected a link callback whose nonce did not match; the sign-in attempt was abandoned")
+            cancelLink()
+        case .missingCode:
+            attempt = nil
+            state = .error(message: "The sign-in page came back without a code. Try linking this Mac again.")
+        case .accepted(let code, let nonce):
+            RCLog.info("account: accepted the \(Self.callbackScheme)://\(Self.callbackHost) callback")
+            attempt = nil
+            Task { await exchange(code: code, nonce: nonce) }
         }
-        attempt = nil
-        Task { await exchange(code: code) }
         return true
+    }
+
+    nonisolated public static func verdict(
+        for url: URL,
+        pendingNonce: String?,
+        startedAt: Date?,
+        now: Date
+    ) -> LinkCallbackVerdict {
+        guard url.scheme == callbackScheme, url.host == callbackHost else { return .notOurs }
+        guard let pendingNonce, let startedAt else { return .noAttempt }
+        guard now.timeIntervalSince(startedAt) < linkAttemptLifetime else { return .expired }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let value = { (name: String) in items.first(where: { $0.name == name })?.value ?? "" }
+        let nonce = value("nonce")
+        guard !nonce.isEmpty, constantTimeEquals(nonce, pendingNonce) else { return .nonceMismatch }
+        let code = value("code")
+        guard !code.isEmpty else { return .missingCode }
+        return .accepted(code: code, nonce: nonce)
+    }
+
+    nonisolated static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
+        let left = Array(lhs.utf8)
+        let right = Array(rhs.utf8)
+        guard left.count == right.count else { return false }
+        var difference: UInt8 = 0
+        for index in left.indices {
+            difference |= left[index] ^ right[index]
+        }
+        return difference == 0
     }
 
     // MARK: - §1.3 / §1.4 exchange
 
-    private func exchange(code: String) async {
+    private func exchange(code: String, nonce: String) async {
         state = .linking
         do {
             let challenge = try await client.deviceChallenge(code: code)
@@ -155,8 +202,10 @@ public final class AccountLinker: ObservableObject {
                 state = .error(message: "The server's sign-in challenge was not readable.")
                 return
             }
+            // TODO: sign as purpose api-challenge once SkipperCore exposes signing_message
             let grant = try await client.deviceToken(
                 code: code,
+                nonce: nonce,
                 pubkey: identity.publicKeyBase64,
                 signature: try identity.signatureBase64(for: nonceBytes),
                 platform: "macos",
