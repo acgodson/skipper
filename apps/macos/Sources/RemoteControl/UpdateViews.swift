@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import RemoteControlCore
 import SkipperDesign
@@ -17,6 +18,17 @@ struct UpdateReadyBanner: View {
                 Button("Restart to Update") { model.restartToUpdate() }
                     .skipperButton(.primary)
                     .disabled(model.sessionActive)
+            }
+        } else if model.updates.status == .needsReinstall {
+            SkipperBanner(
+                tone: .attention,
+                symbol: "exclamationmark.arrow.circlepath",
+                title: UpdateStatus.reinstallSentence
+            ) {
+                Button("Open skipperdesk.app") {
+                    NSWorkspace.shared.open(AccountLinker.defaultWebBaseURL())
+                }
+                .skipperButton(.secondary)
             }
         }
     }
