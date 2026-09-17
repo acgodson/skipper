@@ -1239,6 +1239,174 @@
       }
     },
     {
+      "name": "cursor_shape_arrow",
+      "surface": "ctrl",
+      "type": "cursor_shape",
+      "frame": {
+        "v": 2,
+        "type": "cursor_shape",
+        "ts": 1755600000000,
+        "payload": {
+          "shape": "arrow"
+        }
+      },
+      "note": "host -\u003e controller, sent on change only"
+    },
+    {
+      "name": "cursor_shape_ibeam",
+      "surface": "ctrl",
+      "type": "cursor_shape",
+      "frame": {
+        "v": 2,
+        "type": "cursor_shape",
+        "ts": 1755600000000,
+        "payload": {
+          "shape": "ibeam"
+        }
+      },
+      "note": "host -\u003e controller, sent on change only"
+    },
+    {
+      "name": "cursor_shape_crosshair",
+      "surface": "ctrl",
+      "type": "cursor_shape",
+      "frame": {
+        "v": 2,
+        "type": "cursor_shape",
+        "ts": 1755600000000,
+        "payload": {
+          "shape": "crosshair"
+        }
+      },
+      "note": "host -\u003e controller, sent on change only"
+    },
+    {
+      "name": "cursor_shape_pointing_hand",
+      "surface": "ctrl",
+      "type": "cursor_shape",
+      "frame": {
+        "v": 2,
+        "type": "cursor_shape",
+        "ts": 1755600000000,
+        "payload": {
+          "shape": "pointing_hand"
+        }
+      },
+      "note": "host -\u003e controller, sent on change only"
+    },
+    {
+      "name": "cursor_shape_open_hand",
+      "surface": "ctrl",
+      "type": "cursor_shape",
+      "frame": {
+        "v": 2,
+        "type": "cursor_shape",
+        "ts": 1755600000000,
+        "payload": {
+          "shape": "open_hand"
+        }
+      },
+      "note": "host -\u003e controller, sent on change only"
+    },
+    {
+      "name": "cursor_shape_closed_hand",
+      "surface": "ctrl",
+      "type": "cursor_shape",
+      "frame": {
+        "v": 2,
+        "type": "cursor_shape",
+        "ts": 1755600000000,
+        "payload": {
+          "shape": "closed_hand"
+        }
+      },
+      "note": "host -\u003e controller, sent on change only"
+    },
+    {
+      "name": "cursor_shape_resize_lr",
+      "surface": "ctrl",
+      "type": "cursor_shape",
+      "frame": {
+        "v": 2,
+        "type": "cursor_shape",
+        "ts": 1755600000000,
+        "payload": {
+          "shape": "resize_lr"
+        }
+      },
+      "note": "host -\u003e controller, sent on change only"
+    },
+    {
+      "name": "cursor_shape_resize_ud",
+      "surface": "ctrl",
+      "type": "cursor_shape",
+      "frame": {
+        "v": 2,
+        "type": "cursor_shape",
+        "ts": 1755600000000,
+        "payload": {
+          "shape": "resize_ud"
+        }
+      },
+      "note": "host -\u003e controller, sent on change only"
+    },
+    {
+      "name": "cursor_shape_resize_diag_nesw",
+      "surface": "ctrl",
+      "type": "cursor_shape",
+      "frame": {
+        "v": 2,
+        "type": "cursor_shape",
+        "ts": 1755600000000,
+        "payload": {
+          "shape": "resize_diag_nesw"
+        }
+      },
+      "note": "host -\u003e controller, sent on change only"
+    },
+    {
+      "name": "cursor_shape_resize_diag_nwse",
+      "surface": "ctrl",
+      "type": "cursor_shape",
+      "frame": {
+        "v": 2,
+        "type": "cursor_shape",
+        "ts": 1755600000000,
+        "payload": {
+          "shape": "resize_diag_nwse"
+        }
+      },
+      "note": "host -\u003e controller, sent on change only"
+    },
+    {
+      "name": "cursor_shape_not_allowed",
+      "surface": "ctrl",
+      "type": "cursor_shape",
+      "frame": {
+        "v": 2,
+        "type": "cursor_shape",
+        "ts": 1755600000000,
+        "payload": {
+          "shape": "not_allowed"
+        }
+      },
+      "note": "host -\u003e controller, sent on change only"
+    },
+    {
+      "name": "cursor_shape_busy",
+      "surface": "ctrl",
+      "type": "cursor_shape",
+      "frame": {
+        "v": 2,
+        "type": "cursor_shape",
+        "ts": 1755600000000,
+        "payload": {
+          "shape": "busy"
+        }
+      },
+      "note": "host -\u003e controller, sent on change only"
+    },
+    {
       "name": "mouse_move",
       "surface": "hi",
       "type": "mouse_move",

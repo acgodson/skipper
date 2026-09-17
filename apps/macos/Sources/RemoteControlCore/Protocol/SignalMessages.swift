@@ -481,6 +481,7 @@ public enum CtrlType {
     public static let ping = "ping"
     public static let pong = "pong"
     public static let sessionClose = "session_close"
+    public static let cursorShape = "cursor_shape"
     public static let mouseMove = "mouse_move"
 }
 

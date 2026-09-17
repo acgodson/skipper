@@ -36,7 +36,8 @@ current goal. Still v1: it predates protocol v2.
 - The **automatic relay-only retry** (first ICE `failed` → one ICE restart with a relay-only
   transport policy, then the 45 s grace) is proven locally only up to the restart; a relay path
   actually carrying the session needs a backend with TURN (Phase 5).
-- Local cursor is always an arrow (I-beam/resize shapes not sent over `ctrl`).
+- Cursor shapes: a Mac host reports only the shapes public AppKit can name (no busy or
+  diagonal-resize cursor on macOS 14); anything else is drawn as the arrow.
 - Main display only · text-only clipboard (≤ 192 KiB) · arm64 only.
 - No Developer ID build has been verified yet.
 - Real backend not built: Phase 5. Locally this is `rc-signal` (Go) plus `scripts/dev-web-stub.py`
@@ -68,7 +69,7 @@ cargo test --workspace                    # from the repo root
 
 # App
 ./scripts/build-core.sh                   # builds librc_ffi.a — required before swift build/run
-cd apps/macos && swift run rc-tests              # 270 unit/scenario tests (swift test needs Xcode)
+cd apps/macos && swift run rc-tests              # 271 unit/scenario tests (swift test needs Xcode)
 ./scripts/make-signing-cert.sh            # once: stable identity so TCC grants survive rebuilds
 ./scripts/build.sh                        # -> dist/SkipperDesk.app
 ./scripts/package-dmg.sh                  # -> dist/SkipperDesk-<version>.dmg, self-verifying

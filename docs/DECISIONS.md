@@ -12,7 +12,7 @@ The distilled record of the build. Full phase-by-phase notes: [archive/PLAN.md](
 | ~~**No Apple Developer account**~~ | **REVERSED** — a Developer ID account now exists (see Phase 2.2 below); it is what unblocked the Keychain/Secure Enclave move |
 | ~~**Self-signed cert pinned by SHA-256** instead of a domain + public CA~~ | **REVERSED** — see the 2026-09-16/17 Protocol v2 block below |
 | **No Elastic IP** (user decision, 2026-08-19) | Instance is long-running; if the IP ever changes, the recovery is scripted (~2 min) plus rebuilding both Macs |
-| **Controller draws the cursor locally**, host hides it | A streamed cursor always lags by a full capture→encode→network→decode round trip. Same approach as Parsec/Moonlight |
+| **Controller draws the cursor locally**, host hides it | A streamed cursor always lags by a full capture→encode→network→decode round trip. Same approach as Parsec/Moonlight. The host sends only the *shape* (`cursor_shape` on `ctrl`, on change); the controller draws it as a vector path |
 | **Gestures via public key equivalents**, not synthesised multi-touch | Multi-touch synthesis needs private CGS SPI that breaks on OS updates |
 | **Capture mode** (`CGEventTap`) with a reserved escape `⌃⌥⌘K` | Otherwise Cmd+Space/Cmd+Tab hit the controller's own macOS |
 | **H.264 forced in SDP** | libwebrtc otherwise picked VP8 — software encode, ~94% of a core |
@@ -121,6 +121,9 @@ with no domain and no Developer ID account. Neither condition still holds.
   `objectWillChange` (`AppModel.rewireObservation()`).
 - `RunLoop.main` timers never fire under `dispatchMain()` (as in `rc-node`); use `DispatchSourceTimer`.
 - `MainActor.assumeIsolated` **traps** when called from a dispatch-timer handler; hop with a `Task` instead.
+- `NSCursor.currentSystem` returns a new object every call, so identity comparison never matches;
+  classify by image size + hot spot, then by rendered pixels. Touch `NSApplication.shared` first or
+  the standard cursors' images are empty.
 - `NSCursor.arrow.image` is zero-sized without a window-server connection. Draw the cursor as a
   `CGPath`, and never hide the system cursor unless the replacement is verifiably drawable.
 - Layer order matters: the cursor layer goes above the video layer.

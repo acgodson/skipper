@@ -147,6 +147,7 @@ fn every_go_vector_round_trips_through_the_rust_types() {
             c::QUALITY => roundtrip::<ctrl::Quality>(case, &env),
             c::PING | c::PONG => roundtrip::<ctrl::Ping>(case, &env),
             c::SESSION_CLOSE => roundtrip::<ctrl::SessionClose>(case, &env),
+            c::CURSOR_SHAPE => roundtrip::<ctrl::CursorShape>(case, &env),
 
             h::MOUSE_MOVE => roundtrip::<ctrl::MouseMove>(case, &env),
 
@@ -171,6 +172,7 @@ fn every_go_vector_round_trips_through_the_rust_types() {
         "ctrl/gesture",
         "ctrl/display_info",
         "ctrl/clipboard_text",
+        "ctrl/cursor_shape",
         "hi/mouse_move",
     ] {
         assert!(seen_types.contains(t), "vectors do not cover {t}");
@@ -196,4 +198,39 @@ fn vectors_cover_every_gesture() {
             g.as_wire()
         );
     }
+}
+
+#[test]
+fn vectors_cover_every_cursor_shape_and_nothing_else() {
+    let file: VectorFile = serde_json::from_str(VECTORS).unwrap();
+    let mut found = std::collections::BTreeSet::new();
+    for case in &file.cases {
+        if case.msg_type == rc_proto::consts::ctrl::CURSOR_SHAPE {
+            let c: ctrl::CursorShape =
+                serde_json::from_value(case.frame["payload"].clone()).unwrap();
+            let name = ctrl::CursorShapeName::from_wire(&c.shape);
+            assert_eq!(
+                name.as_wire(),
+                c.shape,
+                "unknown cursor shape {:?} in vectors",
+                c.shape
+            );
+            found.insert(name.as_wire());
+        }
+    }
+    for shape in ctrl::CursorShapeName::ALL {
+        assert!(
+            found.contains(shape.as_wire()),
+            "no vector for cursor shape {:?}",
+            shape.as_wire()
+        );
+    }
+}
+
+#[test]
+fn an_unknown_cursor_shape_is_drawn_as_the_arrow() {
+    assert_eq!(
+        ctrl::CursorShapeName::from_wire("zoom_in"),
+        ctrl::CursorShapeName::Arrow
+    );
 }

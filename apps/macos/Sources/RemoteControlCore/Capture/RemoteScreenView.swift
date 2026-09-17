@@ -169,6 +169,15 @@ public final class RemoteScreenNSView: NSView {
     public var onPointerEvent: ((RemotePointerEvent) -> Void)?
     public var isCapturingKeyboard = false { didSet { needsDisplay = true } }
     public var onVideoSizeChange: ((CGSize) -> Void)?
+    public var cursorShape: CursorShape = .arrow {
+        didSet {
+            guard cursorShape != oldValue else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            cursorLayer.path = cursorShape.path
+            CATransaction.commit()
+        }
+    }
 
     public private(set) var videoSize: CGSize = .zero
     public var remoteDisplaySize: CGSize = .zero {
@@ -284,19 +293,7 @@ public final class RemoteScreenNSView: NSView {
     private var isShowingVideo: Bool { renderer.renderedFrames > 0 }
 
     private func configureCursorLayer() {
-        let path = CGMutablePath()
-        path.addLines(between: [
-            CGPoint(x: 0,    y: 0),
-            CGPoint(x: 0,    y: 16.5),
-            CGPoint(x: 4.2,  y: 12.7),
-            CGPoint(x: 6.8,  y: 18.4),
-            CGPoint(x: 9.3,  y: 17.2),
-            CGPoint(x: 6.7,  y: 11.7),
-            CGPoint(x: 11.6, y: 11.4),
-        ])
-        path.closeSubpath()
-
-        cursorLayer.path = path
+        cursorLayer.path = cursorShape.path
         cursorLayer.fillColor = NSColor.black.cgColor
         cursorLayer.strokeColor = NSColor.white.cgColor
         cursorLayer.lineWidth = 1.2
@@ -409,6 +406,7 @@ public struct RemoteScreenView: NSViewRepresentable {
         if let info = session.remoteDisplay {
             view.remoteDisplaySize = CGSize(width: Double(info.w), height: Double(info.h))
         }
+        view.cursorShape = session.remoteCursorShape
         view.attach(track: session.remoteTrack)
     }
 

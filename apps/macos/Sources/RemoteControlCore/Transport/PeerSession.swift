@@ -418,6 +418,10 @@ public final class PeerSession {
         try sendCtrl(type: CtrlType.quality, payload: QualityPayload(mode))
     }
 
+    public func sendCursorShape(_ shape: CursorShape) throws {
+        try sendCtrl(type: CtrlType.cursorShape, payload: CursorShapePayload(shape))
+    }
+
     public func sendSessionClose(reason: String) throws {
         try sendCtrl(type: CtrlType.sessionClose, payload: SessionClosePayload(reason: reason))
     }

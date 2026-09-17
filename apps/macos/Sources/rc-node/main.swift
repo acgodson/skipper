@@ -100,6 +100,8 @@ final class Node {
             emit("clipboard", ["incoming": incoming, "bytes": bytes])
         case .gesture(let name):
             emit("gesture", ["name": name])
+        case .cursorShape(let shape, let outgoing):
+            emit("cursor_shape", ["shape": shape.rawValue, "outgoing": outgoing])
         }
     }
 
@@ -269,6 +271,18 @@ final class Node {
         case "drop-socket":
             coordinator.dropSignalingSocket()
             emit("socket_dropped", [:])
+
+        case "cursor-shape":
+            let observer = coordinator.cursorObserver
+            let system = NSCursor.currentSystem.map { observer.classify($0).rawValue } ?? "unavailable"
+            let selfRecognised = observer.recognisedShapes.filter { shape in
+                observer.referenceCursor(for: shape).map { observer.classify($0) == shape } ?? false
+            }
+            emit("cursor_probe", [
+                "system": system,
+                "recognised": observer.recognisedShapes.map(\.rawValue),
+                "selfRecognised": selfRecognised.map(\.rawValue),
+            ])
 
         case "ice-restart":
             coordinator.forceICERestart()

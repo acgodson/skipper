@@ -162,23 +162,3 @@ public let observationSuite = TestSuite("Observation", [
         try expectEqual(AppSettings(defaults: b).role, .host)
     },
 ])
-
-// MARK: - Local cursor bitmap
-
-public let cursorSuite = TestSuite("LocalCursor", [
-
-    TestCase("the pointer is a vector path, not a window-server bitmap") {
-        let systemImage = NSCursor.arrow.image
-        let bitmapIsUnreliable = systemImage.size.width == 0 || systemImage.size.height == 0
-
-        let path = CGMutablePath()
-        path.addLines(between: [CGPoint(x: 0, y: 0), CGPoint(x: 0, y: 16.5), CGPoint(x: 11.6, y: 11.4)])
-        path.closeSubpath()
-
-        try expectFalse(path.isEmpty)
-        try expect(path.boundingBox.height > 0)
-        try expectEqual(path.boundingBox.minX, 0)
-        try expectEqual(path.boundingBox.minY, 0)
-        _ = bitmapIsUnreliable
-    },
-])

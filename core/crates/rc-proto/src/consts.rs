@@ -59,6 +59,7 @@ pub mod ctrl {
     pub const PING: &str = "ping";
     pub const PONG: &str = "pong";
     pub const SESSION_CLOSE: &str = "session_close";
+    pub const CURSOR_SHAPE: &str = "cursor_shape";
 }
 
 pub mod hi {
