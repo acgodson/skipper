@@ -13,12 +13,8 @@ struct AccountSection: View {
 
             case .unlinked:
                 VStack(alignment: .leading, spacing: SkipperSpace.s) {
-                    HStack(spacing: SkipperSpace.s) {
-                        Button("Sign in to SkipperDesk") { model.linkAccount() }
-                            .skipperButton(.primary)
-                        Button("Create account") { model.linkAccount(signUp: true) }
-                            .skipperButton(.quiet)
-                    }
+                    Button("Sign in to SkipperDesk") { model.linkAccount() }
+                        .skipperButton(.primary)
                     SkipperNote("Sign in to host this Mac and manage your plan.")
                 }
 
@@ -81,7 +77,7 @@ private struct SignedInRow: View {
                         .foregroundStyle(SkipperColor.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Text("This Mac: \(deviceName)")
+                Text("This Mac appears in your account as \(deviceName)")
                     .font(SkipperFont.caption)
                     .foregroundStyle(SkipperColor.textTertiary)
             }
@@ -147,18 +143,7 @@ enum AccountActions {
 
 final class AccountBrowserOpener {
 
-    var nextOpenIsSignUp = false
-
     func open(_ url: URL) {
-        let target = nextOpenIsSignUp ? Self.signUpURL(from: url) : url
-        nextOpenIsSignUp = false
-        NSWorkspace.shared.open(target)
-    }
-
-    private static func signUpURL(from url: URL) -> URL {
-        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
-        let existing = parts.percentEncodedQuery.map { $0 + "&" } ?? ""
-        parts.percentEncodedQuery = existing + "mode=signup"
-        return parts.url ?? url
+        NSWorkspace.shared.open(url)
     }
 }

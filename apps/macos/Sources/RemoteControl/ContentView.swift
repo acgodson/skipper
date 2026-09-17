@@ -45,13 +45,20 @@ private struct RoleSwitch: View {
             set: { model.settings.role = $0 }
         )) {
             ForEach(AppRole.allCases) { role in
-                Text(role.displayName).tag(role)
+                Text(segmentLabel(for: role)).tag(role)
             }
         }
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(width: 340)
-        .help("Host shares this Mac. Controller drives another one.")
+        .help("Share this Mac lets another Mac connect to it. Connect to a Mac drives another one.")
+    }
+
+    private func segmentLabel(for role: AppRole) -> String {
+        switch role {
+        case .host: return "Share this Mac"
+        case .controller: return "Connect to a Mac"
+        }
     }
 }
 

@@ -125,8 +125,6 @@ struct ControllerView: View {
                     title: error
                 )
             }
-
-            SkipperNote(model.signalingSummary)
         }
     }
 
@@ -137,7 +135,8 @@ struct ControllerView: View {
     private var sessionLabel: String {
         if model.isReconnecting { return "Reconnecting\u{2026}" }
         if failedToConnect { return "Not connected" }
-        return model.sessionState.summary
+        if model.sessionState.isActive || model.isConnecting { return model.sessionState.summary }
+        return model.signalingReady ? "Ready" : "Offline"
     }
 
     private var sessionTone: SkipperTone {
@@ -145,7 +144,7 @@ struct ControllerView: View {
         if model.sessionState.isActive { return .accent }
         if model.isConnecting { return .attention }
         if failedToConnect { return .critical }
-        return .neutral
+        return model.signalingReady ? .positive : .neutral
     }
 
     private var savedDevicesCard: some View {
@@ -167,7 +166,9 @@ struct ControllerView: View {
                     .skipperButton(.destructive)
                 }
             }
-            SkipperNote(model.presence.explanation)
+            if model.presence.state != .online {
+                SkipperNote(model.presence.explanation)
+            }
         }
     }
 

@@ -206,9 +206,15 @@ private struct TrustedControllersSection: View {
                         subtitle: entry.lastSeenSentence(),
                         monospacedSubtitle: false
                     ) {
-                        Text(entry.shortKey)
-                            .font(SkipperFont.codeCaption)
-                            .foregroundStyle(SkipperColor.textTertiary)
+                        HStack(spacing: SkipperSpace.m) {
+                            Text(entry.shortKey)
+                                .font(SkipperFont.codeCaption)
+                                .foregroundStyle(SkipperColor.textTertiary)
+                            QuietDestructiveButton(title: "Remove") {
+                                model.removeTrustedController(pubkey: entry.pubkey)
+                            }
+                            .help("Forgets this Mac. It has to enter this Mac's access code again before it can connect.")
+                        }
                     }
                 }
                 SkipperDivider()
@@ -225,6 +231,25 @@ private struct TrustedControllersSection: View {
                 }
             }
         }
+    }
+}
+
+private struct QuietDestructiveButton: View {
+
+    let title: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(SkipperFont.caption.weight(.medium))
+                .foregroundStyle(SkipperColor.critical)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .opacity(hovering ? 0.7 : 1)
     }
 }
 
@@ -309,7 +334,7 @@ struct DeviceKeyFooter: View {
                     Image(systemName: "key.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(SkipperColor.textTertiary)
-                    Text("Key: \(identity.keyStorageLabel)")
+                    Text("Kept in \(identity.keyStorageLabel)")
                         .font(SkipperFont.caption)
                         .foregroundStyle(SkipperColor.textTertiary)
                 }

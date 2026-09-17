@@ -73,7 +73,7 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
 ## 2. Components
 
 - **Window shell** — one window. Unified toolbar, no title; its centre holds the role switch (a
-  two-segment control: "This Mac (Host)" / "Control Another Mac"). Hidden during a session or an
+  two-segment control: "Share this Mac" / "Connect to a Mac"). Hidden during a session or an
   identity failure. Body: `canvas`, a scrolling centred column of cards.
 - **Hero** — `surface` card with a 35 %-accent stroke, `xl` padding. Title + one-line caption at
   top-left, the screen's single status pill top-right.
@@ -95,9 +95,10 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
   focus = 2 pt `accent` stroke. Codes use `code` (mono). Access code is a secure field.
 - **Banner** — `medium` radius, tone-soft fill, 35 % tone stroke; glyph, title (`bodyEmphasis`),
   optional message (`caption`), actions on the right (primary first).
-- **Account block** — signed out: primary "Sign in to SkipperDesk" + quiet "Create account" (same
-  browser flow, `mode=signup` appended) and one sentence, "Sign in to host this Mac and manage your
-  plan." In progress: small spinner, "Continue in your browser…", quiet Cancel. Signed in: 36 pt
+- **Account block** — signed out: a single primary action, "Sign in to SkipperDesk", and one
+  sentence, "Sign in to host this Mac and manage your plan." The website decides whether the
+  person is new and handles sign-up itself; the app never offers a separate "create account"
+  path. In progress: small spinner, "Continue in your browser…", quiet Cancel. Signed in: 36 pt
   accent avatar with the account's initial, the account label, the plan line, a tertiary
   "This Mac: <name>" line, and "Sign Out…" inside an ellipsis menu (confirmed by an alert). Error: one
   critical sentence + "Try again". Controllers never need to sign in.
@@ -128,7 +129,8 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
 | Missing permission | Host only, only when missing | attention banner per permission: Open Settings + Ask macOS |
 
 Nothing is shown for a healthy permission. Trusted controllers list each Mac with its label and
-when it last connected; "Remove All…" forgets them after a confirmation (Refresh also does).
+when it last connected; each row has a quiet destructive "Remove" for just that one (no
+confirmation), and "Remove All…" forgets them all after a confirmation (Refresh also does).
 
 ## 4. Copy rules
 
@@ -141,8 +143,10 @@ when it last connected; "Remove All…" forgets them after a confirmation (Refre
 4. **Sentence case** for titles, toggles and rows; Title Case only for button verbs ("Link this
    Mac" is the exception that reads as a sentence). Ellipsis (…) on any button that asks again.
 5. **Say the consequence before destroying**: every destructive confirmation states who loses access.
-6. **Account vocabulary:** say "sign in" / "sign out" / "create account" / "plan". Never "link",
-   "unlink", "token" or "device key" in user-facing text.
+6. **Account vocabulary:** say "sign in" / "sign out" / "plan". Never "link", "unlink", "token" or
+   "device key" in user-facing text. The app never says "create account" or offers a sign-up
+   action of its own — signing in always goes to the website, which decides whether the person
+   is new.
 7. The product name is always "SkipperDesk"; the other computer is "the other Mac" / "this Mac".
 
 ## 5. App icon
