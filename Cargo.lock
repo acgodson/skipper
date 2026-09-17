@@ -1311,6 +1311,7 @@ dependencies = [
  "base64 0.22.1",
  "rc-identity",
  "rc-session",
+ "serde",
  "serde_json",
 ]
 
@@ -1376,6 +1377,7 @@ dependencies = [
 name = "rc-session"
 version = "0.1.0"
 dependencies = [
+ "rand_core",
  "rc-proto",
  "serde",
  "serde_json",

@@ -1,14 +1,23 @@
 import CSkipperCore
 import Foundation
 
-/// `step` is 1-based; `payload` is opaque and base64, exactly as it travels on the wire.
+/// `step` is 1...3; `payload` is opaque and base64, exactly as it travels on the wire.
 public struct PakeMessage: Equatable, Sendable {
+    public static let steps: ClosedRange<Int32> = 1...3
+
     public let step: Int
     public let payload: String
 
     public init(step: Int, payload: String) {
         self.step = step
         self.payload = payload
+    }
+
+    /// The step as the core takes it, or nil for anything outside 1...3;
+    /// never a trap, whatever the wire said.
+    public var wireStep: Int32? {
+        guard let step = Int32(exactly: step), Self.steps.contains(step) else { return nil }
+        return step
     }
 }
 
@@ -79,10 +88,20 @@ public final class PakeExchange {
     /// `isAuthenticationFailure` is true; any other failure is a broken exchange.
     @discardableResult
     public func step(_ incoming: PakeMessage?) throws -> PakeMessage? {
+        let stepNumber: Int32
+        switch incoming {
+        case nil:
+            stepNumber = 0
+        case let message?:
+            guard let wireStep = message.wireStep else {
+                throw SkipperCoreError("a pake step must be 1, 2 or 3")
+            }
+            stepNumber = wireStep
+        }
         let result: StepResult = try CoreBoundary.withText([incoming?.payload]) { text in
             Result {
                 try CoreBoundary.call {
-                    skipper_pake_step(handle, Int32(incoming?.step ?? 0), text[0].base, text[0].count)
+                    skipper_pake_step(handle, stepNumber, text[0].base, text[0].count)
                 }
             }
         }.get()

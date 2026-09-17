@@ -7,6 +7,7 @@ description = "PROTOCOL.md §4 as executable code. A port of the Swift SessionSt
 
 [dependencies]
 rc-proto = { path = "../rc-proto" }
+rand_core.workspace = true
 
 [dev-dependencies]
 serde.workspace = true

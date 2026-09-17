@@ -9,7 +9,8 @@ public struct SkipperConsentPrompt: View {
 
     private let title: String
     private let message: String
-    private let detail: String?
+    private let notice: String?
+    private let details: [String]
     private let countdown: String
     private let style: SkipperConsentPromptStyle
     private let allowEnabled: Bool
@@ -19,7 +20,8 @@ public struct SkipperConsentPrompt: View {
     public init(
         title: String,
         message: String,
-        detail: String? = nil,
+        notice: String? = nil,
+        details: [String] = [],
         countdown: String,
         style: SkipperConsentPromptStyle = .window,
         allowEnabled: Bool = true,
@@ -28,7 +30,8 @@ public struct SkipperConsentPrompt: View {
     ) {
         self.title = title
         self.message = message
-        self.detail = detail
+        self.notice = notice
+        self.details = details
         self.countdown = countdown
         self.style = style
         self.allowEnabled = allowEnabled
@@ -48,11 +51,17 @@ public struct SkipperConsentPrompt: View {
                         .font(style == .window ? SkipperFont.heading : SkipperFont.bodyEmphasis)
                         .foregroundStyle(SkipperColor.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if let notice {
+                        Text(notice)
+                            .font(SkipperFont.caption.weight(.semibold))
+                            .foregroundStyle(SkipperColor.attention)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Text(message)
                         .font(SkipperFont.caption)
                         .foregroundStyle(SkipperColor.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    if let detail {
+                    ForEach(details, id: \.self) { detail in
                         Text(detail)
                             .font(SkipperFont.codeCaption)
                             .foregroundStyle(SkipperColor.textTertiary)

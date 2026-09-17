@@ -96,12 +96,31 @@ private func action(from obj: [String: JSONValue], _ ctx: String) throws -> Sess
                         reason: try string(obj, "reason", ctx))
     case "promptForConsent":
         guard let at = obj["expiresAt"]?.number else { throw fail("\(ctx): expiresAt") }
-        return .promptForConsent(expiresAt: Date(timeIntervalSinceReferenceDate: at))
+        guard let replaces = obj["replacesPrevious"]?.boolean else { throw fail("\(ctx): replacesPrevious") }
+        return .promptForConsent(expiresAt: Date(timeIntervalSinceReferenceDate: at),
+                                 promptID: "", replacesPrevious: replaces)
     case "dismissConsentPrompt":
         let name = try string(obj, "outcome", ctx)
         guard let outcome = ConsentOutcome(rawValue: name) else { throw fail("\(ctx): outcome \(name)") }
         return .dismissConsentPrompt(outcome: outcome)
     case let other: throw fail("\(ctx): unknown action \(other)")
+    }
+}
+
+private func withoutPromptIDs(_ actions: [SessionAction]) -> [SessionAction] {
+    actions.map { action in
+        guard case .promptForConsent(let expiresAt, _, let replaces) = action else { return action }
+        return .promptForConsent(expiresAt: expiresAt, promptID: "", replacesPrevious: replaces)
+    }
+}
+
+private func promptID(for event: [String: JSONValue], remembered: [String], _ ctx: String) throws -> String? {
+    let placeholder = String(repeating: "0", count: 32)
+    switch event["prompt"]?.string {
+    case "current": return remembered.last ?? placeholder
+    case "previous": return remembered.count >= 2 ? remembered[remembered.count - 2] : placeholder
+    case nil: return event["promptId"]?.string
+    case let other?: throw fail("\(ctx): unknown prompt reference \(other)")
     }
 }
 
@@ -129,12 +148,13 @@ public let scenarioSuite = TestSuite("Shared state-machine scenarios (through th
     TestCase("every shared scenario passes through the FFI-backed machine") {
         let data = try Data(contentsOf: scenariosURL())
         let file = try JSONDecoder().decode(Scenarios.self, from: data)
-        try expectGreaterThanOrEqual(file.scenarios.count, 30, "scenario file looks truncated")
+        try expectGreaterThanOrEqual(file.scenarios.count, 80, "scenario file looks truncated")
         var stepsRun = 0
 
         for scenario in file.scenarios {
             let role: Wire.Role = scenario.role == "host" ? .host : .controller
             let machine = SessionStateMachine(role: role)
+            var promptIDs: [String] = []
 
             for (i, step) in scenario.steps.enumerated() {
                 let ctx = "scenario \(scenario.name) step \(i) (at \(step.at)s)"
@@ -195,7 +215,10 @@ public let scenarioSuite = TestSuite("Shared state-machine scenarios (through th
                     actions = machine.pakeSucceeded(now: now)
                 case "consentAnswered":
                     guard let allow = e["allow"]?.boolean else { throw fail("\(ctx): allow") }
-                    actions = machine.consentAnswered(allow: allow, sessionID: e["sessionId"]?.string, now: now)
+                    actions = machine.consentAnswered(
+                        allow: allow, promptID: try promptID(for: e, remembered: promptIDs, ctx), now: now)
+                case "iceServersArrived":
+                    actions = machine.iceServersArrived(sessionID: try string(e, "sessionId", ctx))
                 case "setConsentRequired":
                     guard let required = e["required"]?.boolean else { throw fail("\(ctx): required") }
                     machine.consentRequired = required
@@ -204,12 +227,18 @@ public let scenarioSuite = TestSuite("Shared state-machine scenarios (through th
                     throw fail("\(ctx): unknown event \(other)")
                 }
 
+                for case .promptForConsent(_, let id, _) in actions ?? [] {
+                    try expectEqual(id.count, 32, "\(ctx): prompt id")
+                    try expectNotEqual(id, machine.sessionID ?? "", "\(ctx): a prompt is never named by the session id")
+                    try expectFalse(promptIDs.contains(id), "\(ctx): a prompt id was reused")
+                    promptIDs.append(id)
+                }
                 try expectEqual(machine.lastRejection != nil, step.expectRejected ?? false,
                                 "\(ctx): rejection \(machine.lastRejection ?? "none")")
                 if let expected = step.expectActions {
                     let want = try expected.map { try action(from: $0, ctx) }
                     guard let got = actions else { throw fail("\(ctx): expectActions on a non-action event") }
-                    try expectEqual(got, want, "\(ctx): actions differ")
+                    try expectEqual(withoutPromptIDs(got), want, "\(ctx): actions differ")
                 }
                 if let phase = step.expectPhase {
                     try expect(phaseMatches(machine.phase, phase),
@@ -236,6 +265,6 @@ public let scenarioSuite = TestSuite("Shared state-machine scenarios (through th
                 stepsRun += 1
             }
         }
-        try expectGreaterThanOrEqual(stepsRun, 200, "only \(stepsRun) steps ran; file looks truncated")
+        try expectGreaterThanOrEqual(stepsRun, 550, "only \(stepsRun) steps ran; file looks truncated")
     },
 ])

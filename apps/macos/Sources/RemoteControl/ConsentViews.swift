@@ -15,12 +15,13 @@ struct ConsentPromptView: View {
             SkipperConsentPrompt(
                 title: request.title,
                 message: ConsentRequest.message,
-                detail: request.controllerDeviceID.map { "Device ID \(DeviceID.formatted($0))" },
+                notice: request.notice,
+                details: [request.deviceIDLine, request.fingerprintLine].compactMap { $0 },
                 countdown: request.countdown(now: context.date),
                 style: style,
                 allowEnabled: request.allowEnabled(now: context.date),
-                allow: { model.answerConsent(allow: true, sessionID: request.sessionID) },
-                decline: { model.answerConsent(allow: false, sessionID: request.sessionID) }
+                allow: { model.answerConsent(allow: true, promptID: request.promptID) },
+                decline: { model.answerConsent(allow: false, promptID: request.promptID) }
             )
         }
     }

@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 
 mod consent;
 mod pake;
+mod relay;
 mod sdp;
 mod signing;
 mod text;
@@ -68,9 +69,16 @@ fn action_json(action: &SessionAction) -> Value {
         SessionAction::SendBye { session_id, reason } => {
             json!({ "action": "sendBye", "sessionId": session_id, "reason": reason })
         }
-        SessionAction::PromptForConsent { expires_at_ms } => {
-            json!({ "action": "promptForConsent", "expiresAtMs": expires_at_ms })
-        }
+        SessionAction::PromptForConsent {
+            expires_at_ms,
+            prompt_id,
+            replaces_previous,
+        } => json!({
+            "action": "promptForConsent",
+            "expiresAtMs": expires_at_ms,
+            "promptId": prompt_id,
+            "replacesPrevious": replaces_previous,
+        }),
         SessionAction::DismissConsentPrompt { outcome } => {
             json!({ "action": "dismissConsentPrompt", "outcome": outcome.name() })
         }
@@ -128,6 +136,7 @@ fn state_json(machine: &SessionStateMachine) -> Value {
         "serverAdvertisedSessionId": machine.server_advertised_session_id,
         "consentRequired": machine.consent_required,
         "consentExpiresAtMs": machine.consent_expires_at_ms(),
+        "consentPromptId": machine.consent_prompt_id(),
         "peerStarted": machine.peer_started(),
     })
 }
@@ -510,13 +519,25 @@ pub unsafe extern "C" fn skipper_session_pake_succeeded(
 pub unsafe extern "C" fn skipper_session_consent_answered(
     session: *mut SkipperSession,
     allow: bool,
-    session_id: *const u8,
-    session_id_len: usize,
+    prompt_id: *const u8,
+    prompt_id_len: usize,
     now_ms: i64,
 ) -> *mut c_char {
     dispatch(session, |machine| {
-        let session_id = unsafe { optional_text(session_id, session_id_len, "session_id") }?;
-        Ok(machine.consent_answered(allow, session_id, now_ms))
+        let prompt_id = unsafe { optional_text(prompt_id, prompt_id_len, "prompt_id") }?;
+        Ok(machine.consent_answered(allow, prompt_id, now_ms))
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn skipper_session_ice_servers_arrived(
+    session: *mut SkipperSession,
+    session_id: *const u8,
+    session_id_len: usize,
+) -> *mut c_char {
+    dispatch(session, |machine| {
+        let session_id = unsafe { required_text(session_id, session_id_len, "session_id") }?;
+        Ok(machine.ice_servers_arrived(session_id))
     })
 }
 

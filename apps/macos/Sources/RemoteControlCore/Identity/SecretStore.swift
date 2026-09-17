@@ -9,6 +9,7 @@ public enum SecretAccount: String, CaseIterable {
     case guessCounters = "guess-counters"
     case deviceIDCertificate = "device-id-cert"
     case hostKeyPins = "host-key-pins"
+    case pendingHostKeys = "pending-host-keys"
     case hostSettings = "host-settings"
 
     public static let survivesIdentityReset: Set<SecretAccount> = [.hostSettings]
@@ -149,13 +150,31 @@ public struct SecretStore {
 
     // MARK: This Mac's Device ID certificate (PROTOCOL.md v4 §1)
 
-    public func deviceIDCertificate() throws -> String? {
-        try read(.deviceIDCertificate)
+    /// A store written before certificates were kept per id holds one bare
+    /// certificate; it belongs to `currentDeviceID`.
+    public func deviceIDCertificates(currentDeviceID: String) throws -> DeviceIDCertificates {
+        guard let blob = try blobs.load(.deviceIDCertificate) else { return DeviceIDCertificates() }
+        if let book = try? Self.decoder.decode(DeviceIDCertificates.self, from: blob) { return book }
+        guard let legacy = try? Self.decoder.decode(String.self, from: blob) else {
+            throw SecretStoreError.unreadable(.deviceIDCertificate)
+        }
+        var book = DeviceIDCertificates()
+        book.confirmed(deviceID: currentDeviceID, certificate: legacy)
+        return book
     }
 
-    public func saveDeviceIDCertificate(_ certificate: String) throws {
-        guard !certificate.isEmpty else { return }
-        try write(certificate, to: .deviceIDCertificate)
+    public func saveDeviceIDCertificates(_ certificates: DeviceIDCertificates) throws {
+        try write(certificates, to: .deviceIDCertificate)
+    }
+
+    // MARK: Host keys waiting for their first proof (controller side)
+
+    public func pendingHostKeys() throws -> [String: String] {
+        try map(.pendingHostKeys)
+    }
+
+    public func savePendingHostKeys(_ keys: [String: String]) throws {
+        try write(keys, to: .pendingHostKeys)
     }
 
     // MARK: Host keys pinned per Device ID (controller side)

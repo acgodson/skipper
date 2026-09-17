@@ -123,15 +123,23 @@ public let stateMachineSuite = TestSuite("Session state machine (the coordinator
         _ = machine.sessionGranted(grant(), now: t0)
 
         let prompt = machine.pakeSucceeded(now: t0)
-        try expectEqual(prompt, [.promptForConsent(expiresAt: t0.addingTimeInterval(30))])
+        let promptID = try expectNotNil(machine.consentPromptID)
+        try expectEqual(prompt, [.promptForConsent(expiresAt: t0.addingTimeInterval(30),
+                                                   promptID: promptID, replacesPrevious: false)])
+        try expectNotEqual(promptID, sessionOne)
         try expectEqual(machine.phase, .awaitingConsent)
         try expectEqual(machine.consentExpiresAt, t0.addingTimeInterval(30))
         try expectEqual(SessionState(phase: machine.phase, sessionID: machine.sessionID), .connecting,
                         "waiting for the owner is not a session anyone is in yet")
 
-        let allowed = machine.consentAnswered(allow: true, now: t0.addingTimeInterval(3))
+        try expectEqual(machine.consentAnswered(allow: true, promptID: nil, now: t0.addingTimeInterval(3)), [],
+                        "an Allow must name its prompt")
+        try expectEqual(machine.consentAnswered(allow: true, promptID: promptID, now: t0.addingTimeInterval(1)), [],
+                        "an Allow inside the delay is refused")
+        let allowed = machine.consentAnswered(allow: true, promptID: promptID, now: t0.addingTimeInterval(3))
         try expectEqual(allowed, [.dismissConsentPrompt(outcome: .allowed), .startPeerConnection(offerer: false)])
         try expectEqual(machine.consentExpiresAt, nil)
+        try expectNil(machine.consentPromptID)
     },
 
     TestCase("every prompt that was not allowed counts against the controller") {
@@ -222,7 +230,7 @@ public let stateMachineSuite = TestSuite("Session state machine (the coordinator
         _ = machine.signalingAuthenticated(activeSessionID: nil)
         _ = machine.sessionGranted(grant(), now: t0)
         _ = machine.pakeSucceeded(now: t0)
-        _ = machine.consentAnswered(allow: true, now: t0.addingTimeInterval(2))
+        _ = machine.consentAnswered(allow: true, promptID: machine.consentPromptID, now: t0.addingTimeInterval(2))
         _ = machine.iceStateChanged(to: .connected, now: t0.addingTimeInterval(3))
         try expectEqual(machine.phase, .live)
         try expectEqual(RemoteSignalDisposition.of(signalSessionID: sessionOne, machine: machine, hasPeer: true),
@@ -243,7 +251,8 @@ public let stateMachineSuite = TestSuite("Session state machine (the coordinator
         try expectEqual(produced, [])
         try expectFalse(machine.peerStarted)
 
-        let declined = machine.consentAnswered(allow: false, sessionID: sessionB, now: t0.addingTimeInterval(14))
+        let declined = machine.consentAnswered(allow: false, promptID: machine.consentPromptID,
+                                               now: t0.addingTimeInterval(14))
         try expect(declined.contains(.teardownPeerConnection))
         try expect(declined.contains(.sendBye(sessionID: sessionB, reason: Wire.ByeReason.declined)))
         try expectFalse(declined.contains(.startPeerConnection(offerer: false)))
@@ -261,6 +270,53 @@ public let stateMachineSuite = TestSuite("Session state machine (the coordinator
         _ = machine.sessionGranted(grant(controller: "Evil Mac"))
         try expectEqual(machine.lastRejection, nil)
         try expectEqual(machine.peerDeviceID, nil, "the prompt then says \"another Mac\"")
+    },
+
+    TestCase("review C2: a replaced prompt's Allow never admits the controller that replaced it") {
+        let t0 = Date(timeIntervalSince1970: 1_756_000_000)
+        let machine = SessionStateMachine(role: .host)
+        machine.consentRequired = true
+        _ = machine.signalingAuthenticated(activeSessionID: nil)
+        _ = machine.sessionGranted(grant(), now: t0)
+        _ = machine.pakeSucceeded(now: t0)
+        let promptA = try expectNotNil(machine.consentPromptID)
+
+        let replaced = machine.sessionGranted(grant(controller: "739000588"), now: t0.addingTimeInterval(5))
+        try expectEqual(replaced, [.teardownPeerConnection, .dismissConsentPrompt(outcome: .cancelled)],
+                        "the same session id for another controller still dismisses the open prompt")
+        let prompt = machine.pakeSucceeded(now: t0.addingTimeInterval(6))
+        let promptB = try expectNotNil(machine.consentPromptID)
+        try expectNotEqual(promptA, promptB)
+        try expectEqual(prompt, [.promptForConsent(expiresAt: t0.addingTimeInterval(36),
+                                                   promptID: promptB, replacesPrevious: true)])
+
+        try expectEqual(machine.consentAnswered(allow: true, promptID: promptA, now: t0.addingTimeInterval(9)), [])
+        try expectEqual(machine.consentAnswered(allow: true, promptID: sessionOne, now: t0.addingTimeInterval(9)), [])
+        try expectEqual(machine.consentAnswered(allow: true, promptID: promptB, now: t0.addingTimeInterval(7)), [])
+        try expectEqual(machine.tick(now: t0.addingTimeInterval(8)), [], "a refused Allow is not queued")
+        try expectEqual(machine.phase, .awaitingConsent)
+        try expectFalse(machine.peerStarted)
+    },
+
+    TestCase("a relay fallback ends with its session; a forced relay does not") {
+        let t0 = Date(timeIntervalSince1970: 1_756_000_000)
+        let machine = SessionStateMachine(role: .controller)
+        _ = machine.signalingAuthenticated(activeSessionID: nil)
+        _ = machine.sessionGranted(grant(), now: t0)
+        _ = machine.pakeSucceeded(now: t0)
+        _ = machine.iceStateChanged(to: .failed, now: t0)
+        try expect(machine.relayOnly)
+        _ = machine.sessionGranted(grant("5e5500000000000000000000000000b2"), now: t0)
+        try expectFalse(machine.relayOnly, "review leftover: relay_only no longer carries over")
+
+        machine.setRelayOnly(true)
+        _ = machine.closeLocally(reason: Wire.ByeReason.userEnded)
+        _ = machine.sessionGranted(grant(), now: t0)
+        try expect(machine.relayOnly, "RC_ICE_POLICY=relay holds for every session")
+        _ = machine.pakeSucceeded(now: t0)
+        try expectEqual(machine.iceServersArrived(sessionID: sessionOne), [.restartICE(relayOnly: true)])
+        try expectEqual(machine.iceServersArrived(sessionID: "5e5500000000000000000000000000b2"), [])
+        try expect(machine.lastRejection != nil, "a push for another session is refused")
     },
 
     TestCase("input_reset is a no-op at the transport when no channel is open") {

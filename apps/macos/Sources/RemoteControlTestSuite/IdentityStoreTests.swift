@@ -142,31 +142,36 @@ public let identitySuite = TestSuite("IdentityStore", [
         }
     },
 
-    TestCase("server-assigned Device ID seam replaces the local one and persists") {
+    TestCase("a server-assigned Device ID replaces the local one and persists; a malformed one is refused") {
         try await withIdentity { fileStore in
             let store = try IdentityStore(fileStore: fileStore)
             let local = store.deviceID
 
-            try store.adoptServerAssignedDeviceID("482 719 351")
+            try store.recordRegistration(deviceID: "482719351", certificate: nil, presentedDeviceID: nil)
             try expectEqual(store.deviceID, "482719351")
             try expectNotEqual(store.deviceID, local)
+            try expect(store.isServerRegistered)
             try expectEqual(try IdentityStore(fileStore: fileStore).deviceID, "482719351", "must persist")
 
-            try store.adoptServerAssignedDeviceID("nonsense")
-            try expectEqual(store.deviceID, "482719351", "an invalid assignment must be ignored")
+            for bad in ["nonsense", "482 719 351", "48271935", "4827193510", "\u{0664}82719351", ""] {
+                do {
+                    try store.recordRegistration(deviceID: bad, certificate: nil, presentedDeviceID: nil)
+                    throw fail("\(bad) must be refused")
+                } catch let error as IdentityRegistrationError {
+                    try expectEqual(error, .malformedDeviceID, bad)
+                }
+                try expectEqual(store.deviceID, "482719351", "an invalid assignment changes nothing")
+            }
         }
     },
 
     TestCase("a server reassignment keeps the key and persists the new Device ID") {
         try await withIdentity { fileStore in
             let store = try IdentityStore(fileStore: fileStore)
-            try store.adoptServerAssignedDeviceID("482719351")
+            try store.recordRegistration(deviceID: "482719351", certificate: nil, presentedDeviceID: nil)
             let key = store.publicKeyBase64
 
-            try store.adoptReassignedDeviceID("482719351", previous: "482719351")
-            try expectEqual(store.deviceID, "482719351")
-
-            try store.adoptReassignedDeviceID("913004287", previous: "482719351")
+            try store.recordRegistration(deviceID: "913004287", certificate: nil, presentedDeviceID: nil)
             try expectEqual(store.deviceID, "913004287")
             try expectEqual(store.publicKeyBase64, key, "a new id must never mean a new key")
             try expectEqual(try IdentityStore(fileStore: fileStore).deviceID, "913004287", "must persist")

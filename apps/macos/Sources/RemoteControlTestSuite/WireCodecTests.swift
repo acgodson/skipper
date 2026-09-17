@@ -2,10 +2,12 @@ import Foundation
 import RCTestKit
 import RemoteControlCore
 
+private let session = String(repeating: "c", count: 32)
+
 private func roundTrip<T: Codable & Equatable>(_ type: String, _ payload: T) throws -> T {
     let data = try Envelope.encode(type: type, id: "c-42", re: "r-7", ts: 1_755_600_000_000, payload: payload)
     let envelope = try Envelope.decode(data)
-    try expectEqual(envelope.v, 4)
+    try expectEqual(envelope.v, Wire.version)
     try expectEqual(envelope.type, type)
     try expectEqual(envelope.id, "c-42")
     try expectEqual(envelope.re, "r-7")
@@ -19,7 +21,7 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
         let data = try Envelope.encode(type: "connect_req", id: "c-17",
                                        payload: ConnectReqPayload(deviceId: "481930275"))
         let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        try expectEqual(object["v"] as? Int, 4)
+        try expectEqual(object["v"] as? Int, 5)
         try expectEqual(object["type"] as? String, "connect_req")
         try expectEqual(object["id"] as? String, "c-17")
         try expectNil(object["re"], "re must be absent, not null, on a request")
@@ -27,7 +29,7 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
         try expectEqual(payload["deviceId"] as? String, "481930275")
     },
 
-    TestCase("a version other than 3, including v2, is refused") {
+    TestCase("a version other than 5, including v2, is refused") {
         let bad = Data(#"{"v":2,"type":"hello","payload":{}}"#.utf8)
         do {
             _ = try Envelope.decode(bad)
@@ -38,21 +40,21 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
     },
 
     TestCase("a frame with no type, and a non-object frame, are refused") {
-        do { _ = try Envelope.decode(Data(#"{"v":4,"payload":{}}"#.utf8)); throw fail("missing type must throw") }
+        do { _ = try Envelope.decode(Data(#"{"v":5,"payload":{}}"#.utf8)); throw fail("missing type must throw") }
         catch let error as WireError { try expectEqual(error, .missingType) }
         do { _ = try Envelope.decode(Data("[1,2,3]".utf8)); throw fail("a JSON array must throw") }
         catch let error as WireError { try expectEqual(error, .notJSONObject) }
     },
 
     TestCase("an absent or null payload decodes as {}, matching the Go side") {
-        let absent = try Envelope.decode(Data(#"{"v":4,"type":"heartbeat"}"#.utf8))
+        let absent = try Envelope.decode(Data(#"{"v":5,"type":"heartbeat"}"#.utf8))
         _ = try absent.decodePayload(EmptyPayload.self)
-        let null = try Envelope.decode(Data(#"{"v":4,"type":"heartbeat","payload":null}"#.utf8))
+        let null = try Envelope.decode(Data(#"{"v":5,"type":"heartbeat","payload":null}"#.utf8))
         _ = try null.decodePayload(EmptyPayload.self)
     },
 
     TestCase("unknown payload members are ignored, as receivers must") {
-        let frame = Data(#"{"v":4,"type":"presence","payload":{"deviceId":"481930275","online":true,"since":5,"future":42}}"#.utf8)
+        let frame = Data(#"{"v":5,"type":"presence","payload":{"deviceId":"481930275","online":true,"since":5,"future":42}}"#.utf8)
         let presence = try Envelope.decode(frame).decodePayload(PresencePayload.self)
         try expectEqual(presence, PresencePayload(deviceId: "481930275", online: true, since: 5))
     },
@@ -164,12 +166,12 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
 
     TestCase("sdp round-trips verbatim, and `restart` is omitted when unset") {
         let body = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
-        let plain = SDPPayload(sessionId: "s", sdpType: "offer", sdp: body)
+        let plain = SDPPayload(sessionId: session, sdpType: "offer", sdp: body)
         let decoded = try roundTrip("sdp", plain)
         try expectEqual(decoded.sdp, body, "the SDP body must survive byte-for-byte")
         try expectNil(decoded.restart)
 
-        let restart = SDPPayload(sessionId: "s", sdpType: "offer", sdp: body, restart: true)
+        let restart = SDPPayload(sessionId: session, sdpType: "offer", sdp: body, restart: true)
         try expectEqual(try roundTrip("sdp", restart).restart, true)
 
         let object = try JSONSerialization.jsonObject(
@@ -178,11 +180,11 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
     },
 
     TestCase("ice round-trips, including the end-of-candidates marker") {
-        let candidate = ICEPayload(sessionId: "s",
+        let candidate = ICEPayload(sessionId: session,
                                    candidate: "candidate:1 1 udp 2113937151 192.0.2.1 54321 typ host",
                                    sdpMid: "0", sdpMLineIndex: 0)
         try expectEqual(try roundTrip("ice", candidate), candidate)
-        let end = ICEPayload(sessionId: "s", candidate: "")
+        let end = ICEPayload(sessionId: session, candidate: "")
         try expectEqual(try roundTrip("ice", end), end)
     },
 

@@ -35,6 +35,26 @@ public enum DevicePublicKey {
         (try? parse(pubkey))?.canonical == true
     }
 
+    /// Whether two spellings name the same device key; a value that is not a
+    /// device key matches nothing.
+    public static func same(_ first: String?, _ second: String?) -> Bool {
+        guard let first, let second, let key = try? canonical(first) else { return false }
+        return (try? canonical(second)) == key
+    }
+
+    /// Four groups of four hex digits of SHA-256 over the key, for a person
+    /// to compare between two Macs.
+    public static func fingerprint(_ pubkey: String) throws -> String {
+        let result: FingerprintResult = try CoreBoundary.withText([pubkey]) { text in
+            Swift.Result { try CoreBoundary.call { skipper_pubkey_fingerprint(text[0].base, text[0].count) } }
+        }.get()
+        return result.fingerprint
+    }
+
+    private struct FingerprintResult: Decodable {
+        let fingerprint: String
+    }
+
     private static func parse(_ pubkey: String) throws -> Result {
         try CoreBoundary.withText([pubkey]) { text in
             Swift.Result { try CoreBoundary.call { skipper_pubkey_canonical(text[0].base, text[0].count) } }

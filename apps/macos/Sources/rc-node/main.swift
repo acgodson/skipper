@@ -32,8 +32,8 @@ final class Node {
         guard let consentAnswer, consentAnswer != .timeout else { return }
         Task {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            emit("consent_answer", ["allow": consentAnswer == .allow, "sessionId": request.sessionID])
-            await coordinator.answerConsent(allow: consentAnswer == .allow)
+            emit("consent_answer", ["allow": consentAnswer == .allow, "promptId": request.promptID])
+            await coordinator.answerConsent(allow: consentAnswer == .allow, promptID: request.promptID)
         }
     }
 
@@ -94,6 +94,8 @@ final class Node {
                 "iceServers": servers.count,
                 "turn": servers.contains { $0.carriesCredentials },
             ])
+        case .iceServers(let sessionID, let count, let turn):
+            emit("ice_servers", ["sessionId": sessionID, "iceServers": count, "turn": turn])
         case .resumed(let sessionID, let peerAttached):
             emit("resumed", ["sessionId": sessionID, "peerAttached": peerAttached, "usedAccessCode": false])
         case .silentReconnect(let reason):
@@ -127,7 +129,10 @@ final class Node {
         case .consentRequested(let request):
             emit("consent_prompt", [
                 "title": request.title,
-                "sessionId": request.sessionID,
+                "promptId": request.promptID,
+                "sessionId": coordinator.sessionID ?? "",
+                "fingerprint": request.controllerFingerprint ?? "",
+                "replacesPrevious": request.replacesPrevious,
                 "secondsRemaining": request.secondsRemaining(),
             ])
             answer(request)
@@ -408,6 +413,7 @@ final class Node {
                 "signaling": describe(coordinator.signalingState),
                 "ice": coordinator.iceState.rawValue,
                 "relayOnly": coordinator.isRelayOnly,
+                "sessionTurn": coordinator.signaling.holdsSessionICECredentials,
                 "channels": coordinator.dataChannelsOpen,
                 "sessionId": coordinator.sessionID ?? "",
                 "presence": coordinator.presence.state.rawValue,

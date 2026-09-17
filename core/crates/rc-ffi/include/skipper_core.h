@@ -13,7 +13,8 @@
  *     "iceState":S,
  *     "sessionId":S|null, "sessionToken":S|null, "peerDeviceId":S|null,
  *     "rememberedAccessCode":S|null, "serverAdvertisedSessionId":S|null,
- *     "consentRequired":B, "consentExpiresAtMs":N|null, "peerStarted":B } }
+ *     "consentRequired":B, "consentExpiresAtMs":N|null,
+ *     "consentPromptId":S|null, "peerStarted":B } }
  * or, rejected: { "ok": false, "error": "<message>", "kind"?: "<kind>" }; a
  * session call the machine refused also carries its current "state" and
  * performs no action.
@@ -109,8 +110,10 @@ char *skipper_session_user_ended(SkipperSession *session,
                                  const uint8_t *reason, size_t reason_len);
 
 /*
- * A session that already runs on TURN relay only. The state machine never
- * asks for a relay-only ICE restart while this is true.
+ * The relay policy every session starts with (RC_ICE_POLICY=relay). The state
+ * machine never asks for a relay-only ICE restart while it is true. A
+ * session's own fallback to relay (after ICE failed) ends with that session:
+ * session_granted and close_locally return to this value.
  */
 char *skipper_session_set_relay_only(SkipperSession *session, bool relay_only);
 
@@ -122,7 +125,8 @@ char *skipper_session_set_remembered_access_code(SkipperSession *session,
 /*
  * Host consent (PROTOCOL.md §2.17 Consent). The peer connection starts only
  * after pake_succeeded. A host with consent_required enters "awaitingConsent"
- * instead and emits promptForConsent{"expiresAtMs":N}; consent_answered or the
+ * instead and emits promptForConsent{"expiresAtMs":N,"promptId":S,
+ * "replacesPrevious":B}; consent_answered or the
  * 30 s tick timeout leaves it with dismissConsentPrompt{"outcome":S}, S one of
  * "allowed", "declined", "timedOut", "cancelled". Declined and timed out end
  * the session with bye{declined}. Either side whose peer connection has not
@@ -130,10 +134,15 @@ char *skipper_session_set_remembered_access_code(SkipperSession *session,
  *
  * session_granted always emits teardownPeerConnection first and resets every
  * per-session value; ICE events are ignored until the machine itself emitted
- * startPeerConnection, and always while awaitingConsent. Decline (and the
- * timeout) works whenever a prompt is open; Allow only in awaitingConsent and
- * not before 1.5 s after the prompt opened. session_id (nullable) names the
- * prompt being answered; an answer for another session changes nothing.
+ * startPeerConnection, and always while awaitingConsent.
+ *
+ * promptId is a random name the core gives each prompt; it is never the
+ * server's session id. prompt_id names the prompt being answered: an answer
+ * naming any other prompt changes nothing. Allow needs the name, the machine
+ * in awaitingConsent, and 1.5 s since the prompt opened; an earlier Allow is
+ * refused (never deferred). Decline with a NULL name is the host's own
+ * decision. replacesPrevious is true when a session_granted dismissed an open
+ * prompt before this one.
  *
  * Server-supplied values are checked: a session id must be 32 lowercase hex,
  * a device id 9 digits. A call whose input fails returns ok:false and
@@ -143,8 +152,17 @@ char *skipper_session_set_remembered_access_code(SkipperSession *session,
 char *skipper_session_pake_succeeded(SkipperSession *session, int64_t now_ms);
 
 char *skipper_session_consent_answered(SkipperSession *session, bool allow,
-                                       const uint8_t *session_id, size_t session_id_len,
+                                       const uint8_t *prompt_id, size_t prompt_id_len,
                                        int64_t now_ms);
+
+/*
+ * Protocol v5 ice_servers push for session_id. ok:false when session_id is
+ * malformed or not this machine's session (the push is then ignored). A
+ * relay-only offerer whose link is not up and has no restart pending emits
+ * restartICE{"relayOnly":true}; otherwise no action.
+ */
+char *skipper_session_ice_servers_arrived(SkipperSession *session,
+                                          const uint8_t *session_id, size_t session_id_len);
 
 char *skipper_session_set_consent_required(SkipperSession *session, bool consent_required);
 
@@ -173,6 +191,29 @@ char *skipper_consent_allowed(const uint8_t *ledger_json, size_t ledger_json_len
  * that is not a P-256 key is an error.
  */
 char *skipper_pubkey_canonical(const uint8_t *pubkey, size_t pubkey_len);
+
+/*
+ * What a person compares between two Macs: "fingerprint":S, four groups of
+ * four uppercase hex digits of SHA-256 over the canonical DER SPKI, joined by
+ * single spaces ("1A2B 3C4D 5E6F 7081"). Any spelling of the same key gives
+ * the same fingerprint.
+ */
+char *skipper_pubkey_fingerprint(const uint8_t *pubkey, size_t pubkey_len);
+
+/*
+ * Protocol v5: the exact schema of a relayed frame. frame_json is the whole
+ * envelope as received; its "type" must be "sdp", "ice" or "pake". Payload
+ * keys are exact-case and appear once; unknown keys and null members are
+ * refused, and every field is bounded: sessionId 32 lowercase hex; pake step
+ * an integer 1...3 and payload padded base64 of at most 4096 characters; sdp
+ * sdpType offer|answer, sdp at most 64 KiB starting "v=0" without NUL,
+ * fp/pubkey/sig/mac bounded; ice candidate empty (end of candidates) or an
+ * RFC 8839 candidate line of at most 1024 bytes with at most 16 extension
+ * pairs, sdpMid at most 32 media-id characters, sdpMLineIndex an integer
+ * 0...65535. The grammar is the one a v5 server applies before re-encoding.
+ *   "type":S, and for pake "step":N
+ */
+char *skipper_relayed_check(const uint8_t *frame_json, size_t frame_json_len);
 
 /*
  * The whole stored map {key: counter}: entries idle for 24 h are dropped,
@@ -226,7 +267,8 @@ SkipperPake *skipper_pake_new(int32_t role,
 void skipper_pake_free(SkipperPake *pake);
 
 /* Controller starts with step 0 and a NULL payload; later calls pass the step
- * and base64 payload from the peer's `pake` frame. */
+ * (1...3; anything else is an error) and base64 payload from the peer's
+ * `pake` frame. */
 char *skipper_pake_step(SkipperPake *pake, int32_t step,
                         const uint8_t *payload_base64, size_t payload_base64_len);
 

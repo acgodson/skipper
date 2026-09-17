@@ -360,9 +360,9 @@ final class AppModel: ObservableObject {
         settings.role == .controller && coordinator?.awaitingPeerAcceptance == true
     }
 
-    func answerConsent(allow: Bool, sessionID: String) {
+    func answerConsent(allow: Bool, promptID: String) {
         guard let coordinator else { return }
-        Task { await coordinator.answerConsent(allow: allow, sessionID: sessionID) }
+        Task { await coordinator.answerConsent(allow: allow, promptID: promptID) }
     }
 
     // MARK: - Host
@@ -440,6 +440,10 @@ final class AppModel: ObservableObject {
     func forgetPeerCode(forHost deviceID: String) {
         guard let canonical = DeviceID.canonicalize(deviceID) else { return }
         try? identity?.secrets.forgetPeerCode(forHost: canonical)
+    }
+
+    var ownFingerprint: String? {
+        identity.flatMap { try? DevicePublicKey.fingerprint($0.publicKeyBase64) }
     }
 
     var hostKeyMismatch: HostKeyMismatch? {

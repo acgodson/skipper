@@ -3,7 +3,7 @@ import Foundation
 
 public enum Wire {
 
-    public static let version = 4
+    public static let version = 5
 
     public enum MessageType {
         public static let challenge = "challenge"
@@ -32,6 +32,7 @@ public enum Wire {
         public static let refreshCode = "refresh_code"
         public static let refreshCodeOK = "refresh_code_ok"
         public static let pake = "pake"
+        public static let iceServers = "ice_servers"
         public static let error = "error"
     }
 
@@ -161,6 +162,13 @@ public struct Envelope: Equatable {
         let v = object["v"] as? Int ?? 0
         guard v == Wire.version else { throw WireError.unsupportedVersion(v) }
         guard let type = object["type"] as? String, !type.isEmpty else { throw WireError.missingType }
+        if RelayedFrame.types.contains(type) {
+            do {
+                try RelayedFrame.check(data)
+            } catch {
+                throw WireError.badPayload("\(type): \(error.localizedDescription)")
+            }
+        }
 
         let rawPayload: Data
         if let p = object["payload"], !(p is NSNull) {
@@ -329,6 +337,22 @@ public struct SessionGrantPayload: Codable, Equatable, CustomStringConvertible {
         self.hostPubkey = hostPubkey; self.controllerPubkey = controllerPubkey
         self.iceServers = iceServers
     }
+
+    /// Protocol v5: `connect_ok` and `session_start` carry STUN only; relay
+    /// credentials come later in `ice_servers`, so any that appear here are dropped.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        sessionToken = try container.decode(String.self, forKey: .sessionToken)
+        expiresAt = try container.decode(Int64.self, forKey: .expiresAt)
+        ttlSec = try container.decode(Int.self, forKey: .ttlSec)
+        hostDeviceId = try container.decode(String.self, forKey: .hostDeviceId)
+        controllerDeviceId = try container.decode(String.self, forKey: .controllerDeviceId)
+        hostPubkey = try container.decodeIfPresent(String.self, forKey: .hostPubkey)
+        controllerPubkey = try container.decodeIfPresent(String.self, forKey: .controllerPubkey)
+        iceServers = try container.decodeIfPresent([ICEServerSpec].self, forKey: .iceServers)?
+            .filter { !$0.carriesCredentials }
+    }
     public var description: String {
         "session(\(sessionId), host: \(hostDeviceId), controller: \(controllerDeviceId), token: <redacted>)"
     }
@@ -369,6 +393,16 @@ public struct RenewOKPayload: Codable, Equatable {
         self.sessionId = sessionId; self.sessionToken = sessionToken
         self.expiresAt = expiresAt; self.ttlSec = ttlSec
         self.iceServers = iceServers
+    }
+}
+
+/// Protocol v5: this session's complete ICE list, relay credentials included,
+/// pushed once metering starts and refreshed by `renew_ok`.
+public struct ICEServersPayload: Codable, Equatable {
+    public var sessionId: String
+    public var iceServers: [ICEServerSpec]
+    public init(sessionId: String, iceServers: [ICEServerSpec]) {
+        self.sessionId = sessionId; self.iceServers = iceServers
     }
 }
 
@@ -439,6 +473,17 @@ public struct PakePayload: Codable, Equatable {
 
     public init(sessionId: String, message: PakeMessage) {
         self.init(sessionId: sessionId, step: message.step, payload: message.payload)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        payload = try container.decode(String.self, forKey: .payload)
+        let wire = try container.decode(Int.self, forKey: .step)
+        guard let step = Int32(exactly: wire), PakeMessage.steps.contains(step) else {
+            throw WireBounds.OutOfRange(field: CodingKeys.step.stringValue)
+        }
+        self.step = Int(step)
     }
 
     public var message: PakeMessage { PakeMessage(step: step, payload: payload) }

@@ -155,19 +155,27 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
 
     TestCase("the consent prompt names a known controller and falls back to another Mac") {
         let expires = Date(timeIntervalSince1970: 1_756_000_030)
-        let known = ConsentRequest(sessionID: "s", controllerLabel: "481 930 275",
-                                   controllerDeviceID: "481930275", expiresAt: expires)
+        let known = ConsentRequest(promptID: "p", controllerLabel: "481 930 275",
+                                   controllerDeviceID: "481930275",
+                                   controllerFingerprint: "1A2B 3C4D 5E6F 7081", expiresAt: expires)
         try expectEqual(known.title, "Allow 481 930 275 to control this Mac?")
+        try expectEqual(known.deviceIDLine, "Device ID 481 930 275")
+        try expectEqual(known.fingerprintLine, "Fingerprint 1A2B 3C4D 5E6F 7081")
+        try expectNil(known.notice)
         for label in [nil, "", "   "] as [String?] {
-            let unknown = ConsentRequest(sessionID: "s", controllerLabel: label,
+            let unknown = ConsentRequest(promptID: "p", controllerLabel: label,
                                          controllerDeviceID: nil, expiresAt: expires)
             try expectEqual(unknown.title, "Allow another Mac to control this Mac?")
+            try expectNil(unknown.deviceIDLine)
         }
+        let replacing = ConsentRequest(promptID: "p", controllerLabel: nil, controllerDeviceID: nil,
+                                       replacesPrevious: true, expiresAt: expires)
+        try expectEqual(replacing.notice, "A different request replaced the previous one.")
     },
 
     TestCase("the consent countdown rounds up, pluralises, and never goes negative") {
         let expires = Date(timeIntervalSince1970: 1_756_000_030)
-        let request = ConsentRequest(sessionID: "s", controllerLabel: nil,
+        let request = ConsentRequest(promptID: "p", controllerLabel: nil,
                                      controllerDeviceID: nil, expiresAt: expires)
         try expectEqual(request.countdown(now: expires.addingTimeInterval(-30)), "Declines in 30 seconds")
         try expectEqual(request.countdown(now: expires.addingTimeInterval(-0.2)), "Declines in 1 second")

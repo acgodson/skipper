@@ -393,19 +393,35 @@ fn consent_answers_name_their_prompt_and_allow_waits() {
         session,
     );
     assert_eq!(prompt["actions"][0]["action"], "promptForConsent");
-    assert_eq!(
-        answer(true, Some(SESSION), 2_000)["actions"],
-        serde_json::json!([])
+    assert_eq!(prompt["actions"][0]["replacesPrevious"], false);
+    let prompt_id = prompt["actions"][0]["promptId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(prompt_id.len(), 32);
+    assert_ne!(
+        prompt_id, SESSION,
+        "a prompt is never named by the server's session id"
     );
+    assert_eq!(prompt["state"]["consentPromptId"], prompt_id.as_str());
     assert_eq!(
-        answer(true, Some("feedfacefeedfacefeedfacefeedface"), 2_500)["actions"],
-        serde_json::json!([])
+        answer(true, Some(&prompt_id), 2_000)["actions"],
+        serde_json::json!([]),
+        "too early: refused"
     );
-    let allowed = answer(true, Some(SESSION), 2_500);
+    for wrong in [Some(SESSION), None] {
+        assert_eq!(
+            answer(true, wrong, 2_500)["actions"],
+            serde_json::json!([]),
+            "{wrong:?}"
+        );
+    }
+    let allowed = answer(true, Some(&prompt_id), 2_500);
     assert_eq!(
         allowed["actions"][1]["action"], "startPeerConnection",
         "{allowed}"
     );
+    assert_eq!(allowed["state"]["consentPromptId"], Value::Null);
     unsafe { crate::skipper_session_free(session) };
 }
 
@@ -417,6 +433,11 @@ fn the_consent_budget_and_ledger_keys_cross_the_boundary() {
     assert_eq!(canonical["key"], key.as_str());
     assert_eq!(canonical["canonical"], true);
     let refused = take(unsafe { crate::consent::skipper_pubkey_canonical("host".as_ptr(), 4) });
+    assert_eq!(refused["ok"], false);
+    let fingerprint =
+        take(unsafe { crate::consent::skipper_pubkey_fingerprint(key.as_ptr(), key.len()) });
+    assert_eq!(fingerprint["fingerprint"].as_str().map(str::len), Some(19));
+    let refused = take(unsafe { crate::consent::skipper_pubkey_fingerprint("host".as_ptr(), 4) });
     assert_eq!(refused["ok"], false);
 
     let mut host = serde_json::json!({});

@@ -69,7 +69,7 @@ public final class PeerSession {
     private var ctrl: RTCDataChannel?
     private var hi: RTCDataChannel?
     private var bridge: PeerSessionBridge?
-    private let iceServers: [ICEServerSpec]
+    public private(set) var iceServers: [ICEServerSpec]
 
     private var outgoingMoveSeq: Int64 = 0
     private var moveGate = MoveSequenceGate()
@@ -165,6 +165,25 @@ public final class PeerSession {
             return false
         }
         RCLog.info("transport: ICE transport policy is now relay-only")
+        return true
+    }
+
+    /// libwebrtc takes a new server list through setConfiguration without
+    /// renegotiating. It is used for gathering from then on: the candidate
+    /// pool at once, the live transport from its next ICE restart (which the
+    /// session state machine orders for a relay-only offer that found nothing).
+    @discardableResult
+    public func updateICEServers(_ servers: [ICEServerSpec]) -> Bool {
+        guard servers != iceServers else { return true }
+        let previous = iceServers
+        iceServers = servers
+        guard let connection else { return true }
+        guard connection.setConfiguration(makeConfiguration()) else {
+            iceServers = previous
+            RCLog.error("transport: libwebrtc refused the new ICE server list")
+            return false
+        }
+        RCLog.info("transport: ICE servers updated (\(servers.count))")
         return true
     }
 

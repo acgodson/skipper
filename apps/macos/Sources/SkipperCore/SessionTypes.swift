@@ -52,7 +52,7 @@ public enum SessionAction: Equatable, Sendable {
     case clearStoredSession
     case promptForAccessCode(reason: String)
     case sendBye(sessionID: String, reason: String)
-    case promptForConsent(expiresAt: Date)
+    case promptForConsent(expiresAt: Date, promptID: String, replacesPrevious: Bool)
     case dismissConsentPrompt(outcome: ConsentOutcome)
 }
 

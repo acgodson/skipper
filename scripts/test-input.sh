@@ -130,10 +130,10 @@ else
   fail "the session did not come up" "see $WORK"
   exit 1
 fi
-if grep -q '"event":"session".*"turn":true' "$WORK/ctrl.log"; then
-  pass "TURN credentials arrived with the session (protocol v4)"
+if grep -q '"event":"ice_servers".*"turn":true' "$WORK/ctrl.log"; then
+  pass "TURN credentials arrived with the ice_servers push (protocol v5)"
 else
-  fail "the session carries TURN credentials" "$(grep '"event":"session"' "$WORK/ctrl.log")"
+  fail "ice_servers carries TURN credentials" "$(grep -E '"event":"(session|ice_servers)"' "$WORK/ctrl.log")"
 fi
 echo
 
