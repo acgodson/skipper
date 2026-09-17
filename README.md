@@ -116,3 +116,33 @@ inner binary from a shell.
 - No session payload (SDP, ICE, clipboard, input) is ever logged or persisted.
 - Refresh Code revokes everything at once: every session, every token, and both peers' trusted-
   controller state.
+
+## Supply chain & CI
+
+`.github/workflows/ci.yml` runs on every push and PR to `main`: a `verify-deps` gate first, then
+Rust (`cargo fmt --check` / `cargo clippy -D warnings` / `cargo test --workspace` for the four
+shared-core crates — the parked Windows crates are excluded, they need a mingw toolchain no
+runner here has), Go (`gofmt`, `go vet`, `go test`, `go build`, `scripts/smoke-signal.sh`), an
+SBOM job, and — only for non-docs changes, on `macos-14` — a full app build plus
+`scripts/check-isolation.sh` against the built `.app`.
+
+- `scripts/verify-deps.sh` — fails if a lockfile is missing or incomplete, if a git dependency
+  isn't pinned to an exact commit, or if the Swift `stasel/WebRTC` package isn't pinned to an
+  exact version; prints the third-party dependency count per language; runs `cargo audit` /
+  `govulncheck` when they install within a minute (a slow install is not fatal, a real finding
+  is).
+- `scripts/sbom.sh` — writes a CycloneDX 1.5 JSON SBOM per language to `dist/sbom/` (Rust from
+  `cargo metadata`, Go from `go list -m -json all`, Swift from `Package.resolved`), uploaded as a
+  CI artifact on every run.
+- `./scripts/build.sh --reproducible` pins `SOURCE_DATE_EPOCH` to the building commit's timestamp
+  and passes `-Xswiftc -debug-prefix-map` so the repo's local path isn't embedded in the binary,
+  then normalises file timestamps in the built bundle to that same epoch. What this does **not**
+  make reproducible: `WebRTC.framework` is Google's prebuilt binary xcframework (fetched via
+  `stasel/WebRTC`), not something this repo compiles, so its bytes are whatever that release
+  shipped, unrelated to `SOURCE_DATE_EPOCH`. Two `--reproducible` builds from the same commit are
+  not guaranteed to be byte-identical beyond that either — Swift's own build metadata (module
+  timestamps, `swiftmodule` UUIDs) is not fully addressed by these flags; treat this as
+  best-effort determinism, not a verified reproducible-build guarantee.
+
+See `SECURITY.md` (how to report a vulnerability) and `docs/SECURITY.md` (the public security
+page: threat model, crypto table, what is logged, isolation rule, these gates).

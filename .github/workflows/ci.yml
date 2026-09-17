@@ -1,0 +1,110 @@
+name: CI
+
+# TODO: verify every pinned action SHA below against its upstream release tag
+# before this workflow first runs — this environment has no network access to
+# GitHub to cross-check them at authoring time.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED="$(git diff --name-only "$BASE" "${{ github.sha }}")"
+          if echo "$CHANGED" | grep -qvE '^(docs/|README\.md$|.*\.md$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  verify-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: ./scripts/verify-deps.sh
+
+  rust:
+    needs: verify-deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --check -p rc-proto -p rc-session -p rc-identity -p rc-ffi
+      - run: cargo clippy -p rc-proto -p rc-session -p rc-identity -p rc-ffi --all-targets --all-features -- -D warnings
+      # TODO: rc-host, rc-transport, rc-signal-client and rc-input are the parked
+      # Windows port (see MEMORY "Windows host port"); they need a mingw cross
+      # toolchain that this ubuntu-latest runner does not have, so they are
+      # excluded here rather than failing CI on an unsupported target.
+      - run: cargo test --workspace --exclude rc-host --exclude rc-transport --exclude rc-signal-client --exclude rc-input
+
+  go:
+    needs: verify-deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version-file: server/go.mod
+      - run: test -z "$(gofmt -l server protocol)"
+      - run: go vet ./...
+        working-directory: server
+      - run: go test ./...
+        working-directory: server
+      - run: go build ./...
+        working-directory: protocol
+      - run: ./scripts/smoke-signal.sh
+
+  sbom:
+    needs: verify-deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: ./scripts/sbom.sh
+      - uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: sbom
+          path: dist/sbom/*.json
+          if-no-files-found: error
+
+  macos:
+    needs: [changes, rust, go]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # No Developer ID identity exists on a CI runner, and no local signing
+      # cert has been installed either, so scripts/build.sh already falls
+      # through to ad-hoc (SIGN_IDENTITY="-") on its own. Confirmed this does
+      # not hard-fail; no SKIPPER_SIGN_IDENTITY override is needed here.
+      - run: ./scripts/build-core.sh
+      - run: swift run rc-tests
+        working-directory: apps/macos
+      - run: ./scripts/build.sh
+      - run: ./scripts/check-isolation.sh

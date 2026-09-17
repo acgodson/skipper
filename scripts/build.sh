@@ -8,7 +8,20 @@
 #
 set -euo pipefail
 
+REPRODUCIBLE=0
+for arg in "$@"; do
+    if [[ "$arg" == "--reproducible" ]]; then
+        REPRODUCIBLE=1
+    fi
+done
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ "$REPRODUCIBLE" -eq 1 ]]; then
+    SOURCE_DATE_EPOCH="$(git -C "${REPO_ROOT}" log -1 --format=%ct 2>/dev/null || echo 0)"
+    export SOURCE_DATE_EPOCH
+    echo "==> --reproducible: SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} (from HEAD commit time)"
+fi
 APP_DIR="${REPO_ROOT}/apps/macos"
 DIST_DIR="${REPO_ROOT}/dist"
 # The SwiftPM product is still named "RemoteControl" (apps/macos/Package.swift);
@@ -76,7 +89,11 @@ CONTENTS="${BUNDLE}/Contents"
 
 echo "==> Building ${APP_NAME} (${CONFIG}, ${ARCH})"
 cd "${APP_DIR}"
-swift build -c "${CONFIG}" --arch "${ARCH}"
+SWIFT_BUILD_FLAGS=("-c" "${CONFIG}" "--arch" "${ARCH}")
+if [[ "$REPRODUCIBLE" -eq 1 ]]; then
+    SWIFT_BUILD_FLAGS+=("-Xswiftc" "-debug-prefix-map" "-Xswiftc" "${REPO_ROOT}=/BUILD")
+fi
+swift build "${SWIFT_BUILD_FLAGS[@]}"
 
 BIN_PATH="$(swift build -c "${CONFIG}" --arch "${ARCH}" --show-bin-path)"
 if [[ ! -x "${BIN_PATH}/${SWIFT_PRODUCT}" ]]; then
@@ -307,6 +324,14 @@ fi
 
 # The designated requirement IS the TCC identity. Printing it makes "why did my
 # Screen Recording grant disappear?" a one-line answer rather than an afternoon.
+if [[ "$REPRODUCIBLE" -eq 1 ]]; then
+    echo "==> --reproducible: normalising file timestamps to SOURCE_DATE_EPOCH"
+    find "${BUNDLE}" -exec touch -t "$(date -r "${SOURCE_DATE_EPOCH}" +%Y%m%d%H%M.%S)" {} +
+    echo "    Info.plist carries no build timestamp key; nothing to strip there."
+    echo "    NOT reproducible: WebRTC.framework is Google's prebuilt binary xcframework,"
+    echo "    fetched as-is from stasel/WebRTC and never rebuilt from source here."
+fi
+
 echo "==> Designated requirement (this is what macOS ties privacy grants to)"
 codesign -d -r- "${BUNDLE}" 2>&1 | grep designated | sed 's/^/    /' || true
 if [[ "${SIGN_IDENTITY}" == "-" ]]; then
