@@ -43,7 +43,7 @@ public final class AppSettings: ObservableObject {
 
     public enum Key {
         public static let role = "rc.role"
-        public static let unattendedAccess = "rc.unattendedAccess"
+        public static let legacyUnattendedAccess = "rc.unattendedAccess"
         public static let clipboardSync = "rc.clipboardSync"
         public static let qualityMode = "rc.qualityMode"
         public static let savedPeerLabel = "rc.savedPeer.label"
@@ -53,9 +53,12 @@ public final class AppSettings: ObservableObject {
     }
 
     private let defaults: UserDefaults
+    private let secrets: SecretStore
 
     @Published public var role: AppRole { didSet { defaults.set(role.rawValue, forKey: Key.role) } }
-    @Published public var unattendedAccess: Bool { didSet { defaults.set(unattendedAccess, forKey: Key.unattendedAccess) } }
+    @Published public var unattendedAccess: Bool {
+        didSet { Self.store(unattendedAccess: unattendedAccess, in: secrets) }
+    }
     @Published public var clipboardSync: Bool { didSet { defaults.set(clipboardSync, forKey: Key.clipboardSync) } }
     @Published public var qualityMode: QualityMode { didSet { defaults.set(qualityMode.rawValue, forKey: Key.qualityMode) } }
     @Published public var savedPeerLabel: String { didSet { defaults.set(savedPeerLabel, forKey: Key.savedPeerLabel) } }
@@ -65,7 +68,7 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(installUpdatesAutomatically, forKey: Key.installUpdatesAutomatically) }
     }
 
-    public init(defaults: UserDefaults? = nil, isExistingInstall: Bool = false) {
+    public init(defaults: UserDefaults? = nil, isExistingInstall: Bool = false, secrets: SecretStore? = nil) {
         let resolved: UserDefaults
         if let defaults {
             resolved = defaults
@@ -76,6 +79,8 @@ public final class AppSettings: ObservableObject {
             resolved = .standard
         }
         self.defaults = resolved
+        let secrets = secrets ?? SecretStore.forThisMac()
+        self.secrets = secrets
         resolved.register(defaults: [
             Key.role: AppRole.host.rawValue,
             Key.clipboardSync: true,
@@ -86,7 +91,8 @@ public final class AppSettings: ObservableObject {
             Key.installUpdatesAutomatically: true,
         ])
         self.role = AppRole(rawValue: resolved.string(forKey: Key.role) ?? "") ?? .host
-        self.unattendedAccess = Self.unattendedAccess(in: resolved, isExistingInstall: isExistingInstall)
+        self.unattendedAccess = Self.unattendedAccess(in: secrets, legacy: resolved,
+                                                      isExistingInstall: isExistingInstall)
         self.clipboardSync = resolved.bool(forKey: Key.clipboardSync)
         self.qualityMode = QualityMode(rawValue: resolved.string(forKey: Key.qualityMode) ?? "") ?? .balanced
         self.savedPeerLabel = resolved.string(forKey: Key.savedPeerLabel) ?? ""
@@ -95,10 +101,30 @@ public final class AppSettings: ObservableObject {
         self.installUpdatesAutomatically = resolved.bool(forKey: Key.installUpdatesAutomatically)
     }
 
-    private static func unattendedAccess(in defaults: UserDefaults, isExistingInstall: Bool) -> Bool {
-        if let stored = defaults.object(forKey: Key.unattendedAccess) as? Bool { return stored }
-        defaults.set(isExistingInstall, forKey: Key.unattendedAccess)
-        return isExistingInstall
+    private static func unattendedAccess(in secrets: SecretStore, legacy: UserDefaults,
+                                         isExistingInstall: Bool) -> Bool {
+        do {
+            if let stored = try secrets.hostSettings() { return stored.unattendedAccess }
+        } catch {
+            RCLog.error("settings: host settings unreadable, asking before each connection: \(error.localizedDescription)")
+            return false
+        }
+        let migrated = legacy.object(forKey: Key.legacyUnattendedAccess) as? Bool ?? isExistingInstall
+        guard store(unattendedAccess: migrated, in: secrets) else { return false }
+        legacy.removeObject(forKey: Key.legacyUnattendedAccess)
+        RCLog.info("settings: moved unattended access into secure storage")
+        return migrated
+    }
+
+    @discardableResult
+    private static func store(unattendedAccess: Bool, in secrets: SecretStore) -> Bool {
+        do {
+            try secrets.saveHostSettings(HostSettings(unattendedAccess: unattendedAccess))
+            return true
+        } catch {
+            RCLog.error("settings: host settings could not be saved: \(error.localizedDescription)")
+            return false
+        }
     }
 
     public var hasSavedPeer: Bool { DeviceID.canonicalize(savedPeerDeviceID) != nil }

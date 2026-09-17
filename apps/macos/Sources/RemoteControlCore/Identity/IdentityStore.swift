@@ -19,6 +19,7 @@ public final class IdentityStore: ObservableObject {
     private let fileStore: IdentityFileStore
     private let key: DeviceSigningKey
     public let secrets: SecretStore
+    public let hostKeyPins: HostKeyPins
     public weak var sink: AccessCodeSink?
 
     public var formattedDeviceID: String { DeviceID.formatted(deviceID) }
@@ -47,6 +48,7 @@ public final class IdentityStore: ObservableObject {
         self.sink = sink
         let secrets = secrets ?? SecretStore.forThisMac(fileStore: fileStore)
         self.secrets = secrets
+        self.hostKeyPins = HostKeyPins(secrets: secrets)
 
         let loaded = try fileStore.load()
         let devFileIdentity = devFileIdentity ?? Self.usesDevFileIdentity(fileStore: fileStore)
@@ -137,7 +139,7 @@ public final class IdentityStore: ObservableObject {
             switch DeviceKeyPolicy.existingFileKey(migrationFailure: moved.failure) {
             case .moveToKeychain:
                 return ResolvedKey(key: try moved.get(), rewriteRecord: true, note: nil)
-            case .keepInFile(let note):
+            case .useFileForThisLaunch(let note):
                 return ResolvedKey(
                     key: FileDeviceKey(key: existing, url: fileStore.fileURL),
                     rewriteRecord: false,
@@ -189,10 +191,6 @@ public final class IdentityStore: ObservableObject {
 
     // MARK: - Key operations
 
-    public func sign(_ message: Data) throws -> Data {
-        try key.sign(message)
-    }
-
     public static func discardStoredKeys(blobStore: DeviceKeyBlobStore = KeychainBlobs<DeviceKeyAccount>()) {
         try? blobStore.remove(.secureEnclave)
         try? blobStore.remove(.software)
@@ -212,6 +210,7 @@ public final class IdentityStore: ObservableObject {
 
         try secrets.saveAccessCode(fresh)
         try secrets.revokeControllers()
+        try secrets.resetControllerGuessCounters()
         accessCode = fresh
         lastRefreshError = nil
 
@@ -236,6 +235,25 @@ public final class IdentityStore: ObservableObject {
         try adoptServerAssignedDeviceID(assigned)
         guard deviceID != previous else { return }
         RCLog.info("identity: server reassigned device id \(previous) -> \(deviceID)")
+    }
+
+    public var deviceIDCertificate: String? {
+        do {
+            return try secrets.deviceIDCertificate()
+        } catch {
+            RCLog.error("identity: the stored Device ID certificate could not be read: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    public func storeDeviceIDCertificate(_ certificate: String?) {
+        guard let certificate, !certificate.isEmpty, certificate != deviceIDCertificate else { return }
+        do {
+            try secrets.saveDeviceIDCertificate(certificate)
+            RCLog.info("identity: stored the Device ID certificate for \(deviceID)")
+        } catch {
+            RCLog.error("identity: the Device ID certificate could not be stored: \(error.localizedDescription)")
+        }
     }
 
     public func markServerRegistered() {
@@ -266,5 +284,12 @@ public final class IdentityStore: ObservableObject {
         }
         (secrets ?? SecretStore.forThisMac(fileStore: fileStore)).discardEverything()
         try fileStore.reset()
+    }
+}
+
+extension IdentityStore: DeviceMessageSigner {
+    @_spi(DeviceSigning)
+    public func sign(_ message: Data) throws -> Data {
+        try key.sign(message)
     }
 }

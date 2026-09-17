@@ -117,7 +117,8 @@ public let legacyKeychainMigrationSuite = TestSuite("LegacyKeychainMigration", [
     TestCase("every account the app stores is considered for migration") {
         try expectEqual(Set(LegacyKeychainMigration.accounts), [
             "device-key", "device-key-software", "access-code", "peer-codes",
-            "trusted-controllers", "guess-counters", "device-token",
+            "trusted-controllers", "guess-counters", "device-id-cert", "host-key-pins",
+            "host-settings", "device-token",
         ])
     },
 

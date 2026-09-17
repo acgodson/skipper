@@ -124,6 +124,24 @@ struct ControllerView: View {
                 SkipperNote("The network wobbled. The session is still open and is recovering by itself \u{2014} you will not be asked for the access code again.")
             }
 
+            if model.hostKeyMismatch != nil {
+                SkipperBanner(
+                    tone: .critical,
+                    symbol: "exclamationmark.shield.fill",
+                    title: HostKeyPins.changedSentence
+                ) {
+                    HStack(spacing: SkipperSpace.s) {
+                        Button("Cancel") { model.dismissHostKeyNotice() }
+                            .skipperButton(.primary)
+                        Button("Trust the new Mac") {
+                            model.trustNewMac()
+                            accessCodeField = ""
+                        }
+                        .skipperButton(.secondary)
+                    }
+                }
+            }
+
             if let error = model.connectError {
                 SkipperBanner(
                     tone: .critical,
@@ -135,7 +153,8 @@ struct ControllerView: View {
     }
 
     private var failedToConnect: Bool {
-        model.connectError != nil && !model.sessionState.isActive && !model.isConnecting
+        (model.connectError != nil || model.hostKeyMismatch != nil)
+            && !model.sessionState.isActive && !model.isConnecting
     }
 
     private var sessionLabel: String {

@@ -5,18 +5,18 @@ import RCTestKit
 import RemoteControlCore
 
 @MainActor
-private func withDefaults(_ body: @MainActor (UserDefaults, String) throws -> Void) throws {
+private func withDefaults(_ body: @MainActor (UserDefaults, SecretStore) throws -> Void) throws {
     let suiteName = "com.godson.remotecontrol.tests.\(UUID().uuidString)"
     let defaults = try expectNotNil(UserDefaults(suiteName: suiteName))
     defer { defaults.removePersistentDomain(forName: suiteName) }
-    try body(defaults, suiteName)
+    try body(defaults, SecretStore(blobs: InMemorySecretStore()))
 }
 
 public let settingsSuite = TestSuite("AppSettings", [
 
     TestCase("defaults match the specified product defaults") {
-        try withDefaults { defaults, _ in
-            let settings = AppSettings(defaults: defaults)
+        try withDefaults { defaults, secrets in
+            let settings = AppSettings(defaults: defaults, secrets: secrets)
             try expectEqual(settings.qualityMode, .balanced)
             try expectFalse(settings.unattendedAccess, "a new install asks before each connection")
             try expect(settings.clipboardSync)
@@ -28,36 +28,36 @@ public let settingsSuite = TestSuite("AppSettings", [
     },
 
     TestCase("an existing install that never touched unattended access keeps it on") {
-        try withDefaults { defaults, _ in
-            let settings = AppSettings(defaults: defaults, isExistingInstall: true)
+        try withDefaults { defaults, secrets in
+            let settings = AppSettings(defaults: defaults, isExistingInstall: true, secrets: secrets)
             try expect(settings.unattendedAccess, "the old default was on; upgrading must not change behaviour")
-            try expectEqual(defaults.object(forKey: AppSettings.Key.unattendedAccess) as? Bool, true)
-            try expect(AppSettings(defaults: defaults).unattendedAccess)
+            try expectEqual(try secrets.hostSettings(), HostSettings(unattendedAccess: true))
+            try expect(AppSettings(defaults: defaults, secrets: secrets).unattendedAccess)
         }
     },
 
     TestCase("a new install stays off after its identity exists and the app relaunches") {
-        try withDefaults { defaults, _ in
-            try expectFalse(AppSettings(defaults: defaults, isExistingInstall: false).unattendedAccess)
-            try expectFalse(AppSettings(defaults: defaults, isExistingInstall: true).unattendedAccess,
+        try withDefaults { defaults, secrets in
+            try expectFalse(AppSettings(defaults: defaults, isExistingInstall: false, secrets: secrets).unattendedAccess)
+            try expectFalse(AppSettings(defaults: defaults, isExistingInstall: true, secrets: secrets).unattendedAccess,
                             "the second launch sees an identity file; it must not look like an upgrade")
         }
     },
 
     TestCase("an existing install keeps an explicit choice either way") {
-        try withDefaults { defaults, _ in
-            defaults.set(false, forKey: AppSettings.Key.unattendedAccess)
-            try expectFalse(AppSettings(defaults: defaults, isExistingInstall: true).unattendedAccess)
+        try withDefaults { defaults, secrets in
+            defaults.set(false, forKey: AppSettings.Key.legacyUnattendedAccess)
+            try expectFalse(AppSettings(defaults: defaults, isExistingInstall: true, secrets: secrets).unattendedAccess)
         }
-        try withDefaults { defaults, _ in
-            defaults.set(true, forKey: AppSettings.Key.unattendedAccess)
-            try expect(AppSettings(defaults: defaults, isExistingInstall: false).unattendedAccess)
+        try withDefaults { defaults, secrets in
+            defaults.set(true, forKey: AppSettings.Key.legacyUnattendedAccess)
+            try expect(AppSettings(defaults: defaults, isExistingInstall: false, secrets: secrets).unattendedAccess)
         }
     },
 
     TestCase("every setting survives a reload") {
-        try withDefaults { defaults, _ in
-            let settings = AppSettings(defaults: defaults)
+        try withDefaults { defaults, secrets in
+            let settings = AppSettings(defaults: defaults, secrets: secrets)
             settings.unattendedAccess = false
             settings.clipboardSync = false
             settings.qualityMode = .lowBandwidth
@@ -66,7 +66,7 @@ public let settingsSuite = TestSuite("AppSettings", [
             settings.installUpdatesAutomatically = false
             settings.savePeer(label: "Studio Mac", deviceID: "482 719 351")
 
-            let reloaded = AppSettings(defaults: defaults)
+            let reloaded = AppSettings(defaults: defaults, secrets: secrets)
             try expectFalse(reloaded.unattendedAccess)
             try expectFalse(reloaded.clipboardSync)
             try expectEqual(reloaded.qualityMode, .lowBandwidth)
@@ -80,18 +80,65 @@ public let settingsSuite = TestSuite("AppSettings", [
     },
 
     TestCase("writes land under the documented keys") {
-        try withDefaults { defaults, _ in
-            let settings = AppSettings(defaults: defaults)
+        try withDefaults { defaults, secrets in
+            let settings = AppSettings(defaults: defaults, secrets: secrets)
             settings.qualityMode = .best
             settings.unattendedAccess = false
             try expectEqual(defaults.string(forKey: AppSettings.Key.qualityMode), "best")
-            try expectEqual(defaults.bool(forKey: AppSettings.Key.unattendedAccess), false)
+            try expectEqual(try secrets.hostSettings(), HostSettings(unattendedAccess: false),
+                            "unattended access lives in secure storage")
+            try expectNil(defaults.object(forKey: AppSettings.Key.legacyUnattendedAccess),
+                          "and never in UserDefaults")
+        }
+    },
+
+    TestCase("unattended access migrates out of UserDefaults once") {
+        try withDefaults { defaults, secrets in
+            defaults.set(true, forKey: AppSettings.Key.legacyUnattendedAccess)
+            try expect(AppSettings(defaults: defaults, isExistingInstall: true, secrets: secrets).unattendedAccess)
+            try expectEqual(try secrets.hostSettings(), HostSettings(unattendedAccess: true))
+            try expectNil(defaults.object(forKey: AppSettings.Key.legacyUnattendedAccess),
+                          "the legacy value is removed after the move")
+        }
+    },
+
+    TestCase("a UserDefaults value written after migration is ignored") {
+        try withDefaults { defaults, secrets in
+            let settings = AppSettings(defaults: defaults, isExistingInstall: false, secrets: secrets)
+            try expectFalse(settings.unattendedAccess)
+            defaults.set(true, forKey: AppSettings.Key.legacyUnattendedAccess)
+            try expectFalse(AppSettings(defaults: defaults, isExistingInstall: true, secrets: secrets).unattendedAccess,
+                            "another process turning unattended access on through UserDefaults has no effect")
+
+            settings.unattendedAccess = true
+            defaults.set(false, forKey: AppSettings.Key.legacyUnattendedAccess)
+            try expect(AppSettings(defaults: defaults, secrets: secrets).unattendedAccess,
+                       "nor does writing false over the owner's choice")
+        }
+    },
+
+    TestCase("unreadable secure storage asks before every connection") {
+        try withDefaults { defaults, _ in
+            let blobs = InMemorySecretStore()
+            let secrets = SecretStore(blobs: blobs)
+            try secrets.saveHostSettings(HostSettings(unattendedAccess: true))
+            blobs.isSealed = true
+            defaults.set(true, forKey: AppSettings.Key.legacyUnattendedAccess)
+            try expectFalse(AppSettings(defaults: defaults, isExistingInstall: true, secrets: secrets).unattendedAccess)
+        }
+    },
+
+    TestCase("resetting the identity keeps the unattended choice") {
+        try withDefaults { defaults, secrets in
+            AppSettings(defaults: defaults, secrets: secrets).unattendedAccess = true
+            secrets.discardEverything()
+            try expect(AppSettings(defaults: defaults, isExistingInstall: false, secrets: secrets).unattendedAccess)
         }
     },
 
     TestCase("savePeer normalises and forgetPeer clears") {
-        try withDefaults { defaults, _ in
-            let settings = AppSettings(defaults: defaults)
+        try withDefaults { defaults, secrets in
+            let settings = AppSettings(defaults: defaults, secrets: secrets)
             settings.savePeer(label: "  Studio Mac  ", deviceID: "482-719-351")
             try expectEqual(settings.savedPeerLabel, "Studio Mac")
             try expectEqual(settings.savedPeerDeviceID, "482719351")
@@ -106,7 +153,7 @@ public let settingsSuite = TestSuite("AppSettings", [
             try expectEqual(settings.savedPeerLabel, "")
             try expectEqual(settings.savedPeerDeviceID, "")
             try expectFalse(settings.rememberPeerCode)
-            try expectFalse(AppSettings(defaults: defaults).hasSavedPeer)
+            try expectFalse(AppSettings(defaults: defaults, secrets: secrets).hasSavedPeer)
         }
     },
 
@@ -149,8 +196,8 @@ public let sessionStateSuite = TestSuite("Session state and permissions", [
 public let observationSuite = TestSuite("Observation", [
 
     TestCase("AppSettings emits objectWillChange when role changes") {
-        try withDefaults { defaults, _ in
-            let settings = AppSettings(defaults: defaults)
+        try withDefaults { defaults, secrets in
+            let settings = AppSettings(defaults: defaults, secrets: secrets)
             var fired = 0
             let token = settings.objectWillChange.sink { _ in fired += 1 }
             defer { token.cancel() }
@@ -163,8 +210,8 @@ public let observationSuite = TestSuite("Observation", [
     },
 
     TestCase("AppSettings role change is observable via its $role publisher") {
-        try withDefaults { defaults, _ in
-            let settings = AppSettings(defaults: defaults)
+        try withDefaults { defaults, secrets in
+            let settings = AppSettings(defaults: defaults, secrets: secrets)
             var seen: [AppRole] = []
             let token = settings.$role.dropFirst().sink { seen.append($0) }
             defer { token.cancel() }

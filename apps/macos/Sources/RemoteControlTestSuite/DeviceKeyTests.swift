@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 import RCTestKit
-import RemoteControlCore
+@_spi(DeviceSigning) import RemoteControlCore
 import SkipperCore
 
 public let deviceKeySuite = TestSuite("DeviceKey", [

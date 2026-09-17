@@ -25,7 +25,15 @@
 #   j. (rc-api only) real entitlement gating: a host that never signed in is
 #      refused with entitlement/unlinked, and a host whose trial has ended with
 #      entitlement/trial_expired
+#   l. a controller refuses a host whose key changed for a pinned Device ID,
+#      before the access code is used, and keeps the remembered code until the
+#      user chooses "Trust the new Mac"
+#   m. a burst of connect requests is answered with rate_limited
+#   n. (dev-backend.sh with id-cert keys) a host holding a Device ID certificate
+#      keeps its Device ID after the backend's database is wiped
 #
+# Protocol v4: TURN credentials arrive with a session (connect_ok /
+# session_start), never with hello_ok.
 # Against rc-api (scripts/dev-backend.sh), the host signs in first with the
 # real API.md §1 flow (rc-node --dev-sign-in), and the Device ID the sign-in
 # returns must be the one signaling assigned: rc-api owns the one registry.
@@ -50,6 +58,7 @@ NEXT_FD=10
 pass() { steps=$((steps + 1)); printf 'PASS  %s\n' "$1"; }
 fail() { steps=$((steps + 1)); failures=$((failures + 1)); printf 'FAIL  %s\n      %s\n' "$1" "${2:-}"; }
 info() { printf '      %s\n' "$1"; }
+skip() { printf 'SKIP  %s\n      %s\n' "$1" "${2:-}"; }
 
 cleanup() {
   # Never leave an instance running.
@@ -240,10 +249,15 @@ else
   fail "host registered" "deviceId='$HOST_ID' accessCode length ${#HOST_CODE}"
   exit 1
 fi
-if grep -q '"turn":true' "$WORK/bootstrap.log"; then
-  pass "hello_ok carried server-minted TURN credentials (never hardcoded)"
+if grep -q '"event":"hello_ok".*"turn":false' "$WORK/bootstrap.log"; then
+  pass "hello_ok carried no TURN credentials (protocol v4: they come with a session)"
 else
-  fail "hello_ok carried TURN credentials" "$(grep hello_ok "$WORK/bootstrap.log")"
+  fail "hello_ok carries no TURN credentials" "$(grep hello_ok "$WORK/bootstrap.log")"
+fi
+if grep -q '"event":"hello_ok".*"idCert":true' "$WORK/bootstrap.log"; then
+  pass "the host holds a Device ID certificate from the registry"
+else
+  fail "the host receives a Device ID certificate" "$(grep hello_ok "$WORK/bootstrap.log")"
 fi
 
 start_node ctrl controller "$WORK/id-ctrl"
@@ -319,6 +333,13 @@ if wait_for "$WORK/host.log" '"event":"session"' 20 "$HOST_MARK"; then
   pass "the host is told about the session (session_start push)"
 else
   fail "host receives session_start" "$(tail -5 "$WORK/host.log")"
+fi
+if tail -n "+$MARK" "$WORK/ctrl.log" | grep -q '"event":"session".*"turn":true' &&
+   tail -n "+$HOST_MARK" "$WORK/host.log" | grep -q '"event":"session".*"turn":true'; then
+  pass "connect_ok and session_start each carried server-minted TURN credentials (never hardcoded)"
+else
+  fail "the session carries TURN credentials to both sides" \
+       "$(tail -n "+$MARK" "$WORK/ctrl.log" | grep '"event":"session"'; tail -n "+$HOST_MARK" "$WORK/host.log" | grep '"event":"session"')"
 fi
 if wait_for "$WORK/ctrl.log" '"event":"pake_ok"' 25 "$MARK" &&
    wait_for "$WORK/host.log" '"event":"pake_ok"' 25 "$HOST_MARK"; then
@@ -692,6 +713,135 @@ sleep 2
 start_node host host "$WORK/id-host"
 wait_for "$WORK/host.log" '"event":"hello_ok"' 30
 
+echo
+# ---------------------------------------------------------------------------
+# l. host key pinning (PROTOCOL.md v4 §1)
+# ---------------------------------------------------------------------------
+echo "== l. a pinned Device ID whose host key changed is refused"
+
+pinned_key() {  # pinned_key <file> <start-line> <device id>  -> the key the last `pins` event holds
+  tail -n "+$2" "$1" > "$WORK/pins.tmp" 2>/dev/null
+  python3 - "$WORK/pins.tmp" "$3" <<'PY'
+import json, sys
+found = ""
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if line.startswith('{'):
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if d.get("event") == "pins":
+            found = d.get("pins", {}).get(sys.argv[2], "")
+print(found)
+PY
+}
+
+canonical_key() {
+  python3 -c 'import base64,sys; print(base64.b64encode(base64.b64decode(sys.argv[1])).decode())' "$1" 2>/dev/null
+}
+
+ask_pins() {  # ask_pins <node>  -> the pinned key for HOST_ID
+  local mark
+  mark=$(( $(lines_in "$WORK/$1.log") + 1 ))
+  say "$1" pins
+  wait_for "$WORK/$1.log" '"event":"pins"' 10 "$mark"
+  pinned_key "$WORK/$1.log" "$mark" "$HOST_ID"
+}
+
+ask_remembered() {  # ask_remembered <node>  -> True / False
+  local mark
+  mark=$(( $(lines_in "$WORK/$1.log") + 1 ))
+  say "$1" "remembered $HOST_ID"
+  wait_for "$WORK/$1.log" '"event":"remembered"' 10 "$mark"
+  field_after "$WORK/$1.log" "$mark" remembered present
+}
+
+HOST_PUBKEY="$(canonical_key "$(field "$WORK/host.log" ready pubkey)")"
+PIN_CODE="${NEW_CODE:-$HOST_CODE}"
+start_node pctrl controller "$WORK/id-pctrl"
+if wait_for "$WORK/pctrl.log" '"event":"hello_ok"' 30; then
+  PMARK=$(( $(lines_in "$WORK/pctrl.log") + 1 ))
+  say pctrl "connect $HOST_ID $PIN_CODE remember"
+  if wait_for "$WORK/pctrl.log" '"event":"pake_ok"' 30 "$PMARK" &&
+     wait_for "$WORK/pctrl.log" '"event":"phase","phase":"live"' 45 "$PMARK"; then
+    pass "a first session with the code succeeded"
+  else
+    fail "the first pinned session succeeds" "$(tail -n "+$PMARK" "$WORK/pctrl.log")"
+  fi
+  if [[ -n "$HOST_PUBKEY" && "$(ask_pins pctrl)" == "$HOST_PUBKEY" ]]; then
+    pass "the controller pinned the host's key to its Device ID after the code was proved"
+  else
+    fail "the host key is pinned after the first session" "pins: $(grep '"event":"pins"' "$WORK/pctrl.log" | tail -1)"
+  fi
+  say pctrl bye
+  sleep 2
+  [[ "$(ask_remembered pctrl)" == "True" ]] || fail "the code is remembered" "$(grep remembered "$WORK/pctrl.log" | tail -1)"
+
+  FOREIGN_KEY="$(openssl ecparam -name prime256v1 -genkey -noout 2>/dev/null |
+                 openssl ec -pubout -outform DER 2>/dev/null | base64)"
+  python3 - "$WORK/id-pctrl/host-key-pins.json" "$HOST_ID" "$FOREIGN_KEY" <<'PY'
+import json, os, sys
+path, device, key = sys.argv[1], sys.argv[2], sys.argv[3]
+tmp = path + ".tmp"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    f.write(json.dumps({device: key}, sort_keys=True))
+os.replace(tmp, path)
+PY
+  info "the controller's pin for $HOST_ID now names a different Mac's key"
+
+  PMARK=$(( $(lines_in "$WORK/pctrl.log") + 1 ))
+  HMARK=$(( $(lines_in "$WORK/host.log") + 1 ))
+  say pctrl "connect $HOST_ID $PIN_CODE"
+  if wait_for "$WORK/pctrl.log" '"code":"host_key_changed"' 30 "$PMARK" &&
+     wait_for "$WORK/pctrl.log" '"event":"host_key_changed"' 5 "$PMARK"; then
+    pass "the controller refused: \"$(field_after "$WORK/pctrl.log" "$PMARK" connect_error message)\""
+  else
+    fail "a changed host key is refused" "$(tail -n "+$PMARK" "$WORK/pctrl.log")"
+  fi
+  if must_not_appear "$WORK/pctrl.log" '"event":"pake"' "$PMARK" &&
+     must_not_appear "$WORK/pctrl.log" '"event":"ice"' "$PMARK"; then
+    pass "the access code was never used with the unexpected key"
+  else
+    fail "no exchange with a changed host key" "$(tail -n "+$PMARK" "$WORK/pctrl.log" | grep -E 'pake|ice')"
+  fi
+  if wait_for "$WORK/host.log" '"event":"bye","reason":"peer_auth_failed"' 15 "$HMARK"; then
+    pass "the session was ended with bye{peer_auth_failed}"
+  else
+    fail "the refused session ends with peer_auth_failed" "$(tail -n "+$HMARK" "$WORK/host.log")"
+  fi
+  if [[ "$(field_after "$WORK/pctrl.log" "$PMARK" host_key_changed rememberedCode)" == "True" &&
+        "$(ask_remembered pctrl)" == "True" ]]; then
+    pass "the remembered code was kept"
+  else
+    fail "the remembered code survives a refused host" "$(grep -E 'host_key_changed|remembered' "$WORK/pctrl.log" | tail -2)"
+  fi
+
+  TMARK=$(( $(lines_in "$WORK/pctrl.log") + 1 ))
+  say pctrl trust-new
+  if wait_for "$WORK/pctrl.log" '"event":"trusted_new_mac"' 10 "$TMARK" &&
+     [[ "$(ask_pins pctrl)" == "$HOST_PUBKEY" ]] &&
+     [[ "$(ask_remembered pctrl)" == "False" ]]; then
+    pass "Trust the new Mac replaced the pin and forgot the remembered code"
+  else
+    fail "Trust the new Mac" "$(tail -n "+$TMARK" "$WORK/pctrl.log")"
+  fi
+  PMARK=$(( $(lines_in "$WORK/pctrl.log") + 1 ))
+  say pctrl "connect $HOST_ID $PIN_CODE"
+  if wait_for "$WORK/pctrl.log" '"event":"pake_ok"' 30 "$PMARK"; then
+    pass "after trusting, the typed code connects again"
+    say pctrl bye
+    sleep 2
+  else
+    fail "the trusted host connects" "$(tail -n "+$PMARK" "$WORK/pctrl.log")"
+  fi
+else
+  fail "the pinning controller authenticates" "see $WORK/pctrl.log"
+fi
+say pctrl quit
+sleep 1
+
 if [[ "$API_MODE" == "1" ]]; then
   echo
   echo "== j. entitlement gating by rc-api (SCOPE §6 rule 1)"
@@ -725,6 +875,114 @@ fi
 say ctrl quit
 say host quit
 sleep 1
+
+echo
+# ---------------------------------------------------------------------------
+# m. connect_req rate limit (PROTOCOL.md v4 §5)
+# ---------------------------------------------------------------------------
+echo "== m. a burst of connect requests is rate limited"
+start_node rctrl controller "$WORK/id-rctrl"
+if wait_for "$WORK/rctrl.log" '"event":"hello_ok"' 30; then
+  RMARK=$(( $(lines_in "$WORK/rctrl.log") + 1 ))
+  for _ in $(seq 1 10); do
+    say rctrl "connect $HOST_ID ZZZZZZZZZZZZ"
+    sleep 0.4
+  done
+  if wait_for "$WORK/rctrl.log" '"code":"rate_limited"' 20 "$RMARK"; then
+    RL_LINE="$(tail -n "+$RMARK" "$WORK/rctrl.log" | grep -m1 '"code":"rate_limited"')"
+    RL_SENTENCE="$(printf '%s' "$RL_LINE" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["sentence"])')"
+    RL_RETRY="$(printf '%s' "$RL_LINE" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("retryAfterSec", 0))')"
+    if [[ "$RL_SENTENCE" == "Too many attempts. Try again in "* && "$RL_RETRY" -gt 0 ]]; then
+      pass "the burst was refused with rate_limited (retry in ${RL_RETRY}s): \"$RL_SENTENCE\""
+    else
+      fail "rate_limited reads as a plain sentence with a retry" "$RL_LINE"
+    fi
+  else
+    fail "a connect burst is rate limited" "$(tail -n "+$RMARK" "$WORK/rctrl.log" | grep connect_error | tail -3)"
+  fi
+else
+  fail "the burst controller authenticates" "see $WORK/rctrl.log"
+fi
+say rctrl quit
+sleep 1
+
+echo
+# ---------------------------------------------------------------------------
+# n. Device ID certificates survive a backend reset (PROTOCOL.md v4 §1)
+# ---------------------------------------------------------------------------
+echo "== n. a re-registered host keeps its Device ID after the database is wiped"
+if ! grep -qi 'id.cert' "$ROOT/scripts/dev-backend.sh"; then
+  skip "Device ID survives a backend reset" \
+       "scripts/dev-backend.sh does not generate an id-cert key yet (lands with the server v4 branch)"
+else
+  free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'; }
+  PRIV_DATA="$WORK/private-backend"
+  PRIV_API_PORT="$(free_port)"
+  PRIV_SIGNAL_PORT="$(free_port)"
+  PRIV_URL="http://127.0.0.1:$PRIV_API_PORT"
+  PRIV_PID=""
+
+  start_private_backend() {
+    env RC_DEV_DATA="$PRIV_DATA" RC_DEV_API_PORT="$PRIV_API_PORT" RC_DEV_SIGNAL_PORT="$PRIV_SIGNAL_PORT" \
+        "$ROOT/scripts/dev-backend.sh" >> "$WORK/private-backend.log" 2>&1 &
+    PRIV_PID="$!"
+    PIDS+=("$PRIV_PID")
+    for _ in $(seq 1 900); do
+      [[ "$(curl -s --max-time 2 "$PRIV_URL/healthz")" == "ok" ]] && return 0
+      kill -0 "$PRIV_PID" 2>/dev/null || return 1
+      sleep 0.2
+    done
+    return 1
+  }
+
+  stop_private_backend() {
+    [[ -n "$PRIV_PID" ]] || return 0
+    kill "$PRIV_PID" 2>/dev/null
+    wait "$PRIV_PID" 2>/dev/null
+    PRIV_PID=""
+  }
+
+  SHARED_API_BASE_URL="$API_BASE_URL"
+  API_BASE_URL="$PRIV_URL"
+  if start_private_backend; then
+    start_node rehost host "$WORK/id-rehost"
+    if wait_for "$WORK/rehost.log" '"event":"hello_ok".*"idCert":true' 30; then
+      REHOST_ID="$(field "$WORK/rehost.log" hello_ok deviceId)"
+      REHOST_KEY="$(field "$WORK/rehost.log" ready pubkey)"
+      pass "a private backend registered a host with a certificate ($REHOST_ID)"
+
+      stop_private_backend
+      rm -f "$PRIV_DATA"/*.db "$PRIV_DATA"/*.db-wal "$PRIV_DATA"/*.db-shm
+      info "the private backend's database was deleted; its id-cert key was kept"
+      NMARK=$(( $(lines_in "$WORK/rehost.log") + 1 ))
+      if start_private_backend &&
+         wait_for "$WORK/rehost.log" '"event":"hello_ok"' 120 "$NMARK"; then
+        AFTER_ID="$(field_after "$WORK/rehost.log" "$NMARK" hello_ok deviceId)"
+        AFTER_KEY="$(field_after "$WORK/rehost.log" "$NMARK" hello_ok pubkey)"
+        if [[ "$AFTER_ID" == "$REHOST_ID" && "$AFTER_KEY" == "$REHOST_KEY" ]]; then
+          pass "after the wipe the host re-registered with its certificate and kept $REHOST_ID and its key"
+        else
+          fail "the Device ID survives the wipe" "before $REHOST_ID/$REHOST_KEY, after $AFTER_ID/$AFTER_KEY"
+        fi
+        if must_not_appear "$WORK/rehost.log" '"event":"ready"' "$NMARK"; then
+          pass "the host never restarted or generated a new identity"
+        else
+          fail "no new identity after the wipe" "$(tail -n "+$NMARK" "$WORK/rehost.log" | grep ready)"
+        fi
+      else
+        fail "the host comes back after the wipe" "$(tail -n "+$NMARK" "$WORK/rehost.log" | tail -5)"
+      fi
+    else
+      fail "the private backend issues a certificate" "$(grep hello_ok "$WORK/rehost.log" || tail -5 "$WORK/rehost.log")"
+    fi
+    say rehost quit
+    sleep 1
+  else
+    fail "the private backend starts" "see $WORK/private-backend.log"
+  fi
+  stop_private_backend
+  API_BASE_URL="$SHARED_API_BASE_URL"
+fi
 
 echo
 echo "-----------------------------------------------------------------------"

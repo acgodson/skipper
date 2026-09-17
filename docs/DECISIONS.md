@@ -36,8 +36,10 @@ Keychain and the Secure Enclave each hold exactly one device key. Never a releas
 become hardware-backed without changing its Device ID, and the Device ID is permanent. So: an
 existing `identity.json` with a software key keeps that key and keeps its Device ID, but the key
 *moves* into the Keychain (`KeychainDeviceKey`) and is removed from the file. Only brand-new
-identities get Secure Enclave keys. If the Keychain refuses, the key stays in the file, the UI
-says so, and nothing is regenerated. The existing rule stands unchanged: an identity is never
+identities get Secure Enclave keys. If the Keychain refuses on a signed build, the legacy key is
+used from the file for that launch only (the one exception to the dev-only file rule above), the
+move is retried on every launch, the host screen's key-storage footer says "This Mac's key could
+not be moved to secure storage.", and nothing is regenerated. An unsigned build refuses such an identity instead. The existing rule stands unchanged: an identity is never
 silently regenerated, whatever fails.
 
 **What stays in the file:** Device ID, access code, `createdAt`, `serverRegistered`. The access

@@ -54,12 +54,9 @@ public final class DeviceKey {
 
     // MARK: - Signing
 
+    @_spi(DeviceSigning)
     public func sign(_ message: Data) throws -> Data {
         try privateKey.signature(for: message).derRepresentation
-    }
-
-    public func signatureBase64(for message: Data) throws -> String {
-        try sign(message).base64EncodedString()
     }
 
     public func verify(_ signature: Data, for message: Data) -> Bool {

@@ -224,13 +224,12 @@ public let deviceKeyStorageSuite = TestSuite("DeviceKeyStorage", [
         try expect(message.hasPrefix("SkipperDesk could not store its key securely."), message)
     },
 
-    TestCase("policy: an existing file key moves, or stays in the file with a note, never regenerates") {
+    TestCase("policy: an existing file key moves, or is used for this launch with a visible note, never regenerates") {
         let sealed = KeychainError.status(errSecNotAvailable)
         try expectEqual(DeviceKeyPolicy.existingFileKey(migrationFailure: nil), .moveToKeychain)
-        guard case .keepInFile(let note) = DeviceKeyPolicy.existingFileKey(migrationFailure: sealed) else {
-            throw fail("a failed migration must keep the file key")
-        }
-        try expect(note.contains("identity file"))
+        try expectEqual(DeviceKeyPolicy.existingFileKey(migrationFailure: sealed),
+                        .useFileForThisLaunch(note: "This Mac's key could not be moved to secure storage."),
+                        "a failed move is never silently fine")
         try expectEqual(DeviceKeyPolicy.existingFileKey(migrationFailure: KeychainError.unsigned), .refuse(.unsigned))
     },
 

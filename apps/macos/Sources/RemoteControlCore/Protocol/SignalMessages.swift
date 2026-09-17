@@ -3,7 +3,7 @@ import Foundation
 
 public enum Wire {
 
-    public static let version = 3
+    public static let version = 4
 
     public enum MessageType {
         public static let challenge = "challenge"
@@ -211,15 +211,21 @@ public struct RegisterPayload: Codable, Equatable {
     public var sig: String
     public var label: String?
     public var preferredDeviceId: String?
-    public init(pubkey: String, sig: String, label: String?, preferredDeviceId: String? = nil) {
-        self.pubkey = pubkey; self.sig = sig; self.label = label; self.preferredDeviceId = preferredDeviceId
+    public var idCert: String?
+    public init(pubkey: String, sig: String, label: String?, preferredDeviceId: String? = nil,
+                idCert: String? = nil) {
+        self.pubkey = pubkey; self.sig = sig; self.label = label
+        self.preferredDeviceId = preferredDeviceId; self.idCert = idCert
     }
 }
 
 public struct RegisterOKPayload: Codable, Equatable {
     public var deviceId: String
     public var existing: Bool
-    public init(deviceId: String, existing: Bool) { self.deviceId = deviceId; self.existing = existing }
+    public var idCert: String?
+    public init(deviceId: String, existing: Bool, idCert: String? = nil) {
+        self.deviceId = deviceId; self.existing = existing; self.idCert = idCert
+    }
 }
 
 public struct HelloPayload: Codable, Equatable {
@@ -240,6 +246,8 @@ public struct ICEServerSpec: Codable, Equatable {
     public init(urls: [String], username: String? = nil, credential: String? = nil, expiresAt: Int64? = nil) {
         self.urls = urls; self.username = username; self.credential = credential; self.expiresAt = expiresAt
     }
+
+    public var carriesCredentials: Bool { username != nil || credential != nil }
 }
 
 public struct HelloOKPayload: Codable, Equatable {
@@ -250,13 +258,30 @@ public struct HelloOKPayload: Codable, Equatable {
     public var offlineAfterSec: Int
     public var sessionTokenTtlSec: Int
     public var activeSessionId: String?
-    public init(deviceId: String, serverTime: Int64, iceServers: [ICEServerSpec],
+    public var idCert: String?
+    public init(deviceId: String, serverTime: Int64, iceServers: [ICEServerSpec] = [],
                 heartbeatSec: Int, offlineAfterSec: Int, sessionTokenTtlSec: Int,
-                activeSessionId: String? = nil) {
+                activeSessionId: String? = nil, idCert: String? = nil) {
         self.deviceId = deviceId; self.serverTime = serverTime; self.iceServers = iceServers
         self.heartbeatSec = heartbeatSec; self.offlineAfterSec = offlineAfterSec
         self.sessionTokenTtlSec = sessionTokenTtlSec; self.activeSessionId = activeSessionId
+        self.idCert = idCert
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        deviceId = try container.decode(String.self, forKey: .deviceId)
+        serverTime = try container.decode(Int64.self, forKey: .serverTime)
+        iceServers = (try container.decodeIfPresent([ICEServerSpec].self, forKey: .iceServers) ?? [])
+            .filter { !$0.carriesCredentials }
+        heartbeatSec = try container.decode(Int.self, forKey: .heartbeatSec)
+        offlineAfterSec = try container.decode(Int.self, forKey: .offlineAfterSec)
+        sessionTokenTtlSec = try container.decode(Int.self, forKey: .sessionTokenTtlSec)
+        activeSessionId = try container.decodeIfPresent(String.self, forKey: .activeSessionId)
+        idCert = try container.decodeIfPresent(String.self, forKey: .idCert)
+    }
+
+    public var heartbeatInterval: TimeInterval { TimeInterval(WireBounds.heartbeatSeconds(heartbeatSec)) }
 }
 
 public struct HeartbeatOKPayload: Codable, Equatable {
@@ -292,13 +317,16 @@ public struct SessionGrantPayload: Codable, Equatable, CustomStringConvertible {
     public var controllerDeviceId: String
     public var hostPubkey: String?
     public var controllerPubkey: String?
+    public var iceServers: [ICEServerSpec]?
     public init(sessionId: String, sessionToken: String, expiresAt: Int64, ttlSec: Int,
                 hostDeviceId: String, controllerDeviceId: String,
-                hostPubkey: String? = nil, controllerPubkey: String? = nil) {
+                hostPubkey: String? = nil, controllerPubkey: String? = nil,
+                iceServers: [ICEServerSpec]? = nil) {
         self.sessionId = sessionId; self.sessionToken = sessionToken
         self.expiresAt = expiresAt; self.ttlSec = ttlSec
         self.hostDeviceId = hostDeviceId; self.controllerDeviceId = controllerDeviceId
         self.hostPubkey = hostPubkey; self.controllerPubkey = controllerPubkey
+        self.iceServers = iceServers
     }
     public var description: String {
         "session(\(sessionId), host: \(hostDeviceId), controller: \(controllerDeviceId), token: <redacted>)"
@@ -334,9 +362,12 @@ public struct RenewOKPayload: Codable, Equatable {
     public var sessionToken: String
     public var expiresAt: Int64
     public var ttlSec: Int
-    public init(sessionId: String, sessionToken: String, expiresAt: Int64, ttlSec: Int) {
+    public var iceServers: [ICEServerSpec]?
+    public init(sessionId: String, sessionToken: String, expiresAt: Int64, ttlSec: Int,
+                iceServers: [ICEServerSpec]? = nil) {
         self.sessionId = sessionId; self.sessionToken = sessionToken
         self.expiresAt = expiresAt; self.ttlSec = ttlSec
+        self.iceServers = iceServers
     }
 }
 
@@ -383,6 +414,18 @@ public struct ICEPayload: Codable, Equatable {
         self.sessionId = sessionId; self.candidate = candidate
         self.sdpMid = sdpMid; self.sdpMLineIndex = sdpMLineIndex
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        candidate = try container.decode(String.self, forKey: .candidate)
+        sdpMid = try container.decodeIfPresent(String.self, forKey: .sdpMid)
+        sdpMLineIndex = try container.decodeIfPresent(Int.self, forKey: .sdpMLineIndex)
+        if let sdpMLineIndex {
+            try WireBounds.check(sdpMLineIndex, in: WireBounds.mediaLineIndex,
+                                 field: CodingKeys.sdpMLineIndex.stringValue)
+        }
+    }
 }
 
 public struct PakePayload: Codable, Equatable {
@@ -420,6 +463,15 @@ public struct ErrorPayload: Codable, Equatable {
     public init(code: String, message: String, retryAfterSec: Int? = nil, reason: String? = nil) {
         self.code = code; self.message = message
         self.retryAfterSec = retryAfterSec; self.reason = reason
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        code = try container.decode(String.self, forKey: .code)
+        message = try container.decode(String.self, forKey: .message)
+        retryAfterSec = try container.decodeIfPresent(Int.self, forKey: .retryAfterSec)
+            .map(WireBounds.retryAfterSeconds)
+        reason = try container.decodeIfPresent(String.self, forKey: .reason)
     }
 }
 
