@@ -1,6 +1,7 @@
 package apisrv
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -68,9 +69,6 @@ func (s *Server) signalingDevice(deviceID string) (*apidb.Device, error) {
 }
 
 func (s *Server) internalEntitlement(w http.ResponseWriter, r *http.Request) {
-	if !s.internalCaller(w, r) {
-		return
-	}
 	deviceID := r.PathValue("deviceId")
 	if !protocol.ValidDeviceID(deviceID) {
 		s.badRequest(w, r, "'deviceId' must be 9 digits")
@@ -95,9 +93,6 @@ func (s *Server) internalEntitlement(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) internalSessionStart(w http.ResponseWriter, r *http.Request) {
-	if !s.internalCaller(w, r) {
-		return
-	}
 	body, ok := s.readBody(w, r)
 	if !ok {
 		return
@@ -107,7 +102,7 @@ func (s *Server) internalSessionStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !protocol.ValidDeviceID(report.HostDeviceID) || !protocol.ValidDeviceID(report.ControllerDeviceID) ||
-		report.SessionID == "" {
+		!protocol.ValidSessionID(report.SessionID) {
 		s.badRequest(w, r, "'sessionId', 'hostDeviceId' and 'controllerDeviceId' are required")
 		return
 	}
@@ -149,9 +144,6 @@ func hostAccount(host *apidb.Device) string {
 }
 
 func (s *Server) internalSessionStop(w http.ResponseWriter, r *http.Request) {
-	if !s.internalCaller(w, r) {
-		return
-	}
 	body, ok := s.readBody(w, r)
 	if !ok {
 		return
@@ -160,8 +152,8 @@ func (s *Server) internalSessionStop(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, body, &report) {
 		return
 	}
-	if report.SessionID == "" {
-		s.badRequest(w, r, "'sessionId' is required")
+	if !protocol.ValidSessionID(report.SessionID) || !protocol.ValidByeReason(report.Reason) {
+		s.badRequest(w, r, "'sessionId' and a defined 'reason' are required")
 		return
 	}
 	session, err := s.opt.DB.SessionByID(report.SessionID)
@@ -191,6 +183,56 @@ func (s *Server) internalSessionStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// LiveSessions asks signaling which metered sessions it still holds.
+type LiveSessions func(ctx context.Context) (protocol.InternalLiveSessions, error)
+
+// Reconcile closes every open session row signaling no longer knows, billing it
+// up to the last time signaling was seen holding it. Rows are read before
+// signaling is asked, so a session that starts in between is never closed.
+// TODO: with several rc-signal instances in Phase 5, ask every instance and close only what none holds.
+func (s *Server) Reconcile(ctx context.Context, live LiveSessions) (int, error) {
+	open, err := s.opt.DB.OpenSessions()
+	if err != nil || len(open) == 0 {
+		return 0, err
+	}
+	snapshot, err := live(ctx)
+	if err != nil {
+		return 0, err
+	}
+	seenAt := snapshot.ServerTime
+	if seenAt == 0 {
+		seenAt = s.nowMS()
+	}
+	held := make(map[string]bool, len(snapshot.SessionIDs))
+	for _, id := range snapshot.SessionIDs {
+		held[id] = true
+	}
+	closed := 0
+	for i := range open {
+		row := &open[i]
+		if held[row.SessionID] {
+			if err := s.opt.DB.MarkAlive(row.SessionID, seenAt); err != nil {
+				return closed, err
+			}
+			continue
+		}
+		endedAt := max(row.LastAliveAt, row.StartedAt)
+		err := s.opt.DB.StopSession(row.SessionID, endedAt, false, nil, protocol.SessionReasonReconciled)
+		if errors.Is(err, apidb.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return closed, err
+		}
+		if err := s.meter(row, endedAt); err != nil {
+			return closed, err
+		}
+		closed++
+		s.opt.Logger.Info("session reconciled", "sessionId", row.SessionID, "endedAt", endedAt)
+	}
+	return closed, nil
 }
 
 func (s *Server) meter(session *apidb.Session, endedAt int64) error {

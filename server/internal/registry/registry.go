@@ -1,6 +1,7 @@
 // Package registry is the one device registry rc-signal consults: which
 // deviceId belongs to which public key, and the code epoch of each device.
 // Local mode keeps it in rc-signal's SQLite store; http mode asks rc-api, which owns it.
+// Either way every answer carries the registry's device-id certificate for the binding.
 package registry
 
 import (
@@ -22,10 +23,24 @@ type Device struct {
 	DeviceID  string
 	Pubkey    string
 	CodeEpoch int64
+	IDCert    string
+}
+
+// Registration.PreferredDeviceID is honoured only when IDCert certifies it for Pubkey.
+type Registration struct {
+	Pubkey            string
+	Label             string
+	PreferredDeviceID string
+	IDCert            string
+}
+
+type Registered struct {
+	Device   Device
+	Existing bool
 }
 
 type Registry interface {
-	Register(ctx context.Context, pubkey, label, preferredDeviceID string) (dev Device, existing bool, err error)
+	Register(ctx context.Context, r Registration) (Registered, error)
 	Lookup(ctx context.Context, deviceID string) (Device, error)
 	BumpEpoch(ctx context.Context, deviceID string) error
 }

@@ -107,7 +107,7 @@ func TestLatestReleaseRejectsBadQueries(t *testing.T) {
 
 func TestLatestReleaseIsRateLimitedPerIP(t *testing.T) {
 	h := newHarness(t)
-	for i := 0; i < int(limitReleaseLatest.limit); i++ {
+	for i := 0; i < int(limitReleaseLatest.Limit); i++ {
 		if status, _, _ := h.latest("platform=macos&arch=arm64"); status == http.StatusTooManyRequests {
 			t.Fatalf("limited after %d calls", i)
 		}

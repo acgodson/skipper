@@ -9,14 +9,17 @@ import (
 	protocol "rcprotocol"
 )
 
-func internalDevice(d *apidb.Device) protocol.InternalDevice {
-	return protocol.InternalDevice{DeviceID: d.DeviceID, Pubkey: d.Pubkey, CodeEpoch: d.CodeEpoch}
+func (s *Server) internalDevice(w http.ResponseWriter, r *http.Request, status int, d *apidb.Device) {
+	cert, err := s.opt.IDCert.Issue(d.DeviceID, d.Pubkey)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.writeJSON(w, r, status, protocol.InternalDevice{
+		DeviceID: d.DeviceID, Pubkey: d.Pubkey, CodeEpoch: d.CodeEpoch, IDCert: cert})
 }
 
 func (s *Server) internalRegister(w http.ResponseWriter, r *http.Request) {
-	if !s.internalCaller(w, r) {
-		return
-	}
 	body, ok := s.readBody(w, r)
 	if !ok {
 		return
@@ -26,7 +29,7 @@ func (s *Server) internalRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := auth.ParsePubkey(req.Pubkey); err != nil {
-		s.badRequest(w, r, "'pubkey' is not a base64 DER SPKI P-256 key")
+		s.badRequest(w, r, "'pubkey' is not canonical base64 of a DER SPKI P-256 key")
 		return
 	}
 	if req.PreferredDeviceID != "" && !protocol.ValidDeviceID(req.PreferredDeviceID) {
@@ -34,25 +37,32 @@ func (s *Server) internalRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.nowMS()
-	device, existing, err := s.opt.DB.RegisterDevice(apidb.Device{
-		Label: trimmedLabel(req.Label), Platform: req.Platform, Pubkey: req.Pubkey,
+	certified := s.opt.IDCert.CertifiedID(req.Pubkey, req.PreferredDeviceID, req.IDCert)
+	device, result, err := s.opt.DB.RegisterDevice(apidb.Device{
+		Label: protocol.TrimLabel(req.Label), Platform: req.Platform, Pubkey: req.Pubkey,
 		CreatedAt: now, LastSeen: now,
-	}, req.PreferredDeviceID)
+	}, certified)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
+	cert, err := s.opt.IDCert.Issue(device.DeviceID, device.Pubkey)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if result.Displaced {
+		s.opt.Logger.Info("device id restored over another key", "deviceId", device.DeviceID)
+	}
 	status := http.StatusCreated
-	if existing {
+	if result.Existing {
 		status = http.StatusOK
 	}
-	s.writeJSON(w, r, status, protocol.InternalRegisterResponse{DeviceID: device.DeviceID, Existing: existing})
+	s.writeJSON(w, r, status, protocol.InternalRegisterResponse{
+		DeviceID: device.DeviceID, Existing: result.Existing, IDCert: cert})
 }
 
 func (s *Server) internalDeviceRead(w http.ResponseWriter, r *http.Request) {
-	if !s.internalCaller(w, r) {
-		return
-	}
 	deviceID, ok := s.deviceIDPath(w, r)
 	if !ok {
 		return
@@ -61,13 +71,10 @@ func (s *Server) internalDeviceRead(w http.ResponseWriter, r *http.Request) {
 	if s.deviceMissing(w, r, err) {
 		return
 	}
-	s.writeJSON(w, r, http.StatusOK, internalDevice(device))
+	s.internalDevice(w, r, http.StatusOK, device)
 }
 
 func (s *Server) internalEpoch(w http.ResponseWriter, r *http.Request) {
-	if !s.internalCaller(w, r) {
-		return
-	}
 	deviceID, ok := s.deviceIDPath(w, r)
 	if !ok {
 		return
@@ -84,7 +91,7 @@ func (s *Server) internalEpoch(w http.ResponseWriter, r *http.Request) {
 	if s.deviceMissing(w, r, err) {
 		return
 	}
-	s.writeJSON(w, r, http.StatusOK, internalDevice(device))
+	s.internalDevice(w, r, http.StatusOK, device)
 }
 
 func (s *Server) deviceIDPath(w http.ResponseWriter, r *http.Request) (string, bool) {

@@ -1,6 +1,6 @@
 // Command rc-api is the SkipperDesk REST API of protocol/API.md: accounts,
 // devices, entitlement, session accounting, credits, and the browser link page.
-// It never stores a raw hardware id, a plaintext device token or session content.
+// It never stores a raw hardware id, a plaintext device token or link code, or session content.
 package main
 
 import (
@@ -18,36 +18,45 @@ import (
 
 	"rc-signal/internal/apidb"
 	"rc-signal/internal/apisrv"
+	"rc-signal/internal/clientip"
 	"rc-signal/internal/envx"
+	"rc-signal/internal/idcert"
 	"rc-signal/internal/idp"
+	"rc-signal/internal/internalapi"
+	protocol "rcprotocol"
 )
 
 const (
-	idpDev       = "dev"
-	idpCognito   = "cognito"
-	purgeEvery   = 10 * time.Minute
-	readTimeouts = 15 * time.Second
+	idpDev         = "dev"
+	idpCognito     = "cognito"
+	purgeEvery     = 10 * time.Minute
+	reconcileEvery = time.Minute
+	readTimeouts   = 15 * time.Second
 )
 
 func main() {
 	var (
-		addr       = flag.String("listen", envx.Env("RC_API_LISTEN", "127.0.0.1:18080"), "listen address (RC_API_LISTEN)")
-		dbPath     = flag.String("db", envx.Env("RC_API_DB", "rc-api.db"), "SQLite path (RC_API_DB)")
-		internal   = flag.String("internal-token", envx.Env("RC_API_INTERNAL_TOKEN", ""), "shared bearer secret for the internal surface (RC_API_INTERNAL_TOKEN)")
-		idpName    = flag.String("idp", envx.Env("RC_API_IDP", ""), "dev|cognito — how a user session is authenticated (RC_API_IDP)")
-		issuer     = flag.String("cognito-issuer", envx.Env("RC_API_COGNITO_ISSUER", ""), "cognito issuer URL (RC_API_COGNITO_ISSUER)")
-		audience   = flag.String("cognito-audience", envx.Env("RC_API_COGNITO_AUDIENCE", ""), "cognito app client id (RC_API_COGNITO_AUDIENCE)")
-		salt       = flag.String("hardware-salt", envx.Env("RC_API_HARDWARE_SALT", ""), "server salt for the hardware hash (RC_API_HARDWARE_SALT)")
-		webBase    = flag.String("web-base-url", envx.Env("RC_API_WEB_BASE_URL", ""), "the website this API belongs to (RC_API_WEB_BASE_URL)")
-		upstream   = flag.String("signal-upstream", envx.Env("RC_API_SIGNAL_UPSTREAM", ""), "signaling server to pass /ws through to (RC_API_SIGNAL_UPSTREAM)")
-		tlsCert    = flag.String("tls-cert", envx.Env("RC_API_TLS_CERT", ""), "TLS certificate path (RC_API_TLS_CERT)")
-		tlsKey     = flag.String("tls-key", envx.Env("RC_API_TLS_KEY", ""), "TLS private key path (RC_API_TLS_KEY)")
-		insecure   = flag.Bool("insecure-http", envx.Env("RC_API_INSECURE_HTTP", "") == "1", "serve plain HTTP — LOCAL TESTING ONLY (RC_API_INSECURE_HTTP=1)")
-		logLevelIn = flag.String("log-level", envx.Env("RC_API_LOG_LEVEL", "info"), "debug|info|warn|error (RC_API_LOG_LEVEL)")
+		addr         = flag.String("listen", envx.Env("RC_API_LISTEN", "127.0.0.1:18080"), "public listen address (RC_API_LISTEN)")
+		internalAddr = flag.String("internal-listen", envx.Env("RC_API_INTERNAL_LISTEN", "127.0.0.1:18081"), "internal listen address for rc-signal (RC_API_INTERNAL_LISTEN)")
+		dbPath       = flag.String("db", envx.Env("RC_API_DB", "rc-api.db"), "SQLite path (RC_API_DB)")
+		internal     = flag.String("internal-token", envx.Env("RC_API_INTERNAL_TOKEN", ""), "shared bearer secret for the internal surfaces (RC_API_INTERNAL_TOKEN)")
+		idCertKey    = flag.String("id-cert-key-file", envx.Env("RC_API_ID_CERT_KEY_FILE", ""), "PEM PKCS#8 P-256 key that signs device-id certificates (RC_API_ID_CERT_KEY_FILE)")
+		signalURL    = flag.String("signal-internal-url", envx.Env("RC_API_SIGNAL_INTERNAL_URL", ""), "rc-signal's internal base URL for the session reconciliation sweep (RC_API_SIGNAL_INTERNAL_URL)")
+		trusted      = flag.String("trusted-proxies", envx.Env("RC_API_TRUSTED_PROXIES", ""), "comma-separated CIDRs whose X-Forwarded-For is honoured (RC_API_TRUSTED_PROXIES)")
+		idpName      = flag.String("idp", envx.Env("RC_API_IDP", ""), "dev|cognito — how a user session is authenticated (RC_API_IDP)")
+		issuer       = flag.String("cognito-issuer", envx.Env("RC_API_COGNITO_ISSUER", ""), "cognito issuer URL (RC_API_COGNITO_ISSUER)")
+		audience     = flag.String("cognito-audience", envx.Env("RC_API_COGNITO_AUDIENCE", ""), "cognito app client id (RC_API_COGNITO_AUDIENCE)")
+		salt         = flag.String("hardware-salt", envx.Env("RC_API_HARDWARE_SALT", ""), "server salt for the hardware hash (RC_API_HARDWARE_SALT)")
+		webBase      = flag.String("web-base-url", envx.Env("RC_API_WEB_BASE_URL", ""), "the website this API belongs to (RC_API_WEB_BASE_URL)")
+		upstream     = flag.String("signal-upstream", envx.Env("RC_API_SIGNAL_UPSTREAM", ""), "signaling server to pass /ws through to (RC_API_SIGNAL_UPSTREAM)")
+		tlsCert      = flag.String("tls-cert", envx.Env("RC_API_TLS_CERT", ""), "TLS certificate path (RC_API_TLS_CERT)")
+		tlsKey       = flag.String("tls-key", envx.Env("RC_API_TLS_KEY", ""), "TLS private key path (RC_API_TLS_KEY)")
+		insecure     = flag.Bool("insecure-http", envx.Env("RC_API_INSECURE_HTTP", "") == "1", "serve plain HTTP — LOCAL TESTING ONLY (RC_API_INSECURE_HTTP=1)")
+		logLevelIn   = flag.String("log-level", envx.Env("RC_API_LOG_LEVEL", "info"), "debug|info|warn|error (RC_API_LOG_LEVEL)")
 	)
 	flag.Parse()
 
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel(*logLevelIn)}))
+	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: envx.LogLevel(*logLevelIn)}))
 	slog.SetDefault(log)
 
 	if !*insecure && (*tlsCert == "" || *tlsKey == "") {
@@ -59,9 +68,31 @@ func main() {
 	if strings.TrimSpace(*salt) == "" {
 		exit("-hardware-salt is required")
 	}
+	if err := internalapi.CheckSeparate(*addr, *internalAddr); err != nil {
+		exit(err.Error())
+	}
+	resolver, err := clientip.Parse(*trusted)
+	if err != nil {
+		exit(err.Error())
+	}
+	authority, ephemeral, err := idcert.Open(*idCertKey, *insecure)
+	if err != nil {
+		exit(err.Error())
+	}
+	if ephemeral {
+		log.Warn("no -id-cert-key-file: device-id certificates die with this process (local only)")
+	}
 	provider, err := makeIdP(*idpName, *insecure, *issuer, *audience)
 	if err != nil {
 		exit(err.Error())
+	}
+	var signaling *internalapi.Client
+	if strings.TrimSpace(*signalURL) != "" {
+		if signaling, err = internalapi.New(*signalURL, *internal); err != nil {
+			exit(err.Error())
+		}
+	} else {
+		log.Warn("no -signal-internal-url: open sessions are not reconciled against signaling")
 	}
 
 	db, err := apidb.Open(*dbPath)
@@ -72,19 +103,24 @@ func main() {
 	defer db.Close()
 
 	api, err := apisrv.New(apisrv.Options{
-		DB: db, IdP: provider, InternalToken: *internal, HardwareSalt: []byte(*salt),
-		WebBaseURL: *webBase, SignalUpstream: *upstream, Logger: log,
+		DB: db, IdP: provider, IDCert: authority, InternalToken: *internal, HardwareSalt: []byte(*salt),
+		WebBaseURL: *webBase, SignalUpstream: *upstream, ClientIP: resolver, Logger: log,
 	})
 	if err != nil {
 		exit(err.Error())
 	}
 
 	srv := &http.Server{Addr: *addr, Handler: api, ReadHeaderTimeout: readTimeouts}
+	// TODO: the internal listener becomes mTLS or VPC-only in Phase 5; today it is loopback plain HTTP with a bearer.
+	internalSrv := &http.Server{Addr: *internalAddr, Handler: api.InternalHandler(), ReadHeaderTimeout: readTimeouts}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go purge(ctx, db, log)
+	if signaling != nil {
+		go reconcile(ctx, api, signaling, log)
+	}
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		if *insecure {
 			log.Warn("serving PLAINTEXT http — local testing only", "addr", *addr)
@@ -93,8 +129,9 @@ func main() {
 		}
 		errCh <- srv.ListenAndServeTLS(*tlsCert, *tlsKey)
 	}()
-	log.Info("rc-api started", "addr", *addr, "tls", !*insecure, "db", *dbPath,
-		"idp", provider.Name(), "signalUpstream", *upstream)
+	go func() { errCh <- internalSrv.ListenAndServe() }()
+	log.Info("rc-api started", "addr", *addr, "internalAddr", *internalAddr, "tls", !*insecure, "db", *dbPath,
+		"idp", provider.Name(), "signalUpstream", *upstream, "reconcile", signaling != nil)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -111,6 +148,7 @@ func main() {
 		if err := srv.Shutdown(shutCtx); err != nil {
 			log.Error("graceful shutdown failed", "err", err)
 		}
+		_ = internalSrv.Shutdown(shutCtx)
 		cancel()
 		log.Info("stopped")
 	}
@@ -150,16 +188,34 @@ func purge(ctx context.Context, db *apidb.DB, log *slog.Logger) {
 	}
 }
 
-func logLevel(name string) slog.Level {
-	switch strings.ToLower(name) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
+func reconcile(ctx context.Context, api *apisrv.Server, signaling *internalapi.Client, log *slog.Logger) {
+	live := func(ctx context.Context) (protocol.InternalLiveSessions, error) {
+		var out protocol.InternalLiveSessions
+		resp, err := signaling.Do(ctx, http.MethodGet, protocol.PathInternalLiveSessions, nil)
+		if err != nil {
+			return out, err
+		}
+		if !resp.OK() {
+			return out, fmt.Errorf("signaling live sessions: status %d", resp.Status)
+		}
+		return out, resp.Decode(&out)
+	}
+	t := time.NewTicker(reconcileEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			closed, err := api.Reconcile(ctx, live)
+			if err != nil {
+				log.Warn("session reconciliation skipped", "err", err)
+				continue
+			}
+			if closed > 0 {
+				log.Info("session reconciliation closed rows", "closed", closed)
+			}
+		}
 	}
 }
 

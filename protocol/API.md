@@ -21,8 +21,9 @@ data channels. The two documents meet in exactly one place: a `connect_req` is a
 | Time | Absolute times are **Unix milliseconds**, `int64`, UTC — the same convention as PROTOCOL.md §0. Durations are named `...Sec`. |
 | Money | Integer **cents**, `int64`, currency `USD`. Never a float. A negative amount is a debit. |
 | IDs | `deviceId`: 9 ASCII digits, as PROTOCOL.md §0. `accountId`, `sessionId`, `entryId`, `giftId`: opaque strings ≤ 64 chars. Clients never parse them. |
-| Keys | `pubkey`: base64 (std, padded) DER SPKI of an ECDSA P-256 public key — byte-identical to the signaling `pubkey`. |
-| Signatures | `sig`: base64 of the ASN.1 DER ECDSA signature over the **raw nonce bytes**, SHA-256. Identical scheme to PROTOCOL.md §3.1. |
+| Keys | `pubkey`: canonical base64 (std, padded) of the uncompressed DER SPKI of an ECDSA P-256 public key — byte-identical to the signaling `pubkey` (PROTOCOL.md §0). Any other spelling is `bad_request`. |
+| Signatures | `sig`: base64 of the ASN.1 DER ECDSA-P256/SHA-256 signature over the **domain-separated** message `"skipperdesk/api-challenge/v1\|"` ‖ the 32 raw bytes of the §1.3 nonce — PROTOCOL.md §3.1, purpose `api-challenge`. A signature made for signaling never verifies here, and vice versa. |
+| Client address | The direct peer, unless it is in the configured trusted-proxy list (`RC_API_TRUSTED_PROXIES`, CIDRs), in which case the rightmost `X-Forwarded-For` hop that is not itself trusted. Every "per IP" limit in §8 keys on it; `X-Forwarded-For` from anyone else is ignored. |
 | Unknown fields | Clients **must** ignore unknown response members. Servers **must** reject unknown request members with `bad_request`. |
 | Paging | Cursor-based. A list response carries `nextCursor`; an absent or empty `nextCursor` means the end. Cursors are opaque and expire after 15 minutes. |
 | Max body | 64 KiB on any request. Larger is `413` with `bad_request`. |
@@ -83,6 +84,7 @@ Every non-2xx response has this body and no other:
 | `not_found` | 404 | No such resource, or one this caller may not see. | Surface plainly. |
 | `conflict` | 409 | The resource is not in a state that allows this transition (e.g. accepting an already-accepted gift). | Re-read the resource. |
 | `idempotency_conflict` | 409 | Same `Idempotency-Key`, different request body. `reason` is `body_mismatch`. | Bug. Never reuse a key for a different body. |
+| `idempotency_replay_unavailable` | 409 | Same `Idempotency-Key` and body as a call that already **succeeded** on an endpoint whose answer carries a credential (§0.6). The credential was not kept, so it cannot be replayed. | Treat the first call's outcome as unknown: repeat the operation with a **new** key (for §1.4 that means a new link attempt; for §1.5 a new challenge). |
 | `entitlement` | 402 | The account may not do this yet. `reason` is one of §4.3. | Render the reason; do not retry until the user acts. |
 | `rate_limited` | 429 | Over the limit in §8. `retryAfterSec` is set. | Back off exactly that long. |
 | `unsupported_version` | 426 | The `/v1` surface no longer serves this client build. | Prompt to update the app. |
@@ -105,10 +107,16 @@ Every non-2xx response has this body and no other:
 Every `POST`, `PATCH` and `DELETE` in §7 marked **idem** requires an `Idempotency-Key` header:
 a client-generated opaque string, 16–64 chars, unique per logical operation (a UUIDv4 is fine).
 
-- The server stores key → (request body hash, response status, response body) for **24 hours**,
-  scoped to the caller's account.
+- The server stores key → (request body hash, response status, response hash, replay body) for
+  **24 hours**, scoped to the caller (the account, the device, or for the unauthenticated
+  bootstrap calls the client address).
 - A repeat with the same key and the same body replays the stored response verbatim and sets
   `Idempotency-Replayed: true`.
+- **Credential-bearing answers are never stored.** A successful answer of `POST /v1/auth/link`
+  (the one-time code), `POST /v1/auth/device/token` and `POST /v1/auth/device/refresh` (the
+  device token) keeps only its status and SHA-256; a repeat of that call is
+  `409 idempotency_replay_unavailable`, and the server never re-issues a credential for a
+  replay. Error answers of those endpoints carry no credential and replay normally.
 - A repeat with the same key and a different body is `409 idempotency_conflict`.
 - A repeat while the first is still in flight is `409 conflict` with `reason: in_progress`.
 - `GET` is always safe and never takes the header.
@@ -156,7 +164,7 @@ Normative rules:
    the attempt's (compared in constant time). Any such mismatch also ends the pending attempt; the
    app logs it and shows nothing. The browser is an untrusted messenger.
 2. The one-time `code` is bound to the step 1 `nonce`. The server stores only
-   `SHA-256(nonce)` with the code. A step 6 request whose `nonce` is missing or different is
+   `SHA-256(code)` and `SHA-256(nonce)`, never either value. A step 6 request whose `nonce` is missing or different is
    `400 bad_request` with `reason: nonce_mismatch`, and the code is burned. This is what stops a
    code minted on another account (with this device's public key, which every controller sees)
    being injected into this device's own link attempt.
@@ -165,8 +173,9 @@ Normative rules:
    different `pubkey`.
 4. The `pubkey` presented at step 6 must byte-equal the `pubkey` recorded at step 3. Anything else
    is `forbidden`. This is what stops a code phished out of the browser being redeemed elsewhere.
-5. The signature is verified exactly as PROTOCOL.md §3.1 verifies `hello`: raw nonce bytes,
-   ECDSA-P256/SHA-256, DER, base64. One implementation, two surfaces.
+5. The signature is verified by the same function PROTOCOL.md §3.1 uses for `hello`, with the
+   purpose `api-challenge`: ECDSA-P256/SHA-256 over `"skipperdesk/api-challenge/v1|"` ‖ the 32
+   raw nonce bytes, DER, base64. One implementation, two surfaces, separated domains.
 6. `hardwareId` is sent once, at step 6. The server stores only `HMAC-SHA256(serverSalt, hardwareId)`
    as the device's `hardwareHash` and **discards the raw value before the response is written**.
    The salt never leaves the server. The hash is used for trial-abuse accounting only (§3.2) and
@@ -190,15 +199,23 @@ Linking a key that is already linked to **another** account is `409 conflict` wi
 Body carries exactly one of `code` (first token for a device) or `deviceId` (refresh, §1.5).
 Response `200`: `nonce` (base64, 32 random bytes), `serverTime`, `expiresAt`.
 
-The nonce is single-use and valid **60 s**. A replayed nonce is `unauthenticated`. The endpoint
-does not reveal whether a `deviceId` exists: an unknown device gets a well-formed nonce that will
-simply fail at §1.4.
+The nonce is single-use, valid **60 s**, and bound to the `code` (stored as its SHA-256) or the
+`deviceId` it was requested for. A replayed, expired or foreign nonce is `unauthenticated`. The
+endpoint does not reveal whether a `deviceId` exists: an unknown device gets a well-formed nonce
+that will simply fail at §1.5. It is limited **per client address only** — a per-device budget
+here would let anyone who knows a Device ID stop that device from refreshing — and requesting a
+new nonce never invalidates an earlier one, so a stranger's challenges cannot break a device's
+own refresh.
 
 ### 1.4 `POST /v1/auth/device/token` — unauthenticated, idem
 
 Body: `code`, `nonce` (the step 1 app nonce), `pubkey`, `sig`, `platform`, `hardwareId`,
-optional `label`. The `nonce` check (§1.1 rule 2) runs before the `pubkey` check.
-Response `200`: `deviceToken`, `expiresAt`, `ttlSec`, `deviceId`, `accountId`.
+optional `label`. The `nonce` check (§1.1 rule 2) runs before the `pubkey` check. `sig` is over
+the newest live §1.3 nonce requested for this `code`; the server finds and spends that nonce in
+a single SQL statement, so two requests can never both use it, and then checks the signature.
+Response `200`: `deviceToken`, `expiresAt`, `ttlSec`, `deviceId`, `accountId`. The server stores
+only `SHA-256(deviceToken)`. A repeat with the same `Idempotency-Key` is
+`409 idempotency_replay_unavailable` (§0.6).
 
 This call **never mints a `deviceId`**. The key must already be in the device registry, which
 happens when the app first sends signaling `register` (PROTOCOL.md §2.2, §6 below). The token
@@ -223,12 +240,29 @@ The device token is:
 
 ### 1.5 `POST /v1/auth/device/refresh` — unauthenticated, idem
 
-Body: `deviceId`, `pubkey`, `sig` over the nonce from §1.3. Response is the same shape as §1.4.
+Body: `deviceId`, `pubkey`, `nonce`, `sig`. `nonce` is **the exact** §1.3 nonce, as returned,
+that `sig` signs (purpose `api-challenge`); all four are required. Response is the same shape as
+§1.4, and a repeat with the same `Idempotency-Key` is `409 idempotency_replay_unavailable`.
+
+The server checks, in this order, and charges each limit only when the step before it passed:
+
+1. The per-client-address limit (§8).
+2. It spends `nonce` in one SQL statement that matches it to this `deviceId`, unused and
+   unexpired. Anything else is `401 unauthenticated`.
+3. `sig` verifies over that nonce under the presented `pubkey`. Otherwise `401 unauthenticated`.
+4. `pubkey` is the key registered for `deviceId`. Otherwise `403 forbidden`,
+   `reason: unlinked`.
+5. The per-device limit (§8) — so only a caller holding the device's key can spend the device's
+   budget.
+6. The device is linked. Otherwise `403 forbidden`, `reason: unlinked`, and the app must run the
+   §1.1 flow again.
 
 Refresh proves possession of the private key rather than of the old token, so a device that lost
-its token — a restore, a Keychain reset — recovers without the user returning to the browser. It
-succeeds only while the device is still linked and not revoked; otherwise `forbidden` with
-`reason: unlinked` or `reason: revoked`, and the app must run the §1.1 flow again.
+its token — a restore, a Keychain reset — recovers without the user returning to the browser.
+
+`nonce` became required before launch, in `/v1`, together with PROTOCOL.md v4: a server that
+checked only the newest nonce for a device let anyone who knew the Device ID invalidate the
+device's pending refresh.
 
 The app should refresh when the remaining TTL drops below **7 days**, and on any `401` once.
 
@@ -299,8 +333,9 @@ Unlinks the device from the account. Effects, all immediate:
 1. Every device token for that device is revoked.
 2. The device's entitlement becomes `unlinked`; the next `connect_req` naming it as host is
    refused with `error{entitlement, reason: "unlinked"}` (PROTOCOL.md §2.9).
-3. Any live session with that device as host or controller is closed with
-   `bye{reason:"replaced"}`.
+3. TODO: close any live session with that device as host or controller with
+   `bye{reason:"replaced"}`; that needs an rc-api → rc-signal push (Phase 5). Today such a
+   session runs until it ends, and no new one can start.
 4. The device record is retained, unlinked, so that a re-link keeps the same `deviceId` and the
    same trial history. Unlinking is not a way to restart a trial.
 
@@ -382,15 +417,22 @@ sessions of all devices on the account.
 | `sessionId` | string | yes | The signaling `sessionId`, 32 hex. |
 | `peerDeviceId` | string | yes | The other device. For a user session this is the device that is not `deviceId`; for a device token it is the device that is not the caller. |
 | `role` | string | yes | The **caller's** role in that session: `host` or `controller`. |
-| `startedAt` | int64 | yes | Unix ms, session `open`. |
-| `endedAt` | int64 | no | Unix ms, session `closed`. Absent while the session is still live. |
+| `startedAt` | int64 | yes | Unix ms at which the host relayed its first `sdp` for the session — the moment the session was proved and metering began (PROTOCOL.md §3.4). A session that never got there has no record. |
+| `endedAt` | int64 | no | Unix ms, session `closed`, or for a row closed by reconciliation (§6.2) the last time signaling was seen holding it. Absent while the session is still live. |
 | `relayUsed` | bool | yes | Whether any traffic went through a TURN relay. Always present, including `false`. |
 | `bytesRelayed` | int64 | no | Bytes relayed through TURN. Absent when unknown or when `relayUsed` is `false`. Never the peer-to-peer byte count — the server cannot know it. |
 
 Ordering is `startedAt` descending. A session that is still live appears with no `endedAt` and
 may appear again, completed, in a later query.
 
-### 5.2 What is deliberately not here
+### 5.2 What a session costs
+
+A session is billed on its end, from `startedAt` to `endedAt`: **free below 60 seconds**; from
+60 seconds on, every started minute is charged at the account's per-minute rate (so 60 s is one
+minute, 61 s is two). The charge is one `session_charge` ledger entry (§7.2). Policy lives in the
+server (`server/internal/policy`); the client never computes it.
+
+### 5.3 What is deliberately not here
 
 No session content endpoint exists, in any form, at any version. There is no screenshot, no
 transcript, no event list, no "what was clicked". If a future feature appears to need one, it is
@@ -400,36 +442,64 @@ the feature that is wrong (SCOPE §2, principle 2).
 
 ## 6. Internal surface (not part of the client contract)
 
-The signaling server reports session start and stop to this API over a private network path
-(VPC-internal, mutually authenticated, never exposed at `api.skipperdesk.app`). It is documented
-here only so that the two services are written against one shape, and it carries the same
-metadata as §5.1 — no content.
+The two services talk over a private path. It is documented here only so that both are written
+against one shape, and it carries the same metadata as §5.1 — no content.
+
+**Where it is served.** Never next to the public API. rc-api serves the calls below only on its
+**internal listener** (`RC_API_INTERNAL_LISTEN`, default `127.0.0.1:18081`); on the public
+listener every `/internal/...` path is `404`. rc-signal likewise serves its one internal call
+only on its own internal listener (`RC_INTERNAL_LISTEN`, default `127.0.0.1:18444`), never next
+to `/ws`. Each service refuses to start with an internal listener on its public port.
+TODO: make both listeners mutually authenticated (mTLS) or reachable only inside the VPC in
+Phase 5; today they are plain HTTP bound to loopback.
 
 Every internal call carries `Authorization: Bearer <internal token>`, a secret shared by the two
-services and nothing else. A device token or user session is `401 unauthenticated` here.
+services and nothing else, compared in constant time. A device token or user session is
+`401 unauthenticated` here.
+
+rc-api's internal listener:
 
 | Call | Body | Effect |
 |---|---|---|
-| `POST /internal/devices/register` | `pubkey`, optional `label`, optional `platform`, optional `preferredDeviceId` (9 digits, else `400`) | The device registry. Answers `{deviceId, existing}` — `201` for a new key, `200` for a known one. Idempotent by `pubkey`: a known key always gets its existing `deviceId` and nothing about the record changes. A new key gets `preferredDeviceId` only when that id is free (§6.1); otherwise a fresh id. |
-| `GET /internal/devices/{deviceId}` | — | `{deviceId, pubkey, codeEpoch}`, used to verify `hello` (PROTOCOL.md §2.4) and to pin both keys at `connect_req`. Unknown id is `404 not_found`. |
-| `POST /internal/devices/{deviceId}/epoch` | `{}` | Bumps `codeEpoch` (PROTOCOL.md §2.15 `refresh_code`, §3.2 session-token epoch). Answers the updated `{deviceId, pubkey, codeEpoch}`; unknown id is `404`. |
-| `POST /internal/sessions/start` | `sessionId`, `hostDeviceId`, `controllerDeviceId`, `startedAt` | Opens the accounting record and claims the host's concurrency slot. |
-| `POST /internal/sessions/stop` | `sessionId`, `endedAt`, `relayUsed`, `bytesRelayed`, `reason` | Closes the record, settles the charge against the balance, frees the slot. |
+| `POST /internal/devices/register` | `pubkey` (canonical, else `400`), optional `label`, optional `platform`, optional `preferredDeviceId` (9 digits, else `400`), optional `idCert` | The device registry. Answers `{deviceId, existing, idCert}` — `201` for a new key, `200` for a known one. Idempotent by `pubkey`: a known key always gets its existing `deviceId`. A new key gets `preferredDeviceId` only when `idCert` certifies it for this `pubkey` (§6.1); otherwise a fresh id. |
+| `GET /internal/devices/{deviceId}` | — | `{deviceId, pubkey, codeEpoch, idCert}`, used to verify `hello` (PROTOCOL.md §2.4), to issue `hello_ok.idCert`, and to pin both keys at `connect_req`. Unknown id is `404 not_found`. |
+| `POST /internal/devices/{deviceId}/epoch` | `{}` | Bumps `codeEpoch` (PROTOCOL.md §2.15 `refresh_code`, §3.2 session-token epoch). Answers the updated `{deviceId, pubkey, codeEpoch, idCert}`; unknown id is `404`. |
+| `POST /internal/sessions/start` | `sessionId` (32 hex), `hostDeviceId`, `controllerDeviceId`, `startedAt` | Opens the accounting record and claims the host's concurrency slot. Sent when the host's first `sdp` is relayed (PROTOCOL.md §3.4), not at `connect_ok`. `402 entitlement` when the account's slot is already taken; signaling then ends the session. |
+| `POST /internal/sessions/stop` | `sessionId` (32 hex), `endedAt`, `relayUsed`, `bytesRelayed`, `reason` (a PROTOCOL.md §2.14 reason, else `400`) | Closes the record, settles the charge against the balance (§5.2), frees the slot. A stop for a record that is already closed is `204` and charges nothing. |
 | `GET /internal/entitlement/{deviceId}` | — | Gates `connect_req`. `200` with the §4.1 body when the host may open a session; otherwise `402 entitlement` with the §4.3 `reason`. An id the registry does not hold, or a registered device that is not linked, is `unlinked`. This call never creates a record. |
+| `GET /healthz` | — | `200 ok`, no bearer needed. |
+
+rc-signal's internal listener:
+
+| Call | Body | Effect |
+|---|---|---|
+| `GET /internal/sessions/live` | — | `{sessionIds: [string], serverTime: int64}`: every **metered** session rc-signal still holds, sorted, and its clock. Used by §6.2. |
+
+rc-signal sends start and stop reports through one ordered lane per session (PROTOCOL.md
+§3.4): at most one report per session in flight, the stop never before the start, retries with
+back-off for transport failures, `5xx` and `429` (6 attempts), no retry for other `4xx`, and a
+bounded queue. A report that is finally dropped is logged and left to §6.2.
 
 ### 6.1 One registry
 
 This API is the only place a `deviceId` is minted. The signaling server holds no device records of
 its own in a deployment; it asks the calls above, with bounded timeouts (3 s per call), and may
 cache `GET /internal/devices/{deviceId}` answers briefly, dropping a device's entry whenever it
-bumps that device's epoch.
+bumps that device's epoch or registers a key under that id.
 
-Every id this registry has ever assigned is remembered with the key it went to, permanently,
-even if the device record itself is later removed. `preferredDeviceId` (PROTOCOL.md §2.2) is
-honoured only for a key the registry does not know, and only when no device holds the id and it
-was never assigned to a different key. It helps only the key that asks for it: a stranger naming
-another device's id is given a fresh id, never that one. Its purpose is that devices keep their
-ids when this registry starts from an empty database (a reset or a move to a new account).
+The registry holds a P-256 **device-ID certificate key** (`RC_API_ID_CERT_KEY_FILE`, PEM
+PKCS#8; `TODO:` AWS KMS in Phase 5) and signs every binding it hands out (PROTOCOL.md §3.1.1).
+`preferredDeviceId` is honoured only together with an `idCert` that verifies for exactly that
+id and the registering `pubkey`, and then it is honoured even if another key holds the id: that
+key's device record is removed and its device tokens are revoked. Without a valid certificate a
+new key always gets a fresh id, whether or not the preferred one is free, so the call reveals
+nothing about which ids exist. The ids this database has assigned are remembered with their
+keys even after a record is removed, so a fresh id never repeats one of them; that memory is in
+the same database and is lost with it, which is exactly why the certificate — held by the
+device, verified with a key that is not in the database — is what lets devices keep their ids
+when this registry starts from an empty database (a reset or a move to a new account). The
+process refuses to start without the key file unless it runs in local `-insecure-http` mode,
+where it makes a throwaway key.
 
 When this API cannot be reached or answers `5xx`, the signaling server refuses `register`,
 `hello`, `refresh_code` and `connect_req` with `error{code:"unavailable", retryAfterSec}`. It never
@@ -437,9 +507,25 @@ falls back to minting or trusting an id of its own. A client treats `unavailable
 back off and retry, keeping any live peer-to-peer session running.
 
 The signaling server's stand-alone mode (`RC_ENTITLEMENT=static`, local development and the
-smoke test only) keeps an equivalent registry in its own database and has no link to this API.
+smoke test only) keeps an equivalent registry in its own database, signs certificates with its
+own key file (`RC_ID_CERT_KEY_FILE`), has no link to this API, and does not start its internal
+listener.
 
-### 6.2 Development-only calls
+### 6.2 Reconciliation
+
+Every minute rc-api, when configured with `RC_API_SIGNAL_INTERNAL_URL`, lists its open session
+rows, **then** asks rc-signal for `GET /internal/sessions/live`. Reading the rows first means a
+session that starts in between is never mistaken for a lost one. For each open row:
+
+- held by signaling: the row's last-alive time becomes the answer's `serverTime`;
+- not held: the row is closed with `reason: "reconciled"`, ended at its last-alive time (its
+  start if it was never seen alive), and billed per §5.2 up to then.
+
+If rc-signal cannot be reached or answers anything but `200`, nothing is closed. A late stop
+report for a reconciled row changes nothing and charges nothing. `TODO:` with several rc-signal
+instances in Phase 5, ask every instance and close only what none holds.
+
+### 6.3 Development-only calls
 
 TODO: remove both at launch. They exist only when the API runs with the local development
 identity provider (`Bearer dev:<email>`), and are `404` otherwise.
@@ -540,16 +626,17 @@ payment surface at all and must not grow one.
 
 ## 8. Endpoint index and rate limits
 
-Limits are per the stated key, in a sliding window. Over the limit is `429 rate_limited` with
-`retryAfterSec`. Limits are a floor, not a promise: the server may be stricter under load and
-says so through the same response.
+Limits are per the stated key, as token buckets that refill evenly over the stated window. "Per
+IP" means the client address of §0. Over the limit is `429 rate_limited` with `retryAfterSec`.
+Limits are a floor, not a promise: the server may be stricter under load and says so through the
+same response. Idle buckets are dropped once full, so the limiter's memory is bounded.
 
 | Method | Path | Auth | Idem | Rate limit |
 |---|---|---|:--:|---|
 | `POST` | `/v1/auth/link` | user session | yes | 10 / hour per account |
-| `POST` | `/v1/auth/device/challenge` | none | no | 30 / hour per IP, 10 / hour per `deviceId` |
+| `POST` | `/v1/auth/device/challenge` | none | no | 30 / hour per IP (no per-device limit, §1.3) |
 | `POST` | `/v1/auth/device/token` | none | yes | 10 / hour per IP, 5 / hour per `code` |
-| `POST` | `/v1/auth/device/refresh` | none | yes | 12 / day per device |
+| `POST` | `/v1/auth/device/refresh` | none | yes | 30 / hour per IP, charged first; 12 / day per device, charged only after the signature verified under the device's registered key (§1.5) |
 | `POST` | `/v1/auth/device/revoke` | device token | yes | 10 / hour per device |
 | `GET` | `/v1/devices` | user session | — | 60 / minute per account |
 | `GET` | `/v1/devices/{deviceId}` | user session or own device token | — | 60 / minute per caller |
@@ -574,10 +661,23 @@ that reveals nothing about anyone.
 ## 9. Privacy guarantees (normative)
 
 The API server **must not** log, persist, or transmit to third parties: device tokens, one-time
-link codes, Cognito tokens, raw `hardwareId` values, the `hardwareHash` salt, gift messages, or
-anything from the peer-to-peer surfaces of PROTOCOL.md. Log lines may contain: `requestId`,
-`accountId`, `deviceId`, `sessionId`, method, path, status, error `code`, byte counts and timings.
-Anything else is a bug in the server.
+link codes, Cognito tokens, raw `hardwareId` values, the `hardwareHash` salt, the device-ID
+certificate key, gift messages, or anything from the peer-to-peer surfaces of PROTOCOL.md. Log
+lines may contain: `requestId`, `accountId`, `deviceId`, `sessionId`, method, path, status,
+error `code`, byte counts and timings. Anything else is a bug in the server.
+
+What is persisted in place of a credential, and nothing more:
+
+| Credential | Stored as |
+|---|---|
+| device token | `SHA-256(token)` in the token table; never in the idempotency table (§0.6) |
+| one-time link code | `SHA-256(code)` in the link table and on its challenge nonces; never in the idempotency table |
+| link-attempt nonce | `SHA-256(nonce)` |
+| `hardwareId` | `HMAC-SHA256(serverSalt, hardwareId)` |
+
+A database written by an earlier build is migrated on open: the plaintext link-code and nonce
+tables are dropped (their rows live for at most 120 s and 60 s), and stored idempotent answers of
+the credential-bearing endpoints lose their bodies.
 
 ---
 

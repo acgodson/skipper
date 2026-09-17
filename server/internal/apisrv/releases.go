@@ -29,7 +29,7 @@ func oneOf(value string, allowed []string) bool {
 }
 
 func (s *Server) latestRelease(w http.ResponseWriter, r *http.Request) {
-	if !s.allow(w, r, limitReleaseLatest, clientIP(r)) {
+	if !s.allow(w, r, limitReleaseLatest, s.clientIP(r)) {
 		return
 	}
 	if !knownQuery(r, "platform", "arch", "channel") {

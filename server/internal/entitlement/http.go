@@ -5,17 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"rc-signal/internal/internalapi"
+	"rc-signal/internal/reports"
 	protocol "rcprotocol"
 )
 
-const (
-	CheckTimeout   = internalapi.CallTimeout
-	ReportAttempts = 3
-	ReportBackoff  = 250 * time.Millisecond
-)
+const CheckTimeout = internalapi.CallTimeout
 
 type HTTP struct {
 	api *internalapi.Client
@@ -78,37 +74,19 @@ func (h *HTTP) SessionStopped(ctx context.Context, r protocol.SessionStopReport)
 	return h.post(ctx, protocol.PathInternalSessionStop, r)
 }
 
+// post makes one attempt; the report queue owns retries and reads the error class.
 func (h *HTTP) post(ctx context.Context, path string, payload any) error {
-	var last error
-	for attempt := 0; attempt < ReportAttempts; attempt++ {
-		if attempt > 0 {
-			delay := ReportBackoff << (attempt - 1)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(delay):
-			}
-		}
-		retry, err := h.postOnce(ctx, path, payload)
-		if err == nil {
-			return nil
-		}
-		last = err
-		if !retry {
-			return err
-		}
-	}
-	return last
-}
-
-func (h *HTTP) postOnce(ctx context.Context, path string, payload any) (bool, error) {
 	resp, err := h.api.Do(ctx, http.MethodPost, path, payload)
-	if err != nil {
-		return true, err
+	switch {
+	case err != nil:
+		return err
+	case resp.OK():
+		return nil
+	case resp.Status == http.StatusPaymentRequired || resp.Status == http.StatusForbidden:
+		return fmt.Errorf("%s: status %d: %w", path, resp.Status, reports.ErrDenied)
+	case resp.Status >= 500 || resp.Status == http.StatusTooManyRequests:
+		return fmt.Errorf("%s: status %d", path, resp.Status)
+	default:
+		return fmt.Errorf("%s: status %d: %w", path, resp.Status, reports.ErrPermanent)
 	}
-	if resp.OK() {
-		return false, nil
-	}
-	retry := resp.Status >= 500 || resp.Status == http.StatusTooManyRequests
-	return retry, fmt.Errorf("%s: unexpected status %d", path, resp.Status)
 }

@@ -65,3 +65,38 @@ func TestSigningMessagePrefixesNeverOverlap(t *testing.T) {
 		t.Fatal("an unknown purpose built a message")
 	}
 }
+
+func TestDeviceIDCertMessageIsBoundToIDAndKeyAndNeverADevicePurpose(t *testing.T) {
+	der := []byte{0x30, 0x59, 0x01}
+	message, err := DeviceIDCertMessage("481930275", der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "skipperdesk/device-id-cert/v1|481930275"
+	if !bytes.HasPrefix(message, []byte(prefix)) || len(message) != len(prefix)+32 {
+		t.Fatalf("message %q does not carry the prefix, id and a 32-byte key digest", message)
+	}
+	other, _ := DeviceIDCertMessage("481930276", der)
+	otherKey, _ := DeviceIDCertMessage("481930275", []byte{0x30, 0x59, 0x02})
+	if bytes.Equal(message, other) || bytes.Equal(message, otherKey) {
+		t.Fatal("a certificate message does not depend on both the id and the key")
+	}
+	for _, bad := range []string{"", "12345678", "1234567890", "12345678a"} {
+		if _, err := DeviceIDCertMessage(bad, der); err == nil {
+			t.Fatalf("built a certificate message for id %q", bad)
+		}
+	}
+	if _, err := DeviceIDCertMessage("481930275", nil); err == nil {
+		t.Fatal("built a certificate message without a key")
+	}
+	if _, err := SigningMessage(PurposeDeviceIDCert, make([]byte, NonceLen)); err == nil {
+		t.Fatal("a device key can build a device-id-cert message")
+	}
+	certPrefix := []byte(signingPrefix(PurposeDeviceIDCert))
+	for _, purpose := range SigningPurposes {
+		device := []byte(signingPrefix(purpose))
+		if bytes.HasPrefix(device, certPrefix) || bytes.HasPrefix(certPrefix, device) {
+			t.Fatalf("%s overlaps the device-id-cert prefix", purpose)
+		}
+	}
+}

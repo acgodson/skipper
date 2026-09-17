@@ -18,11 +18,11 @@ func TestRegisterAndLookup(t *testing.T) {
 	defer s.Close()
 	now := time.Unix(1_755_600_000, 0)
 
-	d, existing, err := s.Register("PUBKEY-A", "Studio Mac", "", now)
+	d, first, err := s.Register("PUBKEY-A", "Studio Mac", "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if existing {
+	if first.Existing {
 		t.Fatal("a first registration reported existing=true")
 	}
 	if !protocol.ValidDeviceID(d.DeviceID) {
@@ -35,12 +35,12 @@ func TestRegisterAndLookup(t *testing.T) {
 		t.Fatalf("timestamps = %v/%v, want %v", d.CreatedAt, d.UpdatedAt, now)
 	}
 
-	again, existing, err := s.Register("PUBKEY-A", "renamed", "", now.Add(time.Hour))
+	again, second, err := s.Register("PUBKEY-A", "renamed", "", now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !existing || again.DeviceID != d.DeviceID {
-		t.Fatalf("re-register returned %q existing=%v, want %q true", again.DeviceID, existing, d.DeviceID)
+	if !second.Existing || again.DeviceID != d.DeviceID {
+		t.Fatalf("re-register returned %q existing=%v, want %q true", again.DeviceID, second.Existing, d.DeviceID)
 	}
 
 	seen := map[string]bool{d.DeviceID: true}
@@ -161,7 +161,7 @@ func TestMigrationDropsV1VerifierColumns(t *testing.T) {
 	if _, _, err := s.Register("PUBKEY-B", "Laptop", "", now); err != nil {
 		t.Fatalf("registering into a migrated database: %v", err)
 	}
-	if _, _, err := s.Register("PUBKEY-C", "", "481930275", now); err != nil {
+	if _, _, err := s.Register("PUBKEY-C", "", "", now); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.GetByPubkey("PUBKEY-C"); err != nil || got.DeviceID == "481930275" {
@@ -169,7 +169,7 @@ func TestMigrationDropsV1VerifierColumns(t *testing.T) {
 	}
 }
 
-func TestRegisterPreferredDeviceID(t *testing.T) {
+func TestRegisterCertifiedDeviceIDRestoresOverASquatter(t *testing.T) {
 	s, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -177,36 +177,26 @@ func TestRegisterPreferredDeviceID(t *testing.T) {
 	defer s.Close()
 	now := time.Unix(1_755_600_000, 0)
 
-	honoured, existing, err := s.Register("PK-A", "", "481930275", now)
-	if err != nil || existing || honoured.DeviceID != "481930275" {
-		t.Fatalf("a free preferred id for a new key = %+v existing=%v err=%v", honoured, existing, err)
-	}
-
-	known, existing, err := s.Register("PK-A", "", "222222222", now)
-	if err != nil || !existing || known.DeviceID != "481930275" {
-		t.Fatalf("a known key asking for another id = %+v existing=%v err=%v", known, existing, err)
-	}
-
-	stranger, existing, err := s.Register("PK-B", "", "481930275", now)
-	if err != nil || existing || stranger.DeviceID == "481930275" || !protocol.ValidDeviceID(stranger.DeviceID) {
-		t.Fatalf("a stranger asking for a held id = %+v existing=%v err=%v", stranger, existing, err)
-	}
-
-	if _, err := s.db.Exec(`DELETE FROM devices WHERE device_id = ?`, "481930275"); err != nil {
+	squatter, _, err := s.Register("PK-SQUAT", "", "", now)
+	if err != nil {
 		t.Fatal(err)
 	}
-	tombstoned, _, err := s.Register("PK-C", "", "481930275", now)
-	if err != nil || tombstoned.DeviceID == "481930275" {
-		t.Fatalf("a tombstoned id went to another key: %+v err=%v", tombstoned, err)
+	restored, res, err := s.Register("PK-OWNER", "", squatter.DeviceID, now)
+	if err != nil || res.Existing || !res.Displaced || restored.DeviceID != squatter.DeviceID || restored.Pubkey != "PK-OWNER" {
+		t.Fatalf("certified restore = %+v %+v err=%v", restored, res, err)
 	}
-	back, existing, err := s.Register("PK-A", "", "481930275", now)
-	if err != nil || existing || back.DeviceID != "481930275" {
-		t.Fatalf("the original key could not reclaim its tombstoned id: %+v existing=%v err=%v", back, existing, err)
+	if _, err := s.GetByPubkey("PK-SQUAT"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the squatter's record survived the restore: %v", err)
 	}
 
-	malformed, _, err := s.Register("PK-D", "", "12345", now)
-	if err != nil || !protocol.ValidDeviceID(malformed.DeviceID) {
-		t.Fatalf("a malformed preferred id = %+v err=%v", malformed, err)
+	known, res, err := s.Register("PK-OWNER", "", "222222222", now)
+	if err != nil || !res.Existing || known.DeviceID != squatter.DeviceID {
+		t.Fatalf("a key that holds an id keeps it = %+v %+v err=%v", known, res, err)
+	}
+
+	moved, res, err := s.Register("PK-SQUAT", "", "", now)
+	if err != nil || res.Existing || moved.DeviceID == squatter.DeviceID || !protocol.ValidDeviceID(moved.DeviceID) {
+		t.Fatalf("the displaced key re-registering without a certificate = %+v %+v err=%v", moved, res, err)
 	}
 }
 

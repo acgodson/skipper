@@ -8,12 +8,12 @@ import (
 
 	"rc-signal/internal/auth"
 	"rc-signal/internal/entitlement"
+	"rc-signal/internal/ratelimit"
 	"rc-signal/internal/registry"
 	"rcprotocol"
 )
 
 func (h *Hub) Handle(c *Client, raw []byte) {
-
 	var probe struct {
 		V    int    `json:"v"`
 		Type string `json:"type"`
@@ -94,7 +94,7 @@ func (h *Hub) acceptAuthedLocked(c *Client, e protocol.Envelope) bool {
 		c.badMsgs++
 		h.sendErrLocked(c, e.ID, protocol.ErrUnauthenticated, "authenticate with hello first", 0)
 		if c.badMsgs >= 3 {
-			c.close(1008, "unauthenticated")
+			h.dropClientLocked(c, 1008, "unauthenticated")
 		}
 		return false
 	}
@@ -130,13 +130,14 @@ func (h *Hub) sendRegistryErrLocked(c *Client, re, what string, err error) {
 	h.sendErrLocked(c, re, protocol.ErrInternal, what+" failed", 0)
 }
 
+// checkNonceLocked spends the connection's challenge whatever the outcome.
 func (h *Hub) checkNonceLocked(c *Client, purpose protocol.SigningPurpose, pubkey, sig string) bool {
 	now := h.clock.Now()
-	if len(c.nonce) == 0 || !now.Before(c.nonceExp) {
-		return false
-	}
 	nonce := c.nonce
 	c.nonce = nil
+	if len(nonce) == 0 || !now.Before(c.nonceExp) {
+		return false
+	}
 	return auth.VerifyDeviceSig(purpose, pubkey, sig, nonce) == nil
 }
 
@@ -157,11 +158,22 @@ func (h *Hub) acceptRegisterLocked(c *Client, e protocol.Envelope) (protocol.Reg
 		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "preferredDeviceId must be 9 digits", 0)
 		return p, false
 	}
-	if len(p.Label) > protocol.MaxLabelLen {
-		p.Label = p.Label[:protocol.MaxLabelLen]
+	if _, err := auth.ParsePubkey(p.Pubkey); err != nil {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "pubkey must be canonical base64 of a DER SPKI P-256 key", 0)
+		return p, false
 	}
+	if c.registers >= protocol.RegistersPerSocket {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "one register per connection; reconnect to register again", 0)
+		return p, false
+	}
+	p.Label = protocol.TrimLabel(p.Label)
 	if !h.checkNonceLocked(c, protocol.PurposeRegister, p.Pubkey, p.Sig) {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadSignature, "challenge signature rejected", 0)
+		h.issueChallengeLocked(c)
+		return p, false
+	}
+	c.registers++
+	if !h.takeLocked(c, e.ID, ratelimit.Charge{Rule: h.registerRule, Key: c.ip}) {
 		h.issueChallengeLocked(c)
 		return p, false
 	}
@@ -177,7 +189,9 @@ func (h *Hub) handleRegister(c *Client, e protocol.Envelope) {
 	}
 
 	ctx, cancel := registryContext()
-	dev, existing, err := h.opt.Registry.Register(ctx, p.Pubkey, p.Label, p.PreferredDeviceID)
+	reg, err := h.opt.Registry.Register(ctx, registry.Registration{
+		Pubkey: p.Pubkey, Label: p.Label, PreferredDeviceID: p.PreferredDeviceID, IDCert: p.IDCert,
+	})
 	cancel()
 
 	h.mu.Lock()
@@ -190,11 +204,12 @@ func (h *Hub) handleRegister(c *Client, e protocol.Envelope) {
 		h.issueChallengeLocked(c)
 		return
 	}
-	h.log.Info("device registered", "deviceId", dev.DeviceID, "existing", existing,
-		"preferredHonoured", p.PreferredDeviceID != "" && p.PreferredDeviceID == dev.DeviceID)
+	dev := reg.Device
+	restored := !reg.Existing && p.PreferredDeviceID != "" && p.PreferredDeviceID == dev.DeviceID
+	h.displaceStaleBindingLocked(dev.DeviceID, dev.Pubkey)
+	h.log.Info("device registered", "deviceId", dev.DeviceID, "existing", reg.Existing, "restored", restored)
 	h.sendLocked(c, protocol.TypeRegisterOK, e.ID, protocol.RegisterOK{
-		DeviceID: dev.DeviceID, Existing: existing})
-
+		DeviceID: dev.DeviceID, Existing: reg.Existing, IDCert: dev.IDCert})
 	h.issueChallengeLocked(c)
 }
 
@@ -218,6 +233,9 @@ func (h *Hub) acceptHelloLocked(c *Client, e protocol.Envelope) (protocol.Hello,
 	return p, true
 }
 
+// handleHello proves possession of the presented key first, and only then
+// compares it with the registry: a missing id and an id bound to another key
+// both answer unknown_device, so hello reveals nothing about which ids exist.
 func (h *Hub) handleHello(c *Client, e protocol.Envelope) {
 	h.mu.Lock()
 	p, ok := h.acceptHelloLocked(c, e)
@@ -235,42 +253,41 @@ func (h *Hub) handleHello(c *Client, e protocol.Envelope) {
 	if !h.acceptUnauthedLocked(c, e) {
 		return
 	}
-	if errors.Is(err, registry.ErrNotFound) {
-		h.sendErrLocked(c, e.ID, protocol.ErrUnknownDevice, "unknown device", 0)
-		h.issueChallengeLocked(c)
-		return
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, registry.ErrNotFound) {
 		h.sendRegistryErrLocked(c, e.ID, "device lookup", err)
 		return
 	}
-
-	if p.Pubkey != dev.Pubkey || !h.checkNonceLocked(c, protocol.PurposeHello, p.Pubkey, p.Sig) {
+	if !h.checkNonceLocked(c, protocol.PurposeHello, p.Pubkey, p.Sig) {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadSignature, "challenge signature rejected", 0)
+		h.issueChallengeLocked(c)
+		return
+	}
+	if err != nil || dev.Pubkey != p.Pubkey {
+		h.sendErrLocked(c, e.ID, protocol.ErrUnknownDevice, "unknown device", 0)
 		h.issueChallengeLocked(c)
 		return
 	}
 
 	if old := h.byDevice[p.DeviceID]; old != nil && old != c {
 		h.sendErrLocked(old, "", protocol.ErrDisplaced, "another connection authenticated as this device", 0)
-		h.removeClientLocked(old)
-		old.close(1000, "displaced")
+		h.dropClientLocked(old, 1000, "displaced")
 	}
 
 	c.authed = true
 	c.deviceID = dev.DeviceID
+	c.pubkey = dev.Pubkey
 	c.role = p.Role
-	c.nonce = nil
 	h.byDevice[dev.DeviceID] = c
 	h.touchLocked(c)
 
 	hello := protocol.HelloOK{
 		DeviceID:           dev.DeviceID,
 		ServerTime:         h.clock.Now().UnixMilli(),
-		ICEServers:         h.iceServersLocked(dev.DeviceID),
+		ICEServers:         h.stunServers(),
 		HeartbeatSec:       protocol.HeartbeatSec,
 		OfflineAfterSec:    protocol.OfflineAfterSec,
 		SessionTokenTTLSec: protocol.SessionTokenTTLSec,
+		IDCert:             dev.IDCert,
 	}
 	if sid, live := h.devSess[dev.DeviceID]; live {
 		if s := h.sessions[sid]; s != nil && s.State != protocol.SessionClosed {
@@ -282,13 +299,19 @@ func (h *Hub) handleHello(c *Client, e protocol.Envelope) {
 		"activeSessionId", hello.ActiveSessionID)
 }
 
-func (h *Hub) iceServersLocked(deviceID string) []protocol.ICEServer {
+func (h *Hub) stunServers() []protocol.ICEServer {
 	out := []protocol.ICEServer{}
 	if len(h.opt.StunURLs) > 0 {
 		out = append(out, protocol.ICEServer{URLs: append([]string{}, h.opt.StunURLs...)})
 	}
+	return out
+}
+
+// sessionICE is the full ICE list for one session; its TURN username names the session.
+func (h *Hub) sessionICE(sessionID string, now time.Time) []protocol.ICEServer {
+	out := h.stunServers()
 	if h.opt.TurnSecret != "" && len(h.opt.TurnURLs) > 0 {
-		user, cred, exp := auth.TurnCreds(h.opt.TurnSecret, deviceID, h.clock.Now(), TurnCredTTL)
+		user, cred, exp := auth.TurnCreds(h.opt.TurnSecret, sessionID, now, TurnCredTTL)
 		out = append(out, protocol.ICEServer{
 			URLs:       append([]string{}, h.opt.TurnURLs...),
 			Username:   user,
@@ -336,40 +359,52 @@ func (h *Hub) handleUnwatchLocked(c *Client, e protocol.Envelope) {
 	h.sendLocked(c, protocol.TypeUnwatchOK, e.ID, protocol.UnwatchOK{DeviceID: p.DeviceID})
 }
 
-func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
+func (h *Hub) acceptConnectLocked(c *Client, e protocol.Envelope) (protocol.ConnectReq, bool) {
 	var p protocol.ConnectReq
-	if err := protocol.Unmarshal(e, &p); err != nil {
-		h.mu.Lock()
-		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "malformed connect_req", 0)
-		h.mu.Unlock()
-		return
-	}
-
-	h.mu.Lock()
-	if !c.authed {
+	if !c.authed || c.closed {
 		h.sendErrLocked(c, e.ID, protocol.ErrUnauthenticated, "authenticate with hello first", 0)
-		h.mu.Unlock()
-		return
+		return p, false
 	}
 	h.touchLocked(c)
-
-	if !protocol.ValidDeviceID(p.DeviceID) {
+	if c.role != protocol.RoleController {
+		h.sendErrLocked(c, e.ID, protocol.ErrForbidden, "only a controller connection may send connect_req", 0)
+		return p, false
+	}
+	if err := protocol.Unmarshal(e, &p); err != nil || !protocol.ValidDeviceID(p.DeviceID) {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "connect_req requires a 9-digit deviceId", 0)
-		h.mu.Unlock()
-		return
+		return p, false
 	}
 	if p.AccessCode != "" {
 		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "connect_req must not carry an access code", 0)
-		h.mu.Unlock()
-		return
+		return p, false
 	}
 	if p.DeviceID == c.deviceID {
 		h.sendErrLocked(c, e.ID, protocol.ErrSelfConnect, "cannot connect to yourself", 0)
-		h.mu.Unlock()
-		return
+		return p, false
 	}
+	return p, h.takeLocked(c, e.ID,
+		ratelimit.Charge{Rule: ruleConnectCtrlMin, Key: c.deviceID},
+		ratelimit.Charge{Rule: ruleConnectCtrlHour, Key: c.deviceID},
+		ratelimit.Charge{Rule: ruleConnectHostMin, Key: p.DeviceID},
+		ratelimit.Charge{Rule: ruleConnectHostHour, Key: p.DeviceID},
+	)
+}
+
+func (h *Hub) hostConnLocked(deviceID string) *Client {
+	if conn := h.byDevice[deviceID]; conn != nil && conn.role == protocol.RoleHost {
+		return conn
+	}
+	return nil
+}
+
+func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
+	h.mu.Lock()
+	p, ok := h.acceptConnectLocked(c, e)
 	ctrlID := c.deviceID
 	h.mu.Unlock()
+	if !ok {
+		return
+	}
 
 	host, ctrl, err := h.lookupPair(p.DeviceID, ctrlID)
 
@@ -388,7 +423,7 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 		h.mu.Unlock()
 		return
 	}
-	if h.byDevice[p.DeviceID] == nil {
+	if h.hostConnLocked(p.DeviceID) == nil {
 		h.sendErrLocked(c, e.ID, protocol.ErrOffline, "host is offline", 0)
 		h.mu.Unlock()
 		return
@@ -417,67 +452,67 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 		h.sendEntitlementErrLocked(c, e.ID, decision.Reason, "the host's account may not open a session")
 		return
 	}
-	now := h.clock.Now()
+	h.openSessionLocked(c, e.ID, host, ctrl)
+}
 
-	hostConn := h.byDevice[p.DeviceID]
-	if hostConn == nil {
-		h.sendErrLocked(c, e.ID, protocol.ErrOffline, "host is offline", 0)
+func (h *Hub) openSessionLocked(c *Client, re string, host, ctrl registry.Device) {
+	now := h.clock.Now()
+	hostConn := h.hostConnLocked(host.DeviceID)
+	switch {
+	case hostConn == nil || hostConn.pubkey != host.Pubkey:
+		h.sendErrLocked(c, re, protocol.ErrOffline, "host is offline", 0)
 		return
-	}
-	if h.hasLiveSessionLocked(p.DeviceID) {
-		h.sendErrLocked(c, e.ID, protocol.ErrBusy, "host already has an active session", 0)
+	case c.pubkey != ctrl.Pubkey:
+		h.sendErrLocked(c, re, protocol.ErrUnauthenticated, "this connection's key is no longer registered", 0)
 		return
-	}
-	if h.hasLiveSessionLocked(c.deviceID) {
-		h.sendErrLocked(c, e.ID, protocol.ErrBusy, "controller already has an active session", 0)
+	case h.hasLiveSessionLocked(host.DeviceID):
+		h.sendErrLocked(c, re, protocol.ErrBusy, "host already has an active session", 0)
+		return
+	case h.hasLiveSessionLocked(c.deviceID):
+		h.sendErrLocked(c, re, protocol.ErrBusy, "controller already has an active session", 0)
 		return
 	}
 
 	sid, err := newSessionID()
 	if err != nil {
-		h.sendErrLocked(c, e.ID, protocol.ErrInternal, "could not create session", 0)
+		h.sendErrLocked(c, re, protocol.ErrInternal, "could not create session", 0)
 		return
 	}
 	s := &Session{
 		ID: sid, State: protocol.SessionPending, CreatedAt: now,
-		Host: side{deviceID: host.DeviceID, epoch: host.CodeEpoch},
-		Ctrl: side{deviceID: ctrl.DeviceID, epoch: ctrl.CodeEpoch},
+		Host: side{deviceID: host.DeviceID, pubkey: host.Pubkey, epoch: host.CodeEpoch},
+		Ctrl: side{deviceID: ctrl.DeviceID, pubkey: ctrl.Pubkey, epoch: ctrl.CodeEpoch},
 	}
 	h.sessions[sid] = s
-	h.devSess[p.DeviceID] = sid
+	h.devSess[host.DeviceID] = sid
 	h.devSess[c.deviceID] = sid
 
 	ctrlTok, ctrlExp, err1 := h.issueTokenLocked(s, &s.Ctrl, now)
 	hostTok, hostExp, err2 := h.issueTokenLocked(s, &s.Host, now)
 	if err1 != nil || err2 != nil {
 		h.closeSessionLocked(s, protocol.ByeError)
-		h.sendErrLocked(c, e.ID, protocol.ErrInternal, "could not mint session tokens", 0)
+		h.sendErrLocked(c, re, protocol.ErrInternal, "could not mint session tokens", 0)
 		return
 	}
 
 	h.attachLocked(s, &s.Ctrl, c)
 	h.attachLocked(s, &s.Host, hostConn)
 
-	h.sendLocked(c, protocol.TypeConnectOK, e.ID, protocol.ConnectOK{
+	ice := h.sessionICE(sid, now)
+	h.sendLocked(c, protocol.TypeConnectOK, re, protocol.ConnectOK{
 		SessionID: sid, SessionToken: ctrlTok, ExpiresAt: ctrlExp.UnixMilli(),
-		TTLSec: protocol.SessionTokenTTLSec, HostDeviceID: p.DeviceID,
-		ControllerDeviceID: c.deviceID,
-		HostPubkey:         host.Pubkey,
+		TTLSec: protocol.SessionTokenTTLSec, HostDeviceID: host.DeviceID,
+		ControllerDeviceID: c.deviceID, HostPubkey: host.Pubkey, ICEServers: ice,
 	})
 	h.sendLocked(hostConn, protocol.TypeSessionStart, "", protocol.SessionStart{
 		ConnectOK: protocol.ConnectOK{
 			SessionID: sid, SessionToken: hostTok, ExpiresAt: hostExp.UnixMilli(),
-			TTLSec: protocol.SessionTokenTTLSec, HostDeviceID: p.DeviceID,
-			ControllerDeviceID: c.deviceID,
-			HostPubkey:         host.Pubkey,
+			TTLSec: protocol.SessionTokenTTLSec, HostDeviceID: host.DeviceID,
+			ControllerDeviceID: c.deviceID, HostPubkey: host.Pubkey, ICEServers: ice,
 		},
 		ControllerPubkey: ctrl.Pubkey,
 	})
-	h.reportSessionStart(protocol.SessionStartReport{
-		SessionID: sid, HostDeviceID: p.DeviceID, ControllerDeviceID: c.deviceID,
-		StartedAt: now.UnixMilli(),
-	})
-	h.log.Info("session opened", "sessionId", sid, "host", p.DeviceID, "controller", c.deviceID)
+	h.log.Info("session opened", "sessionId", sid, "host", host.DeviceID, "controller", c.deviceID)
 }
 
 func (h *Hub) checkEntitlement(hostDeviceID string) (entitlement.Decision, error) {
@@ -512,16 +547,24 @@ func (h *Hub) lookupPair(hostID, ctrlID string) (host, ctrl registry.Device, err
 	return host, ctrl, err
 }
 
-func (h *Hub) handleResumeLocked(c *Client, e protocol.Envelope) {
+func decodeTokenCall(e protocol.Envelope) (sessionID, token string, ok bool) {
 	var p protocol.Resume
-	if err := protocol.Unmarshal(e, &p); err != nil || p.SessionID == "" || p.SessionToken == "" {
-		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "resume requires sessionId and sessionToken", 0)
+	if err := protocol.Unmarshal(e, &p); err != nil || !protocol.ValidSessionID(p.SessionID) || p.SessionToken == "" {
+		return "", "", false
+	}
+	return p.SessionID, p.SessionToken, true
+}
+
+func (h *Hub) handleResumeLocked(c *Client, e protocol.Envelope) {
+	sessionID, token, ok := decodeTokenCall(e)
+	if !ok {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "resume requires a 32-hex sessionId and a sessionToken", 0)
 		return
 	}
 	now := h.clock.Now()
-	s, sd, errCode := h.verifyTokenLocked(c.deviceID, p.SessionID, p.SessionToken, now)
+	s, sd, errCode := h.verifyTokenLocked(c.deviceID, sessionID, token, now)
 	if errCode != "" {
-		h.log.Warn("resume rejected", "deviceId", c.deviceID, "sessionId", p.SessionID, "code", errCode)
+		h.log.Warn("resume rejected", "deviceId", c.deviceID, "sessionId", sessionID, "code", errCode)
 		h.sendErrLocked(c, e.ID, errCode, "resume rejected", 0)
 		return
 	}
@@ -545,13 +588,13 @@ func (h *Hub) handleResumeLocked(c *Client, e protocol.Envelope) {
 }
 
 func (h *Hub) handleRenewLocked(c *Client, e protocol.Envelope) {
-	var p protocol.Renew
-	if err := protocol.Unmarshal(e, &p); err != nil || p.SessionID == "" || p.SessionToken == "" {
-		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "renew requires sessionId and sessionToken", 0)
+	sessionID, token, ok := decodeTokenCall(e)
+	if !ok {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "renew requires a 32-hex sessionId and a sessionToken", 0)
 		return
 	}
 	now := h.clock.Now()
-	s, sd, errCode := h.verifyTokenLocked(c.deviceID, p.SessionID, p.SessionToken, now)
+	s, sd, errCode := h.verifyTokenLocked(c.deviceID, sessionID, token, now)
 	if errCode != "" {
 		h.sendErrLocked(c, e.ID, errCode, "renew rejected", 0)
 		return
@@ -567,7 +610,7 @@ func (h *Hub) handleRenewLocked(c *Client, e protocol.Envelope) {
 	}
 	h.sendLocked(c, protocol.TypeRenewOK, e.ID, protocol.RenewOK{
 		SessionID: s.ID, SessionToken: tok, ExpiresAt: exp.UnixMilli(),
-		TTLSec: protocol.SessionTokenTTLSec,
+		TTLSec: protocol.SessionTokenTTLSec, ICEServers: h.sessionICE(s.ID, now),
 	})
 }
 
@@ -576,8 +619,8 @@ func (h *Hub) handleRelayLocked(c *Client, e protocol.Envelope) {
 		SessionID string `json:"sessionId"`
 		Payload   string `json:"payload"`
 	}
-	if err := json.Unmarshal(e.Payload, &meta); err != nil || meta.SessionID == "" {
-		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "relay requires sessionId", 0)
+	if err := json.Unmarshal(e.Payload, &meta); err != nil || !protocol.ValidSessionID(meta.SessionID) {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "relay requires a 32-hex sessionId", 0)
 		return
 	}
 	if e.Type == protocol.TypePake && len(meta.Payload) > protocol.MaxPakePayloadBytes {
@@ -603,12 +646,22 @@ func (h *Hub) handleRelayLocked(c *Client, e protocol.Envelope) {
 		return
 	}
 	peer.conn.send(b)
+	if e.Type == protocol.TypeSDP && c.deviceID == s.Host.deviceID && !s.metered {
+		s.metered = true
+		s.meteredAt = h.clock.Now()
+		h.reportStartLocked(s)
+		h.log.Info("session metered", "sessionId", s.ID)
+	}
 }
 
 func (h *Hub) handleByeLocked(c *Client, e protocol.Envelope) {
 	var p protocol.Bye
-	if err := protocol.Unmarshal(e, &p); err != nil || p.SessionID == "" {
-		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "bye requires sessionId", 0)
+	if err := protocol.Unmarshal(e, &p); err != nil || !protocol.ValidSessionID(p.SessionID) {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "bye requires a 32-hex sessionId", 0)
+		return
+	}
+	if !protocol.ValidByeReason(p.Reason) {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "bye reason is not one of the defined reasons", 0)
 		return
 	}
 	s := h.sessions[p.SessionID]
@@ -616,11 +669,7 @@ func (h *Hub) handleByeLocked(c *Client, e protocol.Envelope) {
 		h.sendErrLocked(c, e.ID, protocol.ErrNoSession, "unknown session", 0)
 		return
 	}
-	reason := p.Reason
-	if reason == "" {
-		reason = protocol.ByeUserEnded
-	}
-	h.closeSessionLocked(s, reason)
+	h.closeSessionLocked(s, p.Reason)
 }
 
 func (h *Hub) handleRefresh(c *Client, e protocol.Envelope) {

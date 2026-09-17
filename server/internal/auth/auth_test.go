@@ -197,15 +197,47 @@ func TestTokenMintAndParse(t *testing.T) {
 	}
 }
 
+func TestOneKeyHasExactlyOneAcceptedSpelling(t *testing.T) {
+	k, pub := newKey(t)
+	if _, err := ParsePubkey(pub); err != nil {
+		t.Fatalf("canonical key refused: %v", err)
+	}
+	der, _ := base64.StdEncoding.DecodeString(pub)
+	compressed := append([]byte{}, der[:25]...)
+	compressed[1], compressed[24] = 0x39, 0x22
+	compressed = append(compressed, 0x00, 0x02|byte(k.PublicKey.Y.Bit(0)))
+	compressed = append(compressed, der[27:59]...)
+	variants := map[string]string{
+		"newline inside":   pub[:40] + "\n" + pub[40:],
+		"trailing newline": pub + "\n",
+		"unpadded":         strings.TrimRight(pub, "="),
+		"url alphabet":     base64.URLEncoding.EncodeToString(der),
+		"leading space":    " " + pub,
+		"compressed point": base64.StdEncoding.EncodeToString(compressed),
+	}
+	for name, v := range variants {
+		if v == pub {
+			continue
+		}
+		if _, err := ParsePubkey(v); err == nil {
+			t.Errorf("%s: a second spelling of the same key was accepted", name)
+		}
+	}
+	nonce, _, _ := NewNonce()
+	if err := VerifyDeviceSig(protocol.PurposeHello, pub[:40]+"\n"+pub[40:], sign(t, k, nonce), nonce); err == nil {
+		t.Error("a signature verified under a non-canonical key string")
+	}
+}
+
 func TestTurnCredsMatchCoturnRESTAuth(t *testing.T) {
 	now := time.Unix(1_755_600_000, 0)
-	user, cred, exp := TurnCreds("s3cr3t", "481930275", now, 12*time.Hour)
+	user, cred, exp := TurnCreds("s3cr3t", "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", now, 2*time.Hour)
 
-	wantExpUnix := now.Add(12 * time.Hour).Unix()
+	wantExpUnix := now.Add(2 * time.Hour).Unix()
 	if exp.Unix() != wantExpUnix {
 		t.Fatalf("expiry = %d, want %d", exp.Unix(), wantExpUnix)
 	}
-	wantUser := strconv.FormatInt(wantExpUnix, 10) + ":481930275"
+	wantUser := strconv.FormatInt(wantExpUnix, 10) + ":8c7f1a2b3c4d5e6f708192a3b4c5d6e7"
 	if user != wantUser {
 		t.Fatalf("username = %q, want %q", user, wantUser)
 	}
@@ -216,10 +248,10 @@ func TestTurnCredsMatchCoturnRESTAuth(t *testing.T) {
 		t.Fatalf("credential = %q, want %q", cred, want)
 	}
 
-	if _, c2, _ := TurnCreds("other", "481930275", now, 12*time.Hour); c2 == cred {
+	if _, c2, _ := TurnCreds("other", "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", now, 2*time.Hour); c2 == cred {
 		t.Fatal("changing the TURN secret did not change the credential")
 	}
-	if _, c3, _ := TurnCreds("s3cr3t", "481930276", now, 12*time.Hour); c3 == cred {
-		t.Fatal("changing the deviceId did not change the credential")
+	if _, c3, _ := TurnCreds("s3cr3t", "9c7f1a2b3c4d5e6f708192a3b4c5d6e7", now, 2*time.Hour); c3 == cred {
+		t.Fatal("changing the session did not change the credential")
 	}
 }

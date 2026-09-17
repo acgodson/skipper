@@ -1,8 +1,8 @@
 # RemoteControl wire protocol
 
-Version: **3** (`v: 3` in every envelope)
-Status: normative. This document is the single source of truth. `protocol/protocol.go`
-(and the Swift mirror) must match it exactly; if they disagree, this file wins.
+Version: **4** (`v: 4` in every envelope)
+Status: normative. This document is the single source of truth. `protocol/protocol.go`,
+`core/crates/rc-proto` (and the Swift mirror) must match it exactly; if they disagree, this file wins.
 
 Three surfaces are specified:
 
@@ -11,6 +11,37 @@ Three surfaces are specified:
 3. **`hi` data channel** — unreliable, unordered (`maxRetransmits: 0`), peer ↔ peer.
 
 The server sees only surface 1. It never sees, parses or stores anything from 2 or 3.
+
+---
+
+## v4 changes (summary)
+
+Version **4** closes the holes the second security review found in the server's side of the
+contract. A v4 endpoint rejects a `v: 3` envelope with `error{unsupported_version}`.
+
+| # | Change | Why | Where |
+|---|---|---|---|
+| 1 | **Device-ID certificates.** `register_ok` always carries `idCert`, and `hello_ok` carries it for the authenticated binding: the registry's P-256 signature over `"skipperdesk/device-id-cert/v1\|" ‖ deviceId ‖ SHA-256(pubkey DER)`. `register` gains optional `idCert`; `preferredDeviceId` is honoured **only** with an `idCert` that verifies for that id and this key, and then it wins even over another key that holds the id after a reset (that key's record is dropped, its socket gets `error{displaced}` and its sessions `bye{displaced}`). Without a valid certificate a new key always gets a fresh id. | After a backend reset anyone could ask for a victim's free id and receive it (H-A). | §2.2, §2.4, §3.1 |
+| 2 | **No existence oracle.** `hello` verifies the signature over the presented key first; an unknown `deviceId` and a `deviceId` bound to another key both answer `unknown_device`. A client re-registers with its certificate on `unknown_device`. | `unknown_device` vs `bad_signature` told a stranger which ids were free. | §2.4, §3.1, §7 |
+| 3 | **TURN per session.** `hello_ok.iceServers` is STUN only. `connect_ok`, `session_start` and `renew_ok` carry `iceServers` with TURN credentials whose username is `<expiry>:<sessionId>`, valid **2 h**, issued only for a session the host's entitlement allowed. The TURN secret is read from a file. | Any registered device got 12 h relay credentials; the secret was a command-line flag. | §2.5, §2.9, §2.11 |
+| 4 | **Metering starts on proof.** The server reports a session to accounting only when it relays the host's **first `sdp`** for it (the host sends one only after §2.17 verified and, with unattended access off, the owner allowed). Sessions that never get there are not billed and do not count for concurrency. No wire change. | A stranger without the code could open and bill sessions at will (H-B). | §3.4 |
+| 5 | **`bye.reason` is a closed set** (§2.14, now including `displaced`). Any other value is `error{bad_request}` and is not relayed. `sessionId` everywhere must be 32 lowercase hex or is refused before it is looked up or logged. Stop/start reports go through one ordered, retrying queue per session, and accounting reconciles open rows against the live session list. | A 70 KiB reason made the stop report fail; unordered reports left rows open (H-C). | §2.10, §2.14, §3.4, §8 |
+| 6 | **Rate limits.** `connect_req`: 6/min and 60/h per controller, 30/min and 300/h per target host. `register`: one per connection and 20/h per client address. Unauthenticated sockets are closed 20 s after opening whatever they send. Excess is `error{rate_limited, retryAfterSec}`. | Unlimited `connect_req` let anyone flood a host and burn its guess budget (H-D). | §1.1, §2.2, §3.3 |
+| 7 | **Roles are enforced.** `connect_req` is accepted only from a connection that said `hello` as `controller` (else `error{forbidden}`); `session_start` goes only to a connection that said `hello` as `host` (a device connected as controller is `offline` as a target). | A host connected as controller still received `session_start`. | §2.4, §2.9 |
+| 8 | **One spelling per key.** `pubkey` must be canonical padded standard base64 of the uncompressed DER SPKI; anything else is `error{bad_request}`. | The same key in another base64 spelling got a fresh per-key budget. | §0, §2.2 |
+
+Wire summary for implementers — every field that is new or changed in v4:
+
+| Message | Field | Type | Presence |
+|---|---|---|---|
+| `register` | `idCert` | string (base64 DER ECDSA) | optional, omitted when empty |
+| `register_ok` | `idCert` | string | always present |
+| `hello_ok` | `idCert` | string | present on success (omitted only when empty) |
+| `hello_ok` | `iceServers` | array | STUN entries only, never `username`/`credential` |
+| `connect_ok`, `session_start` | `iceServers` | array of §2.5 | present when the server has any ICE server; omitted when empty |
+| `renew_ok` | `iceServers` | array of §2.5 | as `connect_ok` |
+| `bye` | `reason` | string | one of §2.14, `displaced` added |
+| `error` | `code` | string | `forbidden` for a role violation; `rate_limited` with `retryAfterSec` per §3.3 |
 
 ---
 
@@ -33,9 +64,9 @@ The `sdp` signing string itself is unchanged: `"skipperdesk/sdp/v1|" sessionId "
 is exactly the domain-separated message for purpose `sdp` with payload
 `sessionId "|" sdpType "|" fp`. `protocol/vectors/signing-vectors.json` pins every purpose.
 
-A later, additive v3 change: `register` accepts an optional `preferredDeviceId`, so a device
-keeps its id after the registry loses its data (§2.2). An endpoint that ignores the field still
-interoperates; the version number is unchanged.
+A later, additive v3 change: `register` accepted an optional `preferredDeviceId`, so a device
+kept its id after the registry lost its data. *v4* honours it only together with an `idCert`
+(§2.2), because honouring it for any free id let a stranger take a victim's id.
 
 ---
 
@@ -79,9 +110,9 @@ only the envelope that carries it.
 | Encoding | UTF-8 JSON, one message per WebSocket **text** frame. Binary frames are a protocol error. |
 | Time | All absolute times are **Unix milliseconds**, `int64`, UTC. Durations are named `...Sec` (seconds, `int`) or `...Ms`. |
 | Coordinates | Normalised `double` in `[0.0, 1.0]`; `x` = left→right, `y` = top→bottom of the host's captured display. Receivers **must** clamp. |
-| IDs | `deviceId`: exactly 9 ASCII digits, e.g. `"481930275"`. Leading zeros are significant; it is a string, never a number. `sessionId`: 32 lowercase hex chars. Message `id`: opaque client string ≤ 64 chars. |
-| Keys | `pubkey`: base64 (std, padded) of the **DER SPKI** encoding of an ECDSA P-256 public key. |
-| Signatures | `sig`: base64 of the **ASN.1 DER** ECDSA-P256/SHA-256 signature over a **domain-separated message** (§3.1): `"skipperdesk/" purpose "/v1\|"` followed by the purpose's payload. A device key never signs anything else. |
+| IDs | `deviceId`: exactly 9 ASCII digits, e.g. `"481930275"`. Leading zeros are significant; it is a string, never a number. `sessionId`: exactly 32 lowercase hex chars; *v4:* the server refuses any other shape with `bad_request` before it looks the value up or logs it. Message `id`: opaque client string ≤ 64 chars. |
+| Keys | `pubkey`: base64 (std, padded) of the **uncompressed DER SPKI** encoding of an ECDSA P-256 public key. *v4:* that spelling is the only one accepted — a key re-encoded any other way (line breaks, missing padding, URL alphabet, compressed point) is `bad_request` — so one key has exactly one string. |
+| Signatures | `sig`: base64 of the **ASN.1 DER** ECDSA-P256/SHA-256 signature over a **domain-separated message** (§3.1): `"skipperdesk/" purpose "/v1\|"` followed by the purpose's payload. A device key must never sign anything else, so an implementation must not expose a signer that takes raw bytes. |
 | Unknown fields | Receivers **must** ignore unknown object members. Senders **must not** rely on that. |
 | Unknown types | A receiver that does not recognise `type` ignores the message (server replies `error{unsupported}` for client→server only). |
 | Max frame | 256 KiB. Larger frames are closed with WebSocket code 1009. |
@@ -92,7 +123,7 @@ Every message on every surface uses the same envelope:
 
 ```json
 {
-  "v": 3,
+  "v": 4,
   "type": "connect_req",
   "id": "c-17",
   "re": null,
@@ -103,7 +134,7 @@ Every message on every surface uses the same envelope:
 
 | Field | Type | Req | Meaning |
 |---|---|:--:|---|
-| `v` | int | yes | Protocol version. Must be `3`. Server rejects anything else with `error{unsupported_version}` and closes. |
+| `v` | int | yes | Protocol version. Must be `4`. Server rejects anything else with `error{unsupported_version}` and closes. |
 | `type` | string | yes | Message type; see tables below. |
 | `id` | string | no | Sender-assigned correlation id. Required if the sender wants to match the reply. Servers echo it in `re`. |
 | `re` | string | no | Set on a reply/error to the `id` of the request it answers. Absent on unsolicited pushes. |
@@ -113,7 +144,7 @@ Every message on every surface uses the same envelope:
 **Every error is the same shape** (`type: "error"`), and carries `re` when it answers a request:
 
 ```json
-{"v":3,"type":"error","re":"c-17","ts":1755600000001,
+{"v":4,"type":"error","re":"c-17","ts":1755600000001,
  "payload":{"code":"entitlement","message":"trial has ended","reason":"trial_expired"}}
 ```
 
@@ -128,11 +159,18 @@ Every message on every surface uses the same envelope:
 
 ## 1. Signaling transport
 
-- Production: `wss://<host>:8443/ws`, TLS 1.2+, self-signed certificate **pinned by SHA-256
-  fingerprint** in the app (see PLAN.md §3). No CA validation is performed.
-- Local development only: `ws://127.0.0.1:8443/ws` when the server runs with `-insecure-http`.
-- `GET /healthz` returns `200 ok` (plain text) and is the only non-WebSocket route.
+- Production: `wss://<api base domain>/ws`, TLS 1.2+ with ordinary CA validation. The app is
+  configured with one value, the API base domain, and derives this URL from it; there is no
+  compiled-in address and no certificate pin.
+- Local development only: `ws://127.0.0.1:<port>/ws` when the server runs with `-insecure-http`
+  (rc-api passes `/ws` through to rc-signal, so the app still needs only the API base URL).
+- `GET /healthz` returns `200 ok` (plain text) and is the only other route on the public
+  listener. *v4:* rc-signal's internal surface (`GET /internal/sessions/live`, API.md §6) is
+  served on a **separate** listener that is never exposed publicly.
 - Sub-protocol: none required. Origin is not checked (native clients).
+- Client address: the direct peer, unless the peer is a configured trusted proxy, in which case
+  the rightmost `X-Forwarded-For` hop that is not itself trusted. The per-address limits of
+  §3.3 key on it.
 
 ### 1.1 Connection lifecycle
 
@@ -160,10 +198,18 @@ Every message on every surface uses the same envelope:
 - The server sends `challenge` **within 1 s of the socket opening**, unsolicited, with no `re`.
 - A connection that sends anything other than `register` or `hello` while `CHALLENGED` gets
   `error{unauthenticated}`; three such messages close the socket (1008).
-- A connection that does not authenticate within **20 s** is closed (1008, `auth_timeout`).
+- A connection that has not authenticated **20 s** after it opened is closed (1008,
+  `auth_timeout`). *v4:* this is a timer on the server's sweep (it fires within 25 s), not a
+  check made when a message arrives, so neither silence nor WebSocket pings nor rejected
+  messages keep an unauthenticated socket open.
 - After `register_ok` the connection is still `CHALLENGED` and the server issues a **fresh
   `challenge`**; the client then sends `hello` with the newly assigned `deviceId`.
-- Each nonce is single-use. A replayed nonce is `error{bad_signature}`.
+- *v4:* a connection may `register` **once**; a second `register` is `error{bad_request}` and
+  the client must reconnect to register again.
+- Each nonce is single-use, whatever the outcome of the message that used it. A replayed nonce
+  is `error{bad_signature}`. A refusal that happens before the signature is checked
+  (`bad_request`, and `unavailable` on `hello`) leaves the nonce usable; every other refusal of
+  `register` or `hello` is followed by a fresh `challenge`.
 - At most **one** authenticated connection per `deviceId`. A second successful `hello` for the
   same device **displaces** the first: the older socket is sent
   `error{displaced}` and closed with 1000. (Presence is a single-device fact; this keeps it
@@ -187,38 +233,46 @@ Creates a device record and mints a `deviceId`.
 
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
-| `pubkey` | string | yes | base64 DER SPKI, P-256. |
+| `pubkey` | string | yes | Canonical base64 DER SPKI, P-256 (§0); any other spelling is `error{bad_request}`. |
 | `sig` | string | yes | *v3:* base64 DER ECDSA-SHA256 over `"skipperdesk/register/v1\|"` ‖ the raw 32 `nonce` bytes of the current challenge (§3.1). Proves possession of the private key. |
-| `label` | string | no | Human label, ≤ 64 chars, e.g. `"Studio Mac"`. Stored verbatim; not secret. |
-| `preferredDeviceId` | string | no | 9 digits. The `deviceId` this key held before the registry lost its record. Omitted when empty; any other shape is `error{bad_request}`. |
+| `label` | string | no | Human label, e.g. `"Studio Mac"`. The server drops control characters and invalid UTF-8 and keeps at most 64 **bytes**, cut on a character boundary. Not secret. |
+| `preferredDeviceId` | string | no | 9 digits. The `deviceId` this key held before the registry lost its record. Omitted when empty; any other shape is `error{bad_request}`. *v4:* ignored unless `idCert` certifies it. |
+| `idCert` | string | no | *v4.* The certificate the registry issued for (`preferredDeviceId`, this `pubkey`) in an earlier `register_ok` or `hello_ok`. Opaque to the client. Omitted when empty. |
 | `code` | object | yes | *v1 only.* Access-code verifier, see §2.3. **REMOVED in v2.** |
 
 If this `pubkey` is already registered, the server **does not** create a second device: it
-returns `register_ok` with the existing `deviceId` and leaves the stored code untouched.
-Registration is therefore idempotent per key.
+returns `register_ok` with the existing `deviceId`. Registration is therefore idempotent per key.
 
-The registry decides the `deviceId` in this order:
+*v4.* The registry decides the `deviceId` in this order:
 
 1. **Known `pubkey`:** its existing `deviceId`, `existing: true`. `preferredDeviceId` is ignored.
-2. **New `pubkey`, `preferredDeviceId` free:** that id, `existing: false`. "Free" means no
-   device holds it now **and** it has never been assigned to any other `pubkey`. The registry
-   keeps a permanent record of every id it has ever assigned and the key it went to (a
-   tombstone that outlives the device record), so an id is never handed to a second key.
-3. **Otherwise:** a fresh random id, `existing: false`. A `preferredDeviceId` held by, or once
-   assigned to, a different key is silently ignored.
+2. **New `pubkey` with a valid certificate:** `idCert` verifies under the registry's key for
+   exactly (`preferredDeviceId`, `pubkey`). The key gets that id, `existing: false`, **even if
+   another key holds the id now** — the certificate is the authority. The other key's device
+   record is dropped (its device tokens revoked), its live socket is sent `error{displaced}` and
+   closed, and every session it holds under that id ends with `bye{displaced}`.
+3. **Otherwise:** a fresh random id, `existing: false`, whether or not `preferredDeviceId` is
+   free. A fresh id never repeats an id recorded in this registry's database (a reset
+   database may reissue one; the certificate of step 2 is what protects the previous owner).
 
-`preferredDeviceId` only ever helps the key that asks for it, and only when the id is free: the
-`sig` already proves possession of `pubkey`, and a stranger asking for someone else's id gets a
-fresh id instead. It therefore cannot be used to claim, displace or impersonate another device.
-Its only purpose is that a device keeps its id across a registry that lost its data (a fresh
-database, a move to a new deployment).
+So asking for an id reveals nothing about whether it exists, and only the key an id was
+certified to can get it back. The certificate outlives the registry's data because the client
+keeps it and the registry's signing key is not part of the database: a device keeps its id
+across a fresh database or a move to a new deployment that uses the same key.
+
+**Limits.** One `register` per connection (a second is `bad_request`) and at most **20** per
+client address per hour (`rate_limited` with `retryAfterSec`, charged once the signature has
+verified). A limited `register` is followed by a fresh `challenge`, so the connection can still
+`hello`.
 
 **Re-registering.** A client whose identity says it is registered, but whose `hello` is answered
-with `error{unknown_device}`, sends `register` once on that connection with the **same key** and
-`preferredDeviceId` set to its current id, then sends `hello` with the id `register_ok` returned.
-If that id differs (the old one was taken), the client adopts it and tells the user plainly. It
-never generates a new key for this. If `hello` still fails, the connection attempt ends and the
-client reconnects with its normal backoff (§4.3); it does not retry in a tight loop.
+with `error{unknown_device}`, sends `register` once — on a connection that has not registered
+yet — with the **same key**, `preferredDeviceId` set to its current id and `idCert` set to its
+stored certificate, then sends `hello` with the id `register_ok` returned. If that id differs
+(the client had no valid certificate), the client adopts it and records the change in its log;
+it does not interrupt the user for it. It never generates a new key for this. If `hello` still
+fails, the connection attempt ends and the client reconnects with its normal backoff (§4.3); it
+does not retry in a tight loop.
 
 Reply: **`register_ok`**
 
@@ -226,6 +280,7 @@ Reply: **`register_ok`**
 |---|---|:--:|---|
 | `deviceId` | string | yes | 9 digits. Permanent. |
 | `existing` | bool | yes | `true` if the key was already registered. |
+| `idCert` | string | yes | *v4.* base64 DER ECDSA-P256/SHA-256 signature by the **registry's** key over `"skipperdesk/device-id-cert/v1\|"` ‖ `deviceId` ‖ SHA-256(DER SPKI of `pubkey`) (§3.1). The client stores it (macOS: Keychain account `device-id-cert`) and replaces its copy whenever a newer one arrives; it never parses or verifies it. |
 
 ### 2.3 The `code` verifier object — *v1 only, REMOVED in v2*
 
@@ -260,9 +315,13 @@ Crockford-style alphabet** (`23456789ABCDEFGHJKMNPQRSTVWXYZ` minus look-alikes),
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
 | `deviceId` | string | yes | 9 digits. |
-| `pubkey` | string | yes | base64 DER SPKI. Must byte-equal the stored key for `deviceId`, else `error{bad_signature}`. |
-| `sig` | string | yes | *v3:* base64 DER ECDSA-SHA256 over `"skipperdesk/hello/v1\|"` ‖ the raw 32 bytes of the current challenge nonce (§3.1). A `register` or undomained signature is `error{bad_signature}`. |
-| `role` | string | yes | `"host"` or `"controller"`. Advisory: it describes the app's current mode and is used for logging and for rejecting nonsense (a `controller` cannot receive `connect_req`s). A device may reconnect with the other role. |
+| `pubkey` | string | yes | base64 DER SPKI. The signature is checked against this key first; then it must byte-equal the stored key for `deviceId`. *v4:* a mismatch is `error{unknown_device}`, exactly like an id that does not exist. |
+| `sig` | string | yes | *v3:* base64 DER ECDSA-SHA256 over `"skipperdesk/hello/v1\|"` ‖ the raw 32 bytes of the current challenge nonce (§3.1). A `register`, undomained or otherwise invalid signature is `error{bad_signature}`, whatever `deviceId` says. |
+| `role` | string | yes | `"host"` or `"controller"`: this connection's mode. *v4, enforced:* only a `controller` connection may send `connect_req` (§2.9), and only a `host` connection receives `session_start`. A device may reconnect with the other role. |
+
+The answers therefore depend only on what the caller can prove: a caller that cannot sign for
+`pubkey` always gets `bad_signature`, and one that can always gets `unknown_device` unless
+`pubkey` really owns `deviceId`. Neither reveals whether `deviceId` exists.
 
 Reply: **`hello_ok`**
 
@@ -270,23 +329,29 @@ Reply: **`hello_ok`**
 |---|---|:--:|---|
 | `deviceId` | string | yes | Echoed. |
 | `serverTime` | int64 | yes | Unix ms; clients may use it to detect clock skew. |
-| `iceServers` | array | yes | See §2.5. STUN entries first, TURN last. |
+| `iceServers` | array | yes | See §2.5. *v4:* STUN entries only, never credentials. May be empty. |
 | `heartbeatSec` | int | yes | How often the client must send `heartbeat`. Currently **15**. |
 | `offlineAfterSec` | int | yes | Silence after which the server marks the device offline. Currently **40**. |
 | `sessionTokenTtlSec` | int | yes | Session-token lifetime. Currently **600**. |
 | `activeSessionId` | string | no | Present iff a live session for this device already exists (the client dropped and came back). The client **must** attempt `resume` (§4) rather than `connect_req`. |
+| `idCert` | string | no | *v4.* The registry's certificate for this authenticated (`deviceId`, `pubkey`), as in `register_ok`. Present whenever the registry issued one; a client stores it, so a device registered before v4 obtains a certificate without re-registering. |
 
 ### 2.5 `iceServers` entries
 
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
 | `urls` | array of string | yes | e.g. `["stun:stun.l.google.com:19302"]`, `["turn:1.2.3.4:3478?transport=udp"]`. |
-| `username` | string | no | TURN only. `"<unixExpirySeconds>:<deviceId>"`. |
+| `username` | string | no | TURN only. *v4:* `"<unixExpirySeconds>:<sessionId>"` — the credential names the one session it was issued for. |
 | `credential` | string | no | TURN only. base64 of `HMAC-SHA1(username, turnSecret)` — coturn `use-auth-secret` REST form. |
-| `expiresAt` | int64 | no | TURN only, Unix ms. TTL is **12 h**. |
+| `expiresAt` | int64 | no | TURN only, Unix ms. *v4:* TTL is **2 h**. |
 
-Credentials are ephemeral and minted per `hello_ok`. A client that has been connected longer
-than 12 h and needs a new ICE gathering pass should reconnect the signaling socket first.
+*v4.* STUN entries come first, TURN last. TURN credentials are minted **per session**, only
+for a session the host's entitlement allowed, and only in `connect_ok`, `session_start` and
+`renew_ok`, whose `iceServers` is the complete list for that session (it replaces the
+`hello_ok` list for the session's peer connection). A client that needs a new ICE gathering
+pass after the credentials expire uses the list from its latest `renew_ok`; `renew` every
+5 minutes keeps it fresh. The TURN secret is read by the server from a file, never from its
+command line.
 
 ### 2.6 `heartbeat` — client → server, every 15 s
 
@@ -326,12 +391,21 @@ offline edge is reported within `offlineAfterSec + 5 s`. A socket close reports 
 | `deviceId` | string | yes | The **host** to connect to. |
 | `accessCode` | string | yes | *v1 only.* Plaintext, ≤ 64 chars. Never logged, never stored, never forwarded to the host. **REMOVED in v2:** a v2 `connect_req` carries only `deviceId`, and a v2 server rejects the field with `error{bad_request}`. |
 
-**v2 authorisation.** A v2 server grants `connect_ok` when, and only when, both hold:
+**Authorisation.** A v4 server checks, in this order:
 
-1. The **host's** entitlement allows a session — `status` is `trial` or `active` and the account's
+1. The sending connection said `hello` as `controller`. Otherwise: `error{forbidden}`.
+2. The payload is well formed and does not target the caller. Otherwise: `bad_request` /
+   `self_connect`.
+3. The §3.3 `connect_req` limits for this controller and this target allow another attempt.
+   Otherwise: `error{rate_limited}` with `retryAfterSec`. Every attempt that gets this far is
+   charged, whatever happens next.
+4. The target exists and is connected **as a host**. Otherwise: `unknown_device` / `offline` (a
+   device connected as `controller` is `offline` as a target and never receives
+   `session_start`).
+5. The **host's** entitlement allows a session — `status` is `trial` or `active` and the account's
    `maxActivePairs` is not already in use (API.md §4). Otherwise:
    `error{entitlement}` with a `reason` from §7.
-2. The host has no session in any state but `closed`. Otherwise: `error{busy}`.
+6. The host has no session in any state but `closed`. Otherwise: `error{busy}`.
 
 Nothing about the access code is checked, because the server no longer knows it. The session that
 `connect_ok` opens is a *signaling* session: the two peers then run the §2.17 exchange over it,
@@ -351,13 +425,16 @@ Reply: **`connect_ok`**
 | `hostDeviceId` | string | yes | |
 | `controllerDeviceId` | string | yes | |
 | `hostPubkey` | string | no | *v2.* The host's registered `pubkey` (base64 DER SPKI), which the server has held since `register`. It is the key the controller **requires** on every `sdp` the host sends (§2.12). A v2 server MUST send it; a controller that does not receive it cannot pin the host key and must treat the session as unauthenticated until §2.17 supplies the key instead. |
+| `iceServers` | array | no | *v4.* This session's complete ICE list (§2.5), TURN credentials scoped to `sessionId` included. Omitted only when the server has no ICE server at all. |
 
 Errors, v1: `bad_code`, `offline`, `busy`, `rate_limited`, `unknown_device`, `self_connect`.
-Errors, v2: `entitlement`, `offline`, `busy`, `rate_limited`, `unknown_device`, `self_connect`.
+Errors, v4: `forbidden`, `entitlement`, `offline`, `busy`, `rate_limited`, `unknown_device`, `self_connect`, `unavailable`.
 
-Simultaneously the host receives a push **`session_start`** with the same fields plus its own
-`sessionToken` (each side gets a *different* token bound to its own deviceId) and one field of
-its own:
+Opening a session does not start billing; §3.4 says when it does.
+
+Simultaneously the host receives a push **`session_start`** with the same fields (the same
+`iceServers`) plus its own `sessionToken` (each side gets a *different* token bound to its own
+deviceId) and one field of its own:
 
 | Field | Type | Req | Meaning |
 |---|---|:--:|---|
@@ -373,7 +450,7 @@ See §4 for the state machine. Payload:
 
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
-| `sessionId` | string | yes | |
+| `sessionId` | string | yes | 32 lowercase hex; any other shape is `bad_request`. |
 | `sessionToken` | string | yes | The most recent token issued to *this* device for this session. |
 
 Reply: **`resume_ok`**
@@ -399,14 +476,16 @@ Keeps a long-lived session's token fresh **while connected**, so a drop at minut
 resumable. Clients should renew every 5 minutes.
 
 Payload: `{"sessionId": string, "sessionToken": string}`.
-Reply **`renew_ok`**: `{"sessionId","sessionToken","expiresAt","ttlSec"}` — token rotated,
-same rules and errors as `resume`, but the connection must already be attached to the session.
+Reply **`renew_ok`**: `{"sessionId","sessionToken","expiresAt","ttlSec","iceServers"}` — token
+rotated, same rules and errors as `resume`, but the connection must already be attached to the
+session. *v4:* `iceServers` is a fresh session list (§2.5) with new TURN credentials; the client
+uses it for any later ICE restart.
 
 ### 2.12 `sdp` — client ↔ client, relayed
 
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
-| `sessionId` | string | yes | Must be a session this connection is attached to, else `error{no_session}`. |
+| `sessionId` | string | yes | 32 lowercase hex (else `bad_request`), and a session this connection is attached to (else `error{no_session}`). |
 | `sdpType` | string | yes | `"offer"`, `"answer"`, `"pranswer"` or `"rollback"`. |
 | `sdp` | string | yes | The SDP body, verbatim. |
 | `restart` | bool | no | `true` marks an ICE-restart renegotiation. Advisory for the peer. |
@@ -420,7 +499,9 @@ parses nothing, stores nothing, logs no part of `sdp`. If the peer is detached, 
 replies `error{peer_offline}`; SDP is **not** queued (a stale offer is worse than none).
 The server relays `fp`, `pubkey`, `sig` and `mac` **unchanged and never validates `sig` or `mac`**. It cannot —
 it holds neither device key — and it must not need to: the whole point of the signature is that
-it is checked by the peer, against a key the server did not choose.
+it is checked by the peer, against a key the server did not choose. The only thing the server
+takes from an `sdp` is the fact that the **host** sent one: the first such relay per session
+starts metering (§3.4).
 
 #### Why the fingerprints are signed
 
@@ -435,7 +516,9 @@ completed: an `sdp` that arrives earlier is dropped. A receiver **must**, before
 
 1. refuse an `sdp` body that contains a NUL byte, or a CR that is not immediately followed by
    LF, and treat the body as the exact bytes received — never as a terminated C string. Every
-   implementation passes it across language boundaries as (pointer, length);
+   implementation passes it across language boundaries as (pointer, length). Then remove every
+   `a=candidate` and `a=end-of-candidates` line from the body it will install: candidates only
+   ever arrive through `ice`, so none can be applied before the post-install check below;
 2. check that `fp` is exactly the fingerprint set in the `sdp` body (same de-duplication, same
    sort) — a signature over fingerprints that are not the ones being installed proves nothing;
 3. verify `mac` under its own `sdpMacKey` — a missing or wrong `mac` means the sender is not
@@ -447,10 +530,11 @@ completed: an `sdp` that arrives earlier is dropped. A receiver **must**, before
    - the **controller** expects `connect_ok.hostPubkey`, and, once §2.17 completes, requires the
      host key it learned there to be the same one.
 
-And **after** `setRemoteDescription`, before applying any remote ICE candidate, it re-extracts
-the fingerprints from the description the WebRTC stack reports as installed
+And **after** `setRemoteDescription`, before applying any remote `ice` candidate, it
+re-extracts the fingerprints from the description the WebRTC stack reports as installed
 (`remoteDescription.sdp`) and requires them to equal `fp` exactly. That closes any gap between
-the verifier's SDP parser and the WebRTC stack's.
+the verifier's SDP parser and the WebRTC stack's, and because step 1 stripped inline candidates,
+"before any remote candidate" is literally true.
 
 Any failure is terminal for the session: `bye{reason:"peer_auth_failed"}` (§2.14), tear the peer
 connection down, and tell the user the other device could not be verified. Never fall back to an
@@ -470,20 +554,27 @@ restart is an ordinary re-offer: it is signed again, over its own fingerprints.
 | `sdpMLineIndex` | int | no | |
 
 Same routing/opacity rules as `sdp`. Trickle ICE is expected; candidates arriving while the
-peer is detached are dropped with `error{peer_offline}` and re-gathered after resume.
+peer is detached are dropped with `error{peer_offline}` and re-gathered after resume. A receiver
+applies a candidate only when `sessionId` is its current session and only after the §2.12
+checks passed for that session's remote description; `sdpMLineIndex` outside `0…2³¹−1` is
+dropped.
 
 ### 2.14 `bye` — client ↔ client, relayed, and terminal
 
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
-| `sessionId` | string | yes | |
-| `reason` | string | yes | One of `user_ended`, `host_ended`, `timeout`, `failed`, `code_refreshed`, `replaced`, `shutdown`, `error`, `peer_auth_failed`, `auth_failed`, `declined`. |
+| `sessionId` | string | yes | 32 lowercase hex; any other shape is `bad_request`. |
+| `reason` | string | yes | *v4, a closed set:* exactly one of `user_ended`, `host_ended`, `timeout`, `failed`, `code_refreshed`, `replaced`, `shutdown`, `error`, `peer_auth_failed`, `auth_failed`, `declined`, `displaced`. Any other value — including the empty string — is answered `error{bad_request}`; the session is left as it was and nothing is relayed. `protocol/vectors/vectors.json` lists the set (`byeReasons`) and values that must be refused (`invalidByeReasons`). |
+
+`displaced` is *v4* and sent only by the server: the host's `deviceId` was restored to the key
+its certificate names (§2.2), so a session held under another key for that id ended.
 
 `declined` means the §2.17 exchange **succeeded** — the controller knows the code — but the
 host's owner did not let it in: they clicked Decline, did not answer within 30 s, or the host
 declined on its own because this controller was declined twice in the last 10 minutes
 (§2.17 Consent). It is sent only by a host with unattended access off, only after step 3
-verified, and never before either side has started a peer connection. It is **not** a guess
+verified, and always before the **host** has started its peer connection (the controller has
+already started its side and sent its offer, see Consent 3). It is **not** a guess
 failure: the host does not charge the guess policy for it. A controller that receives it
 shows "The other Mac declined the connection.", keeps any remembered code (the code was
 right), and does not retry without the user.
@@ -510,8 +601,8 @@ gains nothing by hanging up before step 3: the host counted the guess when it se
 (§2.17). A controller that receives it shows "wrong access code", forgets any code it had
 remembered for that host, and does not retry without the user.
 
-On `bye` the server closes the session **immediately and permanently**: both tokens die, the
-host's 1:1 slot frees, and the peer (if attached) receives the same `bye`. A later `resume` for
+On a `bye` with a defined reason the server closes the session **immediately and permanently**:
+both tokens die, the host's 1:1 slot frees, and the peer (if attached) receives the same `bye`. A later `resume` for
 that `sessionId` returns `no_session`. `bye` is also pushed by the server on its own initiative
 (e.g. `code_refreshed`, `timeout`, `shutdown`).
 
@@ -637,8 +728,12 @@ or the timeout is `failed`.
 
 Guess rate limiting is the **host's** job in v2 (§3.3): the host counts failed exchanges per
 controller device key and per unit time, and refuses to start another one while it is throttling.
-The server cannot do this for it, because a failed exchange is indistinguishable, from the
-server's side, from a dropped one.
+The server cannot do this for it. It does see the `bye` reason that ends an exchange
+(`auth_failed` usually means a wrong code), so an operator can tell a failed guess from a clean
+hang-up; but it cannot verify that reason, a guesser can end the exchange without sending it,
+and the server learns nothing about the code itself either way. Only the host knows a guess was
+spent. The server's own `connect_req` limits (§3.3) bound how fast anyone can start exchanges
+against one host.
 
 Step 2 carries `confirmH`, which lets whoever sent step 1 check **one** guess offline. So a
 guess costs the host exactly when step 2 leaves it, and the host accounts for it then:
@@ -681,10 +776,13 @@ owner's call, and the host's **Unattended access** setting says which rule appli
   2. The host shows "Allow <controller> to control this Mac?" with Allow and Decline and a
      30-second countdown. The 10-second exchange timer has already stopped; nothing else
      times out while the owner decides.
-  3. The host starts no peer connection and applies no remote `sdp` or `ice` while it waits.
-     The controller has already started its own side and sent its offer; the host keeps the
-     latest offer and up to 64 candidates for this `sessionId`, and applies them — after the
-     usual §2.12 checks — only on Allow.
+  3. The host has no peer connection for this session and applies no remote `sdp` or `ice`
+     while it waits. A `session_start` tears down any peer connection left from an earlier
+     session before the new exchange starts, and an ICE or connection event from a torn-down
+     peer never changes the state of the new one; so nothing but Allow can leave
+     `awaitingConsent` towards `live`. The controller has already started its own side and sent
+     its offer; the host keeps the latest offer and up to 64 candidates for this `sessionId`,
+     and applies them — after the usual §2.12 checks — only on Allow.
   4. **Allow** starts the host's peer connection. **Decline**, or no answer within 30 s, is
      `bye{declined}` (§2.14). A `bye` from either side, a new `session_start` or a lost
      session withdraws the prompt.
@@ -710,14 +808,14 @@ pubkey; the state it gates (`awaitingConsent`) is part of the §4 session state 
 2. Client decodes it, refuses anything that is not exactly 32 bytes, signs the
    **domain-separated message** below with ECDSA-P256/SHA-256 and sends the DER signature,
    base64-encoded.
-3. The server loads the stored SPKI for `deviceId`, requires the presented `pubkey` to be
-   byte-identical, and verifies the signature over the same message. Any failure ⇒
-   `error{bad_signature}`; the server does not distinguish "unknown key" from "bad maths" in
-   the message text.
+3. *v4.* The server spends the nonce and verifies the signature over the same message with the
+   **presented** `pubkey`; a failure is `error{bad_signature}`. Only then does it compare the
+   presented key with the stored SPKI for `deviceId`: a missing device and a different key are
+   the same `error{unknown_device}` (§2.4).
 
 *v3.* A device key signs **only** `"skipperdesk/" purpose "/v1|"` followed by the purpose's
 payload, built by one function in the shared core (`rc_identity::signing_message`); the
-platform signing API accepts a purpose and a payload, never raw bytes.
+platform signing API must accept a purpose and a payload, never raw bytes.
 
 | Purpose | Payload | Used by |
 |---|---|---|
@@ -729,6 +827,21 @@ platform signing API accepts a purpose and a payload, never raw bytes.
 A nonce purpose with a payload of any length but 32 is refused by every implementation, and
 the server never verifies an `sdp`-purpose signature. No prefix is a prefix of another, so a
 signature for one purpose never verifies for another.
+
+#### 3.1.1 Device-ID certificates — *v4*
+
+The registry holds its own P-256 key (never a device key; a file today, `TODO` AWS KMS in
+Phase 5). A certificate is that key's ASN.1 DER ECDSA-SHA256 signature, base64, over
+
+```
+"skipperdesk/device-id-cert/v1|" ‖ deviceId (9 ASCII digits) ‖ SHA-256(DER SPKI of the device key) (32 bytes)
+```
+
+`device-id-cert` is deliberately not a device signing purpose: no device key ever signs it, and
+its prefix overlaps none of the purposes above. The registry issues a certificate in every
+`register_ok` and `hello_ok` and honours `register.preferredDeviceId` only with one (§2.2).
+A server started without the key file refuses to run outside local `-insecure-http` mode; in
+local mode it makes a throwaway key whose certificates die with the process.
 
 ### 3.2 Session tokens
 Opaque to clients. Structurally:
@@ -744,12 +857,27 @@ old token dead after `resume`/`renew`. Verification requires **all** of: MAC val
 `nonce` equal to the session's current nonce for that device. Tokens are bearer credentials
 with a 10-minute TTL; they are never logged.
 
-### 3.3 Access-code rate limiting (per host `deviceId`, server-wide) — *v1 only*
+### 3.3 Signaling rate limits — *v4*
 
-**v2:** this limiter no longer applies to access codes; the server cannot see a code attempt, let
-alone a failed one. The host rate-limits the §2.17 exchange itself, with the same shape of policy.
-The server keeps the limiter for `connect_req` as a whole — the counter then measures connection
-attempts against a host, not code guesses — and still answers `rate_limited` with `retryAfterSec`.
+The server cannot see a code attempt, so the host rate-limits the §2.17 exchange itself
+(§2.17 Guessing). What the server limits is how fast anyone can start work for a host:
+
+| What | Limit | Keyed on | Charged |
+|---|---|---|---|
+| `connect_req` | **6** per minute and **60** per hour | the sending controller's `deviceId` | every attempt that passes the role and shape checks (§2.9 step 3), before the target is looked up |
+| `connect_req` | **30** per minute and **300** per hour | the target `deviceId` | the same attempts |
+| `register` | **1** per connection | the connection | — (a second one is `bad_request`) |
+| `register` | **20** per hour | the client address (§1) | each `register` whose signature verified |
+| unauthenticated connection | closed **20 s** after opening | the connection | — |
+
+The limits are token buckets (a full bucket of the stated size, refilling evenly over the
+window); an attempt is charged against all of its buckets only if every one of them has room.
+Exceeding one answers `error{rate_limited}` with `retryAfterSec`, the whole seconds until every
+bucket involved has room again. A client backs off exactly that long. Idle buckets are
+forgotten once they have refilled, so the limiter's memory is bounded by recent activity.
+`TODO:` in Phase 5 the buckets move to a store shared by every server instance.
+
+*v1 only, kept for the record — the access-code limiter this replaced:*
 
 - A sliding window of **15 minutes** counts failed `connect_req` attempts.
 - Attempts 1–5 that present the wrong code return `bad_code`.
@@ -761,6 +889,28 @@ attempts against a host, not code guesses — and still answers `rate_limited` w
 - Failures older than the 15-minute window are discarded, so the counter decays on its own.
 - The limiter keys on the *host* device, not the source IP: the threat is code guessing, and
   the attacker chooses the IP but not the target device.
+
+### 3.4 Metering — *v4*
+
+Billing (API.md §5, §6.3) follows **proof**, not grant:
+
+1. `connect_ok` opens a signaling session and reports nothing to accounting.
+2. The first time the server relays an `sdp` **sent by the host** for a session, it records the
+   session as metered, with that moment as its start, and queues a start report. The host sends
+   `sdp` only after §2.17 verified the code and, with unattended access off, after its owner
+   allowed the connection. A controller's `sdp`, a `pake` or anything else never starts metering.
+3. Ending a metered session queues a stop report with the end time and the §2.14 reason. An
+   unmetered session is never reported, is never billed, and never counts against the account's
+   `maxActivePairs`.
+4. Reports for one session travel through **one ordered lane**: the stop is sent only after the
+   start was delivered or given up on, never concurrently, with bounded retries and a bounded
+   queue. If accounting refuses a start on entitlement grounds, the server ends the session
+   with `bye{error}`.
+5. A report that is finally lost leaves an open row. Accounting's periodic sweep asks signaling
+   (on its internal listener, API.md §6) which metered sessions it still holds, and closes every
+   open row signaling no longer knows, billed up to the last time the sweep saw it alive.
+
+A session shorter than one minute is free; longer sessions bill every started minute (API.md §7.2).
 
 ---
 
@@ -820,7 +970,9 @@ unattended access off goes `connecting → awaitingConsent` there and emits
 `promptForConsent{expiresAtMs}`; the owner's answer or the 30 s `tick` leaves it with
 `dismissConsentPrompt{outcome}` (`allowed`, `declined`, `timedOut`, `cancelled`) and either
 `startPeerConnection` or `bye{declined}`. A signaling flap does not move a host out of
-`awaitingConsent`; the prompt and its deadline survive a resume.
+`awaitingConsent`; the prompt and its deadline survive a resume. Only the owner's answer, its
+deadline or the session ending leaves `awaitingConsent`: an ICE or connection-state event never
+does, and while in it the host applies no remote `sdp` or `ice` (§2.17 Consent 3).
 
 ### 4.3 Client algorithm on signaling-socket loss
 
@@ -925,22 +1077,22 @@ Nothing else may be sent on `hi`.
 
 | Code | Meaning | Client action |
 |---|---|---|
-| `bad_request` | Malformed JSON, missing required field, bad type, out-of-range value. | Bug. Log and fix. |
-| `unsupported_version` | `v` ≠ 3. Socket is closed. | Prompt to update the app. |
+| `bad_request` | Malformed JSON, missing required field, bad type, out-of-range value, a non-canonical `pubkey`, a `sessionId` that is not 32 lowercase hex, a `bye` reason outside §2.14, a second `register` on one connection. | Bug. Log and fix (for the second `register`: reconnect first). |
+| `unsupported_version` | `v` ≠ 4. Socket is closed. | Prompt to update the app. |
 | `unsupported` | Unknown `type` for this surface. | Ignore. |
 | `unauthenticated` | Sent an authenticated message while `CHALLENGED`. | Complete `hello` first. |
-| `bad_signature` | Signature invalid, key mismatch, or nonce replayed/expired. | Re-challenge and retry once; then treat the identity as broken. |
-| `unknown_device` | No such `deviceId`. | On `hello`: re-register once with `preferredDeviceId` (§2.2), then `hello` again; if that fails, reconnect with backoff. Elsewhere: surface "device not found". |
+| `bad_signature` | The signature does not verify under the presented `pubkey`, or the nonce was replayed/expired. | Re-challenge and retry once; then treat the identity as broken. |
+| `unknown_device` | *v4:* no such `deviceId`, **or** `deviceId` is bound to a different key — the two are indistinguishable by design. | On `hello`: re-register once with `preferredDeviceId` and the stored `idCert` (§2.2), then `hello` again; if that fails, reconnect with backoff. Elsewhere: surface "device not found". |
 | `bad_code` | *v1 only.* Access code did not verify. A v2 server never sends it. | Prompt again; count locally too. |
 | `offline` | Target host has no live authenticated socket. | Show ○ Offline, keep watching presence. |
 | `busy` | Host already has an active session (any state but `closed`). | If it might be *your* session, `resume`. Otherwise surface "in use". |
-| `rate_limited` | Locked out per §3.3. `retryAfterSec` is set. | Back off exactly that long; do not retry sooner. |
+| `rate_limited` | A §3.3 limit refused the request. `retryAfterSec` is set. | Back off exactly that long; do not retry sooner. |
 | `self_connect` | `connect_req` targeted the caller's own `deviceId`. | Bug. |
 | `no_session` | Session unknown, closed, or this connection is not attached to it. | Terminal for the session; return to Connect. |
 | `bad_token` | Session token forged, expired, rotated away, or bound to another device. | Terminal for the session; return to Connect. |
 | `peer_offline` | Relay target is detached right now. | Hold; retry after `peer_state{attached:true}`. |
-| `displaced` | Another socket authenticated as this `deviceId`. Socket is closed. | Do **not** reconnect in a loop; the other instance won. |
-| `forbidden` | Operation not allowed for this role (e.g. `refresh_code` for another device). | Bug. |
+| `displaced` | Another socket authenticated as this `deviceId`, or *v4* the id was restored to the key its certificate names (§2.2). Socket is closed. | Do **not** reconnect in a loop; the other instance won. |
+| `forbidden` | Operation not allowed for this connection's role: *v4* `connect_req` from a connection that said `hello` as `host`. | Bug. Reconnect with the right role. |
 | `entitlement` | *v2.* The host's account may not open a session. `reason` is one of `unlinked`, `trial_expired`, `no_balance`, `concurrency`, `suspended` — the same set as API.md §4.3. | Render the reason; re-fetch `GET /v1/entitlement` once. Do not retry until the user acts. |
 | `internal` | Server fault. | Retry with backoff. |
 | `unavailable` | *v2.* A backend the server depends on (the device registry) is unreachable, so `register`, `hello`, `refresh_code` or `connect_req` cannot be answered safely. `retryAfterSec` is set. The server never falls back to minting or trusting an id on its own. | Back off `retryAfterSec`, then reconnect normally. Not the user's fault; show "temporarily unavailable". |
@@ -948,6 +1100,11 @@ Nothing else may be sent on `hi`.
 ## 8. Server-side privacy guarantees (normative)
 
 The server **must not** log, persist, or transmit to third parties: plaintext access codes,
-access-code verifiers, `pake` payloads, session tokens, SDP bodies, ICE candidates, clipboard
-text, keystrokes, mouse coordinates, or any media. Log lines may contain: `deviceId`, `sessionId`, message `type`, error `code`,
-byte counts, and timings. Anything else is a bug in the server.
+access-code verifiers, `pake` payloads, session tokens, TURN secrets or credentials, device-id
+certificates, SDP bodies, ICE candidates, clipboard text, keystrokes, mouse coordinates, or any
+media. Log lines may contain: `deviceId`, `sessionId`, message `type`, error `code`, a §2.14
+`bye` reason, byte counts, and timings. Anything else is a bug in the server.
+
+*v4.* The server never logs a free-form client string: a `sessionId` is checked against its
+32-hex shape and a `bye` reason against the §2.14 set **before** either can reach a log line or
+a report, and a label is trimmed (§2.2) before it is stored.

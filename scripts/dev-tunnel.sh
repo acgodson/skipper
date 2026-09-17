@@ -80,7 +80,8 @@ echo "   tunnel: $TUNNEL_URL"
 
 echo "== starting the local backend on 127.0.0.1:$API_PORT (web base = tunnel URL)"
 : > "$BACKEND_LOG"
-RC_DEV_API_PORT="$API_PORT" RC_DEV_WEB_BASE_URL="$TUNNEL_URL" "$ROOT/scripts/dev-backend.sh" >> "$BACKEND_LOG" 2>&1 &
+RC_DEV_API_PORT="$API_PORT" RC_DEV_WEB_BASE_URL="$TUNNEL_URL" RC_DEV_TRUSTED_PROXIES="127.0.0.1/32,::1/128" \
+  "$ROOT/scripts/dev-backend.sh" >> "$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 
 for _ in $(seq 1 100); do

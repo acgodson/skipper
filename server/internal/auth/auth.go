@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/hmac"
@@ -34,10 +35,15 @@ func NewNonce() ([]byte, string, error) {
 	return b, base64.StdEncoding.EncodeToString(b), nil
 }
 
+// ParsePubkey accepts only the canonical spelling of a key: padded standard
+// base64 of the uncompressed DER SPKI encoding, so one key has exactly one string.
 func ParsePubkey(b64 string) (*ecdsa.PublicKey, error) {
-	der, err := base64.StdEncoding.DecodeString(b64)
+	der, err := base64.StdEncoding.Strict().DecodeString(b64)
 	if err != nil {
 		return nil, fmt.Errorf("pubkey is not base64: %w", err)
+	}
+	if base64.StdEncoding.EncodeToString(der) != b64 {
+		return nil, errors.New("pubkey is not canonical standard base64")
 	}
 	pk, err := x509.ParsePKIXPublicKey(der)
 	if err != nil {
@@ -49,6 +55,10 @@ func ParsePubkey(b64 string) (*ecdsa.PublicKey, error) {
 	}
 	if pub.Curve != elliptic.P256() {
 		return nil, errors.New("pubkey is not on P-256")
+	}
+	canonical, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil || !bytes.Equal(canonical, der) {
+		return nil, errors.New("pubkey is not the canonical DER SPKI encoding")
 	}
 	return pub, nil
 }
@@ -160,9 +170,11 @@ func (s *Signer) Parse(token string) (TokenClaims, error) {
 	}, nil
 }
 
-func TurnCreds(secret, deviceID string, now time.Time, ttl time.Duration) (username, credential string, expiresAt time.Time) {
+// TurnCreds mints coturn REST-auth credentials; subject is the session id, so a
+// credential names the one session it was issued for.
+func TurnCreds(secret, subject string, now time.Time, ttl time.Duration) (username, credential string, expiresAt time.Time) {
 	expiresAt = now.Add(ttl)
-	username = strconv.FormatInt(expiresAt.Unix(), 10) + ":" + deviceID
+	username = strconv.FormatInt(expiresAt.Unix(), 10) + ":" + subject
 	m := hmac.New(sha1.New, []byte(secret))
 	m.Write([]byte(username))
 	credential = base64.StdEncoding.EncodeToString(m.Sum(nil))

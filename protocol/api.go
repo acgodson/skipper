@@ -28,6 +28,8 @@ const (
 	PathInternalDevices      = "/internal/devices"
 	PathInternalRegister     = PathInternalDevices + "/register"
 	InternalEpochSuffix      = "/epoch"
+
+	PathInternalLiveSessions = "/internal/sessions/live"
 )
 
 const (
@@ -37,6 +39,7 @@ const (
 	HeaderIdempotencyKey      = "Idempotency-Key"
 	HeaderIdempotencyReplayed = "Idempotency-Replayed"
 	HeaderRetryAfter          = "Retry-After"
+	HeaderForwardedFor        = "X-Forwarded-For"
 
 	BearerPrefix = "Bearer "
 )
@@ -75,6 +78,7 @@ const (
 	APIErrNotFound            = "not_found"
 	APIErrConflict            = "conflict"
 	APIErrIdempotencyConflict = "idempotency_conflict"
+	APIErrReplayUnavailable   = "idempotency_replay_unavailable"
 	APIErrEntitlement         = "entitlement"
 	APIErrRateLimited         = "rate_limited"
 	APIErrUnsupportedVersion  = "unsupported_version"
@@ -192,9 +196,11 @@ type DeviceTokenRequest struct {
 	Label      string `json:"label,omitempty"`
 }
 
+// DeviceRefreshRequest.Nonce echoes the exact challenge nonce Sig was made over.
 type DeviceRefreshRequest struct {
 	DeviceID string `json:"deviceId"`
 	Pubkey   string `json:"pubkey"`
+	Nonce    string `json:"nonce"`
 	Sig      string `json:"sig"`
 }
 
@@ -357,17 +363,23 @@ type SessionStopReport struct {
 	Reason       string `json:"reason"`
 }
 
+// SessionReasonReconciled marks a session rc-api closed because signaling no longer knew it.
+const SessionReasonReconciled = "reconciled"
+
 // InternalRegisterRequest is idempotent by Pubkey: a known key answers with its existing id.
+// PreferredDeviceID is honoured only when IDCert verifies for it and Pubkey.
 type InternalRegisterRequest struct {
 	Pubkey            string `json:"pubkey"`
 	Label             string `json:"label,omitempty"`
 	Platform          string `json:"platform,omitempty"`
 	PreferredDeviceID string `json:"preferredDeviceId,omitempty"`
+	IDCert            string `json:"idCert,omitempty"`
 }
 
 type InternalRegisterResponse struct {
 	DeviceID string `json:"deviceId"`
 	Existing bool   `json:"existing"`
+	IDCert   string `json:"idCert"`
 }
 
 // InternalDevice is what the signaling server needs to verify a hello and pin a session.
@@ -375,6 +387,14 @@ type InternalDevice struct {
 	DeviceID  string `json:"deviceId"`
 	Pubkey    string `json:"pubkey"`
 	CodeEpoch int64  `json:"codeEpoch"`
+	IDCert    string `json:"idCert"`
+}
+
+// InternalLiveSessions is rc-signal's answer to rc-api's reconciliation sweep:
+// every metered session it still holds.
+type InternalLiveSessions struct {
+	SessionIDs []string `json:"sessionIds"`
+	ServerTime int64    `json:"serverTime"`
 }
 
 func InternalDevicePath(deviceID string) string { return PathInternalDevices + "/" + deviceID }

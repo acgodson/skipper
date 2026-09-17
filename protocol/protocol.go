@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Version is the only protocol version this build speaks.
-const Version = 3
+const Version = 4
 
 const (
 	HeartbeatSec       = 15
@@ -20,7 +23,17 @@ const (
 	AuthTimeoutSec     = 20
 	NonceTTLSec        = 20
 	MaxWatches         = 8
-	TurnCredTTLSec     = 12 * 60 * 60
+	TurnCredTTLSec     = 2 * 60 * 60
+)
+
+// Signaling rate limits (PROTOCOL.md §3.3); exceeding one answers error{rate_limited, retryAfterSec}.
+const (
+	ConnectPerControllerPerMin  = 6
+	ConnectPerControllerPerHour = 60
+	ConnectPerHostPerMin        = 30
+	ConnectPerHostPerHour       = 300
+	RegistersPerSocket          = 1
+	RegistersPerIPPerHour       = 20
 )
 
 // Envelope wraps every message on every surface.
@@ -113,7 +126,23 @@ const (
 	ByePeerAuthFailed = "peer_auth_failed"
 	ByeAuthFailed     = "auth_failed"
 	ByeDeclined       = "declined"
+	ByeDisplaced      = "displaced"
 )
+
+// ByeReasons is the closed §2.14 set; the server refuses any other bye reason and never relays it.
+var ByeReasons = []string{
+	ByeUserEnded, ByeHostEnded, ByeTimeout, ByeFailed, ByeCodeRefreshed, ByeReplaced,
+	ByeShutdown, ByeError, ByePeerAuthFailed, ByeAuthFailed, ByeDeclined, ByeDisplaced,
+}
+
+func ValidByeReason(reason string) bool {
+	for _, known := range ByeReasons {
+		if reason == known {
+			return true
+		}
+	}
+	return false
+}
 
 const (
 	SessionPending  = "pending"
@@ -166,17 +195,21 @@ func (c CodeVerifier) Validate() error {
 }
 
 // Register creates a device and mints a deviceId. Idempotent per pubkey.
+// PreferredDeviceID is honoured only together with an IDCert the registry issued for that id and this pubkey.
 type Register struct {
-	Pubkey            string       `json:"pubkey"` // base64 DER SPKI, P-256
+	Pubkey            string       `json:"pubkey"` // canonical std base64 of a DER SPKI P-256 key
 	Sig               string       `json:"sig"`    // base64 DER ECDSA-SHA256 over SigningMessage(PurposeRegister, nonce)
 	Label             string       `json:"label,omitempty"`
 	PreferredDeviceID string       `json:"preferredDeviceId,omitempty"`
+	IDCert            string       `json:"idCert,omitempty"`
 	Code              CodeVerifier `json:"code"`
 }
 
+// RegisterOK.IDCert is the registry's signature over DeviceIDCertMessage; clients store it and never interpret it.
 type RegisterOK struct {
 	DeviceID string `json:"deviceId"`
 	Existing bool   `json:"existing"`
+	IDCert   string `json:"idCert"`
 }
 
 type Hello struct {
@@ -193,6 +226,7 @@ type ICEServer struct {
 	ExpiresAt  int64    `json:"expiresAt,omitempty"` // unix ms
 }
 
+// HelloOK.ICEServers never carries credentials; TURN arrives per session in connect_ok, session_start and renew_ok.
 type HelloOK struct {
 	DeviceID           string      `json:"deviceId"`
 	ServerTime         int64       `json:"serverTime"`
@@ -201,6 +235,7 @@ type HelloOK struct {
 	OfflineAfterSec    int         `json:"offlineAfterSec"`
 	SessionTokenTTLSec int         `json:"sessionTokenTtlSec"`
 	ActiveSessionID    string      `json:"activeSessionId,omitempty"`
+	IDCert             string      `json:"idCert,omitempty"`
 }
 
 type Heartbeat struct{}
@@ -245,6 +280,8 @@ type ConnectOK struct {
 	ControllerDeviceID string `json:"controllerDeviceId"`
 	// HostPubkey is the host's registered pubkey, base64 DER SPKI; it is public material, not a secret.
 	HostPubkey string `json:"hostPubkey,omitempty"`
+	// ICEServers is the complete list for this session, including TURN credentials scoped to it.
+	ICEServers []ICEServer `json:"iceServers,omitempty"`
 }
 
 type SessionStart struct {
@@ -272,10 +309,11 @@ type Renew struct {
 }
 
 type RenewOK struct {
-	SessionID    string `json:"sessionId"`
-	SessionToken string `json:"sessionToken"`
-	ExpiresAt    int64  `json:"expiresAt"`
-	TTLSec       int    `json:"ttlSec"`
+	SessionID    string      `json:"sessionId"`
+	SessionToken string      `json:"sessionToken"`
+	ExpiresAt    int64       `json:"expiresAt"`
+	TTLSec       int         `json:"ttlSec"`
+	ICEServers   []ICEServer `json:"iceServers,omitempty"`
 }
 
 type PeerState struct {
@@ -532,6 +570,36 @@ func Unmarshal(e Envelope, v any) error {
 		return json.Unmarshal([]byte(`{}`), v)
 	}
 	return json.Unmarshal(e.Payload, v)
+}
+
+// ValidSessionID reports whether s is exactly 32 lowercase hex characters.
+func ValidSessionID(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// TrimLabel drops control characters and invalid UTF-8 and cuts s to MaxLabelLen bytes on a rune boundary.
+func TrimLabel(s string) string {
+	s = strings.TrimSpace(strings.ToValidUTF8(s, ""))
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			continue
+		}
+		if b.Len()+utf8.RuneLen(r) > MaxLabelLen {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // ValidDeviceID reports whether s is exactly 9 ASCII digits.

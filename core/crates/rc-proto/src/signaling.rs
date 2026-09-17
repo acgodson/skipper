@@ -72,15 +72,18 @@ impl CodeVerifier {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Register {
-    /// base64 DER SPKI, P-256.
+    /// Canonical padded standard base64 of the DER SPKI P-256 key.
     pub pubkey: String,
-    /// base64 DER ECDSA-SHA256 over the raw challenge nonce bytes.
+    /// base64 DER ECDSA-SHA256 over the `register` signing message of the challenge nonce.
     pub sig: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
-    /// The id this key held before the registry lost its record; honoured only when free.
+    /// The id this key held before the registry lost its record; honoured only with `id_cert`.
     #[serde(rename = "preferredDeviceId", default, skip_serializing_if = "String::is_empty")]
     pub preferred_device_id: String,
+    /// The registry's certificate for `preferred_device_id` and this key, as last received; opaque.
+    #[serde(rename = "idCert", default, skip_serializing_if = "String::is_empty")]
+    pub id_cert: String,
     pub code: CodeVerifier,
 }
 
@@ -89,6 +92,9 @@ pub struct RegisterOk {
     #[serde(rename = "deviceId")]
     pub device_id: String,
     pub existing: bool,
+    /// Store opaquely and send back in `Register::id_cert`; never interpret it.
+    #[serde(rename = "idCert", default)]
+    pub id_cert: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -144,6 +150,9 @@ pub struct HelloOk {
         skip_serializing_if = "String::is_empty"
     )]
     pub active_session_id: String,
+    /// The certificate for this authenticated binding; store it like `RegisterOk::id_cert`.
+    #[serde(rename = "idCert", default, skip_serializing_if = "String::is_empty")]
+    pub id_cert: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -219,6 +228,14 @@ pub struct ConnectOk {
         skip_serializing_if = "String::is_empty"
     )]
     pub host_pubkey: String,
+    /// This session's complete ICE list; TURN credentials are scoped to the session.
+    #[serde(
+        rename = "iceServers",
+        default,
+        deserialize_with = "null_as_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub ice_servers: Vec<IceServer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -269,6 +286,14 @@ pub struct RenewOk {
     pub expires_at: i64,
     #[serde(rename = "ttlSec")]
     pub ttl_sec: i32,
+    /// Fresh session-scoped ICE list; replaces the one from `connect_ok`/`session_start`.
+    #[serde(
+        rename = "iceServers",
+        default,
+        deserialize_with = "null_as_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub ice_servers: Vec<IceServer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

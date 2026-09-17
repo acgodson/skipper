@@ -20,9 +20,13 @@ type Case struct {
 	Note    string          `json:"note,omitempty"`
 }
 
+// File.ByeReasons is the closed §2.14 set; InvalidByeReasons are values every
+// implementation must refuse (the server answers error{bad_request} and relays nothing).
 type File struct {
-	Version int    `json:"version"`
-	Cases   []Case `json:"cases"`
+	Version           int      `json:"version"`
+	ByeReasons        []string `json:"byeReasons"`
+	InvalidByeReasons []string `json:"invalidByeReasons"`
+	Cases             []Case   `json:"cases"`
 }
 
 var cases []Case
@@ -47,6 +51,13 @@ func main() {
 	const signedFP = "sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A"
 	const signedOffer = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:" + signedFP + "\r\na=setup:actpass\r\n"
 
+	sessionICE := []p.ICEServer{
+		{URLs: []string{"stun:54.246.73.81:3478"}},
+		{URLs: []string{"turn:54.246.73.81:3478?transport=udp"},
+			Username:   "1755607200:8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+			Credential: "Y3JlZA==", ExpiresAt: ts + 7200000},
+	}
+
 	recCode := p.CodeVerifier{
 		Alg: p.AlgArgon2id, Salt: "c2FsdHNhbHRzYWx0c2FsdA==",
 		Hash: "aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g=",
@@ -64,34 +75,41 @@ func main() {
 		p.Register{Pubkey: "cHVia2V5", Sig: "c2ln", Code: recCode})
 
 	add("register_preferred_device_id", "signaling", p.TypeRegister,
-		"preferredDeviceId: the id this key held before the registry lost its record; omitted when empty", "c-4", "", ts,
+		"v4: preferredDeviceId without idCert is ignored and a fresh id is minted", "c-4", "", ts,
 		p.Register{Pubkey: "cHVia2V5", Sig: "c2ln", PreferredDeviceID: "481930275", Code: recCode})
 
-	add("register_ok_existing", "signaling", p.TypeRegisterOK, "", "", "c-1", ts,
-		p.RegisterOK{DeviceID: "481930275", Existing: true})
+	add("register_with_id_cert", "signaling", p.TypeRegister,
+		"v4: idCert is the registry's certificate from an earlier register_ok or hello_ok; it restores preferredDeviceId; both omitted when empty",
+		"c-4", "", ts,
+		p.Register{Pubkey: "cHVia2V5", Sig: "c2ln", PreferredDeviceID: "481930275",
+			IDCert: "MEUCIQDpZGNlcnRpZGNlcnRpZGNlcnRpZGNlcnRpZGNlcnRpZGNlcgIgaWRjZXJ0", Code: recCode})
+
+	add("register_ok_existing", "signaling", p.TypeRegisterOK,
+		"v4: idCert is always present; clients store it opaquely (Keychain account device-id-cert)", "", "c-1", ts,
+		p.RegisterOK{DeviceID: "481930275", Existing: true,
+			IDCert: "MEUCIQDpZGNlcnRpZGNlcnRpZGNlcnRpZGNlcnRpZGNlcnRpZGNlcgIgaWRjZXJ0"})
 
 	add("register_ok_leading_zero", "signaling", p.TypeRegisterOK,
 		"deviceId keeps leading zeros; it is a string, never a number", "", "c-1", ts,
-		p.RegisterOK{DeviceID: "000000042", Existing: false})
+		p.RegisterOK{DeviceID: "000000042", Existing: false, IDCert: "MEQCIGlkY2VydA=="})
 
 	add("hello_host", "signaling", p.TypeHello, "", "c-3", "", ts,
 		p.Hello{DeviceID: "481930275", Pubkey: "cHVia2V5", Sig: "c2ln", Role: p.RoleHost})
 
 	add("hello_ok_with_active_session", "signaling", p.TypeHelloOK,
-		"activeSessionId present: the server has a session this client holds no token for", "", "c-3", ts,
+		"v4: iceServers is STUN only, never credentials; idCert certifies the authenticated binding", "", "c-3", ts,
 		p.HelloOK{
 			DeviceID: "481930275", ServerTime: ts,
 			ICEServers: []p.ICEServer{
 				{URLs: []string{"stun:54.246.73.81:3478"}},
-				{URLs: []string{"turn:54.246.73.81:3478?transport=udp"},
-					Username: "1755600000:rc", Credential: "Y3JlZA==", ExpiresAt: ts + 43200000},
 			},
 			HeartbeatSec: 15, OfflineAfterSec: 40, SessionTokenTTLSec: 600,
 			ActiveSessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+			IDCert:          "MEUCIQDpZGNlcnRpZGNlcnRpZGNlcnRpZGNlcnRpZGNlcnRpZGNlcgIgaWRjZXJ0",
 		})
 
 	add("hello_ok_no_active_session", "signaling", p.TypeHelloOK,
-		"activeSessionId omitempty; iceServers may be empty", "", "c-3", ts,
+		"activeSessionId and idCert are omitempty; iceServers may be empty", "", "c-3", ts,
 		p.HelloOK{DeviceID: "481930275", ServerTime: ts, HeartbeatSec: 15,
 			OfflineAfterSec: 40, SessionTokenTTLSec: 600})
 
@@ -129,6 +147,17 @@ func main() {
 			HostPubkey: hostPubkey,
 		})
 
+	add("connect_ok_with_ice_servers", "signaling", p.TypeConnectOK,
+		"v4: iceServers is this session's complete list; the TURN username is <expiry>:<sessionId>, valid 2 h",
+		"", "c-7", ts,
+		p.ConnectOK{
+			SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "dG9rZW4=",
+			ExpiresAt: ts + 600000, TTLSec: 600,
+			HostDeviceID: "739000587", ControllerDeviceID: "481930275",
+			HostPubkey: hostPubkey,
+			ICEServers: sessionICE,
+		})
+
 	add("connect_ok_no_host_pubkey", "signaling", p.TypeConnectOK,
 		"hostPubkey is omitempty: absent, never an empty string", "", "c-7", ts,
 		p.ConnectOK{
@@ -138,13 +167,15 @@ func main() {
 		})
 
 	add("session_start", "signaling", p.TypeSessionStart,
-		"connect_ok plus controllerPubkey, which the host keys its guess policy on", "", "", ts,
+		"connect_ok plus controllerPubkey, which the host keys its guess policy on; v4 iceServers as in connect_ok",
+		"", "", ts,
 		p.SessionStart{
 			ConnectOK: p.ConnectOK{
 				SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "dG9rZW4y",
 				ExpiresAt: ts + 600000, TTLSec: 600,
 				HostDeviceID: "739000587", ControllerDeviceID: "481930275",
 				HostPubkey: hostPubkey,
+				ICEServers: sessionICE,
 			},
 			ControllerPubkey: controllerPubkey,
 		})
@@ -167,7 +198,10 @@ func main() {
 
 	add("renew", "signaling", p.TypeRenew, "", "c-9", "", ts,
 		p.Renew{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "bmV3dG9rZW4="})
-	add("renew_ok", "signaling", p.TypeRenewOK, "", "", "c-9", ts,
+	add("renew_ok", "signaling", p.TypeRenewOK, "v4: iceServers carries fresh session credentials", "", "c-9", ts,
+		p.RenewOK{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "bmV3ZXI=",
+			ExpiresAt: ts + 600000, TTLSec: 600, ICEServers: sessionICE})
+	add("renew_ok_no_ice_servers", "signaling", p.TypeRenewOK, "iceServers is omitempty", "", "c-9", ts,
 		p.RenewOK{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SessionToken: "bmV3ZXI=",
 			ExpiresAt: ts + 600000, TTLSec: 600})
 
@@ -213,6 +247,16 @@ func main() {
 		"the host proved the code but its owner declined the connection, or did not answer in 30 s",
 		"", "", ts,
 		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByeDeclined})
+	add("bye_displaced", "signaling", p.TypeBye,
+		"v4: the server ended the session because the device id was restored to its certified key",
+		"", "", ts,
+		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByeDisplaced})
+	add("error_bye_reason_rejected", "signaling", p.TypeError,
+		"v4: a bye whose reason is not in byeReasons is answered with this and never relayed", "", "c-11", ts,
+		p.Error{Code: p.ErrBadRequest, Message: "bye reason is not one of the defined reasons"})
+	add("error_forbidden_role", "signaling", p.TypeError,
+		"v4: connect_req from a connection that said hello as host", "", "c-7", ts,
+		p.Error{Code: p.ErrForbidden, Message: "only a controller connection may send connect_req"})
 
 	add("pake_step1", "signaling", p.TypePake,
 		"v2: opaque to the server, relayed verbatim like sdp and ice", "", "", ts,
@@ -319,7 +363,12 @@ func main() {
 		"seq is int64 and must not be narrowed to 32 bits", "", "", ts,
 		p.MouseMove{X: 0.5, Y: 0.5, Seq: 9007199254740993})
 
-	write(*out, File{Version: p.Version, Cases: cases})
+	write(*out, File{
+		Version:           p.Version,
+		ByeReasons:        p.ByeReasons,
+		InvalidByeReasons: []string{"", "user", "USER_ENDED", "user_ended ", "reconciled", "declined\n"},
+		Cases:             cases,
+	})
 	fmt.Fprintf(os.Stderr, "wrote %d cases to %s\n", len(cases), *out)
 	signing := signingCases()
 	write(*signingOut, SigningFile{Version: p.Version, Note: signingNote, Cases: signing})

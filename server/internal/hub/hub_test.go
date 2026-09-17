@@ -20,17 +20,21 @@ import (
 	"rc-signal/internal/auth"
 	"rc-signal/internal/clockx"
 	"rc-signal/internal/entitlement"
+	"rc-signal/internal/idcert"
 	"rc-signal/internal/registry"
+	"rc-signal/internal/reports"
 	"rc-signal/internal/store"
 	"rcprotocol"
 )
 
 type fakeEntitlement struct {
-	mu     sync.Mutex
-	deny   map[string]string
-	err    error
-	starts []protocol.SessionStartReport
-	stops  []protocol.SessionStopReport
+	mu        sync.Mutex
+	deny      map[string]string
+	err       error
+	denyStart bool
+	starts    []protocol.SessionStartReport
+	stops     []protocol.SessionStopReport
+	order     []string
 }
 
 func newFakeEntitlement() *fakeEntitlement {
@@ -52,7 +56,11 @@ func (f *fakeEntitlement) Check(_ context.Context, hostDeviceID string) (entitle
 func (f *fakeEntitlement) SessionStarted(_ context.Context, r protocol.SessionStartReport) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.denyStart {
+		return reports.ErrDenied
+	}
 	f.starts = append(f.starts, r)
+	f.order = append(f.order, "start "+r.SessionID)
 	return nil
 }
 
@@ -60,13 +68,26 @@ func (f *fakeEntitlement) SessionStopped(_ context.Context, r protocol.SessionSt
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stops = append(f.stops, r)
+	f.order = append(f.order, "stop "+r.SessionID)
 	return nil
+}
+
+func (f *fakeEntitlement) reportCounts() (int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.starts), len(f.stops)
 }
 
 func (f *fakeEntitlement) denyDevice(deviceID, reason string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deny[deviceID] = reason
+}
+
+func (f *fakeEntitlement) allowDevice(deviceID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.deny, deviceID)
 }
 
 func (f *fakeEntitlement) failWith(err error) {
@@ -138,11 +159,11 @@ func (r *switchableRegistry) state() (bool, chan struct{}) {
 	return r.down, r.gate
 }
 
-func (r *switchableRegistry) Register(ctx context.Context, pubkey, label, preferredDeviceID string) (registry.Device, bool, error) {
+func (r *switchableRegistry) Register(ctx context.Context, reg registry.Registration) (registry.Registered, error) {
 	if down, _ := r.state(); down {
-		return registry.Device{}, false, registry.ErrUnavailable
+		return registry.Registered{}, registry.ErrUnavailable
 	}
-	return r.inner().Register(ctx, pubkey, label, preferredDeviceID)
+	return r.inner().Register(ctx, reg)
 }
 
 func (r *switchableRegistry) Lookup(ctx context.Context, deviceID string) (registry.Device, error) {
@@ -164,13 +185,17 @@ func (r *switchableRegistry) BumpEpoch(ctx context.Context, deviceID string) err
 }
 
 type harness struct {
-	t     *testing.T
-	hub   *Hub
-	clock *clockx.Fake
-	store *store.Store
-	reg   *switchableRegistry
-	ent   *fakeEntitlement
+	t         *testing.T
+	hub       *Hub
+	clock     *clockx.Fake
+	store     *store.Store
+	reg       *switchableRegistry
+	ent       *fakeEntitlement
+	authority *idcert.Authority
+	pool      []*peer
 }
+
+const peerIP = "192.0.2.10"
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
@@ -179,9 +204,13 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+	authority, err := idcert.Ephemeral()
+	if err != nil {
+		t.Fatal(err)
+	}
 	clk := clockx.NewFake()
 	ent := newFakeEntitlement()
-	reg := &switchableRegistry{backend: registry.NewLocal(st, clk)}
+	reg := &switchableRegistry{backend: registry.NewLocal(st, clk, authority)}
 	h := New(Options{
 		Registry:    reg,
 		Entitlement: ent,
@@ -191,8 +220,14 @@ func newHarness(t *testing.T) *harness {
 		TurnSecret:  "turnsecret",
 		TurnURLs:    []string{"turn:198.51.100.7:3478?transport=udp"},
 		StunURLs:    []string{"stun:stun.example:3478"},
+		Reports:     reports.Options{Backoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond},
 	})
-	return &harness{t: t, hub: h, clock: clk, store: st, reg: reg, ent: ent}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		h.FlushReports(ctx)
+	})
+	return &harness{t: t, hub: h, clock: clk, store: st, reg: reg, ent: ent, authority: authority}
 }
 
 type peer struct {
@@ -202,6 +237,7 @@ type peer struct {
 	priv     *ecdsa.PrivateKey
 	pubB64   string
 	deviceID string
+	idCert   string
 	token    string
 	session  string
 
@@ -223,7 +259,7 @@ func (hn *harness) newPeer() *peer {
 		hn.t.Fatal(err)
 	}
 	p := &peer{t: hn.t, h: hn.hub, priv: priv, pubB64: base64.StdEncoding.EncodeToString(spki)}
-	p.c = hn.hub.AddClient(p.recv, func(code int, msg string) {
+	p.c = hn.hub.AddClient(peerIP, p.recv, func(code int, msg string) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.closed, p.closeMsg = true, msg
@@ -238,7 +274,7 @@ func (hn *harness) reconnect(p *peer) {
 	p.msgs = nil
 	p.closed = false
 	p.mu.Unlock()
-	p.c = hn.hub.AddClient(p.recv, func(code int, msg string) {
+	p.c = hn.hub.AddClient(peerIP, p.recv, func(code int, msg string) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.closed, p.closeMsg = true, msg
@@ -283,6 +319,12 @@ func (p *peer) sig(purpose protocol.SigningPurpose, mangle bool) string {
 		nb[0] ^= 0xff
 	}
 	return p.signNonce(purpose, nb)
+}
+
+func (p *peer) currentNonce() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.nonce
 }
 
 func (p *peer) sigOver(purpose protocol.SigningPurpose, nonceB64 string) string {
@@ -381,7 +423,7 @@ func (p *peer) register(label string) string {
 	p.send(protocol.TypeRegister, protocol.Register{
 		Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeRegister, false), Label: label})
 	ok := unmarshal[protocol.RegisterOK](p.t, p.last(protocol.TypeRegisterOK))
-	p.deviceID = ok.DeviceID
+	p.deviceID, p.idCert = ok.DeviceID, ok.IDCert
 	return ok.DeviceID
 }
 
@@ -411,6 +453,18 @@ func TestRegisterMintsNineDigitIDAndIsIdempotent(t *testing.T) {
 		t.Fatal("first registration reported existing=true")
 	}
 
+	if !hn.authority.Verify(id, p.pubB64, first.IDCert) {
+		t.Fatal("register_ok carried no valid device-id certificate")
+	}
+
+	p.reset()
+	p.send(protocol.TypeRegister, protocol.Register{
+		Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeRegister, false)})
+	if p.has(protocol.TypeRegisterOK) || p.lastErr().Code != protocol.ErrBadRequest {
+		t.Fatalf("a second register on one connection was not refused: %s", p.typesLocked())
+	}
+
+	hn.reconnect(p)
 	p.send(protocol.TypeRegister, protocol.Register{
 		Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeRegister, false)})
 	second := unmarshal[protocol.RegisterOK](t, p.last(protocol.TypeRegisterOK))
@@ -448,22 +502,12 @@ func TestHelloValidSignatureAuthenticates(t *testing.T) {
 		t.Fatal("device should be online after hello")
 	}
 
-	if len(ok.ICEServers) != 2 {
-		t.Fatalf("iceServers len = %d, want 2", len(ok.ICEServers))
+	if len(ok.ICEServers) != 1 || ok.ICEServers[0].URLs[0] != "stun:stun.example:3478" ||
+		ok.ICEServers[0].Username != "" || ok.ICEServers[0].Credential != "" {
+		t.Fatalf("hello_ok iceServers = %+v, want bare STUN and no credentials", ok.ICEServers)
 	}
-	if ok.ICEServers[0].URLs[0] != "stun:stun.example:3478" || ok.ICEServers[0].Username != "" {
-		t.Fatalf("first ICE server = %+v, want bare STUN", ok.ICEServers[0])
-	}
-	turn := ok.ICEServers[1]
-	wantUser, wantCred, wantExp := auth.TurnCreds("turnsecret", id, hn.clock.Now(), TurnCredTTL)
-	if turn.Username != wantUser || turn.Credential != wantCred {
-		t.Fatalf("TURN creds = %q/%q, want %q/%q", turn.Username, turn.Credential, wantUser, wantCred)
-	}
-	if turn.ExpiresAt != wantExp.UnixMilli() {
-		t.Fatalf("TURN expiry = %d, want %d", turn.ExpiresAt, wantExp.UnixMilli())
-	}
-	if !strings.HasSuffix(turn.Username, ":"+id) {
-		t.Fatalf("TURN username %q must end in :%s", turn.Username, id)
+	if !hn.authority.Verify(id, p.pubB64, ok.IDCert) {
+		t.Fatal("hello_ok carried no valid device-id certificate")
 	}
 }
 
@@ -488,12 +532,12 @@ func TestHelloForgedSignatureRejected(t *testing.T) {
 	other := hn.newPeer()
 	p.reset()
 	p.send(protocol.TypeHello, protocol.Hello{
-		DeviceID: id, Pubkey: other.pubB64, Sig: other.sig(protocol.PurposeHello, false), Role: protocol.RoleHost})
+		DeviceID: id, Pubkey: other.pubB64, Sig: other.sigOver(protocol.PurposeHello, p.currentNonce()), Role: protocol.RoleHost})
 	if p.has(protocol.TypeHelloOK) {
 		t.Fatal("a signature from the wrong key was accepted")
 	}
-	if got := p.lastErr().Code; got != protocol.ErrBadSignature {
-		t.Fatalf("error code = %q, want %q", got, protocol.ErrBadSignature)
+	if got := p.lastErr().Code; got != protocol.ErrUnknownDevice {
+		t.Fatalf("another key's valid signature: error code = %q, want %q", got, protocol.ErrUnknownDevice)
 	}
 
 	q := hn.newPeer()
@@ -636,6 +680,11 @@ func TestConnectIsAuthorisedByEntitlement(t *testing.T) {
 		t.Fatalf("session state = %q, want %q", got, protocol.SessionOpen)
 	}
 
+	time.Sleep(50 * time.Millisecond)
+	if starts, stops := hn.ent.reportCounts(); starts != 0 || stops != 0 {
+		t.Fatalf("a session was reported before the host proved anything: %d/%d", starts, stops)
+	}
+	host.send(protocol.TypeSDP, protocol.SDP{SessionID: ok.SessionID, SDPType: "offer", SDP: "v=0\r\n"})
 	starts, _ := hn.ent.awaitReports(t, 1, 0)
 	if starts[0].SessionID != ok.SessionID || starts[0].HostDeviceID != host.deviceID ||
 		starts[0].ControllerDeviceID != ctrl.deviceID {
@@ -759,10 +808,10 @@ func TestSecondControllerGetsBusy(t *testing.T) {
 
 func TestSelfConnectRejected(t *testing.T) {
 	hn := newHarness(t)
-	host, _ := hn.pair(t)
-	host.reset()
-	host.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
-	if got := host.lastErr().Code; got != protocol.ErrSelfConnect {
+	_, ctrl := hn.pair(t)
+	ctrl.reset()
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: ctrl.deviceID})
+	if got := ctrl.lastErr().Code; got != protocol.ErrSelfConnect {
 		t.Fatalf("error code = %q, want %q", got, protocol.ErrSelfConnect)
 	}
 }
@@ -1330,63 +1379,69 @@ func (hn *harness) resetBackend() {
 	}
 	hn.t.Cleanup(func() { fresh.Close() })
 	hn.store = fresh
-	hn.reg.replace(registry.NewLocal(fresh, hn.clock))
+	hn.reg.replace(registry.NewLocal(fresh, hn.clock, hn.authority))
 }
 
-func (p *peer) reregister(preferred string) protocol.RegisterOK {
+func (p *peer) reregister(preferred, cert string) protocol.RegisterOK {
 	p.t.Helper()
 	p.send(protocol.TypeRegister, protocol.Register{
-		Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeRegister, false), PreferredDeviceID: preferred})
+		Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeRegister, false),
+		PreferredDeviceID: preferred, IDCert: cert})
 	ok := unmarshal[protocol.RegisterOK](p.t, p.last(protocol.TypeRegisterOK))
-	p.deviceID = ok.DeviceID
+	p.deviceID, p.idCert = ok.DeviceID, ok.IDCert
 	return ok
 }
 
-func TestReRegisterAfterBackendResetKeepsTheDeviceID(t *testing.T) {
+func (p *peer) helloAs(deviceID, role string) {
+	p.t.Helper()
+	p.reset()
+	p.send(protocol.TypeHello, protocol.Hello{
+		DeviceID: deviceID, Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeHello, false), Role: role})
+}
+
+func TestReRegisterWithItsCertificateKeepsTheDeviceID(t *testing.T) {
 	hn := newHarness(t)
 	host := hn.newPeer()
 	id := host.register("Studio Mac")
+	cert := host.idCert
 	hn.hub.RemoveClient(host.c)
 
 	hn.resetBackend()
 	hn.reconnect(host)
-	host.send(protocol.TypeHello, protocol.Hello{
-		DeviceID: id, Pubkey: host.pubB64, Sig: host.sig(protocol.PurposeHello, false), Role: protocol.RoleHost})
+	host.helloAs(id, protocol.RoleHost)
 	if got := host.lastErr().Code; got != protocol.ErrUnknownDevice {
 		t.Fatalf("hello against a reset backend = %q, want unknown_device", got)
 	}
 
-	again := host.reregister(id)
-	if again.DeviceID != id || again.Existing {
-		t.Fatalf("re-register = %+v, want the same id %q as a new record", again, id)
+	hn.reconnect(host)
+	again := host.reregister(id, cert)
+	if again.DeviceID != id || again.Existing || !hn.authority.Verify(id, host.pubB64, again.IDCert) {
+		t.Fatalf("re-register = %+v, want the same id %q as a new record with a certificate", again, id)
 	}
 	if ok := host.hello(protocol.RoleHost); ok.DeviceID != id || !hn.hub.IsOnline(id) {
 		t.Fatalf("hello after re-register = %+v online=%v", ok, hn.hub.IsOnline(id))
 	}
 }
 
-func TestReRegisterCannotTakeAnotherKeysDeviceID(t *testing.T) {
+func TestAPreferredIDWithoutACertificateIsNeverHonoured(t *testing.T) {
 	hn := newHarness(t)
 	host := hn.newPeer()
 	id := host.register("Studio Mac")
+	cert := host.idCert
 	hn.hub.RemoveClient(host.c)
 	hn.resetBackend()
 
-	squatter := hn.newPeer()
-	if got := squatter.reregister(id); got.DeviceID != id {
-		t.Fatalf("the first key to ask for a free id should get it, got %+v", got)
-	}
-
-	hn.reconnect(host)
-	moved := host.reregister(id)
-	if moved.DeviceID == id || !protocol.ValidDeviceID(moved.DeviceID) {
-		t.Fatalf("a held id was handed to a second key: %+v", moved)
-	}
-	host.hello(protocol.RoleHost)
-
-	stranger := hn.newPeer()
-	if got := stranger.reregister(moved.DeviceID); got.DeviceID == moved.DeviceID {
-		t.Fatalf("a stranger claimed the host's id %q", moved.DeviceID)
+	for name, attempt := range map[string]struct{ preferred, cert string }{
+		"no certificate":            {id, ""},
+		"the owner's certificate":   {id, cert},
+		"a certificate for another": {"123456789", cert},
+		"a free id":                 {"123456789", ""},
+	} {
+		squatter := hn.newPeer()
+		got := squatter.reregister(attempt.preferred, attempt.cert)
+		if got.DeviceID == attempt.preferred || !protocol.ValidDeviceID(got.DeviceID) {
+			t.Fatalf("%s: a new key was handed %s", name, got.DeviceID)
+		}
 	}
 
 	bad := hn.newPeer()
@@ -1394,6 +1449,152 @@ func TestReRegisterCannotTakeAnotherKeysDeviceID(t *testing.T) {
 		Pubkey: bad.pubB64, Sig: bad.sig(protocol.PurposeRegister, false), PreferredDeviceID: "12ab"})
 	if got := bad.lastErr().Code; got != protocol.ErrBadRequest {
 		t.Fatalf("malformed preferredDeviceId = %q, want bad_request", got)
+	}
+}
+
+func TestACertifiedRestoreDisplacesALiveSquatterAndItsSession(t *testing.T) {
+	hn := newHarness(t)
+	victim := hn.newPeer()
+	id := victim.register("Studio Mac")
+	cert := victim.idCert
+	hn.hub.RemoveClient(victim.c)
+	hn.resetBackend()
+
+	squatter := hn.newPeer()
+	if _, _, err := hn.store.Register(squatter.pubB64, "Studio Mac", id, hn.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	squatter.deviceID = id
+	squatter.hello(protocol.RoleHost)
+	ctrl := hn.newPeer()
+	ctrl.register("ctrl")
+	ctrl.hello(protocol.RoleController)
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: id})
+	sid := unmarshal[protocol.ConnectOK](t, ctrl.last(protocol.TypeConnectOK)).SessionID
+	ctrl.reset()
+
+	hn.reconnect(victim)
+	victim.helloAs(id, protocol.RoleHost)
+	if got := victim.lastErr().Code; got != protocol.ErrUnknownDevice {
+		t.Fatalf("the victim's hello while the id is held by another key = %q, want unknown_device", got)
+	}
+	hn.reconnect(victim)
+	if got := victim.reregister(id, cert); got.DeviceID != id {
+		t.Fatalf("the certified owner did not get its id back: %+v", got)
+	}
+
+	squatter.mu.Lock()
+	closed, msg := squatter.closed, squatter.closeMsg
+	squatter.mu.Unlock()
+	if !closed || msg != "displaced" {
+		t.Fatalf("the squatter's socket was not displaced: closed=%v msg=%q", closed, msg)
+	}
+	if got := hn.hub.SessionState(sid); got != "" {
+		t.Fatalf("the squatter's session survived: %q", got)
+	}
+	if b := unmarshal[protocol.Bye](t, ctrl.last(protocol.TypeBye)); b.Reason != protocol.ByeDisplaced {
+		t.Fatalf("controller bye = %+v, want displaced", b)
+	}
+	victim.hello(protocol.RoleHost)
+	ctrl.reset()
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: id})
+	if ok := unmarshal[protocol.ConnectOK](t, ctrl.last(protocol.TypeConnectOK)); ok.HostPubkey != victim.pubB64 {
+		t.Fatalf("the controller reached key %q, want the certified owner", ok.HostPubkey)
+	}
+}
+
+func TestHelloDoesNotRevealWhetherAnIDExists(t *testing.T) {
+	hn := newHarness(t)
+	owner := hn.newPeer()
+	id := owner.register("Studio Mac")
+	prober := hn.newPeer()
+
+	answer := func(deviceID, pubkey string, forge bool) string {
+		hn.reconnect(prober)
+		prober.reset()
+		sig := prober.sig(protocol.PurposeHello, forge)
+		prober.send(protocol.TypeHello, protocol.Hello{DeviceID: deviceID, Pubkey: pubkey, Sig: sig, Role: protocol.RoleHost})
+		e := prober.lastErr()
+		return e.Code + "|" + e.Message
+	}
+	taken := answer(id, prober.pubB64, false)
+	free := answer("123456789", prober.pubB64, false)
+	if taken != free || !strings.HasPrefix(taken, protocol.ErrUnknownDevice+"|") {
+		t.Fatalf("own key: taken id -> %q, free id -> %q; want the same unknown_device", taken, free)
+	}
+	takenForged := answer(id, owner.pubB64, true)
+	freeForged := answer("123456789", owner.pubB64, true)
+	if takenForged != freeForged || !strings.HasPrefix(takenForged, protocol.ErrBadSignature+"|") {
+		t.Fatalf("someone else's key: taken id -> %q, free id -> %q; want the same bad_signature", takenForged, freeForged)
+	}
+}
+
+func TestRegisterRefusesNonCanonicalKeysAndTrimsLabels(t *testing.T) {
+	hn := newHarness(t)
+	p := hn.newPeer()
+	p.send(protocol.TypeRegister, protocol.Register{
+		Pubkey: p.pubB64[:40] + "\n" + p.pubB64[40:], Sig: p.sig(protocol.PurposeRegister, false)})
+	if p.has(protocol.TypeRegisterOK) || p.lastErr().Code != protocol.ErrBadRequest {
+		t.Fatalf("a non-canonical key spelling registered: %s", p.typesLocked())
+	}
+	id := p.register(strings.Repeat("é", 40) + "\x00\x1b")
+	d, err := hn.store.GetDevice(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Label != strings.Repeat("é", 32) {
+		t.Fatalf("stored label %q", d.Label)
+	}
+}
+
+func TestRegisterIsLimitedPerIP(t *testing.T) {
+	hn := newHarness(t)
+	for i := 0; i < protocol.RegistersPerIPPerHour; i++ {
+		hn.newPeer().register("x")
+	}
+	p := hn.newPeer()
+	p.send(protocol.TypeRegister, protocol.Register{Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeRegister, false)})
+	e := p.lastErr()
+	if p.has(protocol.TypeRegisterOK) || e.Code != protocol.ErrRateLimited || e.RetryAfterSec <= 0 {
+		t.Fatalf("register %d from one address = %+v", protocol.RegistersPerIPPerHour+1, e)
+	}
+	if !p.has(protocol.TypeChallenge) || p.count(protocol.TypeChallenge) < 2 {
+		t.Fatal("a refused register must leave the connection able to hello")
+	}
+	hn.clock.Advance(time.Hour / time.Duration(protocol.RegistersPerIPPerHour))
+	q := hn.newPeer()
+	q.register("after refill")
+}
+
+func TestUnauthenticatedSocketsAreClosedAfterTheAuthTimeout(t *testing.T) {
+	hn := newHarness(t)
+	idle := hn.newPeer()
+	authed := hn.newPeer()
+	authed.register("host")
+	authed.hello(protocol.RoleHost)
+
+	hn.clock.Advance(AuthTimeout - time.Second)
+	idle.send(protocol.TypeHeartbeat, protocol.Heartbeat{})
+	hn.hub.Sweep()
+	idle.mu.Lock()
+	early := idle.closed
+	idle.mu.Unlock()
+	if early {
+		t.Fatal("closed before the auth timeout")
+	}
+	hn.clock.Advance(2 * time.Second)
+	hn.hub.Sweep()
+	idle.mu.Lock()
+	closed, msg := idle.closed, idle.closeMsg
+	idle.mu.Unlock()
+	if !closed || msg != "auth_timeout" {
+		t.Fatalf("idle unauthenticated socket: closed=%v msg=%q", closed, msg)
+	}
+	authed.mu.Lock()
+	authedClosed := authed.closed
+	authed.mu.Unlock()
+	if authedClosed || !hn.hub.IsOnline(authed.deviceID) {
+		t.Fatal("an authenticated socket was closed by the auth timeout")
 	}
 }
 

@@ -4,6 +4,7 @@ package wsserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -13,7 +14,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"rc-signal/internal/clientip"
 	"rc-signal/internal/hub"
+	"rc-signal/internal/internalapi"
 	"rcprotocol"
 )
 
@@ -23,6 +26,7 @@ type Config struct {
 	TLSKey       string
 	InsecureHTTP bool
 	Logger       *slog.Logger
+	ClientIP     clientip.Resolver
 }
 
 type Server struct {
@@ -108,7 +112,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			websocket.FormatCloseMessage(code, msg), time.Now().Add(writeWait))
 		c.shutdown()
 	}
-	c.client = s.hub.AddClient(send, closeFn)
+	c.client = s.hub.AddClient(s.cfg.ClientIP.Of(r), send, closeFn)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -129,7 +133,6 @@ func (s *Server) readLoop(c *conn) {
 	c.ws.SetPongHandler(func(string) error {
 		return c.ws.SetReadDeadline(time.Now().Add(pongWait))
 	})
-	authDeadline := time.Now().Add(protocol.AuthTimeoutSec * time.Second)
 	for {
 		select {
 		case <-c.closeC:
@@ -149,12 +152,6 @@ func (s *Server) readLoop(c *conn) {
 		}
 		_ = c.ws.SetReadDeadline(time.Now().Add(pongWait))
 		s.hub.Handle(c.client, data)
-		if c.client.DeviceID() == "" && time.Now().After(authDeadline) {
-			s.log.Info("closing unauthenticated connection")
-			_ = c.ws.WriteControl(websocket.CloseMessage,
-				websocket.FormatCloseMessage(1008, "auth_timeout"), time.Now().Add(writeWait))
-			return
-		}
 	}
 }
 
@@ -220,6 +217,29 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 	return s.http.Shutdown(ctx)
+}
+
+// InternalHandler serves rc-signal's internal surface; it is mounted only on the
+// internal listener, never next to /ws.
+func InternalHandler(h *hub.Hub, token string) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+protocol.PathInternalLiveSessions, func(w http.ResponseWriter, r *http.Request) {
+		if !internalapi.Authorized(r, token) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		body, err := json.Marshal(h.LiveMeteredSessions())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	return mux
 }
 
 func RunSweeper(ctx context.Context, h *hub.Hub) {
