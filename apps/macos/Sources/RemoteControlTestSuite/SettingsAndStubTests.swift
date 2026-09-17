@@ -23,6 +23,7 @@ public let settingsSuite = TestSuite("AppSettings", [
             try expectFalse(settings.rememberPeerCode)
             try expectEqual(settings.role, .host)
             try expectFalse(settings.hasSavedPeer)
+            try expect(settings.installUpdatesAutomatically)
         }
     },
 
@@ -34,6 +35,7 @@ public let settingsSuite = TestSuite("AppSettings", [
             settings.qualityMode = .lowBandwidth
             settings.role = .controller
             settings.rememberPeerCode = true
+            settings.installUpdatesAutomatically = false
             settings.savePeer(label: "Studio Mac", deviceID: "482 719 351")
 
             let reloaded = AppSettings(defaults: defaults)
@@ -42,6 +44,7 @@ public let settingsSuite = TestSuite("AppSettings", [
             try expectEqual(reloaded.qualityMode, .lowBandwidth)
             try expectEqual(reloaded.role, .controller)
             try expect(reloaded.rememberPeerCode)
+            try expectFalse(reloaded.installUpdatesAutomatically)
             try expectEqual(reloaded.savedPeerLabel, "Studio Mac")
             try expectEqual(reloaded.savedPeerDeviceID, "482719351")
             try expect(reloaded.hasSavedPeer)

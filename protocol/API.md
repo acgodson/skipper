@@ -41,7 +41,7 @@ Every endpoint in §7 is exactly one of these three.
 
 | Class | Credential | Who holds it | Notes |
 |---|---|---|---|
-| **unauthenticated** | none | anyone | Only the link/token bootstrap. Rate limited by IP. |
+| **unauthenticated** | none | anyone | Only the link/token bootstrap, `/v1/health` and the release feed (§10). Rate limited by IP. |
 | **user session** | `Authorization: Bearer <Cognito access token>` | the website, in the browser | Short-lived, refreshed by Cognito. The desktop app never holds one. |
 | **device token** | `Authorization: Bearer <device token>` | the desktop app | Long-lived, revocable, bound to one device public key. See §1. |
 
@@ -428,6 +428,7 @@ identity provider (`Bearer dev:<email>`), and are `404` otherwise.
 |---|---|---|
 | `POST /v1/credits/dev-topup` | user session, idem | Credits the account with `amountCents`. |
 | `POST /v1/dev/expire-trial` | user session | Body `{}`. Ends every running trial on the account's devices. `204`. |
+| `POST /v1/dev/releases` | user session | Publishes a §10 release. Body: `platform`, `arch`, `channel` (default `stable`), `version`, `build`, `minimumOS`, `url`, `sha256`, `size`, optional `notes`, `critical`. Republishing a build on the same track replaces it. `201` with the §10.1 body. TODO: replace with a signed publish step in Phase 5. |
 
 Clients never call these. They are listed in `protocol/api.go` because both Go services compile
 against the same types.
@@ -543,6 +544,7 @@ says so through the same response.
 | `POST` | `/v1/credits/gifts/{giftId}/accept` | user session | yes | 20 / day per account |
 | `POST` | `/v1/credits/gifts/{giftId}/cancel` | user session | yes | 20 / day per account |
 | `GET` | `/v1/health` | none | — | 60 / minute per IP |
+| `GET` | `/v1/app/releases/latest` | none | — | 60 / hour per IP (cacheable for 300 s) |
 
 `GET /v1/health` returns `200 {"status":"ok","serverTime":<unix ms>}` and is the only endpoint
 that reveals nothing about anyone.
@@ -556,3 +558,37 @@ link codes, Cognito tokens, raw `hardwareId` values, the `hardwareHash` salt, gi
 anything from the peer-to-peer surfaces of PROTOCOL.md. Log lines may contain: `requestId`,
 `accountId`, `deviceId`, `sessionId`, method, path, status, error `code`, byte counts and timings.
 Anything else is a bug in the server.
+
+---
+
+## 10. App releases
+
+The desktop app updates itself without a third-party updater. This endpoint says **what** to
+install; it is never trusted to say the download is **safe**. The app's own checks (hash, size,
+code signature pinned to the running app's Team ID, notarization, no downgrade) decide that —
+`docs/SECURITY.md` "Updates".
+
+### 10.1 `GET /v1/app/releases/latest` — unauthenticated
+
+Query: `platform` (required, `macos`), `arch` (required, `arm64` or `x86_64`), `channel`
+(`stable` or `beta`, default `stable`). Any other parameter or value is `bad_request`. No track
+with a release is `404 not_found`.
+
+The answer is the most recently **published** release on the track, not the highest build: a bad
+release is pulled by republishing the previous one, and the client's no-downgrade rule keeps
+machines that already took the bad build where they are until a newer one ships.
+
+| Field | Type | Req | Meaning |
+|---|---|:--:|---|
+| `version` | string | yes | `CFBundleShortVersionString`, dot-separated numbers. Shown to the user. |
+| `build` | string | yes | `CFBundleVersion`, dot-separated numbers. The only value compared. |
+| `minimumOS` | string | yes | `LSMinimumSystemVersion`. A client below it does not offer the update. |
+| `url` | string | yes | The `.dmg`. `https`, or `http` on a loopback host in development. |
+| `sha256` | string | yes | Lowercase hex SHA-256 of the `.dmg`. |
+| `size` | int64 | yes | Byte length of the `.dmg`. |
+| `notes` | string | no | Plain text, ≤ 4000 chars. |
+| `publishedAt` | int64 | yes | Unix ms. |
+| `critical` | bool | yes | The update fixes a security problem. The app asks the user to restart when convenient; it still never interrupts a live session. |
+
+The response carries `Cache-Control: public, max-age=300` and nothing about the caller, so it may
+be served from a CDN.

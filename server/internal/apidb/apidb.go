@@ -1,5 +1,6 @@
 // Package apidb is the rc-api SQLite store: accounts, devices, link codes,
-// device tokens, session accounting, the append-only credit ledger and gifts.
+// device tokens, session accounting, the append-only credit ledger, gifts and
+// the app release table the updater reads.
 // It holds no raw hardware id, no plaintext device token and no session content.
 package apidb
 
@@ -234,7 +235,23 @@ CREATE TABLE IF NOT EXISTS idempotency (
   done       INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (scope, key)
-);`
+);
+CREATE TABLE IF NOT EXISTS releases (
+  platform     TEXT NOT NULL,
+  arch         TEXT NOT NULL,
+  channel      TEXT NOT NULL,
+  build        TEXT NOT NULL,
+  version      TEXT NOT NULL,
+  minimum_os   TEXT NOT NULL,
+  url          TEXT NOT NULL,
+  sha256       TEXT NOT NULL,
+  size         INTEGER NOT NULL,
+  notes        TEXT NOT NULL DEFAULT '',
+  critical     INTEGER NOT NULL DEFAULT 0,
+  published_at INTEGER NOT NULL,
+  PRIMARY KEY (platform, arch, channel, build)
+);
+CREATE INDEX IF NOT EXISTS releases_latest ON releases(platform, arch, channel, published_at);`
 
 func Open(path string) (*DB, error) {
 	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")

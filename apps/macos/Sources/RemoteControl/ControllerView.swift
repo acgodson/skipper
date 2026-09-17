@@ -20,6 +20,8 @@ struct ControllerView: View {
 
     var body: some View {
         SkipperScreen {
+            UpdateReadyBanner()
+
             connectCard
 
             if model.settings.hasSavedPeer {

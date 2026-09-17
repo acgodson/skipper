@@ -233,6 +233,20 @@ public final class APIClient: @unchecked Sendable {
                        credential: .deviceToken(token))
     }
 
+    // MARK: - §10 App releases
+
+    public func latestRelease(track: ReleaseTrack) async throws -> AppRelease? {
+        var parts = URLComponents()
+        parts.path = "/v1/app/releases/latest"
+        parts.queryItems = track.queryItems
+        do {
+            return try await send(.get, parts.string ?? parts.path, body: Optional<[String: String]>.none,
+                                  credential: .none)
+        } catch let error as APIError where error.code == .notFound {
+            return nil
+        }
+    }
+
     // MARK: - Transport
 
     public enum Method: String {

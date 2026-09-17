@@ -16,6 +16,8 @@ struct HostView: View {
                 SessionActiveBanner()
             }
 
+            UpdateReadyBanner()
+
             PermissionsBanners()
 
             if model.identity != nil {
@@ -142,6 +144,10 @@ private struct AccessSection: View {
             if let error = model.launchAtLogin.lastError {
                 SkipperNote(error, tone: .attention)
             }
+
+            SkipperDivider()
+
+            AutomaticUpdatesRow()
         }
     }
 }
