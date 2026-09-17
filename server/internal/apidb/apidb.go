@@ -1,11 +1,13 @@
 // Package apidb is the rc-api SQLite store: accounts, devices, link codes,
 // device tokens, session accounting, the append-only credit ledger, gifts and
 // the app release table the updater reads.
-// It holds no raw hardware id, no plaintext device token and no session content.
+// It holds no raw hardware id, no plaintext device token or link code (only their
+// SHA-256), and no session content.
 package apidb
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -60,7 +62,7 @@ func (d Device) Public() protocol.Device {
 }
 
 type LinkCode struct {
-	Code      string
+	CodeHash  string
 	NonceHash string
 	Pubkey    string
 	Platform  string
@@ -72,10 +74,9 @@ type LinkCode struct {
 
 type Nonce struct {
 	Nonce     string
-	Code      string
+	CodeHash  string
 	DeviceID  string
 	ExpiresAt int64
-	Used      bool
 }
 
 type DeviceToken struct {
@@ -97,6 +98,7 @@ type Session struct {
 	RelayUsed          bool
 	BytesRelayed       *int64
 	Reason             string
+	LastAliveAt        int64
 }
 
 type Gift struct {
@@ -126,11 +128,15 @@ func (g Gift) Public() protocol.Gift {
 	}
 }
 
+// Idempotent.Response is the replay body; it is nil when Replayable is false,
+// because that answer carried a credential that must not be stored.
 type Idempotent struct {
-	BodyHash string
-	Status   int
-	Response []byte
-	Done     bool
+	BodyHash     string
+	Status       int
+	Response     []byte
+	ResponseHash string
+	Replayable   bool
+	Done         bool
 }
 
 type DB struct {
@@ -161,9 +167,11 @@ CREATE TABLE IF NOT EXISTS devices (
 CREATE UNIQUE INDEX IF NOT EXISTS devices_pubkey ON devices(pubkey) WHERE pubkey <> '';
 CREATE INDEX IF NOT EXISTS devices_account ON devices(account_id);
 CREATE INDEX IF NOT EXISTS devices_hardware ON devices(hardware_hash);
-CREATE TABLE IF NOT EXISTS link_codes (
-  code       TEXT PRIMARY KEY,
-  nonce      TEXT NOT NULL,
+DROP TABLE IF EXISTS link_codes;
+DROP TABLE IF EXISTS nonces;
+CREATE TABLE IF NOT EXISTS link_codes_v2 (
+  code_hash  TEXT PRIMARY KEY,
+  nonce_hash TEXT NOT NULL,
   pubkey     TEXT NOT NULL,
   platform   TEXT NOT NULL,
   label      TEXT NOT NULL DEFAULT '',
@@ -171,13 +179,14 @@ CREATE TABLE IF NOT EXISTS link_codes (
   expires_at INTEGER NOT NULL,
   used       INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS nonces (
+CREATE TABLE IF NOT EXISTS nonces_v2 (
   nonce      TEXT PRIMARY KEY,
-  code       TEXT NOT NULL DEFAULT '',
+  code_hash  TEXT NOT NULL DEFAULT '',
   device_id  TEXT NOT NULL DEFAULT '',
   expires_at INTEGER NOT NULL,
   used       INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS nonces_code ON nonces_v2(code_hash);
 CREATE TABLE IF NOT EXISTS device_tokens (
   token_hash TEXT PRIMARY KEY,
   device_id  TEXT NOT NULL,
@@ -273,7 +282,7 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, err
 	}
-	if err := addColumnIfMissing(db, "devices", "code_epoch", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -284,14 +293,38 @@ func Open(path string) (*DB, error) {
 	return &DB{db: db}, nil
 }
 
-func addColumnIfMissing(db *sql.DB, table, column, decl string) error {
+// credentialScopes are the idempotency scopes whose stored answers once held a
+// device token or link code in plaintext; migration drops those bodies.
+const credentialScopes = `scope LIKE '%POST ` + protocol.PathAuthDeviceToken + `'
+ OR scope LIKE '%POST ` + protocol.PathAuthDeviceRefresh + `'
+ OR scope LIKE '%POST ` + protocol.PathAuthLink + `'`
+
+func migrate(db *sql.DB) error {
+	if _, err := addColumnIfMissing(db, "devices", "code_epoch", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if _, err := addColumnIfMissing(db, "sessions", "last_alive_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if _, err := addColumnIfMissing(db, "idempotency", "response_hash", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	added, err := addColumnIfMissing(db, "idempotency", "replayable", "INTEGER NOT NULL DEFAULT 1")
+	if err != nil || !added {
+		return err
+	}
+	_, err = db.Exec(`UPDATE idempotency SET response=NULL, replayable=0 WHERE ` + credentialScopes)
+	return err
+}
+
+func addColumnIfMissing(db *sql.DB, table, column, decl string) (bool, error) {
 	var n int
 	err := db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info(?) WHERE name=?`, table, column).Scan(&n)
 	if err != nil || n > 0 {
-		return err
+		return false, err
 	}
 	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl)
-	return err
+	return err == nil, err
 }
 
 func (d *DB) Close() error { return d.db.Close() }
@@ -396,24 +429,37 @@ func (d *DB) HardwareSeen(hash string) (bool, error) {
 	return d.exists(`SELECT COUNT(1) FROM devices WHERE hardware_hash=? AND hardware_hash<>''`, hash)
 }
 
-// RegisterDevice is idempotent by pubkey; preferredDeviceID is honoured per deviceid.Assign.
-func (d *DB) RegisterDevice(dev Device, preferredDeviceID string) (*Device, bool, error) {
+// RegisterDevice is idempotent by pubkey; certifiedID is an id a verified
+// device-id certificate binds to this pubkey, or "" (see deviceid.Assign).
+// A restore that displaces another key drops that key's record and revokes its tokens.
+func (d *DB) RegisterDevice(dev Device, certifiedID string) (*Device, deviceid.Result, error) {
 	if dev.Pubkey == "" {
-		return nil, false, errors.New("a device needs a public key")
+		return nil, deviceid.Result{}, errors.New("a device needs a public key")
 	}
-	id, existing, err := deviceid.Assign(deviceid.SQL{DB: d.db, Insert: func(tx *sql.Tx, id string) error {
-		_, err := tx.Exec(`INSERT INTO devices
+	ledger := deviceid.SQL{
+		DB: d.db,
+		Insert: func(tx *sql.Tx, id string) error {
+			_, err := tx.Exec(`INSERT INTO devices
  (device_id, account_id, label, platform, pubkey, hardware_hash, created_at, linked_at, last_seen, trial_ends_at, unlinked)
  VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			id, dev.AccountID, dev.Label, dev.Platform, dev.Pubkey, dev.HardwareHash,
-			dev.CreatedAt, dev.LinkedAt, dev.LastSeen, dev.TrialEndsAt, boolInt(dev.Unlinked))
-		return err
-	}}, dev.Pubkey, preferredDeviceID)
-	if err != nil {
-		return nil, false, err
+				id, dev.AccountID, dev.Label, dev.Platform, dev.Pubkey, dev.HardwareHash,
+				dev.CreatedAt, dev.LinkedAt, dev.LastSeen, dev.TrialEndsAt, boolInt(dev.Unlinked))
+			return err
+		},
+		Evict: func(tx *sql.Tx, id string) error {
+			if _, err := tx.Exec(`UPDATE device_tokens SET revoked=1 WHERE device_id=?`, id); err != nil {
+				return err
+			}
+			_, err := tx.Exec(`DELETE FROM devices WHERE device_id=?`, id)
+			return err
+		},
 	}
-	found, err := d.DeviceByID(id)
-	return found, existing, err
+	result, err := deviceid.Assign(ledger, dev.Pubkey, certifiedID)
+	if err != nil {
+		return nil, result, err
+	}
+	found, err := d.DeviceByID(result.ID)
+	return found, result, err
 }
 
 func (d *DB) BumpEpoch(deviceID string) (*Device, error) {
@@ -486,17 +532,17 @@ func (d *DB) ListDevices(accountID string, after string, limit int) ([]Device, e
 // --- link codes and nonces --------------------------------------------------
 
 func (d *DB) PutLinkCode(c LinkCode) error {
-	_, err := d.db.Exec(`INSERT INTO link_codes (code, nonce, pubkey, platform, label, account_id, expires_at, used)
- VALUES (?,?,?,?,?,?,?,0)`, c.Code, c.NonceHash, c.Pubkey, c.Platform, c.Label, c.AccountID, c.ExpiresAt)
+	_, err := d.db.Exec(`INSERT INTO link_codes_v2 (code_hash, nonce_hash, pubkey, platform, label, account_id, expires_at, used)
+ VALUES (?,?,?,?,?,?,?,0)`, c.CodeHash, c.NonceHash, c.Pubkey, c.Platform, c.Label, c.AccountID, c.ExpiresAt)
 	return err
 }
 
-func (d *DB) LinkCodeByCode(code string) (*LinkCode, error) {
+func (d *DB) LinkCodeByHash(codeHash string) (*LinkCode, error) {
 	var c LinkCode
 	var used int
-	err := d.db.QueryRow(`SELECT code, nonce, pubkey, platform, label, account_id, expires_at, used
- FROM link_codes WHERE code=?`, code).
-		Scan(&c.Code, &c.NonceHash, &c.Pubkey, &c.Platform, &c.Label, &c.AccountID, &c.ExpiresAt, &used)
+	err := d.db.QueryRow(`SELECT code_hash, nonce_hash, pubkey, platform, label, account_id, expires_at, used
+ FROM link_codes_v2 WHERE code_hash=?`, codeHash).
+		Scan(&c.CodeHash, &c.NonceHash, &c.Pubkey, &c.Platform, &c.Label, &c.AccountID, &c.ExpiresAt, &used)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -507,8 +553,8 @@ func (d *DB) LinkCodeByCode(code string) (*LinkCode, error) {
 	return &c, nil
 }
 
-func (d *DB) UseLinkCode(code string) error {
-	res, err := d.db.Exec(`UPDATE link_codes SET used=1 WHERE code=? AND used=0`, code)
+func (d *DB) UseLinkCode(codeHash string) error {
+	res, err := d.db.Exec(`UPDATE link_codes_v2 SET used=1 WHERE code_hash=? AND used=0`, codeHash)
 	if err != nil {
 		return err
 	}
@@ -523,57 +569,40 @@ func (d *DB) UseLinkCode(code string) error {
 }
 
 func (d *DB) PutNonce(n Nonce) error {
-	_, err := d.db.Exec(`INSERT INTO nonces (nonce, code, device_id, expires_at, used) VALUES (?,?,?,?,0)`,
-		n.Nonce, n.Code, n.DeviceID, n.ExpiresAt)
+	_, err := d.db.Exec(`INSERT INTO nonces_v2 (nonce, code_hash, device_id, expires_at, used) VALUES (?,?,?,?,0)`,
+		n.Nonce, n.CodeHash, n.DeviceID, n.ExpiresAt)
 	return err
 }
 
-// ConsumeNonce returns the nonce exactly once; a replay is ErrNotFound.
-func (d *DB) ConsumeNonce(nonce string, now int64) (*Nonce, error) {
-	var n Nonce
-	var used int
-	err := d.db.QueryRow(`SELECT nonce, code, device_id, expires_at, used FROM nonces WHERE nonce=?`, nonce).
-		Scan(&n.Nonce, &n.Code, &n.DeviceID, &n.ExpiresAt, &used)
+func (d *DB) consumeOne(query string, args ...any) (string, error) {
+	var nonce string
+	err := d.db.QueryRow(query, args...).Scan(&nonce)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
+		return "", ErrNotFound
 	}
-	if err != nil {
-		return nil, err
-	}
-	if used != 0 || n.ExpiresAt < now {
-		return nil, ErrNotFound
-	}
-	if _, err := d.db.Exec(`UPDATE nonces SET used=1 WHERE nonce=?`, nonce); err != nil {
-		return nil, err
-	}
-	return &n, nil
+	return nonce, err
 }
 
-// LatestNonce finds the live challenge nonce issued for a link code or a device.
-func (d *DB) LatestNonce(code, deviceID string, now int64) (*Nonce, error) {
-	column, value := "code", code
-	if code == "" {
-		column, value = "device_id", deviceID
-	}
-	var n Nonce
-	var used int
-	err := d.db.QueryRow(`SELECT nonce, code, device_id, expires_at, used FROM nonces
- WHERE `+column+`=? AND `+column+`<>'' AND used=0 AND expires_at >= ?
- ORDER BY expires_at DESC LIMIT 1`, value, now).
-		Scan(&n.Nonce, &n.Code, &n.DeviceID, &n.ExpiresAt, &used)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &n, nil
+// ConsumeDeviceNonce spends exactly the nonce issued for deviceID, in one
+// statement; a replay, an expired nonce or another device's nonce is ErrNotFound.
+func (d *DB) ConsumeDeviceNonce(nonce, deviceID string, now int64) error {
+	_, err := d.consumeOne(`UPDATE nonces_v2 SET used=1
+ WHERE nonce=? AND device_id=? AND device_id<>'' AND used=0 AND expires_at>=? RETURNING nonce`,
+		nonce, deviceID, now)
+	return err
+}
+
+// ConsumeCodeNonce spends the newest live nonce issued for a link code, in one statement.
+func (d *DB) ConsumeCodeNonce(codeHash string, now int64) (string, error) {
+	return d.consumeOne(`UPDATE nonces_v2 SET used=1 WHERE used=0 AND nonce=(
+ SELECT nonce FROM nonces_v2 WHERE code_hash=? AND code_hash<>'' AND used=0 AND expires_at>=?
+ ORDER BY expires_at DESC LIMIT 1) RETURNING nonce`, codeHash, now)
 }
 
 func (d *DB) PurgeExpired(now int64) error {
 	for _, q := range []string{
-		`DELETE FROM nonces WHERE expires_at < ?`,
-		`DELETE FROM link_codes WHERE expires_at < ?`,
+		`DELETE FROM nonces_v2 WHERE expires_at < ?`,
+		`DELETE FROM link_codes_v2 WHERE expires_at < ?`,
 	} {
 		if _, err := d.db.Exec(q, now); err != nil {
 			return err
@@ -616,14 +645,14 @@ func (d *DB) RevokeToken(hash string) error {
 // --- sessions ---------------------------------------------------------------
 
 const sessionCols = `session_id, host_device_id, controller_device_id, host_account_id,
- started_at, ended_at, relay_used, bytes_relayed, reason`
+ started_at, ended_at, relay_used, bytes_relayed, reason, last_alive_at`
 
 func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	var s Session
 	var relay int
 	var ended, bytes sql.NullInt64
 	err := row.Scan(&s.SessionID, &s.HostDeviceID, &s.ControllerDeviceID, &s.HostAccountID,
-		&s.StartedAt, &ended, &relay, &bytes, &s.Reason)
+		&s.StartedAt, &ended, &relay, &bytes, &s.Reason, &s.LastAliveAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -644,9 +673,34 @@ func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 
 func (d *DB) StartSession(s Session) error {
 	_, err := d.db.Exec(`INSERT INTO sessions
- (session_id, host_device_id, controller_device_id, host_account_id, started_at, relay_used, reason)
- VALUES (?,?,?,?,?,0,'') ON CONFLICT(session_id) DO NOTHING`,
-		s.SessionID, s.HostDeviceID, s.ControllerDeviceID, s.HostAccountID, s.StartedAt)
+ (session_id, host_device_id, controller_device_id, host_account_id, started_at, relay_used, reason, last_alive_at)
+ VALUES (?,?,?,?,?,0,'',?) ON CONFLICT(session_id) DO NOTHING`,
+		s.SessionID, s.HostDeviceID, s.ControllerDeviceID, s.HostAccountID, s.StartedAt, s.StartedAt)
+	return err
+}
+
+// OpenSessions lists every session that has no end yet.
+func (d *DB) OpenSessions() ([]Session, error) {
+	rows, err := d.db.Query(`SELECT ` + sessionCols + ` FROM sessions WHERE ended_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		s, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *s)
+	}
+	return out, rows.Err()
+}
+
+// MarkAlive records that signaling still held the session at the given time.
+func (d *DB) MarkAlive(sessionID string, at int64) error {
+	_, err := d.db.Exec(`UPDATE sessions SET last_alive_at=MAX(last_alive_at, ?)
+ WHERE session_id=? AND ended_at IS NULL`, at, sessionID)
 	return err
 }
 
@@ -961,21 +1015,32 @@ func (d *DB) BeginIdempotent(scope, key, bodyHash string, now int64) (*Idempoten
 		return nil, nil
 	}
 	var rec Idempotent
-	var done int
+	var done, replayable int
 	var body []byte
-	err = d.db.QueryRow(`SELECT body_hash, status, response, done FROM idempotency WHERE scope=? AND key=?`,
-		scope, key).Scan(&rec.BodyHash, &rec.Status, &body, &done)
+	err = d.db.QueryRow(`SELECT body_hash, status, response, response_hash, replayable, done
+ FROM idempotency WHERE scope=? AND key=?`,
+		scope, key).Scan(&rec.BodyHash, &rec.Status, &body, &rec.ResponseHash, &replayable, &done)
 	if err != nil {
 		return nil, err
 	}
 	rec.Done = done != 0
-	rec.Response = body
+	rec.Replayable = replayable != 0
+	if rec.Replayable {
+		rec.Response = body
+	}
 	return &rec, nil
 }
 
-func (d *DB) CompleteIdempotent(scope, key string, status int, response []byte) error {
-	_, err := d.db.Exec(`UPDATE idempotency SET status=?, response=?, done=1 WHERE scope=? AND key=?`,
-		status, response, scope, key)
+// CompleteIdempotent stores the answer's hash always and its body only when replayable.
+func (d *DB) CompleteIdempotent(scope, key string, status int, response []byte, replayable bool) error {
+	sum := sha256.Sum256(response)
+	var body []byte
+	if replayable {
+		body = response
+	}
+	_, err := d.db.Exec(`UPDATE idempotency SET status=?, response=?, response_hash=?, replayable=?, done=1
+ WHERE scope=? AND key=?`,
+		status, body, hex.EncodeToString(sum[:]), boolInt(replayable), scope, key)
 	return err
 }
 

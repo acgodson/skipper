@@ -151,19 +151,28 @@ func (s *Store) GetByPubkey(pubkey string) (*Device, error) {
 	return scanDevice(s.db.QueryRow(`SELECT `+selectCols+` FROM devices WHERE pubkey = ?`, pubkey))
 }
 
-func (s *Store) Register(pubkey, label, preferredDeviceID string, now time.Time) (dev *Device, existing bool, err error) {
+// Register assigns pubkey its id; certifiedID is an id a verified device-id certificate binds to pubkey, or "".
+func (s *Store) Register(pubkey, label, certifiedID string, now time.Time) (*Device, deviceid.Result, error) {
 	ms := now.UnixMilli()
-	id, existing, err := deviceid.Assign(deviceid.SQL{DB: s.db, Insert: func(tx *sql.Tx, id string) error {
-		_, err := tx.Exec(`INSERT INTO devices
+	ledger := deviceid.SQL{
+		DB: s.db,
+		Insert: func(tx *sql.Tx, id string) error {
+			_, err := tx.Exec(`INSERT INTO devices
  (device_id, pubkey, label, code_epoch, created_at, updated_at)
  VALUES (?,?,?,1,?,?)`, id, pubkey, label, ms, ms)
-		return err
-	}}, pubkey, preferredDeviceID)
-	if err != nil {
-		return nil, false, err
+			return err
+		},
+		Evict: func(tx *sql.Tx, id string) error {
+			_, err := tx.Exec(`DELETE FROM devices WHERE device_id=?`, id)
+			return err
+		},
 	}
-	d, err := s.GetDevice(id)
-	return d, existing, err
+	result, err := deviceid.Assign(ledger, pubkey, certifiedID)
+	if err != nil {
+		return nil, result, err
+	}
+	d, err := s.GetDevice(result.ID)
+	return d, result, err
 }
 
 func (s *Store) BumpEpoch(deviceID string, now time.Time) error {

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -47,24 +48,30 @@ func unexpected(what string, resp internalapi.Response) error {
 	return fmt.Errorf("%w: %s: status %d (%s)", ErrUnavailable, what, resp.Status, resp.APIError().Code)
 }
 
-func (h *HTTP) Register(ctx context.Context, pubkey, label, preferredDeviceID string) (Device, bool, error) {
+func (h *HTTP) Register(ctx context.Context, r Registration) (Registered, error) {
 	resp, err := h.api.Do(ctx, http.MethodPost, protocol.PathInternalRegister,
-		protocol.InternalRegisterRequest{Pubkey: pubkey, Label: label, PreferredDeviceID: preferredDeviceID})
+		protocol.InternalRegisterRequest{
+			Pubkey: r.Pubkey, Label: r.Label, PreferredDeviceID: r.PreferredDeviceID, IDCert: r.IDCert,
+		})
 	if err != nil {
-		return Device{}, false, unavailable("register", err)
+		return Registered{}, unavailable("register", err)
 	}
 	if !resp.OK() {
-		return Device{}, false, unexpected("register", resp)
+		return Registered{}, unexpected("register", resp)
 	}
 	var out protocol.InternalRegisterResponse
 	if err := resp.Decode(&out); err != nil || !protocol.ValidDeviceID(out.DeviceID) {
-		return Device{}, false, unavailable("register", fmt.Errorf("malformed answer: %v", err))
+		return Registered{}, unavailable("register", fmt.Errorf("malformed answer: %v", err))
 	}
+	h.forget(out.DeviceID)
 	dev, err := h.Lookup(ctx, out.DeviceID)
 	if err != nil {
-		return Device{}, false, err
+		return Registered{}, err
 	}
-	return dev, out.Existing, nil
+	if dev.Pubkey != r.Pubkey {
+		return Registered{}, unavailable("register", errors.New("the registered id is bound to another key"))
+	}
+	return Registered{Device: dev, Existing: out.Existing}, nil
 }
 
 func (h *HTTP) Lookup(ctx context.Context, deviceID string) (Device, error) {
@@ -85,7 +92,7 @@ func (h *HTTP) Lookup(ctx context.Context, deviceID string) (Device, error) {
 	if err := resp.Decode(&out); err != nil || out.DeviceID != deviceID || out.Pubkey == "" {
 		return Device{}, unavailable("lookup", fmt.Errorf("malformed answer: %v", err))
 	}
-	dev := Device{DeviceID: out.DeviceID, Pubkey: out.Pubkey, CodeEpoch: out.CodeEpoch}
+	dev := Device{DeviceID: out.DeviceID, Pubkey: out.Pubkey, CodeEpoch: out.CodeEpoch, IDCert: out.IDCert}
 	h.remember(dev)
 	return dev, nil
 }

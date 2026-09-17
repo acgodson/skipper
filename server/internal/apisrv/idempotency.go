@@ -46,9 +46,16 @@ func (s *Server) replay(w http.ResponseWriter, status int, body []byte) {
 	_, _ = w.Write(body)
 }
 
+// An endpoint whose success answer carries a credential is not replayable: only
+// the answer's hash is stored and a repeat gets 409 idempotency_replay_unavailable.
+const (
+	replayable        = true
+	carriesCredential = false
+)
+
 // idempotent runs handler at most once per (caller, endpoint, key) for 24 hours
 // and replays the stored answer afterwards (API.md §0.6).
-func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, caller string, body []byte, handler func(http.ResponseWriter)) {
+func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, caller string, body []byte, canReplay bool, handler func(http.ResponseWriter)) {
 	key := r.Header.Get(protocol.HeaderIdempotencyKey)
 	if !protocol.ValidIdempotencyKey(key) {
 		s.badRequest(w, r, "this endpoint requires an Idempotency-Key of 16 to 64 characters")
@@ -70,6 +77,9 @@ func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, caller strin
 		case !stored.Done:
 			s.fail(w, r, http.StatusConflict, protocol.APIErrConflict,
 				"the first call with this idempotency key is still running", withReason(protocol.ReasonInProgress))
+		case !stored.Replayable:
+			s.fail(w, r, http.StatusConflict, protocol.APIErrReplayUnavailable,
+				"this call already succeeded and its answer carried a credential that is not kept; retry with a new idempotency key")
 		default:
 			s.replay(w, stored.Status, stored.Response)
 		}
@@ -82,7 +92,8 @@ func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, caller strin
 	}
 	if capture.status >= http.StatusInternalServerError {
 		_ = s.opt.DB.ReleaseIdempotent(scope, key)
-	} else if err := s.opt.DB.CompleteIdempotent(scope, key, capture.status, capture.body); err != nil {
+	} else if err := s.opt.DB.CompleteIdempotent(scope, key, capture.status, capture.body,
+		canReplay || capture.status >= http.StatusMultipleChoices); err != nil {
 		s.internalError(w, r, err)
 		return
 	}

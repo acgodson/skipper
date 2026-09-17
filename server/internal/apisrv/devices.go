@@ -104,12 +104,12 @@ func (s *Server) renameDevice(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.idempotent(w, r, account.AccountID, body, func(w http.ResponseWriter) {
+	s.idempotent(w, r, account.AccountID, body, replayable, func(w http.ResponseWriter) {
 		var req protocol.DeviceRenameRequest
 		if !s.decode(w, r, body, &req) {
 			return
 		}
-		label := trimmedLabel(req.Label)
+		label := protocol.TrimLabel(req.Label)
 		if label == "" {
 			s.badRequest(w, r, "'label' is required")
 			return
@@ -139,7 +139,7 @@ func (s *Server) unlinkDevice(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.idempotent(w, r, account.AccountID, body, func(w http.ResponseWriter) {
+	s.idempotent(w, r, account.AccountID, body, replayable, func(w http.ResponseWriter) {
 		device, ok := s.ownedDevice(w, r, account)
 		if !ok {
 			return

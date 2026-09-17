@@ -1,5 +1,6 @@
-// Package apisrv is the rc-api HTTP surface: every endpoint of protocol/API.md,
-// the internal surface the signaling server calls, and the browser link page.
+// Package apisrv is the rc-api HTTP surface: every endpoint of protocol/API.md
+// and the browser link page on the public handler, and the internal surface the
+// signaling server calls on a separate handler that is served on its own listener.
 package apisrv
 
 import (
@@ -9,7 +10,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -25,26 +25,33 @@ import (
 	"time"
 
 	"rc-signal/internal/apidb"
+	"rc-signal/internal/clientip"
+	"rc-signal/internal/idcert"
 	"rc-signal/internal/idp"
+	"rc-signal/internal/internalapi"
+	"rc-signal/internal/ratelimit"
 	protocol "rcprotocol"
 )
 
 type Options struct {
 	DB             *apidb.DB
 	IdP            idp.Provider
+	IDCert         *idcert.Authority
 	InternalToken  string
 	HardwareSalt   []byte
 	WebBaseURL     string
 	SignalUpstream string
+	ClientIP       clientip.Resolver
 	Logger         *slog.Logger
 	Now            func() time.Time
 }
 
 type Server struct {
-	opt     Options
-	mux     *http.ServeMux
-	limiter *limiter
-	proxy   *httputil.ReverseProxy
+	opt      Options
+	mux      *http.ServeMux
+	internal *http.ServeMux
+	limiter  *ratelimit.Limiter
+	proxy    *httputil.ReverseProxy
 }
 
 const callbackScheme = "skipperdesk://link"
@@ -52,6 +59,9 @@ const callbackScheme = "skipperdesk://link"
 func New(opt Options) (*Server, error) {
 	if opt.DB == nil || opt.IdP == nil {
 		return nil, errors.New("rc-api needs a database and an identity provider")
+	}
+	if opt.IDCert == nil {
+		return nil, errors.New("rc-api needs a device-id certificate authority")
 	}
 	if len(opt.HardwareSalt) == 0 {
 		return nil, errors.New("rc-api needs a hardware salt")
@@ -65,7 +75,7 @@ func New(opt Options) (*Server, error) {
 	if opt.Now == nil {
 		opt.Now = time.Now
 	}
-	s := &Server{opt: opt, mux: http.NewServeMux(), limiter: newLimiter()}
+	s := &Server{opt: opt, mux: http.NewServeMux(), internal: http.NewServeMux(), limiter: ratelimit.New()}
 	if err := s.buildProxy(); err != nil {
 		return nil, err
 	}
@@ -109,31 +119,46 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /v1/credits/gifts/{giftId}/accept", s.acceptGift)
 	m.HandleFunc("POST /v1/credits/gifts/{giftId}/cancel", s.cancelGift)
 
-	m.HandleFunc("GET /internal/entitlement/{deviceId}", s.internalEntitlement)
-	m.HandleFunc("POST "+protocol.PathInternalRegister, s.internalRegister)
-	m.HandleFunc("GET "+protocol.PathInternalDevices+"/{deviceId}", s.internalDeviceRead)
-	m.HandleFunc("POST "+protocol.PathInternalDevices+"/{deviceId}"+protocol.InternalEpochSuffix, s.internalEpoch)
-	m.HandleFunc("POST /internal/sessions/start", s.internalSessionStart)
-	m.HandleFunc("POST /internal/sessions/stop", s.internalSessionStop)
-
 	m.HandleFunc("GET /link", s.linkPage)
 	m.HandleFunc("POST /link", s.linkSubmit)
 	m.HandleFunc("/ws", s.proxyWS)
 	m.HandleFunc("/", s.notFound)
+
+	in := s.internal
+	in.HandleFunc("GET "+protocol.PathInternalEntitlement+"/{deviceId}", s.internalOnly(s.internalEntitlement))
+	in.HandleFunc("POST "+protocol.PathInternalRegister, s.internalOnly(s.internalRegister))
+	in.HandleFunc("GET "+protocol.PathInternalDevices+"/{deviceId}", s.internalOnly(s.internalDeviceRead))
+	in.HandleFunc("POST "+protocol.PathInternalDevices+"/{deviceId}"+protocol.InternalEpochSuffix, s.internalOnly(s.internalEpoch))
+	in.HandleFunc("POST "+protocol.PathInternalSessionStart, s.internalOnly(s.internalSessionStart))
+	in.HandleFunc("POST "+protocol.PathInternalSessionStop, s.internalOnly(s.internalSessionStop))
+	in.HandleFunc("GET /healthz", s.healthz)
+	in.HandleFunc("/", s.notFound)
 }
 
 type ctxKey string
 
 const requestIDKey ctxKey = "requestId"
 
+// ServeHTTP is the public surface.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.serve(s.mux, w, r)
+}
+
+// InternalHandler is API.md §6; it is served only on the internal listener.
+func (s *Server) InternalHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.serve(s.internal, w, r)
+	})
+}
+
+func (s *Server) serve(mux *http.ServeMux, w http.ResponseWriter, r *http.Request) {
 	id := newRequestID()
 	w.Header().Set(protocol.HeaderRequestID, id)
 	w.Header().Set("Date", s.now().UTC().Format(http.TimeFormat))
 	r = r.WithContext(context.WithValue(r.Context(), requestIDKey, id))
 	started := s.now()
 	recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-	s.mux.ServeHTTP(recorder, r)
+	mux.ServeHTTP(recorder, r)
 	s.opt.Logger.Info("request", "requestId", id, "method", r.Method, "path", r.URL.Path,
 		"status", recorder.status, "ms", s.now().Sub(started).Milliseconds())
 }
@@ -230,7 +255,7 @@ func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	if !s.allow(w, r, limitHealth, clientIP(r)) {
+	if !s.allow(w, r, limitHealth, s.clientIP(r)) {
 		return
 	}
 	s.writeJSON(w, r, http.StatusOK, protocol.Health{Status: "ok", ServerTime: s.nowMS()})
@@ -285,13 +310,7 @@ func bearer(r *http.Request) string {
 	return strings.TrimSpace(rest)
 }
 
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
+func (s *Server) clientIP(r *http.Request) string { return s.opt.ClientIP.Of(r) }
 
 // --- credentials ------------------------------------------------------------
 
@@ -374,13 +393,14 @@ func (s *Server) deviceAuth(w http.ResponseWriter, r *http.Request) (*apidb.Devi
 	return device, token, true
 }
 
-func (s *Server) internalCaller(w http.ResponseWriter, r *http.Request) bool {
-	token := bearer(r)
-	if subtle.ConstantTimeCompare([]byte(token), []byte(s.opt.InternalToken)) != 1 {
-		s.fail(w, r, http.StatusUnauthorized, protocol.APIErrUnauthenticated, "the internal surface needs its own token")
-		return false
+func (s *Server) internalOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !internalapi.Authorized(r, s.opt.InternalToken) {
+			s.fail(w, r, http.StatusUnauthorized, protocol.APIErrUnauthenticated, "the internal surface needs its own token")
+			return
+		}
+		next(w, r)
 	}
-	return true
 }
 
 // --- paging -----------------------------------------------------------------
@@ -475,6 +495,7 @@ func (s *Server) buildProxy() error {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = pr.In.Host
+			pr.Out.Header.Set(protocol.HeaderForwardedFor, s.clientIP(pr.In))
 			if upgrade := pr.In.Header.Get("Upgrade"); upgrade != "" {
 				pr.Out.Header.Set("Connection", "Upgrade")
 				pr.Out.Header.Set("Upgrade", upgrade)

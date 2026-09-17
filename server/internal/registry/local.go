@@ -5,23 +5,29 @@ import (
 	"errors"
 
 	"rc-signal/internal/clockx"
+	"rc-signal/internal/idcert"
 	"rc-signal/internal/store"
 )
 
 type Local struct {
-	store *store.Store
-	clock clockx.Clock
+	store     *store.Store
+	clock     clockx.Clock
+	authority *idcert.Authority
 }
 
-func NewLocal(st *store.Store, clock clockx.Clock) *Local {
+func NewLocal(st *store.Store, clock clockx.Clock, authority *idcert.Authority) *Local {
 	if clock == nil {
 		clock = clockx.Real{}
 	}
-	return &Local{store: st, clock: clock}
+	return &Local{store: st, clock: clock, authority: authority}
 }
 
-func fromStore(d *store.Device) Device {
-	return Device{DeviceID: d.DeviceID, Pubkey: d.Pubkey, CodeEpoch: d.CodeEpoch}
+func (l *Local) certified(d *store.Device) (Device, error) {
+	cert, err := l.authority.Issue(d.DeviceID, d.Pubkey)
+	if err != nil {
+		return Device{}, err
+	}
+	return Device{DeviceID: d.DeviceID, Pubkey: d.Pubkey, CodeEpoch: d.CodeEpoch, IDCert: cert}, nil
 }
 
 func mapStoreErr(err error) error {
@@ -31,12 +37,14 @@ func mapStoreErr(err error) error {
 	return err
 }
 
-func (l *Local) Register(_ context.Context, pubkey, label, preferredDeviceID string) (Device, bool, error) {
-	d, existing, err := l.store.Register(pubkey, label, preferredDeviceID, l.clock.Now())
+func (l *Local) Register(_ context.Context, r Registration) (Registered, error) {
+	certified := l.authority.CertifiedID(r.Pubkey, r.PreferredDeviceID, r.IDCert)
+	d, result, err := l.store.Register(r.Pubkey, r.Label, certified, l.clock.Now())
 	if err != nil {
-		return Device{}, false, err
+		return Registered{}, err
 	}
-	return fromStore(d), existing, nil
+	dev, err := l.certified(d)
+	return Registered{Device: dev, Existing: result.Existing}, err
 }
 
 func (l *Local) Lookup(_ context.Context, deviceID string) (Device, error) {
@@ -44,7 +52,7 @@ func (l *Local) Lookup(_ context.Context, deviceID string) (Device, error) {
 	if err != nil {
 		return Device{}, mapStoreErr(err)
 	}
-	return fromStore(d), nil
+	return l.certified(d)
 }
 
 func (l *Local) BumpEpoch(_ context.Context, deviceID string) error {

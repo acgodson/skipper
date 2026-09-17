@@ -5,10 +5,12 @@ package internalapi
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -54,6 +56,29 @@ func New(baseURL, token string) (*Client, error) {
 		return nil, errors.New("internal API bearer token is required")
 	}
 	return &Client{base: baseURL, token: token, http: &http.Client{Timeout: CallTimeout}}, nil
+}
+
+// CheckSeparate refuses an internal listen address that shares a port with the public one.
+func CheckSeparate(public, internal string) error {
+	_, publicPort, errPublic := net.SplitHostPort(public)
+	_, internalPort, errInternal := net.SplitHostPort(internal)
+	if errInternal != nil {
+		return fmt.Errorf("internal listen address %q: %w", internal, errInternal)
+	}
+	if errPublic == nil && publicPort == internalPort {
+		return errors.New("the internal listener must not share the public listener's port")
+	}
+	return nil
+}
+
+// Authorized reports whether r carries the shared internal bearer secret.
+// TODO: replace the bearer with mTLS or VPC-only reachability in Phase 5.
+func Authorized(r *http.Request, token string) bool {
+	presented, ok := strings.CutPrefix(r.Header.Get(protocol.HeaderAuthorization), protocol.BearerPrefix)
+	if !ok || token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(presented)), []byte(token)) == 1
 }
 
 // Do sends one call bounded by CallTimeout; a nil payload sends no body.

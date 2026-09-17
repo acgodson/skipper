@@ -25,7 +25,7 @@ func (m *memoryLedger) IDForPubkey(pubkey string) (string, bool, error) {
 }
 
 func (m *memoryLedger) Claim(id, pubkey string) error {
-	if owner, ok := m.claims[id]; ok && owner != pubkey {
+	if _, ok := m.claims[id]; ok {
 		return ErrTaken
 	}
 	if _, ok := m.live[id]; ok {
@@ -36,23 +36,53 @@ func (m *memoryLedger) Claim(id, pubkey string) error {
 	return nil
 }
 
-func TestAssignHonoursOnlyAFreePreferredIDForANewKey(t *testing.T) {
+func (m *memoryLedger) Restore(id, pubkey string) (bool, error) {
+	owner, held := m.live[id]
+	if held && owner == pubkey {
+		return false, nil
+	}
+	m.claims[id] = pubkey
+	m.live[id] = pubkey
+	return held, nil
+}
+
+func TestWithoutACertificateANewKeyAlwaysGetsAFreshID(t *testing.T) {
 	l := newMemoryLedger()
-	if id, existing, err := Assign(l, "A", "111111111"); err != nil || existing || id != "111111111" {
-		t.Fatalf("free preferred id = %q existing=%v err=%v", id, existing, err)
+	first, err := Assign(l, "A", "")
+	if err != nil || first.Existing || !protocol.ValidDeviceID(first.ID) {
+		t.Fatalf("first key = %+v err=%v", first, err)
 	}
-	if id, existing, err := Assign(l, "A", "222222222"); err != nil || !existing || id != "111111111" {
-		t.Fatalf("known key = %q existing=%v err=%v", id, existing, err)
+	again, err := Assign(l, "A", "")
+	if err != nil || !again.Existing || again.ID != first.ID {
+		t.Fatalf("known key = %+v err=%v", again, err)
 	}
-	if id, _, err := Assign(l, "B", "111111111"); err != nil || id == "111111111" || !protocol.ValidDeviceID(id) {
-		t.Fatalf("held id = %q err=%v", id, err)
+	delete(l.live, first.ID)
+	other, err := Assign(l, "B", "")
+	if err != nil || other.ID == first.ID {
+		t.Fatalf("a tombstoned id was reissued: %+v err=%v", other, err)
 	}
-	delete(l.live, "111111111")
-	if id, _, err := Assign(l, "C", "111111111"); err != nil || id == "111111111" {
-		t.Fatalf("tombstoned id went to another key: %q err=%v", id, err)
+}
+
+func TestACertifiedIDIsRestoredOverASquatter(t *testing.T) {
+	l := newMemoryLedger()
+	l.live["111111111"] = "squatter"
+	got, err := Assign(l, "owner", "111111111")
+	if err != nil || got.ID != "111111111" || got.Existing || !got.Displaced {
+		t.Fatalf("restore = %+v err=%v", got, err)
 	}
-	if id, existing, err := Assign(l, "A", "111111111"); err != nil || existing || id != "111111111" {
-		t.Fatalf("original key could not reclaim its id: %q existing=%v err=%v", id, existing, err)
+	if l.live["111111111"] != "owner" {
+		t.Fatalf("the id still belongs to %q", l.live["111111111"])
+	}
+	free, err := Assign(l, "other", "222222222")
+	if err != nil || free.ID != "222222222" || free.Displaced {
+		t.Fatalf("restore of a free id = %+v err=%v", free, err)
+	}
+	kept, err := Assign(l, "owner", "333333333")
+	if err != nil || !kept.Existing || kept.ID != "111111111" {
+		t.Fatalf("a key that holds an id keeps it = %+v err=%v", kept, err)
+	}
+	if _, err := Assign(l, "x", "12ab"); err == nil {
+		t.Fatal("a malformed certified id was accepted")
 	}
 }
 

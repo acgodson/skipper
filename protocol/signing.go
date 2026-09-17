@@ -1,6 +1,9 @@
 package protocol
 
-import "fmt"
+import (
+	"crypto/sha256"
+	"fmt"
+)
 
 // SigningPurpose names what a device-key signature is for (PROTOCOL.md §3.1).
 type SigningPurpose string
@@ -41,6 +44,27 @@ func SigningMessage(purpose SigningPurpose, payload []byte) ([]byte, error) {
 	if len(payload) == 0 {
 		return nil, fmt.Errorf("an %s signing payload must not be empty", purpose)
 	}
-	prefix := "skipperdesk/" + string(purpose) + "/v1|"
-	return append([]byte(prefix), payload...), nil
+	return append([]byte(signingPrefix(purpose)), payload...), nil
+}
+
+func signingPrefix(purpose SigningPurpose) string {
+	return "skipperdesk/" + string(purpose) + "/v1|"
+}
+
+// PurposeDeviceIDCert is signed by the registry's own key, never by a device key,
+// so it is deliberately not one of SigningPurposes.
+const PurposeDeviceIDCert SigningPurpose = "device-id-cert"
+
+// DeviceIDCertMessage is what an idCert signs: the prefix, the 9-digit deviceId,
+// then SHA-256 of the device's DER SPKI public key.
+func DeviceIDCertMessage(deviceID string, pubkeyDER []byte) ([]byte, error) {
+	if !ValidDeviceID(deviceID) {
+		return nil, fmt.Errorf("a device-id certificate needs a 9-digit deviceId, got %q", deviceID)
+	}
+	if len(pubkeyDER) == 0 {
+		return nil, fmt.Errorf("a device-id certificate needs a public key")
+	}
+	digest := sha256.Sum256(pubkeyDER)
+	message := append([]byte(signingPrefix(PurposeDeviceIDCert)), deviceID...)
+	return append(message, digest[:]...), nil
 }

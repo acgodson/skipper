@@ -110,7 +110,7 @@ func (s *Server) devTopup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.idempotent(w, r, account.AccountID, body, func(w http.ResponseWriter) {
+	s.idempotent(w, r, account.AccountID, body, replayable, func(w http.ResponseWriter) {
 		var req devTopupRequest
 		if !s.decode(w, r, body, &req) {
 			return
@@ -141,7 +141,7 @@ func (s *Server) createGift(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.idempotent(w, r, account.AccountID, body, func(w http.ResponseWriter) {
+	s.idempotent(w, r, account.AccountID, body, replayable, func(w http.ResponseWriter) {
 		var req protocol.CreateGiftRequest
 		if !s.decode(w, r, body, &req) {
 			return
@@ -282,7 +282,7 @@ func (s *Server) acceptGift(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.idempotent(w, r, account.AccountID, body, func(w http.ResponseWriter) {
+	s.idempotent(w, r, account.AccountID, body, replayable, func(w http.ResponseWriter) {
 		if err := s.opt.DB.ExpirePendingGifts(s.nowMS()); err != nil {
 			s.internalError(w, r, err)
 			return
@@ -319,7 +319,7 @@ func (s *Server) cancelGift(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.idempotent(w, r, account.AccountID, body, func(w http.ResponseWriter) {
+	s.idempotent(w, r, account.AccountID, body, replayable, func(w http.ResponseWriter) {
 		gift, ok := s.giftForCaller(w, r, account, true)
 		if !ok {
 			return

@@ -5,13 +5,16 @@ package hub
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
 	"rc-signal/internal/auth"
 	"rc-signal/internal/clockx"
 	"rc-signal/internal/entitlement"
+	"rc-signal/internal/ratelimit"
 	"rc-signal/internal/registry"
+	"rc-signal/internal/reports"
 	"rcprotocol"
 )
 
@@ -25,27 +28,37 @@ const (
 	TurnCredTTL       = protocol.TurnCredTTLSec * time.Second
 )
 
-// TODO: PROTOCOL.md §3.3 keeps a per-host limiter on connect_req attempts as a
-// whole in v2. The code-guess limiter it replaced is gone; the attempt limiter
-// is not implemented yet, and error{rate_limited} is therefore never sent.
+var (
+	ruleConnectCtrlMin  = ratelimit.Rule{Name: "connect_ctrl_min", Limit: protocol.ConnectPerControllerPerMin, Window: time.Minute}
+	ruleConnectCtrlHour = ratelimit.Rule{Name: "connect_ctrl_hour", Limit: protocol.ConnectPerControllerPerHour, Window: time.Hour}
+	ruleConnectHostMin  = ratelimit.Rule{Name: "connect_host_min", Limit: protocol.ConnectPerHostPerMin, Window: time.Minute}
+	ruleConnectHostHour = ratelimit.Rule{Name: "connect_host_hour", Limit: protocol.ConnectPerHostPerHour, Window: time.Hour}
+)
 
+// Options.RegistersPerIPPerHour defaults to protocol.RegistersPerIPPerHour; local
+// test rigs that register many devices from one address raise it.
 type Options struct {
-	Registry    registry.Registry
-	Entitlement entitlement.Entitlement
-	Clock       clockx.Clock
-	Signer      *auth.Signer
-	Logger      *slog.Logger
-	TurnSecret  string
-	TurnURLs    []string
-	StunURLs    []string
+	Registry              registry.Registry
+	Entitlement           entitlement.Entitlement
+	Clock                 clockx.Clock
+	Signer                *auth.Signer
+	Logger                *slog.Logger
+	TurnSecret            string
+	TurnURLs              []string
+	StunURLs              []string
+	Reports               reports.Options
+	RegistersPerIPPerHour int
 }
 
 type Hub struct {
-	mu     sync.Mutex
-	opt    Options
-	clock  clockx.Clock
-	log    *slog.Logger
-	nextID uint64
+	mu           sync.Mutex
+	opt          Options
+	clock        clockx.Clock
+	log          *slog.Logger
+	nextID       uint64
+	limiter      *ratelimit.Limiter
+	registerRule ratelimit.Rule
+	reports      *reports.Queue
 
 	clients  map[uint64]*Client
 	byDevice map[string]*Client
@@ -67,9 +80,12 @@ type Client struct {
 	send  func([]byte)
 	close func(code int, msg string)
 
+	ip        string
 	deviceID  string
+	pubkey    string
 	role      string
 	authed    bool
+	registers int
 	nonce     []byte
 	nonceExp  time.Time
 	watches   map[string]struct{}
@@ -89,28 +105,43 @@ func New(o Options) *Hub {
 	if o.Logger == nil {
 		o.Logger = slog.Default()
 	}
-	return &Hub{
-		opt:      o,
-		clock:    o.Clock,
-		log:      o.Logger,
-		clients:  map[uint64]*Client{},
-		byDevice: map[string]*Client{},
-		presence: map[string]*presenceState{},
-		watchers: map[string]map[uint64]*Client{},
-		sessions: map[string]*Session{},
-		devSess:  map[string]string{},
+	if o.RegistersPerIPPerHour <= 0 {
+		o.RegistersPerIPPerHour = protocol.RegistersPerIPPerHour
 	}
+	h := &Hub{
+		opt:          o,
+		clock:        o.Clock,
+		log:          o.Logger,
+		limiter:      ratelimit.New(),
+		registerRule: ratelimit.Rule{Name: "register_ip", Limit: float64(o.RegistersPerIPPerHour), Window: time.Hour},
+		clients:      map[uint64]*Client{},
+		byDevice:     map[string]*Client{},
+		presence:     map[string]*presenceState{},
+		watchers:     map[string]map[uint64]*Client{},
+		sessions:     map[string]*Session{},
+		devSess:      map[string]string{},
+	}
+	if o.Entitlement != nil {
+		ro := o.Reports
+		if ro.Logger == nil {
+			ro.Logger = o.Logger
+		}
+		ro.OnDenied = h.endDeniedSession
+		h.reports = reports.New(o.Entitlement, ro)
+	}
+	return h
 }
 
 func (h *Hub) Now() time.Time { return h.clock.Now() }
 
-func (h *Hub) AddClient(send func([]byte), closeFn func(code int, msg string)) *Client {
+// AddClient registers a socket; ip is the resolved client address the per-IP limits key on.
+func (h *Hub) AddClient(ip string, send func([]byte), closeFn func(code int, msg string)) *Client {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := h.clock.Now()
 	h.nextID++
 	c := &Client{
-		ID: h.nextID, send: send, close: closeFn,
+		ID: h.nextID, send: send, close: closeFn, ip: ip,
 		watches: map[string]struct{}{}, lastSeen: now, connected: now,
 	}
 	h.clients[c.ID] = c
@@ -159,6 +190,11 @@ func (h *Hub) removeClientLocked(c *Client) {
 	if c.sessionID != "" {
 		h.detachLocked(c)
 	}
+}
+
+func (h *Hub) dropClientLocked(c *Client, code int, reason string) {
+	h.removeClientLocked(c)
+	c.close(code, reason)
 }
 
 func (h *Hub) touchLocked(c *Client) {
@@ -225,6 +261,13 @@ func (h *Hub) Sweep() {
 	defer h.mu.Unlock()
 	now := h.clock.Now()
 
+	for _, c := range h.clients {
+		if !c.authed && now.Sub(c.connected) >= AuthTimeout {
+			h.log.Info("closing unauthenticated connection")
+			h.dropClientLocked(c, 1008, "auth_timeout")
+		}
+	}
+
 	for dev, p := range h.presence {
 		if p.online && now.Sub(p.lastSeen) > OfflineAfter {
 			h.setPresenceLocked(dev, false)
@@ -246,6 +289,20 @@ func (h *Hub) Sweep() {
 	}
 }
 
+// LiveMeteredSessions lists the sessions rc-api has been told about and that are still open.
+func (h *Hub) LiveMeteredSessions() protocol.InternalLiveSessions {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ids := []string{}
+	for id, s := range h.sessions {
+		if s.metered && s.State != protocol.SessionClosed {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return protocol.InternalLiveSessions{SessionIDs: ids, ServerTime: h.clock.Now().UnixMilli()}
+}
+
 func (h *Hub) Shutdown() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -254,34 +311,38 @@ func (h *Hub) Shutdown() {
 	}
 }
 
-const SessionReportTimeout = 30 * time.Second
-
-func (h *Hub) reportSessionStart(r protocol.SessionStartReport) {
-	ent := h.opt.Entitlement
-	if ent == nil {
-		return
+// FlushReports waits, bounded by ctx, for queued session reports to be delivered.
+func (h *Hub) FlushReports(ctx context.Context) {
+	if h.reports != nil {
+		h.reports.Close(ctx)
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), SessionReportTimeout)
-		defer cancel()
-		if err := ent.SessionStarted(ctx, r); err != nil {
-			h.log.Error("session start report failed", "sessionId", r.SessionID, "err", err)
-		}
-	}()
 }
 
-func (h *Hub) reportSessionStop(r protocol.SessionStopReport) {
-	ent := h.opt.Entitlement
-	if ent == nil {
+func (h *Hub) endDeniedSession(sessionID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if s := h.sessions[sessionID]; s != nil {
+		s.metered = false
+		h.closeSessionLocked(s, protocol.ByeError)
+	}
+}
+
+func (h *Hub) reportStartLocked(s *Session) {
+	if h.reports == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), SessionReportTimeout)
-		defer cancel()
-		if err := ent.SessionStopped(ctx, r); err != nil {
-			h.log.Error("session stop report failed", "sessionId", r.SessionID, "err", err)
-		}
-	}()
+	h.reports.Started(protocol.SessionStartReport{
+		SessionID: s.ID, HostDeviceID: s.Host.deviceID, ControllerDeviceID: s.Ctrl.deviceID,
+		StartedAt: s.meteredAt.UnixMilli(),
+	})
+}
+
+func (h *Hub) reportStopLocked(s *Session, reason string) {
+	if h.reports == nil || !s.metered {
+		return
+	}
+	h.reports.Stopped(protocol.SessionStopReport{
+		SessionID: s.ID, EndedAt: h.clock.Now().UnixMilli(), Reason: reason})
 }
 
 func (h *Hub) sendLocked(c *Client, typ, re string, payload any) {
@@ -304,4 +365,13 @@ func (h *Hub) sendErrLocked(c *Client, re, code, msg string, retryAfterSec int) 
 func (h *Hub) sendEntitlementErrLocked(c *Client, re, reason, msg string) {
 	h.sendLocked(c, protocol.TypeError, re, protocol.Error{
 		Code: protocol.ErrEntitlement, Message: msg, Reason: reason})
+}
+
+// takeLocked charges the limiter and answers error{rate_limited} when it refuses.
+func (h *Hub) takeLocked(c *Client, re string, charges ...ratelimit.Charge) bool {
+	ok, wait := h.limiter.Take(h.clock.Now(), charges...)
+	if !ok {
+		h.sendErrLocked(c, re, protocol.ErrRateLimited, "too many attempts; retry later", wait)
+	}
+	return ok
 }

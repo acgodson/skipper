@@ -76,15 +76,16 @@ func TestConcurrencyRefusesASecondPair(t *testing.T) {
 	}
 }
 
-func TestChargeRoundsUpToWholeMinutes(t *testing.T) {
+func TestASubMinuteSessionIsFreeAndLongerOnesRoundUp(t *testing.T) {
 	cases := []struct {
 		d    time.Duration
 		want int64
 	}{
 		{0, 0},
 		{-time.Second, 0},
-		{time.Millisecond, 1 * RateCentsPerMinute},
-		{59 * time.Second, 1 * RateCentsPerMinute},
+		{time.Millisecond, 0},
+		{59 * time.Second, 0},
+		{time.Minute - time.Millisecond, 0},
 		{time.Minute, 1 * RateCentsPerMinute},
 		{time.Minute + time.Millisecond, 2 * RateCentsPerMinute},
 		{90 * time.Minute, 90 * RateCentsPerMinute},

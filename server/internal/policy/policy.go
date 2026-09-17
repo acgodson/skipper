@@ -20,6 +20,7 @@ const (
 	MinGiftCents       = protocol.MinGiftAmountCents
 	GiftLifetime       = protocol.GiftTTLSec * time.Second
 	TrialLifetime      = TrialDays * 24 * time.Hour
+	FreeSessionLength  = time.Minute
 )
 
 // Facts is everything the policy is allowed to look at.
@@ -45,9 +46,9 @@ func TrialEndsAt(now time.Time) int64 { return now.Add(TrialLifetime).UnixMilli(
 // GrantsTrial answers the only question hardwareHash exists for (API.md §3.2).
 func GrantsTrial(pubkeySeen, hardwareSeen bool) bool { return !pubkeySeen && !hardwareSeen }
 
-// ChargeCents rounds a session up to the next whole minute.
+// ChargeCents is free below FreeSessionLength; from there on every started minute is billed.
 func ChargeCents(d time.Duration) int64 {
-	if d <= 0 {
+	if d < FreeSessionLength {
 		return 0
 	}
 	minutes := math.Ceil(d.Minutes())

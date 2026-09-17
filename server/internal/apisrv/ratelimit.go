@@ -1,81 +1,43 @@
 package apisrv
 
 import (
-	"math"
 	"net/http"
-	"sync"
 	"time"
 
+	"rc-signal/internal/ratelimit"
 	protocol "rcprotocol"
 )
-
-// TODO: this bucket set lives in one process. Horizontal scaling moves it to a
-// shared store (ElastiCache or DynamoDB), keyed exactly as it is keyed here.
-type rule struct {
-	name   string
-	limit  float64
-	window time.Duration
-}
 
 const hour = time.Hour
 const day = 24 * time.Hour
 
+type rule = ratelimit.Rule
+
 var (
-	limitHealth          = rule{"health", 60, time.Minute}
-	limitAuthLink        = rule{"auth_link", 10, hour}
-	limitChallengeIP     = rule{"challenge_ip", 30, hour}
-	limitChallengeDevice = rule{"challenge_device", 10, hour}
-	limitTokenIP         = rule{"token_ip", 10, hour}
-	limitTokenCode       = rule{"token_code", 5, hour}
-	limitRefreshDevice   = rule{"refresh_device", 12, day}
-	limitRevokeDevice    = rule{"revoke_device", 10, hour}
-	limitDeviceList      = rule{"device_list", 60, time.Minute}
-	limitDeviceRead      = rule{"device_read", 60, time.Minute}
-	limitDeviceWrite     = rule{"device_write", 20, hour}
-	limitEntitlement     = rule{"entitlement", 60, hour}
-	limitSessionsDevice  = rule{"sessions_device", 60, hour}
-	limitSessionsAccount = rule{"sessions_account", 120, hour}
-	limitCredits         = rule{"credits", 120, hour}
-	limitLedger          = rule{"ledger", 60, hour}
-	limitGiftCreate      = rule{"gift_create", 10, day}
-	limitGiftList        = rule{"gift_list", 60, hour}
-	limitGiftAct         = rule{"gift_act", 20, day}
-	limitReleaseLatest   = rule{"release_latest", 60, hour}
+	limitHealth          = rule{Name: "health", Limit: 60, Window: time.Minute}
+	limitAuthLink        = rule{Name: "auth_link", Limit: 10, Window: hour}
+	limitChallengeIP     = rule{Name: "challenge_ip", Limit: 30, Window: hour}
+	limitTokenIP         = rule{Name: "token_ip", Limit: 10, Window: hour}
+	limitTokenCode       = rule{Name: "token_code", Limit: 5, Window: hour}
+	limitRefreshIP       = rule{Name: "refresh_ip", Limit: 30, Window: hour}
+	limitRefreshDevice   = rule{Name: "refresh_device", Limit: 12, Window: day}
+	limitRevokeDevice    = rule{Name: "revoke_device", Limit: 10, Window: hour}
+	limitDeviceList      = rule{Name: "device_list", Limit: 60, Window: time.Minute}
+	limitDeviceRead      = rule{Name: "device_read", Limit: 60, Window: time.Minute}
+	limitDeviceWrite     = rule{Name: "device_write", Limit: 20, Window: hour}
+	limitEntitlement     = rule{Name: "entitlement", Limit: 60, Window: hour}
+	limitSessionsDevice  = rule{Name: "sessions_device", Limit: 60, Window: hour}
+	limitSessionsAccount = rule{Name: "sessions_account", Limit: 120, Window: hour}
+	limitCredits         = rule{Name: "credits", Limit: 120, Window: hour}
+	limitLedger          = rule{Name: "ledger", Limit: 60, Window: hour}
+	limitGiftCreate      = rule{Name: "gift_create", Limit: 10, Window: day}
+	limitGiftList        = rule{Name: "gift_list", Limit: 60, Window: hour}
+	limitGiftAct         = rule{Name: "gift_act", Limit: 20, Window: day}
+	limitReleaseLatest   = rule{Name: "release_latest", Limit: 60, Window: hour}
 )
 
-type bucket struct {
-	tokens float64
-	seenAt time.Time
-}
-
-type limiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
-}
-
-func newLimiter() *limiter { return &limiter{buckets: map[string]*bucket{}} }
-
-func (l *limiter) take(r rule, key string, now time.Time) (bool, int) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	id := r.name + "|" + key
-	b, ok := l.buckets[id]
-	if !ok {
-		b = &bucket{tokens: r.limit, seenAt: now}
-		l.buckets[id] = b
-	}
-	perSecond := r.limit / r.window.Seconds()
-	b.tokens = math.Min(r.limit, b.tokens+now.Sub(b.seenAt).Seconds()*perSecond)
-	b.seenAt = now
-	if b.tokens < 1 {
-		return false, int(math.Ceil((1 - b.tokens) / perSecond))
-	}
-	b.tokens--
-	return true, 0
-}
-
 func (s *Server) allow(w http.ResponseWriter, r *http.Request, spec rule, key string) bool {
-	ok, retryAfter := s.limiter.take(spec, key, s.now())
+	ok, retryAfter := s.limiter.Take(s.now(), ratelimit.Charge{Rule: spec, Key: key})
 	if ok {
 		return true
 	}

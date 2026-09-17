@@ -11,18 +11,24 @@ import (
 
 type side struct {
 	deviceID string
+	pubkey   string
 	conn     *Client
 	nonce    string
 	expiry   time.Time
 	epoch    int64
 }
 
+// Session.metered turns true when the host relays its first sdp, which it sends
+// only after the access code was proved and the owner consented; only then is
+// the session reported to rc-api and billed.
 type Session struct {
 	ID        string
 	State     string
 	Host      side
 	Ctrl      side
 	CreatedAt time.Time
+	metered   bool
+	meteredAt time.Time
 }
 
 func newSessionID() (string, error) {
@@ -192,9 +198,8 @@ func (h *Hub) closeSessionLocked(s *Session, reason string) {
 		}
 	}
 	delete(h.sessions, s.ID)
-	h.reportSessionStop(protocol.SessionStopReport{
-		SessionID: s.ID, EndedAt: h.clock.Now().UnixMilli(), Reason: reason})
-	h.log.Info("session closed", "sessionId", s.ID, "reason", reason)
+	h.reportStopLocked(s, reason)
+	h.log.Info("session closed", "sessionId", s.ID, "reason", reason, "metered", s.metered)
 }
 
 func (h *Hub) closeSessionsForDeviceLocked(deviceID, reason string) {
@@ -202,5 +207,23 @@ func (h *Hub) closeSessionsForDeviceLocked(deviceID, reason string) {
 		if s.Host.deviceID == deviceID || s.Ctrl.deviceID == deviceID {
 			h.closeSessionLocked(s, reason)
 		}
+	}
+}
+
+// displaceStaleBindingLocked ends everything the hub holds for deviceID under a
+// key other than pubkey: a registry restore just gave the id back to pubkey.
+func (h *Hub) displaceStaleBindingLocked(deviceID, pubkey string) {
+	for _, s := range h.sessions {
+		for _, sd := range []*side{&s.Host, &s.Ctrl} {
+			if sd.deviceID == deviceID && sd.pubkey != pubkey {
+				h.closeSessionLocked(s, protocol.ByeDisplaced)
+				break
+			}
+		}
+	}
+	if old := h.byDevice[deviceID]; old != nil && old.pubkey != pubkey {
+		h.sendErrLocked(old, "", protocol.ErrDisplaced, "this device id was restored to its certified key", 0)
+		h.dropClientLocked(old, 1000, "displaced")
+		h.log.Info("stale device binding displaced", "deviceId", deviceID)
 	}
 }

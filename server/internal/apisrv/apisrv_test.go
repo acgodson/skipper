@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"rc-signal/internal/apidb"
+	"rc-signal/internal/clientip"
+	"rc-signal/internal/idcert"
 	"rc-signal/internal/idp"
 	protocol "rcprotocol"
 )
@@ -45,29 +47,44 @@ func (c *clock) advance(d time.Duration) {
 }
 
 type harness struct {
-	t     *testing.T
-	url   string
-	clock *clock
+	t           *testing.T
+	url         string
+	internalURL string
+	clock       *clock
+	api         *Server
+	db          *apidb.DB
+	dbPath      string
 }
 
 func newHarness(t *testing.T) *harness {
+	return newHarnessWith(t, clientip.Resolver{})
+}
+
+func newHarnessWith(t *testing.T, proxies clientip.Resolver) *harness {
 	t.Helper()
-	db, err := apidb.Open(filepath.Join(t.TempDir(), "api.db"))
+	path := filepath.Join(t.TempDir(), "api.db")
+	db, err := apidb.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
+	authority, err := idcert.Ephemeral()
+	if err != nil {
+		t.Fatal(err)
+	}
 	c := &clock{now: time.UnixMilli(1_800_000_000_000)}
 	api, err := New(Options{
-		DB: db, IdP: idp.Dev{}, InternalToken: internalToken, HardwareSalt: []byte("salt"),
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: c.Now,
+		DB: db, IdP: idp.Dev{}, IDCert: authority, InternalToken: internalToken, HardwareSalt: []byte("salt"),
+		ClientIP: proxies, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: c.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(api)
 	t.Cleanup(srv.Close)
-	return &harness{t: t, url: srv.URL, clock: c}
+	internal := httptest.NewServer(api.InternalHandler())
+	t.Cleanup(internal.Close)
+	return &harness{t: t, url: srv.URL, internalURL: internal.URL, clock: c, api: api, db: db, dbPath: path}
 }
 
 type reply struct {
@@ -94,6 +111,15 @@ func (r reply) apiError(t *testing.T) protocol.APIError {
 
 func (h *harness) call(method, path, credential, idemKey string, body any) reply {
 	h.t.Helper()
+	base := h.url
+	if strings.HasPrefix(path, "/internal/") {
+		base = h.internalURL
+	}
+	return h.callAt(base, method, path, credential, idemKey, body, nil)
+}
+
+func (h *harness) callAt(base, method, path, credential, idemKey string, body any, header http.Header) reply {
+	h.t.Helper()
 	var payload io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -102,9 +128,12 @@ func (h *harness) call(method, path, credential, idemKey string, body any) reply
 		}
 		payload = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequest(method, h.url+path, payload)
+	req, err := http.NewRequest(method, base+path, payload)
 	if err != nil {
 		h.t.Fatal(err)
+	}
+	for name, values := range header {
+		req.Header[name] = values
 	}
 	if credential != "" {
 		req.Header.Set(protocol.HeaderAuthorization, protocol.BearerPrefix+credential)
@@ -309,7 +338,7 @@ func TestAuthHandoffRoundTrip(t *testing.T) {
 	r.decode(t, &challenge)
 	impostor := newDevice(t)
 	r = h.call("POST", protocol.PathAuthDeviceRefresh, "", idem(), protocol.DeviceRefreshRequest{
-		DeviceID: grant.DeviceID, Pubkey: mac.pubkey, Sig: impostor.sign(t, challenge.Nonce),
+		DeviceID: grant.DeviceID, Pubkey: mac.pubkey, Nonce: challenge.Nonce, Sig: impostor.sign(t, challenge.Nonce),
 	})
 	if r.status != http.StatusUnauthorized {
 		t.Fatalf("refresh signed by another key: %d %s", r.status, r.body)
@@ -317,7 +346,7 @@ func TestAuthHandoffRoundTrip(t *testing.T) {
 	r = h.call("POST", protocol.PathAuthDeviceChallenge, "", "", protocol.DeviceChallengeRequest{DeviceID: grant.DeviceID})
 	r.decode(t, &challenge)
 	r = h.call("POST", protocol.PathAuthDeviceRefresh, "", idem(), protocol.DeviceRefreshRequest{
-		DeviceID: grant.DeviceID, Pubkey: mac.pubkey, Sig: mac.sign(t, challenge.Nonce),
+		DeviceID: grant.DeviceID, Pubkey: mac.pubkey, Nonce: challenge.Nonce, Sig: mac.sign(t, challenge.Nonce),
 	})
 	var refreshed protocol.DeviceTokenResponse
 	r.decode(t, &refreshed)
@@ -400,9 +429,20 @@ func TestIdempotencyReplayAndConflict(t *testing.T) {
 		t.Fatalf("first call: %d %s", first.status, first.body)
 	}
 	again := h.call("POST", protocol.PathAuthLink, session, key, body)
-	if again.status != http.StatusCreated || !bytes.Equal(again.body, first.body) ||
-		again.header.Get(protocol.HeaderIdempotencyReplayed) != "true" {
-		t.Fatalf("replay: %d %s (replayed=%q)", again.status, again.body, again.header.Get(protocol.HeaderIdempotencyReplayed))
+	var link protocol.LinkResponse
+	first.decode(t, &link)
+	if again.status != http.StatusConflict || again.apiError(t).Code != protocol.APIErrReplayUnavailable ||
+		bytes.Contains(again.body, []byte(link.Code)) {
+		t.Fatalf("replay of a credential-bearing answer: %d %s", again.status, again.body)
+	}
+
+	topup := map[string]int64{"amountCents": 500}
+	topKey := idem()
+	firstTop := h.call("POST", "/v1/credits/dev-topup", session, topKey, topup)
+	againTop := h.call("POST", "/v1/credits/dev-topup", session, topKey, topup)
+	if firstTop.status != http.StatusCreated || againTop.status != firstTop.status ||
+		!bytes.Equal(againTop.body, firstTop.body) || againTop.header.Get(protocol.HeaderIdempotencyReplayed) != "true" {
+		t.Fatalf("replay: %d %s (replayed=%q)", againTop.status, againTop.body, againTop.header.Get(protocol.HeaderIdempotencyReplayed))
 	}
 
 	changed := body
