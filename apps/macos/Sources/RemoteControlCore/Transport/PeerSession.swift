@@ -102,7 +102,7 @@ public final class PeerSession {
         ]
     }
 
-    private let forceRelay: Bool
+    public private(set) var isRelayOnly: Bool
 
     // MARK: Media (Phase 4)
 
@@ -123,14 +123,12 @@ public final class PeerSession {
         self.iceServers = iceServers
         self.isOfferer = isOfferer
         self.mediaRole = mediaRole
-        self.forceRelay = forceTURNRelay
+        self.isRelayOnly = forceTURNRelay
     }
 
     // MARK: - Lifecycle
 
-    public func start() throws {
-        guard connection == nil else { return }
-
+    private func makeConfiguration() -> RTCConfiguration {
         let configuration = RTCConfiguration()
         configuration.iceServers = iceServers.map {
             if let username = $0.username, let credential = $0.credential {
@@ -142,9 +140,32 @@ public final class PeerSession {
         configuration.continualGatheringPolicy = .gatherContinually
         configuration.iceCandidatePoolSize = 1
         configuration.bundlePolicy = .maxBundle
-        if forceRelay { configuration.iceTransportPolicy = .relay }
+        if isRelayOnly { configuration.iceTransportPolicy = .relay }
         configuration.rtcpMuxPolicy = .require
+        return configuration
+    }
 
+    // libwebrtc applies a new ICE transport policy to the NEXT gathering phase,
+    // so the relay switch is a setConfiguration plus the ICE restart that follows;
+    // the RTCPeerConnection, its tracks and its data channels all survive.
+    @discardableResult
+    public func switchToRelayOnly() -> Bool {
+        guard !isRelayOnly else { return true }
+        guard let connection else { return false }
+        isRelayOnly = true
+        guard connection.setConfiguration(makeConfiguration()) else {
+            isRelayOnly = false
+            RCLog.error("transport: libwebrtc refused the relay-only configuration")
+            return false
+        }
+        RCLog.info("transport: ICE transport policy is now relay-only")
+        return true
+    }
+
+    public func start() throws {
+        guard connection == nil else { return }
+
+        let configuration = makeConfiguration()
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         let bridge = PeerSessionBridge()
         guard let connection = factory.peerConnection(with: configuration,
@@ -395,6 +416,10 @@ public final class PeerSession {
 
     public func sendQuality(_ mode: QualityWireMode) throws {
         try sendCtrl(type: CtrlType.quality, payload: QualityPayload(mode))
+    }
+
+    public func sendCursorShape(_ shape: CursorShape) throws {
+        try sendCtrl(type: CtrlType.cursorShape, payload: CursorShapePayload(shape))
     }
 
     public func sendSessionClose(reason: String) throws {

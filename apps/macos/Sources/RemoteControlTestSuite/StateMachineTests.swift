@@ -72,7 +72,7 @@ public let stateMachineSuite = TestSuite("Session state machine (the coordinator
 
         try expect(machine.tick(now: t0.addingTimeInterval(4)).isEmpty,
                    "the default 3s would have restarted by now; this machine was told 10s")
-        try expect(machine.tick(now: t0.addingTimeInterval(11)).contains(.restartICE))
+        try expect(machine.tick(now: t0.addingTimeInterval(11)).contains(.restartICE(relayOnly: false)))
 
         let closing = machine.tick(now: t0.addingTimeInterval(11))
         try expect(closing.isEmpty, "disconnected is not failed; nothing closes")

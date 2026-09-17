@@ -97,7 +97,7 @@ public let identitySuite = TestSuite("IdentityStore", [
 
     TestCase("refresh notifies the sink without handing it the code") {
         try await withIdentity { fileStore in
-            let sink = PreviewAccessCodeSink()
+            let sink = RecordingAccessCodeSink()
             let store = try IdentityStore(fileStore: fileStore, sink: sink)
 
             try expect(sink.refreshedDeviceIDs.isEmpty, "constructing must not notify the sink")
@@ -254,3 +254,12 @@ public let identitySuite = TestSuite("IdentityStore", [
         }
     },
 ])
+
+private final class RecordingAccessCodeSink: AccessCodeSink {
+
+    private(set) var refreshedDeviceIDs: [String] = []
+
+    func accessCodeDidChange(deviceID: String) async throws {
+        refreshedDeviceIDs.append(deviceID)
+    }
+}

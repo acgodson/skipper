@@ -23,8 +23,6 @@ final class AppModel: ObservableObject {
     @Published var signalingSummary = "Connecting to SkipperDesk\u{2026}"
     @Published var lastRoundTripMs: Int?
 
-    @Published var previewSessionBanner = false
-
     @Published var trustedControllers: [TrustedControllerEntry] = []
 
     // MARK: - Phase 5: keyboard capture
@@ -43,8 +41,8 @@ final class AppModel: ObservableObject {
     private var observers: [Any] = []
     private var cancellables = Set<AnyCancellable>()
 
-    var presence: any PeerPresenceSource { coordinator?.presence ?? offlineStub }
-    private let offlineStub = PreviewPresenceSource()
+    var presence: any PeerPresenceSource { coordinator?.presence ?? offlinePresence }
+    private let offlinePresence = SignalingPresenceSource()
 
     init() {
         let settings = AppSettings()
@@ -156,11 +154,7 @@ final class AppModel: ObservableObject {
     }
 
     private func bindPresence(_ source: any PeerPresenceSource) {
-        if let live = source as? SignalingPresenceSource {
-            bind(live)
-        } else if let stub = source as? PreviewPresenceSource {
-            bind(stub)
-        }
+        if let live = source as? SignalingPresenceSource { bind(live) }
     }
 
     private func restartTransport() {
@@ -314,7 +308,7 @@ final class AppModel: ObservableObject {
 
     // MARK: - Host
 
-    var sessionActive: Bool { sessionState.isActive || previewSessionBanner }
+    var sessionActive: Bool { sessionState.isActive }
 
     var showsRemoteScreen: Bool {
         guard settings.role == .controller, identityError == nil else { return false }
@@ -330,7 +324,6 @@ final class AppModel: ObservableObject {
         captureKeyboard = false
         coordinator?.disconnect(reason: Wire.ByeReason.userEnded)
         sessionState = .idle
-        previewSessionBanner = false
     }
 
     func refreshAccessCode() {

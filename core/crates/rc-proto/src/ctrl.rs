@@ -154,6 +154,64 @@ impl GestureName {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CursorShapeName {
+    Arrow,
+    IBeam,
+    Crosshair,
+    PointingHand,
+    OpenHand,
+    ClosedHand,
+    ResizeLeftRight,
+    ResizeUpDown,
+    ResizeDiagonalNeSw,
+    ResizeDiagonalNwSe,
+    NotAllowed,
+    Busy,
+}
+
+impl CursorShapeName {
+    pub const ALL: [CursorShapeName; 12] = [
+        Self::Arrow,
+        Self::IBeam,
+        Self::Crosshair,
+        Self::PointingHand,
+        Self::OpenHand,
+        Self::ClosedHand,
+        Self::ResizeLeftRight,
+        Self::ResizeUpDown,
+        Self::ResizeDiagonalNeSw,
+        Self::ResizeDiagonalNwSe,
+        Self::NotAllowed,
+        Self::Busy,
+    ];
+
+    /// An unrecognised shape is drawn as the arrow, never rejected.
+    pub fn from_wire(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|shape| shape.as_wire() == s)
+            .unwrap_or(Self::Arrow)
+    }
+
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Arrow => "arrow",
+            Self::IBeam => "ibeam",
+            Self::Crosshair => "crosshair",
+            Self::PointingHand => "pointing_hand",
+            Self::OpenHand => "open_hand",
+            Self::ClosedHand => "closed_hand",
+            Self::ResizeLeftRight => "resize_lr",
+            Self::ResizeUpDown => "resize_ud",
+            Self::ResizeDiagonalNeSw => "resize_diag_nesw",
+            Self::ResizeDiagonalNwSe => "resize_diag_nwse",
+            Self::NotAllowed => "not_allowed",
+            Self::Busy => "busy",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QualityMode {
     Auto,
     Sharp,
@@ -257,6 +315,12 @@ pub mod host_os {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Quality {
     pub mode: String,
+}
+
+/// Host -> controller, on change only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CursorShape {
+    pub shape: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

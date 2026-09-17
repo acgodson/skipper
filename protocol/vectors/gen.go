@@ -296,6 +296,11 @@ func main() {
 	add("session_close", "ctrl", p.CtrlSessionClose, "", "", "", ts,
 		p.SessionClose{Reason: p.ByeHostEnded})
 
+	for _, shape := range p.CursorShapes {
+		add("cursor_shape_"+shape, "ctrl", p.CtrlCursorShape, "host -> controller, sent on change only", "", "", ts,
+			p.CursorShape{Shape: shape})
+	}
+
 	add("mouse_move", "hi", p.HiMouseMove,
 		"receiver must drop any packet whose seq is <= the highest already seen", "", "", ts,
 		p.MouseMove{X: 0.123456789, Y: 0.987654321, Seq: 1})

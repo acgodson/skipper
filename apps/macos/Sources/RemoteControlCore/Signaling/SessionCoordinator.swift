@@ -87,7 +87,7 @@ public enum CoordinatorEvent {
     case connectFailed(ConnectFailure)
     case bye(reason: String)
     case accessCodeRequired(reason: String)
-    case iceRestartStarted
+    case iceRestartStarted(relayOnly: Bool)
     case remoteDescription(type: String, restart: Bool)
     case peerAuthFailed(reason: String)
     case pake(step: Int, outgoing: Bool)
@@ -99,6 +99,7 @@ public enum CoordinatorEvent {
     case inputApplied(type: String, events: Int)
     case clipboard(incoming: Bool, bytes: Int)
     case gesture(name: String)
+    case cursorShape(CursorShape, outgoing: Bool)
 }
 
 @MainActor
@@ -126,6 +127,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     @Published public private(set) var needsAccessCode = false
     @Published public private(set) var canInjectInput = true
     @Published public private(set) var injectedEventCount = 0
+    @Published public private(set) var remoteCursorShape: CursorShape = .arrow
 
     public var state: SessionState {
         switch phase {
@@ -138,6 +140,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     }
 
     public var sessionID: String? { machine.sessionID }
+    public var isRelayOnly: Bool { peer?.isRelayOnly ?? machine.relayOnly }
     public var peerDeviceID: String? { machine.peerDeviceID }
 
     // MARK: Collaborators
@@ -164,6 +167,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     private let captureSourceKind: CaptureSourceKind
     private var captureRetry: Task<Void, Never>?
     private var negotiating = false
+    public let cursorObserver = SystemCursorObserver()
     public private(set) var expectedPeerPublicKey: String?
 
     // MARK: The access-code exchange (PROTOCOL.md §2.17) — see SessionPake.swift
@@ -193,6 +197,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             iceRestartDelay: config.iceRestartDelay,
             iceFailureGrace: config.iceFailureGrace,
             renewInterval: config.renewInterval)
+        self.machine.setRelayOnly(config.forceTURNRelay)
         let sink = CGEventSink()
         self.eventSink = sink
         self.signaling = SignalingClient(config: config, identity: identity, role: role)
@@ -211,6 +216,14 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             self.emit(.clipboard(incoming: false, bytes: payload.text.utf8.count))
         }
         self.clipboard = clipboard
+        cursorObserver.onChange = { [weak self] shape in
+            guard let self, self.role == .host else { return }
+            guard (try? self.peer?.sendCursorShape(shape)) != nil else {
+                self.cursorObserver.reset()
+                return
+            }
+            self.emit(.cursorShape(shape, outgoing: true))
+        }
         self.input.send = { [weak self] outbound in
             _ = self?.peer?.send(outbound)
         }
@@ -288,7 +301,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     public func dropSignalingSocket() { signaling.simulateSocketLoss() }
 
     public func forceICERestart() {
-        emit(.iceRestartStarted)
+        emit(.iceRestartStarted(relayOnly: machine.relayOnly))
         Task { await renegotiate(restart: true) }
     }
 
@@ -363,14 +376,17 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             }
             startPeer(offerer: offerer)
 
-        case .restartICE:
-            emit(.iceRestartStarted)
+        case .restartICE(let relayOnly):
+            if relayOnly { peer?.switchToRelayOnly() }
+            emit(.iceRestartStarted(relayOnly: peer?.isRelayOnly ?? relayOnly))
             await renegotiate(restart: true)
 
         case .reissueWatches:
             if let watchedPeer { Task { try? await signaling.watch(deviceID: watchedPeer) } }
 
         case .teardownPeerConnection:
+            cursorObserver.reset()
+            remoteCursorShape = .arrow
             applyLocalInputReset()
             input.isEnabled = false
             clipboard?.stop()
@@ -611,6 +627,8 @@ extension SessionCoordinator: PeerSessionDelegate {
         switch role {
         case .host:
             if let localDisplay { try? session.sendDisplayInfo(localDisplay) }
+            cursorObserver.reset()
+            cursorObserver.poll(force: true)
         case .controller:
             try? session.sendQuality(qualityMode)
         }
@@ -629,6 +647,11 @@ extension SessionCoordinator: PeerSessionDelegate {
         if envelope.type == CtrlType.quality, role == .host,
            let payload = try? envelope.decodePayload(QualityPayload.self) {
             applyQuality(payload.wireMode)
+        }
+        if envelope.type == CtrlType.cursorShape, role == .controller,
+           let payload = try? envelope.decodePayload(CursorShapePayload.self) {
+            remoteCursorShape = payload.cursorShape
+            emit(.cursorShape(payload.cursorShape, outgoing: false))
         }
         if envelope.type == CtrlType.sessionClose,
            let close = try? envelope.decodePayload(SessionClosePayload.self) {
@@ -674,6 +697,7 @@ public extension SessionCoordinator {
         injector.target = .mainDisplay
         eventSink.post(events)
         injectedEventCount += events.count
+        cursorObserver.pollAfterInput()
         emit(.inputApplied(type: type, events: events.count))
     }
 
@@ -743,7 +767,9 @@ extension SessionCoordinator {
         case .synthetic: producer = SyntheticFrameSource()
         }
         producer.onFrame = { [weak self] pixelBuffer, timeNs in
-            self?.peer?.submit(pixelBuffer: pixelBuffer, timeNs: timeNs)
+            guard let self, let peer = self.peer else { return }
+            peer.submit(pixelBuffer: pixelBuffer, timeNs: timeNs)
+            if peer.ctrlOpen { self.cursorObserver.poll() }
         }
         producer.onSizeChange = { [weak self] width, height, scale in
             self?.captureDidResize(width: width, height: height, scale: scale)

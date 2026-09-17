@@ -20,6 +20,7 @@ private struct Step: Decodable {
     let expectPhase: String?
     let expectHasSession: Bool?
     let expectResumeInFlight: Bool?
+    let expectRelayOnly: Bool?
 }
 
 private enum JSONValue: Decodable {
@@ -78,7 +79,9 @@ private func action(from obj: [String: JSONValue], _ ctx: String) throws -> Sess
     case "startPeerConnection":
         guard let offerer = obj["offerer"]?.boolean else { throw fail("\(ctx): offerer") }
         return .startPeerConnection(offerer: offerer)
-    case "restartICE": return .restartICE
+    case "restartICE":
+        guard let relayOnly = obj["relayOnly"]?.boolean else { throw fail("\(ctx): relayOnly") }
+        return .restartICE(relayOnly: relayOnly)
     case "reissueWatches": return .reissueWatches
     case "teardownPeerConnection": return .teardownPeerConnection
     case "clearStoredSession": return .clearStoredSession
@@ -169,6 +172,10 @@ public let scenarioSuite = TestSuite("Shared state-machine scenarios (through th
                     actions = nil
                 case "renewFailed":
                     actions = machine.renewFailed(code: try string(e, "code", ctx), now: now)
+                case "setRelayOnly":
+                    guard let relayOnly = e["relayOnly"]?.boolean else { throw fail("\(ctx): relayOnly") }
+                    machine.setRelayOnly(relayOnly)
+                    actions = []
                 case "closeLocally":
                     actions = machine.closeLocally(reason: try string(e, "reason", ctx))
                 case "userEnded":
@@ -191,6 +198,9 @@ public let scenarioSuite = TestSuite("Shared state-machine scenarios (through th
                 }
                 if let inFlight = step.expectResumeInFlight {
                     try expectEqual(machine.resumeInFlight, inFlight, "\(ctx): resumeInFlight")
+                }
+                if let relayOnly = step.expectRelayOnly {
+                    try expectEqual(machine.relayOnly, relayOnly, "\(ctx): relayOnly")
                 }
                 stepsRun += 1
             }

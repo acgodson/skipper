@@ -67,8 +67,8 @@ final class Node {
             emit("bye", ["reason": reason])
         case .accessCodeRequired(let reason):
             emit("access_code_required", ["reason": reason])
-        case .iceRestartStarted:
-            emit("ice_restart", [:])
+        case .iceRestartStarted(let relayOnly):
+            emit("ice_restart", ["relayOnly": relayOnly])
         case .remoteDescription(let type, let restart):
             emit("remote_sdp", ["sdpType": type, "restart": restart])
         case .peerAuthFailed(let reason):
@@ -100,6 +100,8 @@ final class Node {
             emit("clipboard", ["incoming": incoming, "bytes": bytes])
         case .gesture(let name):
             emit("gesture", ["name": name])
+        case .cursorShape(let shape, let outgoing):
+            emit("cursor_shape", ["shape": shape.rawValue, "outgoing": outgoing])
         }
     }
 
@@ -270,6 +272,18 @@ final class Node {
             coordinator.dropSignalingSocket()
             emit("socket_dropped", [:])
 
+        case "cursor-shape":
+            let observer = coordinator.cursorObserver
+            let system = NSCursor.currentSystem.map { observer.classify($0).rawValue } ?? "unavailable"
+            let selfRecognised = observer.recognisedShapes.filter { shape in
+                observer.referenceCursor(for: shape).map { observer.classify($0) == shape } ?? false
+            }
+            emit("cursor_probe", [
+                "system": system,
+                "recognised": observer.recognisedShapes.map(\.rawValue),
+                "selfRecognised": selfRecognised.map(\.rawValue),
+            ])
+
         case "ice-restart":
             coordinator.forceICERestart()
 
@@ -295,6 +309,7 @@ final class Node {
                 "phase": describe(coordinator.phase),
                 "signaling": describe(coordinator.signalingState),
                 "ice": coordinator.iceState.rawValue,
+                "relayOnly": coordinator.isRelayOnly,
                 "channels": coordinator.dataChannelsOpen,
                 "sessionId": coordinator.sessionID ?? "",
                 "presence": coordinator.presence.state.rawValue,

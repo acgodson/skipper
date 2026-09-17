@@ -44,7 +44,7 @@ public enum SessionAction: Equatable, Sendable {
     case sendRenew(sessionID: String, sessionToken: String)
     case sendInputReset
     case startPeerConnection(offerer: Bool)
-    case restartICE
+    case restartICE(relayOnly: Bool)
     case reissueWatches
     case teardownPeerConnection
     case clearStoredSession

@@ -31,29 +31,6 @@ public protocol PeerPresenceSource: AnyObject {
 }
 
 @MainActor
-public final class PreviewPresenceSource: PeerPresenceSource, ObservableObject {
-
-    @Published public private(set) var state: PresenceState = .unknown
-    @Published public private(set) var watchedDeviceID: String?
-
-    public var explanation: String {
-        "Presence requires the signaling server (Phase 3). Not connected."
-    }
-
-    public init() {}
-
-    public func watch(deviceID: String) {
-        watchedDeviceID = deviceID
-        state = .unknown
-    }
-
-    public func stopWatching() {
-        watchedDeviceID = nil
-        state = .unknown
-    }
-}
-
-@MainActor
 public final class SelfPresence: ObservableObject {
     @Published public private(set) var state: PresenceState = .unknown
     @Published public private(set) var explanation = "Connecting to the signaling server\u{2026}"

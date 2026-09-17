@@ -16,6 +16,7 @@ private struct CoreAction: Decodable {
     let sessionToken: String?
     let afterSec: Int?
     let offerer: Bool?
+    let relayOnly: Bool?
     let reason: String?
 }
 
@@ -26,6 +27,7 @@ private struct CoreState: Decodable {
     let hasSession: Bool
     let signalingUp: Bool
     let resumeInFlight: Bool
+    let relayOnly: Bool
     let isOfferer: Bool
     let iceState: String
     let sessionId: String?
@@ -55,6 +57,7 @@ public final class SessionStateMachine {
     public private(set) var signalingUp = false
     public private(set) var iceState: ICELinkState = .new
     public private(set) var resumeInFlight = false
+    public private(set) var relayOnly = false
     public private(set) var hasSession = false
     public private(set) var isOfferer = false
     public private(set) var serverAdvertisedSessionID: String?
@@ -90,6 +93,10 @@ public final class SessionStateMachine {
     deinit { skipper_session_free(handle) }
 
     // MARK: - Controller-initiated connect
+
+    public func setRelayOnly(_ relayOnly: Bool) {
+        _ = call { skipper_session_set_relay_only(handle, relayOnly) }
+    }
 
     public func connectRequested(deviceID: String, accessCode: String, remember: Bool) -> [SessionAction] {
         call { skipper_session_connect_requested(handle, deviceID, accessCode, remember) }
@@ -203,6 +210,7 @@ public final class SessionStateMachine {
         hasSession = state.hasSession
         signalingUp = state.signalingUp
         resumeInFlight = state.resumeInFlight
+        relayOnly = state.relayOnly
         isOfferer = state.isOfferer
         sessionID = state.sessionId
         sessionToken = state.sessionToken
@@ -235,7 +243,7 @@ public final class SessionStateMachine {
         case "startPeerConnection":
             return .startPeerConnection(offerer: need(raw.offerer, "offerer"))
         case "restartICE":
-            return .restartICE
+            return .restartICE(relayOnly: need(raw.relayOnly, "relayOnly"))
         case "reissueWatches":
             return .reissueWatches
         case "teardownPeerConnection":

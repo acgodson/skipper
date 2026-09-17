@@ -22,7 +22,7 @@ public let allSuites: [TestSuite] = [
     wireCodecSuite,
     stateMachineSuite,
     scenarioSuite,
-    stubSuite,
+    sessionStateSuite,
     videoGeometrySuite,
     qualitySuite,
     mediaProtocolSuite,

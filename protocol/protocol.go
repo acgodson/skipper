@@ -347,6 +347,7 @@ const (
 	CtrlPing          = "ping"
 	CtrlPong          = "pong"
 	CtrlSessionClose  = "session_close"
+	CtrlCursorShape   = "cursor_shape"
 
 	HiMouseMove = "mouse_move"
 )
@@ -385,6 +386,28 @@ const (
 	GestureForceQuit        = "force_quit"
 	GestureLockScreen       = "lock_screen"
 )
+
+const (
+	CursorArrow          = "arrow"
+	CursorIBeam          = "ibeam"
+	CursorCrosshair      = "crosshair"
+	CursorPointingHand   = "pointing_hand"
+	CursorOpenHand       = "open_hand"
+	CursorClosedHand     = "closed_hand"
+	CursorResizeLR       = "resize_lr"
+	CursorResizeUD       = "resize_ud"
+	CursorResizeDiagNESW = "resize_diag_nesw"
+	CursorResizeDiagNWSE = "resize_diag_nwse"
+	CursorNotAllowed     = "not_allowed"
+	CursorBusy           = "busy"
+)
+
+// CursorShapes lists every defined cursor_shape value; receivers draw anything else as CursorArrow.
+var CursorShapes = []string{
+	CursorArrow, CursorIBeam, CursorCrosshair, CursorPointingHand, CursorOpenHand,
+	CursorClosedHand, CursorResizeLR, CursorResizeUD, CursorResizeDiagNESW,
+	CursorResizeDiagNWSE, CursorNotAllowed, CursorBusy,
+}
 
 const (
 	QualityAuto   = "auto"
@@ -454,6 +477,10 @@ type Ping struct {
 
 type Pong struct {
 	T int64 `json:"t"` // echoed verbatim from Ping
+}
+
+type CursorShape struct {
+	Shape string `json:"shape"`
 }
 
 type SessionClose struct {

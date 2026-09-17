@@ -52,7 +52,9 @@ fn action_json(action: &SessionAction) -> Value {
         SessionAction::StartPeerConnection { offerer } => {
             json!({ "action": "startPeerConnection", "offerer": offerer })
         }
-        SessionAction::RestartIce => json!({ "action": "restartICE" }),
+        SessionAction::RestartIce { relay_only } => {
+            json!({ "action": "restartICE", "relayOnly": relay_only })
+        }
         SessionAction::ReissueWatches => json!({ "action": "reissueWatches" }),
         SessionAction::TeardownPeerConnection => json!({ "action": "teardownPeerConnection" }),
         SessionAction::ClearStoredSession => json!({ "action": "clearStoredSession" }),
@@ -105,6 +107,7 @@ fn state_json(machine: &SessionStateMachine) -> Value {
         "hasSession": machine.has_session(),
         "signalingUp": machine.signaling_up(),
         "resumeInFlight": machine.resume_in_flight(),
+        "relayOnly": machine.relay_only(),
         "isOfferer": machine.is_offerer(),
         "iceState": ice_state_name(machine.ice_state()),
         "sessionId": machine.session_id(),
@@ -385,6 +388,17 @@ pub unsafe extern "C" fn skipper_session_user_ended(
 ) -> *mut c_char {
     dispatch(session, |machine| {
         Ok(machine.user_ended(unsafe { required_str(reason, "reason") }?))
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn skipper_session_set_relay_only(
+    session: *mut SkipperSession,
+    relay_only: bool,
+) -> *mut c_char {
+    dispatch(session, |machine| {
+        machine.set_relay_only(relay_only);
+        Ok(vec![])
     })
 }
 

@@ -1930,7 +1930,8 @@
        "action": "sendInputReset"
       },
       {
-       "action": "restartICE"
+       "action": "restartICE",
+       "relayOnly": false
       }
      ],
      "expectPhase": "reconnecting"
@@ -2120,7 +2121,8 @@
      },
      "expectActions": [
       {
-       "action": "restartICE"
+       "action": "restartICE",
+       "relayOnly": false
       }
      ],
      "expectPhase": "reconnecting",
@@ -2306,6 +2308,10 @@
      "expectActions": [
       {
        "action": "sendInputReset"
+      },
+      {
+       "action": "restartICE",
+       "relayOnly": true
       }
      ],
      "expectPhase": "reconnecting",
@@ -2342,6 +2348,648 @@
      ],
      "expectPhase": "closed:failed",
      "expectHasSession": false
+    }
+   ]
+  },
+  {
+   "name": "a_first_ice_failure_retries_on_relay_immediately_instead_of_waiting",
+   "role": "controller",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "connectRequested",
+      "deviceId": "739000587",
+      "accessCode": "K7M2QX9P",
+      "remember": true
+     },
+     "expectActions": [
+      {
+       "action": "sendConnectReq",
+       "deviceId": "739000587",
+       "accessCode": "K7M2QX9P"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "startPeerConnection",
+       "offerer": true
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "live"
+    },
+    {
+     "at": 10,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "failed"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      },
+      {
+       "action": "restartICE",
+       "relayOnly": true
+      }
+     ],
+     "expectPhase": "reconnecting",
+     "expectHasSession": true,
+     "expectRelayOnly": true
+    },
+    {
+     "at": 11,
+     "do": {
+      "event": "tick"
+     },
+     "expectActions": [],
+     "expectPhase": "reconnecting"
+    },
+    {
+     "at": 54,
+     "do": {
+      "event": "tick"
+     },
+     "expectActions": [],
+     "expectPhase": "reconnecting",
+     "expectHasSession": true
+    },
+    {
+     "at": 55,
+     "do": {
+      "event": "tick"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      },
+      {
+       "action": "teardownPeerConnection"
+      },
+      {
+       "action": "clearStoredSession"
+      },
+      {
+       "action": "sendBye",
+       "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+       "reason": "failed"
+      }
+     ],
+     "expectPhase": "closed:failed",
+     "expectHasSession": false,
+     "expectRelayOnly": false
+    }
+   ],
+   "note": "the 45s grace now covers the relay attempt, not a hopeless wait on the failed path"
+  },
+  {
+   "name": "the_relay_retry_is_offered_at_most_once_per_session",
+   "role": "controller",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "connectRequested",
+      "deviceId": "739000587",
+      "accessCode": "K7M2QX9P",
+      "remember": true
+     },
+     "expectActions": [
+      {
+       "action": "sendConnectReq",
+       "deviceId": "739000587",
+       "accessCode": "K7M2QX9P"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "startPeerConnection",
+       "offerer": true
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "live"
+    },
+    {
+     "at": 10,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "failed"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      },
+      {
+       "action": "restartICE",
+       "relayOnly": true
+      }
+     ],
+     "expectPhase": "reconnecting"
+    },
+    {
+     "at": 20,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "live",
+     "expectRelayOnly": true
+    },
+    {
+     "at": 30,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "failed"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "reconnecting",
+     "expectRelayOnly": true
+    }
+   ],
+   "note": "relay is the last resort; failing on relay too must not loop"
+  },
+  {
+   "name": "a_session_that_is_already_relay_only_never_asks_for_a_relay_retry",
+   "role": "controller",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "setRelayOnly",
+      "relayOnly": true
+     },
+     "expectActions": [],
+     "expectPhase": "idle",
+     "expectRelayOnly": true
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "connectRequested",
+      "deviceId": "739000587",
+      "accessCode": "K7M2QX9P",
+      "remember": false
+     },
+     "expectActions": [
+      {
+       "action": "sendConnectReq",
+       "deviceId": "739000587",
+       "accessCode": "K7M2QX9P"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "startPeerConnection",
+       "offerer": true
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "live"
+    },
+    {
+     "at": 10,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "failed"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "reconnecting",
+     "expectRelayOnly": true
+    }
+   ],
+   "note": "RC_ICE_POLICY=relay already: there is nothing left to fall back to"
+  },
+  {
+   "name": "a_host_never_offers_the_relay_retry",
+   "role": "host",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "startPeerConnection",
+       "offerer": false
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 1,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "live"
+    },
+    {
+     "at": 10,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "failed"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "reconnecting",
+     "expectRelayOnly": false
+    },
+    {
+     "at": 55,
+     "do": {
+      "event": "tick"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      },
+      {
+       "action": "teardownPeerConnection"
+      },
+      {
+       "action": "clearStoredSession"
+      },
+      {
+       "action": "sendBye",
+       "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+       "reason": "failed"
+      }
+     ],
+     "expectPhase": "closed:failed"
+    }
+   ],
+   "note": "only the offerer restarts ICE (\u00a74.3 step 4)"
+  },
+  {
+   "name": "after_the_relay_retry_a_later_disconnect_restarts_on_relay_too",
+   "role": "controller",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "connectRequested",
+      "deviceId": "739000587",
+      "accessCode": "K7M2QX9P",
+      "remember": true
+     },
+     "expectActions": [
+      {
+       "action": "sendConnectReq",
+       "deviceId": "739000587",
+       "accessCode": "K7M2QX9P"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "startPeerConnection",
+       "offerer": true
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "live"
+    },
+    {
+     "at": 10,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "failed"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      },
+      {
+       "action": "restartICE",
+       "relayOnly": true
+      }
+     ],
+     "expectPhase": "reconnecting"
+    },
+    {
+     "at": 20,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "live"
+    },
+    {
+     "at": 30,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "disconnected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "reconnecting"
+    },
+    {
+     "at": 33,
+     "do": {
+      "event": "tick"
+     },
+     "expectActions": [
+      {
+       "action": "restartICE",
+       "relayOnly": true
+      }
+     ],
+     "expectPhase": "reconnecting"
+    }
+   ],
+   "note": "the policy sticks for the rest of the session"
+  },
+  {
+   "name": "a_resume_while_relay_only_restarts_on_relay",
+   "role": "controller",
+   "steps": [
+    {
+     "at": 0,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": null
+     },
+     "expectActions": [],
+     "expectPhase": "idle"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "connectRequested",
+      "deviceId": "739000587",
+      "accessCode": "K7M2QX9P",
+      "remember": true
+     },
+     "expectActions": [
+      {
+       "action": "sendConnectReq",
+       "deviceId": "739000587",
+       "accessCode": "K7M2QX9P"
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "sessionGranted",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-1",
+      "hostDeviceId": "739000587",
+      "controllerDeviceId": "481930275"
+     },
+     "expectActions": [
+      {
+       "action": "startPeerConnection",
+       "offerer": true
+      }
+     ],
+     "expectPhase": "connecting"
+    },
+    {
+     "at": 0,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "connected"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      }
+     ],
+     "expectPhase": "live"
+    },
+    {
+     "at": 10,
+     "do": {
+      "event": "iceStateChanged",
+      "state": "failed"
+     },
+     "expectActions": [
+      {
+       "action": "sendInputReset"
+      },
+      {
+       "action": "restartICE",
+       "relayOnly": true
+      }
+     ],
+     "expectPhase": "reconnecting"
+    },
+    {
+     "at": 12,
+     "do": {
+      "event": "signalingLost"
+     },
+     "expectActions": []
+    },
+    {
+     "at": 15,
+     "do": {
+      "event": "signalingAuthenticated",
+      "activeSessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7"
+     },
+     "expectActions": [
+      {
+       "action": "sendResume",
+       "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+       "sessionToken": "tok-1"
+      }
+     ]
+    },
+    {
+     "at": 15,
+     "do": {
+      "event": "resumeSucceeded",
+      "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+      "sessionToken": "tok-2"
+     },
+     "expectActions": [
+      {
+       "action": "reissueWatches"
+      },
+      {
+       "action": "sendInputReset"
+      },
+      {
+       "action": "restartICE",
+       "relayOnly": true
+      }
+     ],
+     "expectPhase": "reconnecting"
     }
    ]
   },
@@ -2414,6 +3062,10 @@
      "expectActions": [
       {
        "action": "sendInputReset"
+      },
+      {
+       "action": "restartICE",
+       "relayOnly": true
       }
      ],
      "expectPhase": "reconnecting"

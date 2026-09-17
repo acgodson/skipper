@@ -33,16 +33,6 @@ struct HostView: View {
             QualitySection()
 
             DeviceKeyFooter()
-
-            #if DEBUG
-            SkipperCard(title: "Preview only (debug builds)") {
-                SkipperToggleRow(
-                    title: "Show the \u{201C}Remote session active\u{201D} banner",
-                    detail: "Renders the banner state without a real session.",
-                    isOn: $model.previewSessionBanner
-                )
-            }
-            #endif
         }
         .onAppear { model.reloadTrustedControllers() }
     }
