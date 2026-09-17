@@ -145,6 +145,7 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
 | Missing permission | Host only, only when missing | attention banner per permission: Open Settings + Ask macOS |
 | Asking to connect | Host window overlay + menu panel (+ notification when in the background) | consent prompt with a 30 s countdown; no answer declines |
 | Waiting to be accepted | Controller hero | attention note "Waiting for the other Mac to accept…", pill "Waiting…"; after a decline the critical banner "The other Mac declined the connection." |
+| Device ID changed | Host, directly above the Device ID card | attention banner naming the old and new Device ID, "Got it" dismisses it for this run only |
 
 **Unattended access** is a toggle row whose detail follows its state — on: "Anyone with the code
 can connect without you here."; off: "You will be asked to allow each connection." It is off on a

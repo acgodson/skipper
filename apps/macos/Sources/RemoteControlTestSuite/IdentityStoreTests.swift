@@ -165,14 +165,17 @@ public let identitySuite = TestSuite("IdentityStore", [
 
             try store.adoptReassignedDeviceID("482719351", previous: "482719351")
             try expectEqual(store.deviceID, "482719351")
-            try expectNil(store.permissionWarning, "keeping the id is not news")
+            try expectNil(store.identityNotice, "keeping the id is not news")
 
             try store.adoptReassignedDeviceID("913004287", previous: "482719351")
             try expectEqual(store.deviceID, "913004287")
-            let notice = try expectNotNil(store.permissionWarning)
-            try expect(notice.contains("482 719 351"), "the notice must name the old id: \(notice)")
+            let notice = try expectNotNil(store.identityNotice)
+            try expectEqual(notice, .deviceIDChanged(from: "482719351", to: "913004287"))
             try expectEqual(store.publicKeyBase64, key, "a new id must never mean a new key")
             try expectEqual(try IdentityStore(fileStore: fileStore).deviceID, "913004287", "must persist")
+
+            store.acknowledgeIdentityNotice()
+            try expectNil(store.identityNotice, "acknowledging clears it")
         }
     },
 
