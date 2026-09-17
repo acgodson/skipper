@@ -62,6 +62,7 @@ final class Node {
                 "turn": hello.iceServers.contains { $0.username != nil },
                 "activeSessionId": hello.activeSessionId ?? "",
                 "heartbeatSec": hello.heartbeatSec,
+                "pubkey": identity.publicKeyBase64,
             ])
             signInOnce(signalingDeviceID: hello.deviceId)
         case .presence(let deviceID, let online):
@@ -182,6 +183,7 @@ final class Node {
             "deviceId": identity.deviceID,
             "accessCode": identity.accessCode,
             "registered": identity.isServerRegistered,
+            "pubkey": identity.publicKeyBase64,
             "server": coordinator.signaling.config.signalingURL.absoluteString,
         ])
         coordinator.start()

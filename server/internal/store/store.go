@@ -3,14 +3,14 @@
 package store
 
 import (
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
-	"math/big"
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"rc-signal/internal/deviceid"
 )
 
 var ErrNotFound = errors.New("device not found")
@@ -60,6 +60,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec(deviceid.ClaimsSchema); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -147,32 +151,19 @@ func (s *Store) GetByPubkey(pubkey string) (*Device, error) {
 	return scanDevice(s.db.QueryRow(`SELECT `+selectCols+` FROM devices WHERE pubkey = ?`, pubkey))
 }
 
-func (s *Store) Register(pubkey, label string, now time.Time) (dev *Device, existing bool, err error) {
-	if d, err := s.GetByPubkey(pubkey); err == nil {
-		return d, true, nil
-	} else if !errors.Is(err, ErrNotFound) {
-		return nil, false, err
-	}
+func (s *Store) Register(pubkey, label, preferredDeviceID string, now time.Time) (dev *Device, existing bool, err error) {
 	ms := now.UnixMilli()
-	for attempt := 0; attempt < 20; attempt++ {
-		id, err := NewDeviceID()
-		if err != nil {
-			return nil, false, err
-		}
-		_, err = s.db.Exec(`INSERT INTO devices
+	id, existing, err := deviceid.Assign(deviceid.SQL{DB: s.db, Insert: func(tx *sql.Tx, id string) error {
+		_, err := tx.Exec(`INSERT INTO devices
  (device_id, pubkey, label, code_epoch, created_at, updated_at)
  VALUES (?,?,?,1,?,?)`, id, pubkey, label, ms, ms)
-		if err == nil {
-			d, err := s.GetDevice(id)
-			return d, false, err
-		}
-
-		if d, e2 := s.GetByPubkey(pubkey); e2 == nil {
-			return d, true, nil
-		}
-
+		return err
+	}}, pubkey, preferredDeviceID)
+	if err != nil {
+		return nil, false, err
 	}
-	return nil, false, errors.New("could not allocate a unique device id")
+	d, err := s.GetDevice(id)
+	return d, existing, err
 }
 
 func (s *Store) BumpEpoch(deviceID string, now time.Time) error {
@@ -196,21 +187,4 @@ func (s *Store) SetLabel(deviceID, label string, now time.Time) error {
 	_, err := s.db.Exec(`UPDATE devices SET label=?, updated_at=? WHERE device_id=?`,
 		label, now.UnixMilli(), deviceID)
 	return err
-}
-
-func NewDeviceID() (string, error) {
-	buf := make([]byte, 9)
-	first, err := rand.Int(rand.Reader, big.NewInt(9))
-	if err != nil {
-		return "", err
-	}
-	buf[0] = byte('1' + first.Int64())
-	for i := 1; i < 9; i++ {
-		n, err := rand.Int(rand.Reader, big.NewInt(10))
-		if err != nil {
-			return "", err
-		}
-		buf[i] = byte('0' + n.Int64())
-	}
-	return string(buf), nil
 }

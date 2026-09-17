@@ -18,7 +18,7 @@ func TestRegisterAndLookup(t *testing.T) {
 	defer s.Close()
 	now := time.Unix(1_755_600_000, 0)
 
-	d, existing, err := s.Register("PUBKEY-A", "Studio Mac", now)
+	d, existing, err := s.Register("PUBKEY-A", "Studio Mac", "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestRegisterAndLookup(t *testing.T) {
 		t.Fatalf("timestamps = %v/%v, want %v", d.CreatedAt, d.UpdatedAt, now)
 	}
 
-	again, existing, err := s.Register("PUBKEY-A", "renamed", now.Add(time.Hour))
+	again, existing, err := s.Register("PUBKEY-A", "renamed", "", now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestRegisterAndLookup(t *testing.T) {
 
 	seen := map[string]bool{d.DeviceID: true}
 	for i := 0; i < 20; i++ {
-		x, _, err := s.Register("PUBKEY-"+string(rune('a'+i)), "", now)
+		x, _, err := s.Register("PUBKEY-"+string(rune('a'+i)), "", "", now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,7 +75,7 @@ func TestBumpEpoch(t *testing.T) {
 	}
 	defer s.Close()
 	now := time.Unix(1_755_600_000, 0)
-	d, _, err := s.Register("PK", "", now)
+	d, _, err := s.Register("PK", "", "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,28 +158,55 @@ func TestMigrationDropsV1VerifierColumns(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("code_* column count = %d, want 1 (code_epoch only)", n)
 	}
-	if _, _, err := s.Register("PUBKEY-B", "Laptop", now); err != nil {
+	if _, _, err := s.Register("PUBKEY-B", "Laptop", "", now); err != nil {
 		t.Fatalf("registering into a migrated database: %v", err)
+	}
+	if _, _, err := s.Register("PUBKEY-C", "", "481930275", now); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.GetByPubkey("PUBKEY-C"); err != nil || got.DeviceID == "481930275" {
+		t.Fatalf("a migrated device's id must be claimed: %+v, %v", got, err)
 	}
 }
 
-func TestNewDeviceIDShape(t *testing.T) {
-	seen := map[string]bool{}
-	for i := 0; i < 200; i++ {
-		id, err := NewDeviceID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !protocol.ValidDeviceID(id) {
-			t.Fatalf("id %q is not 9 digits", id)
-		}
-		if id[0] == '0' {
-			t.Fatalf("id %q starts with 0", id)
-		}
-		seen[id] = true
+func TestRegisterPreferredDeviceID(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(seen) < 190 {
-		t.Fatalf("only %d unique ids out of 200 — generator is not random enough", len(seen))
+	defer s.Close()
+	now := time.Unix(1_755_600_000, 0)
+
+	honoured, existing, err := s.Register("PK-A", "", "481930275", now)
+	if err != nil || existing || honoured.DeviceID != "481930275" {
+		t.Fatalf("a free preferred id for a new key = %+v existing=%v err=%v", honoured, existing, err)
+	}
+
+	known, existing, err := s.Register("PK-A", "", "222222222", now)
+	if err != nil || !existing || known.DeviceID != "481930275" {
+		t.Fatalf("a known key asking for another id = %+v existing=%v err=%v", known, existing, err)
+	}
+
+	stranger, existing, err := s.Register("PK-B", "", "481930275", now)
+	if err != nil || existing || stranger.DeviceID == "481930275" || !protocol.ValidDeviceID(stranger.DeviceID) {
+		t.Fatalf("a stranger asking for a held id = %+v existing=%v err=%v", stranger, existing, err)
+	}
+
+	if _, err := s.db.Exec(`DELETE FROM devices WHERE device_id = ?`, "481930275"); err != nil {
+		t.Fatal(err)
+	}
+	tombstoned, _, err := s.Register("PK-C", "", "481930275", now)
+	if err != nil || tombstoned.DeviceID == "481930275" {
+		t.Fatalf("a tombstoned id went to another key: %+v err=%v", tombstoned, err)
+	}
+	back, existing, err := s.Register("PK-A", "", "481930275", now)
+	if err != nil || existing || back.DeviceID != "481930275" {
+		t.Fatalf("the original key could not reclaim its tombstoned id: %+v existing=%v err=%v", back, existing, err)
+	}
+
+	malformed, _, err := s.Register("PK-D", "", "12345", now)
+	if err != nil || !protocol.ValidDeviceID(malformed.DeviceID) {
+		t.Fatalf("a malformed preferred id = %+v err=%v", malformed, err)
 	}
 }
 

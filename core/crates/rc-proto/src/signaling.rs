@@ -78,6 +78,9 @@ pub struct Register {
     pub sig: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
+    /// The id this key held before the registry lost its record; honoured only when free.
+    #[serde(rename = "preferredDeviceId", default, skip_serializing_if = "String::is_empty")]
+    pub preferred_device_id: String,
     pub code: CodeVerifier,
 }
 

@@ -10,12 +10,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math/big"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 
+	"rc-signal/internal/deviceid"
 	protocol "rcprotocol"
 )
 
@@ -277,6 +277,10 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, err
 	}
+	if _, err := db.Exec(deviceid.ClaimsSchema); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &DB{db: db}, nil
 }
 
@@ -298,23 +302,6 @@ func NewID(prefix string) string {
 		panic(err)
 	}
 	return prefix + hex.EncodeToString(b)
-}
-
-func NewDeviceID() (string, error) {
-	buf := make([]byte, 9)
-	first, err := rand.Int(rand.Reader, big.NewInt(9))
-	if err != nil {
-		return "", err
-	}
-	buf[0] = byte('1' + first.Int64())
-	for i := 1; i < 9; i++ {
-		n, err := rand.Int(rand.Reader, big.NewInt(10))
-		if err != nil {
-			return "", err
-		}
-		buf[i] = byte('0' + n.Int64())
-	}
-	return string(buf), nil
 }
 
 func NormaliseEmail(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
@@ -409,40 +396,24 @@ func (d *DB) HardwareSeen(hash string) (bool, error) {
 	return d.exists(`SELECT COUNT(1) FROM devices WHERE hardware_hash=? AND hardware_hash<>''`, hash)
 }
 
-func (d *DB) InsertDevice(dev Device) error {
-	_, err := d.db.Exec(`INSERT INTO devices
- (device_id, account_id, label, platform, pubkey, hardware_hash, created_at, linked_at, last_seen, trial_ends_at, unlinked)
- VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		dev.DeviceID, dev.AccountID, dev.Label, dev.Platform, dev.Pubkey, dev.HardwareHash,
-		dev.CreatedAt, dev.LinkedAt, dev.LastSeen, dev.TrialEndsAt, boolInt(dev.Unlinked))
-	return err
-}
-
-// RegisterDevice is idempotent by pubkey: a known key returns its record and existing=true.
-func (d *DB) RegisterDevice(dev Device) (*Device, bool, error) {
+// RegisterDevice is idempotent by pubkey; preferredDeviceID is honoured per deviceid.Assign.
+func (d *DB) RegisterDevice(dev Device, preferredDeviceID string) (*Device, bool, error) {
 	if dev.Pubkey == "" {
 		return nil, false, errors.New("a device needs a public key")
 	}
-	if found, err := d.DeviceByPubkey(dev.Pubkey); err == nil {
-		return found, true, nil
-	} else if !errors.Is(err, ErrNotFound) {
+	id, existing, err := deviceid.Assign(deviceid.SQL{DB: d.db, Insert: func(tx *sql.Tx, id string) error {
+		_, err := tx.Exec(`INSERT INTO devices
+ (device_id, account_id, label, platform, pubkey, hardware_hash, created_at, linked_at, last_seen, trial_ends_at, unlinked)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			id, dev.AccountID, dev.Label, dev.Platform, dev.Pubkey, dev.HardwareHash,
+			dev.CreatedAt, dev.LinkedAt, dev.LastSeen, dev.TrialEndsAt, boolInt(dev.Unlinked))
+		return err
+	}}, dev.Pubkey, preferredDeviceID)
+	if err != nil {
 		return nil, false, err
 	}
-	for attempt := 0; attempt < 20; attempt++ {
-		id, err := NewDeviceID()
-		if err != nil {
-			return nil, false, err
-		}
-		dev.DeviceID = id
-		if err := d.InsertDevice(dev); err == nil {
-			created, err := d.DeviceByID(id)
-			return created, false, err
-		}
-		if found, err := d.DeviceByPubkey(dev.Pubkey); err == nil {
-			return found, true, nil
-		}
-	}
-	return nil, false, errors.New("could not allocate a unique device id")
+	found, err := d.DeviceByID(id)
+	return found, existing, err
 }
 
 func (d *DB) BumpEpoch(deviceID string) (*Device, error) {

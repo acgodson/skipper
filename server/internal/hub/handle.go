@@ -153,6 +153,10 @@ func (h *Hub) acceptRegisterLocked(c *Client, e protocol.Envelope) (protocol.Reg
 		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "register must not carry a code verifier", 0)
 		return p, false
 	}
+	if p.PreferredDeviceID != "" && !protocol.ValidDeviceID(p.PreferredDeviceID) {
+		h.sendErrLocked(c, e.ID, protocol.ErrBadRequest, "preferredDeviceId must be 9 digits", 0)
+		return p, false
+	}
 	if len(p.Label) > protocol.MaxLabelLen {
 		p.Label = p.Label[:protocol.MaxLabelLen]
 	}
@@ -173,7 +177,7 @@ func (h *Hub) handleRegister(c *Client, e protocol.Envelope) {
 	}
 
 	ctx, cancel := registryContext()
-	dev, existing, err := h.opt.Registry.Register(ctx, p.Pubkey, p.Label)
+	dev, existing, err := h.opt.Registry.Register(ctx, p.Pubkey, p.Label, p.PreferredDeviceID)
 	cancel()
 
 	h.mu.Lock()
@@ -186,7 +190,8 @@ func (h *Hub) handleRegister(c *Client, e protocol.Envelope) {
 		h.issueChallengeLocked(c)
 		return
 	}
-	h.log.Info("device registered", "deviceId", dev.DeviceID, "existing", existing)
+	h.log.Info("device registered", "deviceId", dev.DeviceID, "existing", existing,
+		"preferredHonoured", p.PreferredDeviceID != "" && p.PreferredDeviceID == dev.DeviceID)
 	h.sendLocked(c, protocol.TypeRegisterOK, e.ID, protocol.RegisterOK{
 		DeviceID: dev.DeviceID, Existing: existing})
 

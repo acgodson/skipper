@@ -31,8 +31,8 @@ func mapStoreErr(err error) error {
 	return err
 }
 
-func (l *Local) Register(_ context.Context, pubkey, label string) (Device, bool, error) {
-	d, existing, err := l.store.Register(pubkey, label, l.clock.Now())
+func (l *Local) Register(_ context.Context, pubkey, label, preferredDeviceID string) (Device, bool, error) {
+	d, existing, err := l.store.Register(pubkey, label, preferredDeviceID, l.clock.Now())
 	if err != nil {
 		return Device{}, false, err
 	}

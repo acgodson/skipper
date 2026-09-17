@@ -79,6 +79,7 @@ public final class SignalingClient {
     }
     private var waiters: [Waiter] = []
     private var waiterCounter = 0
+    private var unclaimedChallenge: Envelope?
     private var connectionEnd: CheckedContinuation<Void, Swift.Error>?
 
     public init(config: RCConfig = .current, identity: IdentityStore, role: Wire.Role) {
@@ -203,31 +204,22 @@ public final class SignalingClient {
 
     private func handshake(on task: URLSessionWebSocketTask) async throws {
         state = .authenticating
+        unclaimedChallenge = nil
 
-        var challenge = try await expect(types: [Wire.MessageType.challenge],
-                                         timeout: config.handshakeTimeout,
-                                         what: "challenge")
-            .decodePayload(ChallengePayload.self)
-
+        var nonce = try await nextChallengeNonce(what: "challenge")
         if !identity.isServerRegistered {
-            let registered = try await register(nonce: challenge.nonce, on: task)
-            try identity.adoptServerAssignedDeviceID(registered.deviceId)
-            identity.markServerRegistered()
-            challenge = try await expect(types: [Wire.MessageType.challenge],
-                                         timeout: config.handshakeTimeout,
-                                         what: "the post-registration challenge")
-                .decodePayload(ChallengePayload.self)
+            nonce = try await register(nonce: nonce, preferredDeviceID: nil)
         }
 
-        let hello = HelloPayload(
-            deviceId: identity.deviceID,
-            pubkey: identity.publicKeyBase64,
-            sig: try signature(.hello, overNonce: challenge.nonce),
-            role: role.rawValue)
-        let reply = try await request(type: Wire.MessageType.hello, payload: hello,
-                                      expect: [Wire.MessageType.helloOK],
-                                      timeout: config.handshakeTimeout)
-        let ok = try reply.decodePayload(HelloOKPayload.self)
+        let ok: HelloOKPayload
+        do {
+            ok = try await hello(nonce: nonce)
+        } catch let error as WireError where error.serverCode == Wire.ErrorCode.unknownDevice {
+            RCLog.info("the server has no record of this Device ID; registering again with the same key")
+            let retryNonce = try await nextChallengeNonce(what: "the challenge after unknown_device")
+            let registeredNonce = try await register(nonce: retryNonce, preferredDeviceID: identity.deviceID)
+            ok = try await hello(nonce: registeredNonce)
+        }
         lastHelloOK = ok
         state = .authenticated(deviceID: ok.deviceId)
 
@@ -239,15 +231,40 @@ public final class SignalingClient {
         delegate?.signaling(self, didAuthenticate: ok)
     }
 
-    private func register(nonce: String, on task: URLSessionWebSocketTask) async throws -> RegisterOKPayload {
+    private func nextChallengeNonce(what: String) async throws -> String {
+        try await expect(types: [Wire.MessageType.challenge], timeout: config.handshakeTimeout, what: what)
+            .decodePayload(ChallengePayload.self).nonce
+    }
+
+    private func hello(nonce: String) async throws -> HelloOKPayload {
+        let hello = HelloPayload(
+            deviceId: identity.deviceID,
+            pubkey: identity.publicKeyBase64,
+            sig: try signature(.hello, overNonce: nonce),
+            role: role.rawValue)
+        let reply = try await request(type: Wire.MessageType.hello, payload: hello,
+                                      expect: [Wire.MessageType.helloOK],
+                                      timeout: config.handshakeTimeout)
+        return try reply.decodePayload(HelloOKPayload.self)
+    }
+
+    private func register(nonce: String, preferredDeviceID: String?) async throws -> String {
         let payload = RegisterPayload(
             pubkey: identity.publicKeyBase64,
             sig: try signature(.register, overNonce: nonce),
-            label: config.deviceLabel)
+            label: config.deviceLabel,
+            preferredDeviceId: preferredDeviceID)
         let reply = try await request(type: Wire.MessageType.register, payload: payload,
                                       expect: [Wire.MessageType.registerOK],
                                       timeout: config.handshakeTimeout)
-        return try reply.decodePayload(RegisterOKPayload.self)
+        let registered = try reply.decodePayload(RegisterOKPayload.self)
+        if let preferredDeviceID {
+            try identity.adoptReassignedDeviceID(registered.deviceId, previous: preferredDeviceID)
+        } else {
+            try identity.adoptServerAssignedDeviceID(registered.deviceId)
+        }
+        identity.markServerRegistered()
+        return try await nextChallengeNonce(what: "the post-registration challenge")
     }
 
     private func signature(_ purpose: SigningPurpose, overNonce nonceBase64: String) throws -> String {
@@ -310,6 +327,11 @@ public final class SignalingClient {
             return
         }
 
+        if envelope.type == Wire.MessageType.challenge {
+            unclaimedChallenge = envelope
+            return
+        }
+
         if let protocolError = envelope.asProtocolError,
            protocolError.serverCode == Wire.ErrorCode.displaced {
             delegate?.signaling(self, didReceive: envelope)
@@ -363,7 +385,11 @@ public final class SignalingClient {
     }
 
     private func expect(types: Set<String>, timeout: TimeInterval, what: String) async throws -> Envelope {
-        try await wait(re: nil, types: types, timeout: timeout, what: what)
+        if let pending = unclaimedChallenge, types.contains(pending.type) {
+            unclaimedChallenge = nil
+            return pending
+        }
+        return try await wait(re: nil, types: types, timeout: timeout, what: what)
     }
 
     private func wait(re: String?, types: Set<String>, timeout: TimeInterval, what: String) async throws -> Envelope {

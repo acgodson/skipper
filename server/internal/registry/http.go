@@ -47,9 +47,9 @@ func unexpected(what string, resp internalapi.Response) error {
 	return fmt.Errorf("%w: %s: status %d (%s)", ErrUnavailable, what, resp.Status, resp.APIError().Code)
 }
 
-func (h *HTTP) Register(ctx context.Context, pubkey, label string) (Device, bool, error) {
+func (h *HTTP) Register(ctx context.Context, pubkey, label, preferredDeviceID string) (Device, bool, error) {
 	resp, err := h.api.Do(ctx, http.MethodPost, protocol.PathInternalRegister,
-		protocol.InternalRegisterRequest{Pubkey: pubkey, Label: label})
+		protocol.InternalRegisterRequest{Pubkey: pubkey, Label: label, PreferredDeviceID: preferredDeviceID})
 	if err != nil {
 		return Device{}, false, unavailable("register", err)
 	}

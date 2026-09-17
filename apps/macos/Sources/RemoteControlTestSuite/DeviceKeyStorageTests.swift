@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Security
 import RCTestKit
 import RemoteControlCore
 
@@ -202,5 +203,52 @@ public let deviceKeyStorageSuite = TestSuite("DeviceKeyStorage", [
         try expectEqual(DeviceKeyStorage.secureEnclave.recordValue, "secureEnclave")
         try expectEqual(DeviceKeyStorage.keychain.recordValue, "keychain")
         try expectEqual(DeviceKeyStorage.file(URL(fileURLWithPath: "/tmp/x")).recordValue, "file")
+    },
+
+    // MARK: - Fail closed
+
+    TestCase("policy: a new key goes to the Secure Enclave, else the Keychain, else nowhere") {
+        let sealed = KeychainError.status(errSecNotAvailable)
+        try expectEqual(DeviceKeyPolicy.newKey(secureEnclaveFailure: nil, keychainFailure: nil), .secureEnclave)
+        guard case .keychain(let note?) = DeviceKeyPolicy.newKey(secureEnclaveFailure: sealed, keychainFailure: nil) else {
+            throw fail("a working Keychain must be used, with a note")
+        }
+        try expect(note.contains("Secure Enclave"))
+        try expectEqual(DeviceKeyPolicy.newKey(secureEnclaveFailure: sealed, keychainFailure: sealed),
+                        .refuse(.notStoredSecurely(detail: sealed.localizedDescription)),
+                        "a signed build must never fall back to the file")
+        try expectEqual(DeviceKeyPolicy.newKey(secureEnclaveFailure: KeychainError.unsigned,
+                                               keychainFailure: KeychainError.unsigned),
+                        .refuse(.unsigned))
+        let message = try expectNotNil(DeviceKeyRefusal.notStoredSecurely(detail: "x").error.localizedDescription)
+        try expect(message.hasPrefix("SkipperDesk could not store its key securely."), message)
+    },
+
+    TestCase("policy: an existing file key moves, or stays in the file with a note, never regenerates") {
+        let sealed = KeychainError.status(errSecNotAvailable)
+        try expectEqual(DeviceKeyPolicy.existingFileKey(migrationFailure: nil), .moveToKeychain)
+        guard case .keepInFile(let note) = DeviceKeyPolicy.existingFileKey(migrationFailure: sealed) else {
+            throw fail("a failed migration must keep the file key")
+        }
+        try expect(note.contains("identity file"))
+        try expectEqual(DeviceKeyPolicy.existingFileKey(migrationFailure: KeychainError.unsigned), .refuse(.unsigned))
+    },
+
+    TestCase("a new identity with no secure store fails closed and writes nothing") {
+        try await withIdentityDirectory { fileStore, blobStore in
+            blobStore.isSealed = true
+            var caught: Error?
+            do {
+                _ = try IdentityStore(fileStore: fileStore, blobStore: blobStore, devFileIdentity: false)
+            } catch {
+                caught = error
+            }
+            let error = try expectNotNil(caught, "identity creation must fail")
+            guard case .notStoredSecurely = error as? DeviceKeyStorageError else {
+                throw fail("expected DeviceKeyStorageError.notStoredSecurely, got \(error)")
+            }
+            try expect(error.localizedDescription.hasPrefix("SkipperDesk could not store its key securely."))
+            try expectNil(try fileStore.load(), "no identity file may be written, least of all one holding a key")
+        }
     },
 ])

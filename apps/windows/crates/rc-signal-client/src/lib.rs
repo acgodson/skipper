@@ -380,6 +380,7 @@ impl SignalConnection {
                 .sign(rc_identity::SigningPurpose::Register, &nonce)
                 .map_err(|e| SignalError::Protocol(e.to_string()))?,
             label: label.to_string(),
+            preferred_device_id: String::new(),
             code: code.clone(),
         };
         self.request(msg::REGISTER, &payload, msg::REGISTER_OK).await

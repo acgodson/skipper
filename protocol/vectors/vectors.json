@@ -66,6 +66,32 @@
       "note": "label is omitempty: it must be absent, not an empty string"
     },
     {
+      "name": "register_preferred_device_id",
+      "surface": "signaling",
+      "type": "register",
+      "frame": {
+        "v": 3,
+        "type": "register",
+        "id": "c-4",
+        "ts": 1755600000000,
+        "payload": {
+          "pubkey": "cHVia2V5",
+          "sig": "c2ln",
+          "preferredDeviceId": "481930275",
+          "code": {
+            "alg": "argon2id",
+            "salt": "c2FsdHNhbHRzYWx0c2FsdA==",
+            "hash": "aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g=",
+            "time": 3,
+            "memKiB": 65536,
+            "par": 1,
+            "len": 32
+          }
+        }
+      },
+      "note": "preferredDeviceId: the id this key held before the registry lost its record; omitted when empty"
+    },
+    {
       "name": "register_ok_existing",
       "surface": "signaling",
       "type": "register_ok",

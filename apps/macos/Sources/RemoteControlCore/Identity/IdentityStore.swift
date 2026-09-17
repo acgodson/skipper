@@ -133,21 +133,18 @@ public final class IdentityStore: ObservableObject {
 
         if let stored = record?.privateKeyBase64, let bytes = Data(base64Encoded: stored) {
             let existing = try DeviceKey(rawPrivateKey: bytes)
-            do {
-                return ResolvedKey(
-                    key: try KeychainDeviceKey.adopt(existing, in: blobStore),
-                    rewriteRecord: true,
-                    note: nil
-                )
-            } catch KeychainError.unsigned {
-                throw KeychainError.unsigned
-            } catch {
+            let moved = Result { try KeychainDeviceKey.adopt(existing, in: blobStore) }
+            switch DeviceKeyPolicy.existingFileKey(migrationFailure: moved.failure) {
+            case .moveToKeychain:
+                return ResolvedKey(key: try moved.get(), rewriteRecord: true, note: nil)
+            case .keepInFile(let note):
                 return ResolvedKey(
                     key: FileDeviceKey(key: existing, url: fileStore.fileURL),
                     rewriteRecord: false,
-                    note: "This Mac's key could not be moved into the Keychain, so it stays in the identity file: "
-                        + error.localizedDescription
+                    note: note
                 )
+            case .refuse(let refusal):
+                throw refusal.error
             }
         }
 
@@ -171,27 +168,17 @@ public final class IdentityStore: ObservableObject {
             return ResolvedKey(key: key, rewriteRecord: false, note: nil)
         }
 
-        var firstFailure: String?
-        do {
-            return ResolvedKey(key: try SecureEnclaveDeviceKey.create(in: blobStore), rewriteRecord: true, note: nil)
-        } catch {
-            firstFailure = error.localizedDescription
-        }
-        do {
-            return ResolvedKey(
-                key: try KeychainDeviceKey.create(in: blobStore),
-                rewriteRecord: true,
-                note: firstFailure.map { "The Secure Enclave is not usable in this build: \($0)" }
-            )
-        } catch KeychainError.unsigned {
-            throw KeychainError.unsigned
-        } catch {
-            return ResolvedKey(
-                key: FileDeviceKey(key: DeviceKey(), url: fileStore.fileURL),
-                rewriteRecord: true,
-                note: "Neither the Secure Enclave nor the Keychain could hold this Mac's key, so it is in the "
-                    + "identity file: \(error.localizedDescription)"
-            )
+        let enclave = Result<DeviceSigningKey, Error> { try SecureEnclaveDeviceKey.create(in: blobStore) }
+        let keychain = enclave.failure == nil
+            ? nil
+            : Result<DeviceSigningKey, Error> { try KeychainDeviceKey.create(in: blobStore) }
+        switch DeviceKeyPolicy.newKey(secureEnclaveFailure: enclave.failure, keychainFailure: keychain?.failure) {
+        case .secureEnclave:
+            return ResolvedKey(key: try enclave.get(), rewriteRecord: true, note: nil)
+        case .keychain(let note):
+            return ResolvedKey(key: try (keychain ?? enclave).get(), rewriteRecord: true, note: note)
+        case .refuse(let refusal):
+            throw refusal.error
         }
     }
 
@@ -243,6 +230,15 @@ public final class IdentityStore: ObservableObject {
         guard canonical != deviceID else { return }
         try persist(deviceID: canonical, serverRegistered: isServerRegistered)
         deviceID = canonical
+    }
+
+    public func adoptReassignedDeviceID(_ assigned: String, previous: String) throws {
+        try adoptServerAssignedDeviceID(assigned)
+        guard deviceID != previous else { return }
+        let notice = "The server no longer knew this Mac, and its old Device ID \(DeviceID.formatted(previous)) "
+            + "now belongs to another Mac, so this Mac was given the new Device ID above. "
+            + "Share the new ID with anyone who connects to this Mac."
+        permissionWarning = [permissionWarning, notice].compactMap { $0 }.joined(separator: "\n")
     }
 
     public func markServerRegistered() {

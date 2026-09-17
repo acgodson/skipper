@@ -74,6 +74,19 @@ public let wireCodecSuite = TestSuite("Wire codec (PROTOCOL.md §0, §2, §5, §
         try expectEqual(payload["label"] as? String, "Studio Mac")
     },
 
+    TestCase("register carries preferredDeviceId only when set") {
+        let value = RegisterPayload(pubkey: "cHVi", sig: "c2ln", label: nil, preferredDeviceId: "481930275")
+        try expectEqual(try roundTrip("register", value), value)
+
+        func payload(_ value: RegisterPayload) throws -> [String: Any] {
+            let data = try Envelope.encode(type: "register", payload: value)
+            let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            return object["payload"] as! [String: Any]
+        }
+        try expectEqual(try payload(value)["preferredDeviceId"] as? String, "481930275")
+        try expectNil(try payload(RegisterPayload(pubkey: "cHVi", sig: "c2ln", label: nil))["preferredDeviceId"])
+    },
+
     TestCase("register_ok round-trips") {
         let value = RegisterOKPayload(deviceId: "481930275", existing: true)
         try expectEqual(try roundTrip("register_ok", value), value)

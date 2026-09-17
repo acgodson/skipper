@@ -209,8 +209,9 @@ public struct RegisterPayload: Codable, Equatable {
     public var pubkey: String
     public var sig: String
     public var label: String?
-    public init(pubkey: String, sig: String, label: String?) {
-        self.pubkey = pubkey; self.sig = sig; self.label = label
+    public var preferredDeviceId: String?
+    public init(pubkey: String, sig: String, label: String?, preferredDeviceId: String? = nil) {
+        self.pubkey = pubkey; self.sig = sig; self.label = label; self.preferredDeviceId = preferredDeviceId
     }
 }
 

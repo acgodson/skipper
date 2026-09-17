@@ -359,9 +359,10 @@ type SessionStopReport struct {
 
 // InternalRegisterRequest is idempotent by Pubkey: a known key answers with its existing id.
 type InternalRegisterRequest struct {
-	Pubkey   string `json:"pubkey"`
-	Label    string `json:"label,omitempty"`
-	Platform string `json:"platform,omitempty"`
+	Pubkey            string `json:"pubkey"`
+	Label             string `json:"label,omitempty"`
+	Platform          string `json:"platform,omitempty"`
+	PreferredDeviceID string `json:"preferredDeviceId,omitempty"`
 }
 
 type InternalRegisterResponse struct {

@@ -29,11 +29,15 @@ func (s *Server) internalRegister(w http.ResponseWriter, r *http.Request) {
 		s.badRequest(w, r, "'pubkey' is not a base64 DER SPKI P-256 key")
 		return
 	}
+	if req.PreferredDeviceID != "" && !protocol.ValidDeviceID(req.PreferredDeviceID) {
+		s.badRequest(w, r, "'preferredDeviceId' must be 9 digits")
+		return
+	}
 	now := s.nowMS()
 	device, existing, err := s.opt.DB.RegisterDevice(apidb.Device{
 		Label: trimmedLabel(req.Label), Platform: req.Platform, Pubkey: req.Pubkey,
 		CreatedAt: now, LastSeen: now,
-	})
+	}, req.PreferredDeviceID)
 	if err != nil {
 		s.internalError(w, r, err)
 		return

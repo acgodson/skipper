@@ -111,11 +111,11 @@ func newClient(t *testing.T) (*HTTP, *fakeAPI, *httptest.Server, *clockx.Fake) {
 func TestHTTPRegisterIsIdempotentByPubkey(t *testing.T) {
 	reg, _, _, _ := newClient(t)
 	ctx := context.Background()
-	first, existing, err := reg.Register(ctx, "pk-a", "Mac")
+	first, existing, err := reg.Register(ctx, "pk-a", "Mac", "")
 	if err != nil || existing || first.DeviceID != "123456789" || first.Pubkey != "pk-a" || first.CodeEpoch != 1 {
 		t.Fatalf("first register = %+v existing=%v err=%v", first, existing, err)
 	}
-	again, existing, err := reg.Register(ctx, "pk-a", "Mac")
+	again, existing, err := reg.Register(ctx, "pk-a", "Mac", "")
 	if err != nil || !existing || again.DeviceID != first.DeviceID {
 		t.Fatalf("second register = %+v existing=%v err=%v", again, existing, err)
 	}
@@ -124,7 +124,7 @@ func TestHTTPRegisterIsIdempotentByPubkey(t *testing.T) {
 func TestHTTPLookupIsCachedAndBumpEpochInvalidates(t *testing.T) {
 	reg, api, _, clock := newClient(t)
 	ctx := context.Background()
-	dev, _, err := reg.Register(ctx, "pk-b", "")
+	dev, _, err := reg.Register(ctx, "pk-b", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,13 +168,13 @@ func TestHTTPLookupIsCachedAndBumpEpochInvalidates(t *testing.T) {
 func TestHTTPOutageIsUnavailable(t *testing.T) {
 	reg, api, srv, clock := newClient(t)
 	ctx := context.Background()
-	dev, _, err := reg.Register(ctx, "pk-c", "")
+	dev, _, err := reg.Register(ctx, "pk-c", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	api.failWith(http.StatusServiceUnavailable)
-	if _, _, err := reg.Register(ctx, "pk-d", ""); !errors.Is(err, ErrUnavailable) {
+	if _, _, err := reg.Register(ctx, "pk-d", "", ""); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("register on 503: err = %v, want ErrUnavailable", err)
 	}
 	if err := reg.BumpEpoch(ctx, dev.DeviceID); !errors.Is(err, ErrUnavailable) {
@@ -196,7 +196,7 @@ func TestHTTPOutageIsUnavailable(t *testing.T) {
 	if _, err := reg.Lookup(ctx, dev.DeviceID); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("lookup with rc-api gone: err = %v, want ErrUnavailable", err)
 	}
-	if _, _, err := reg.Register(ctx, "pk-e", ""); !errors.Is(err, ErrUnavailable) {
+	if _, _, err := reg.Register(ctx, "pk-e", "", ""); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("register with rc-api gone: err = %v, want ErrUnavailable", err)
 	}
 }

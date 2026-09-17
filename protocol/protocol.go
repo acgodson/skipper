@@ -166,10 +166,11 @@ func (c CodeVerifier) Validate() error {
 
 // Register creates a device and mints a deviceId. Idempotent per pubkey.
 type Register struct {
-	Pubkey string       `json:"pubkey"` // base64 DER SPKI, P-256
-	Sig    string       `json:"sig"`    // base64 DER ECDSA-SHA256 over SigningMessage(PurposeRegister, nonce)
-	Label  string       `json:"label,omitempty"`
-	Code   CodeVerifier `json:"code"`
+	Pubkey            string       `json:"pubkey"` // base64 DER SPKI, P-256
+	Sig               string       `json:"sig"`    // base64 DER ECDSA-SHA256 over SigningMessage(PurposeRegister, nonce)
+	Label             string       `json:"label,omitempty"`
+	PreferredDeviceID string       `json:"preferredDeviceId,omitempty"`
+	Code              CodeVerifier `json:"code"`
 }
 
 type RegisterOK struct {

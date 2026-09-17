@@ -157,6 +157,25 @@ public let identitySuite = TestSuite("IdentityStore", [
         }
     },
 
+    TestCase("a re-registration that keeps the Device ID says nothing; one that moves it says so") {
+        try await withIdentity { fileStore in
+            let store = try IdentityStore(fileStore: fileStore)
+            try store.adoptServerAssignedDeviceID("482719351")
+            let key = store.publicKeyBase64
+
+            try store.adoptReassignedDeviceID("482719351", previous: "482719351")
+            try expectEqual(store.deviceID, "482719351")
+            try expectNil(store.permissionWarning, "keeping the id is not news")
+
+            try store.adoptReassignedDeviceID("913004287", previous: "482719351")
+            try expectEqual(store.deviceID, "913004287")
+            let notice = try expectNotNil(store.permissionWarning)
+            try expect(notice.contains("482 719 351"), "the notice must name the old id: \(notice)")
+            try expectEqual(store.publicKeyBase64, key, "a new id must never mean a new key")
+            try expectEqual(try IdentityStore(fileStore: fileStore).deviceID, "913004287", "must persist")
+        }
+    },
+
     TestCase("signing works through the store and rejects the wrong message") {
         try await withIdentity { fileStore in
             let store = try IdentityStore(fileStore: fileStore)

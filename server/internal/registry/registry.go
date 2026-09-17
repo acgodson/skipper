@@ -25,7 +25,7 @@ type Device struct {
 }
 
 type Registry interface {
-	Register(ctx context.Context, pubkey, label string) (dev Device, existing bool, err error)
+	Register(ctx context.Context, pubkey, label, preferredDeviceID string) (dev Device, existing bool, err error)
 	Lookup(ctx context.Context, deviceID string) (Device, error)
 	BumpEpoch(ctx context.Context, deviceID string) error
 }

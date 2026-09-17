@@ -63,6 +63,10 @@ func main() {
 		"label is omitempty: it must be absent, not an empty string", "c-2", "", ts,
 		p.Register{Pubkey: "cHVia2V5", Sig: "c2ln", Code: recCode})
 
+	add("register_preferred_device_id", "signaling", p.TypeRegister,
+		"preferredDeviceId: the id this key held before the registry lost its record; omitted when empty", "c-4", "", ts,
+		p.Register{Pubkey: "cHVia2V5", Sig: "c2ln", PreferredDeviceID: "481930275", Code: recCode})
+
 	add("register_ok_existing", "signaling", p.TypeRegisterOK, "", "", "c-1", ts,
 		p.RegisterOK{DeviceID: "481930275", Existing: true})
 

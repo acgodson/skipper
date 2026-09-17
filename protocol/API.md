@@ -410,7 +410,7 @@ services and nothing else. A device token or user session is `401 unauthenticate
 
 | Call | Body | Effect |
 |---|---|---|
-| `POST /internal/devices/register` | `pubkey`, optional `label`, optional `platform` | The device registry. Answers `{deviceId, existing}` — `201` for a new key, `200` for a known one. Idempotent by `pubkey`: a known key always gets its existing `deviceId` and nothing about the record changes. |
+| `POST /internal/devices/register` | `pubkey`, optional `label`, optional `platform`, optional `preferredDeviceId` (9 digits, else `400`) | The device registry. Answers `{deviceId, existing}` — `201` for a new key, `200` for a known one. Idempotent by `pubkey`: a known key always gets its existing `deviceId` and nothing about the record changes. A new key gets `preferredDeviceId` only when that id is free (§6.1); otherwise a fresh id. |
 | `GET /internal/devices/{deviceId}` | — | `{deviceId, pubkey, codeEpoch}`, used to verify `hello` (PROTOCOL.md §2.4) and to pin both keys at `connect_req`. Unknown id is `404 not_found`. |
 | `POST /internal/devices/{deviceId}/epoch` | `{}` | Bumps `codeEpoch` (PROTOCOL.md §2.15 `refresh_code`, §3.2 session-token epoch). Answers the updated `{deviceId, pubkey, codeEpoch}`; unknown id is `404`. |
 | `POST /internal/sessions/start` | `sessionId`, `hostDeviceId`, `controllerDeviceId`, `startedAt` | Opens the accounting record and claims the host's concurrency slot. |
@@ -423,6 +423,13 @@ This API is the only place a `deviceId` is minted. The signaling server holds no
 its own in a deployment; it asks the calls above, with bounded timeouts (3 s per call), and may
 cache `GET /internal/devices/{deviceId}` answers briefly, dropping a device's entry whenever it
 bumps that device's epoch.
+
+Every id this registry has ever assigned is remembered with the key it went to, permanently,
+even if the device record itself is later removed. `preferredDeviceId` (PROTOCOL.md §2.2) is
+honoured only for a key the registry does not know, and only when no device holds the id and it
+was never assigned to a different key. It helps only the key that asks for it: a stranger naming
+another device's id is given a fresh id, never that one. Its purpose is that devices keep their
+ids when this registry starts from an empty database (a reset or a move to a new account).
 
 When this API cannot be reached or answers `5xx`, the signaling server refuses `register`,
 `hello`, `refresh_code` and `connect_req` with `error{code:"unavailable", retryAfterSec}`. It never

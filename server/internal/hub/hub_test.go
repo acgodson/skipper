@@ -95,10 +95,22 @@ func (f *fakeEntitlement) awaitReports(t *testing.T, starts, stops int) ([]proto
 }
 
 type switchableRegistry struct {
-	registry.Registry
-	mu   sync.Mutex
-	down bool
-	gate chan struct{}
+	mu      sync.Mutex
+	backend registry.Registry
+	down    bool
+	gate    chan struct{}
+}
+
+func (r *switchableRegistry) inner() registry.Registry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.backend
+}
+
+func (r *switchableRegistry) replace(backend registry.Registry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.backend = backend
 }
 
 func (r *switchableRegistry) setDown(down bool) {
@@ -126,11 +138,11 @@ func (r *switchableRegistry) state() (bool, chan struct{}) {
 	return r.down, r.gate
 }
 
-func (r *switchableRegistry) Register(ctx context.Context, pubkey, label string) (registry.Device, bool, error) {
+func (r *switchableRegistry) Register(ctx context.Context, pubkey, label, preferredDeviceID string) (registry.Device, bool, error) {
 	if down, _ := r.state(); down {
 		return registry.Device{}, false, registry.ErrUnavailable
 	}
-	return r.Registry.Register(ctx, pubkey, label)
+	return r.inner().Register(ctx, pubkey, label, preferredDeviceID)
 }
 
 func (r *switchableRegistry) Lookup(ctx context.Context, deviceID string) (registry.Device, error) {
@@ -141,14 +153,14 @@ func (r *switchableRegistry) Lookup(ctx context.Context, deviceID string) (regis
 	if down {
 		return registry.Device{}, registry.ErrUnavailable
 	}
-	return r.Registry.Lookup(ctx, deviceID)
+	return r.inner().Lookup(ctx, deviceID)
 }
 
 func (r *switchableRegistry) BumpEpoch(ctx context.Context, deviceID string) error {
 	if down, _ := r.state(); down {
 		return registry.ErrUnavailable
 	}
-	return r.Registry.BumpEpoch(ctx, deviceID)
+	return r.inner().BumpEpoch(ctx, deviceID)
 }
 
 type harness struct {
@@ -169,7 +181,7 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(func() { st.Close() })
 	clk := clockx.NewFake()
 	ent := newFakeEntitlement()
-	reg := &switchableRegistry{Registry: registry.NewLocal(st, clk)}
+	reg := &switchableRegistry{backend: registry.NewLocal(st, clk)}
 	h := New(Options{
 		Registry:    reg,
 		Entitlement: ent,
@@ -1307,6 +1319,81 @@ func TestRegistryOutageAnswersUnavailableAndNeverMintsAnID(t *testing.T) {
 	known.send(protocol.TypeRefreshCode, map[string]any{})
 	if got := known.lastErr().Code; got != protocol.ErrUnavailable {
 		t.Fatalf("refresh_code during an outage: error = %q, want unavailable", got)
+	}
+}
+
+func (hn *harness) resetBackend() {
+	hn.t.Helper()
+	fresh, err := store.Open(":memory:")
+	if err != nil {
+		hn.t.Fatal(err)
+	}
+	hn.t.Cleanup(func() { fresh.Close() })
+	hn.store = fresh
+	hn.reg.replace(registry.NewLocal(fresh, hn.clock))
+}
+
+func (p *peer) reregister(preferred string) protocol.RegisterOK {
+	p.t.Helper()
+	p.send(protocol.TypeRegister, protocol.Register{
+		Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeRegister, false), PreferredDeviceID: preferred})
+	ok := unmarshal[protocol.RegisterOK](p.t, p.last(protocol.TypeRegisterOK))
+	p.deviceID = ok.DeviceID
+	return ok
+}
+
+func TestReRegisterAfterBackendResetKeepsTheDeviceID(t *testing.T) {
+	hn := newHarness(t)
+	host := hn.newPeer()
+	id := host.register("Studio Mac")
+	hn.hub.RemoveClient(host.c)
+
+	hn.resetBackend()
+	hn.reconnect(host)
+	host.send(protocol.TypeHello, protocol.Hello{
+		DeviceID: id, Pubkey: host.pubB64, Sig: host.sig(protocol.PurposeHello, false), Role: protocol.RoleHost})
+	if got := host.lastErr().Code; got != protocol.ErrUnknownDevice {
+		t.Fatalf("hello against a reset backend = %q, want unknown_device", got)
+	}
+
+	again := host.reregister(id)
+	if again.DeviceID != id || again.Existing {
+		t.Fatalf("re-register = %+v, want the same id %q as a new record", again, id)
+	}
+	if ok := host.hello(protocol.RoleHost); ok.DeviceID != id || !hn.hub.IsOnline(id) {
+		t.Fatalf("hello after re-register = %+v online=%v", ok, hn.hub.IsOnline(id))
+	}
+}
+
+func TestReRegisterCannotTakeAnotherKeysDeviceID(t *testing.T) {
+	hn := newHarness(t)
+	host := hn.newPeer()
+	id := host.register("Studio Mac")
+	hn.hub.RemoveClient(host.c)
+	hn.resetBackend()
+
+	squatter := hn.newPeer()
+	if got := squatter.reregister(id); got.DeviceID != id {
+		t.Fatalf("the first key to ask for a free id should get it, got %+v", got)
+	}
+
+	hn.reconnect(host)
+	moved := host.reregister(id)
+	if moved.DeviceID == id || !protocol.ValidDeviceID(moved.DeviceID) {
+		t.Fatalf("a held id was handed to a second key: %+v", moved)
+	}
+	host.hello(protocol.RoleHost)
+
+	stranger := hn.newPeer()
+	if got := stranger.reregister(moved.DeviceID); got.DeviceID == moved.DeviceID {
+		t.Fatalf("a stranger claimed the host's id %q", moved.DeviceID)
+	}
+
+	bad := hn.newPeer()
+	bad.send(protocol.TypeRegister, protocol.Register{
+		Pubkey: bad.pubB64, Sig: bad.sig(protocol.PurposeRegister, false), PreferredDeviceID: "12ab"})
+	if got := bad.lastErr().Code; got != protocol.ErrBadRequest {
+		t.Fatalf("malformed preferredDeviceId = %q, want bad_request", got)
 	}
 }
 

@@ -32,6 +32,10 @@ The `sdp` signing string itself is unchanged: `"skipperdesk/sdp/v1|" sessionId "
 is exactly the domain-separated message for purpose `sdp` with payload
 `sessionId "|" sdpType "|" fp`. `protocol/vectors/signing-vectors.json` pins every purpose.
 
+A later, additive v3 change: `register` accepts an optional `preferredDeviceId`, so a device
+keeps its id after the registry loses its data (§2.2). An endpoint that ignores the field still
+interoperates; the version number is unchanged.
+
 ---
 
 ## v2 changes (summary)
@@ -177,18 +181,43 @@ Every message on every surface uses the same envelope:
 
 ### 2.2 `register` — client → server
 
-First-run only. Creates a device record and mints a `deviceId`.
+First run, and again after `hello` answers `unknown_device` (see "Re-registering" below).
+Creates a device record and mints a `deviceId`.
 
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
 | `pubkey` | string | yes | base64 DER SPKI, P-256. |
 | `sig` | string | yes | *v3:* base64 DER ECDSA-SHA256 over `"skipperdesk/register/v1\|"` ‖ the raw 32 `nonce` bytes of the current challenge (§3.1). Proves possession of the private key. |
 | `label` | string | no | Human label, ≤ 64 chars, e.g. `"Studio Mac"`. Stored verbatim; not secret. |
+| `preferredDeviceId` | string | no | 9 digits. The `deviceId` this key held before the registry lost its record. Omitted when empty; any other shape is `error{bad_request}`. |
 | `code` | object | yes | *v1 only.* Access-code verifier, see §2.3. **REMOVED in v2.** |
 
 If this `pubkey` is already registered, the server **does not** create a second device: it
 returns `register_ok` with the existing `deviceId` and leaves the stored code untouched.
 Registration is therefore idempotent per key.
+
+The registry decides the `deviceId` in this order:
+
+1. **Known `pubkey`:** its existing `deviceId`, `existing: true`. `preferredDeviceId` is ignored.
+2. **New `pubkey`, `preferredDeviceId` free:** that id, `existing: false`. "Free" means no
+   device holds it now **and** it has never been assigned to any other `pubkey`. The registry
+   keeps a permanent record of every id it has ever assigned and the key it went to (a
+   tombstone that outlives the device record), so an id is never handed to a second key.
+3. **Otherwise:** a fresh random id, `existing: false`. A `preferredDeviceId` held by, or once
+   assigned to, a different key is silently ignored.
+
+`preferredDeviceId` only ever helps the key that asks for it, and only when the id is free: the
+`sig` already proves possession of `pubkey`, and a stranger asking for someone else's id gets a
+fresh id instead. It therefore cannot be used to claim, displace or impersonate another device.
+Its only purpose is that a device keeps its id across a registry that lost its data (a fresh
+database, a move to a new deployment).
+
+**Re-registering.** A client whose identity says it is registered, but whose `hello` is answered
+with `error{unknown_device}`, sends `register` once on that connection with the **same key** and
+`preferredDeviceId` set to its current id, then sends `hello` with the id `register_ok` returned.
+If that id differs (the old one was taken), the client adopts it and tells the user plainly. It
+never generates a new key for this. If `hello` still fails, the connection attempt ends and the
+client reconnects with its normal backoff (§4.3); it does not retry in a tight loop.
 
 Reply: **`register_ok`**
 
@@ -842,7 +871,7 @@ Nothing else may be sent on `hi`.
 | `unsupported` | Unknown `type` for this surface. | Ignore. |
 | `unauthenticated` | Sent an authenticated message while `CHALLENGED`. | Complete `hello` first. |
 | `bad_signature` | Signature invalid, key mismatch, or nonce replayed/expired. | Re-challenge and retry once; then treat the identity as broken. |
-| `unknown_device` | No such `deviceId`. | Surface "device not found". |
+| `unknown_device` | No such `deviceId`. | On `hello`: re-register once with `preferredDeviceId` (§2.2), then `hello` again; if that fails, reconnect with backoff. Elsewhere: surface "device not found". |
 | `bad_code` | *v1 only.* Access code did not verify. A v2 server never sends it. | Prompt again; count locally too. |
 | `offline` | Target host has no live authenticated socket. | Show ○ Offline, keep watching presence. |
 | `busy` | Host already has an active session (any state but `closed`). | If it might be *your* session, `resume`. Otherwise surface "in use". |
