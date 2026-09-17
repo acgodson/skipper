@@ -16,12 +16,9 @@ hits=$(grep -rnE "$FORBIDDEN" apps/macos/Sources server protocol 2>/dev/null | g
 if [[ -n "$hits" ]]; then echo "$hits"; report "forbidden API referenced above"; else echo "  ok    none present"; fi
 
 echo "== 2. No WebKit/JavaScriptCore linked into the built binary"
-# Look in dist/ first, then the installed location. Skipping this check is NOT
-# acceptable: it is the only one that inspects the artefact people actually run,
-# and a guard that reports PASSED while verifying nothing is worse than no guard.
 BIN=""
-for candidate in dist/RemoteControl.app/Contents/MacOS/RemoteControl \
-                 /Applications/RemoteControl.app/Contents/MacOS/RemoteControl; do
+for candidate in dist/SkipperDesk.app/Contents/MacOS/SkipperDesk \
+                 /Applications/SkipperDesk.app/Contents/MacOS/SkipperDesk; do
   [[ -f "$candidate" ]] && { BIN="$candidate"; break; }
 done
 if [[ -n "$BIN" ]]; then
@@ -30,7 +27,6 @@ if [[ -n "$BIN" ]]; then
   [[ "$n" -eq 0 ]] && echo "  ok    0 WebKit/JavaScriptCore references" || report "binary links WebKit/JavaScriptCore"
   u=$(nm -u "$BIN" 2>/dev/null | grep -icE 'wkweb|jscontext|kCFNetworkProxies|NEVPN|NETunnel' || true)
   [[ "$u" -eq 0 ]] && echo "  ok    0 browser/proxy/VPN symbols" || report "binary imports browser/proxy/VPN symbols"
-  # WebRTC must be OUR embedded framework, not something borrowed from a browser.
   if otool -L "$BIN" | grep -q '@rpath/WebRTC.framework'; then
     echo "  ok    WebRTC is the app's own embedded framework"
   else
@@ -41,7 +37,7 @@ else
 fi
 
 echo "== 3. No system/browser proxy or VPN entitlements requested"
-PLIST="${BIN%/MacOS/RemoteControl}/Info.plist"
+PLIST="${BIN%/MacOS/SkipperDesk}/Info.plist"
 if [[ -n "$BIN" && -f "$PLIST" ]]; then
   if grep -qE 'NetworkExtension|com\.apple\.developer\.networking' "$PLIST"; then
     report "Info.plist requests networking-extension capabilities"

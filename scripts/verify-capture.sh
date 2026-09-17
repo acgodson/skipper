@@ -6,7 +6,7 @@
 # scripts/test-media.sh proves the media pipeline with a synthetic frame source,
 # because a headless CLI process can never hold a Screen Recording grant (TCC
 # attributes it to the terminal). This script covers the other half: it runs the
-# actual RemoteControl.app as the HOST, so the grant applies to the bundle that
+# actual SkipperDesk.app as the HOST, so the grant applies to the bundle that
 # has it, and connects a headless controller to measure what comes out.
 #
 # Reports, from libwebrtc's own counters and from `ps`:
@@ -31,19 +31,19 @@
 # real 1920x1200 desktop silently fell back to SOFTWARE VP8 and pinned a core.
 # Hence the codec assertion below: a software codec now fails this script.
 #
-# Prerequisite: RemoteControl.app must have Screen Recording permission. If it
+# Prerequisite: SkipperDesk.app must have Screen Recording permission. If it
 # does not, this script says so and stops — it does not pretend.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_BUNDLE="${ROOT}/dist/RemoteControl.app"
-APP="${APP_BUNDLE}/Contents/MacOS/RemoteControl"
+APP_BUNDLE="${ROOT}/dist/SkipperDesk.app"
+APP="${APP_BUNDLE}/Contents/MacOS/SkipperDesk"
 NODE="${ROOT}/apps/macos/.build/debug/rc-node"
 W="$(mktemp -d -t rc-verify)"
 IDLE_SECONDS="${RC_IDLE_SECONDS:-15}"
 
 cleanup() {
-  pkill -f "RemoteControl.app/Contents/MacOS/RemoteControl" 2>/dev/null
+  pkill -f "SkipperDesk.app/Contents/MacOS/SkipperDesk" 2>/dev/null
   pkill -f "$NODE" 2>/dev/null
   [[ "${RC_KEEP_LOGS:-0}" == "1" ]] && echo "logs kept in $W" || rm -rf "$W"
 }
@@ -69,14 +69,14 @@ PY
 }
 lines_in() { wc -l < "$1" 2>/dev/null | tr -d ' '; }
 
-echo "== starting RemoteControl.app as the HOST"
-pkill -f "RemoteControl.app/Contents/MacOS/RemoteControl" 2>/dev/null; sleep 1
+echo "== starting SkipperDesk.app as the HOST"
+pkill -f "SkipperDesk.app/Contents/MacOS/SkipperDesk" 2>/dev/null; sleep 1
 mkdir -p "$W/id-app"
 # A separate identity + preferences domain so this never touches a real install.
 defaults write com.godson.remotecontrol.verify rc.role host
 # MUST launch through LaunchServices (`open`), NOT by exec'ing the inner binary.
 # macOS attributes a TCC grant to the *responsible process*. Running
-# .../Contents/MacOS/RemoteControl straight from a shell makes the TERMINAL the
+# .../Contents/MacOS/SkipperDesk straight from a shell makes the TERMINAL the
 # responsible process, so the app's own Screen Recording grant does not apply and
 # CGPreflightScreenCaptureAccess() returns false no matter what the user granted.
 # `open` gives the app its own responsibility, so its real grant is honoured.
@@ -117,10 +117,10 @@ fi
 
 if grep -q "screenRecordingGranted=false" "$W/app.log"; then
   echo
-  echo "SCREEN RECORDING IS NOT GRANTED to RemoteControl.app."
+  echo "SCREEN RECORDING IS NOT GRANTED to SkipperDesk.app."
   echo
   echo "  1. System Settings > Privacy & Security > Screen & System Audio Recording"
-  echo "  2. Add / enable RemoteControl.app (${ROOT}/dist/RemoteControl.app)"
+  echo "  2. Add / enable SkipperDesk.app (${ROOT}/dist/SkipperDesk.app)"
   echo "  3. Run this script again."
   echo
   echo "If you have granted it before and it keeps coming back, the build was"
@@ -129,7 +129,7 @@ if grep -q "screenRecordingGranted=false" "$W/app.log"; then
   exit 1
 fi
 
-APP_PID="$(pgrep -f "RemoteControl.app/Contents/MacOS/RemoteControl" | head -1)"
+APP_PID="$(pgrep -f "SkipperDesk.app/Contents/MacOS/SkipperDesk" | head -1)"
 CORES="$(/usr/sbin/sysctl -n hw.ncpu 2>/dev/null || python3 -c 'import os;print(os.cpu_count())')"
 
 # `ps -o %cpu` is percent of ONE core (see the header). Sampled once a second so

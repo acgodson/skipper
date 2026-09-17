@@ -28,22 +28,22 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_BUNDLE="${ROOT}/dist/RemoteControl.app"
-APP="${APP_BUNDLE}/Contents/MacOS/RemoteControl"
+APP_BUNDLE="${ROOT}/dist/SkipperDesk.app"
+APP="${APP_BUNDLE}/Contents/MacOS/SkipperDesk"
 W="$(mktemp -d -t rc-input)"
 LOG="$W/app.log"
 
 cleanup() {
-  pkill -f "RemoteControl.app/Contents/MacOS/RemoteControl" 2>/dev/null
+  pkill -f "SkipperDesk.app/Contents/MacOS/SkipperDesk" 2>/dev/null
   [[ "${RC_KEEP_LOGS:-0}" == "1" ]] && echo "logs kept in $W" || rm -rf "$W"
 }
 trap cleanup EXIT
 
 [[ -x "$APP" ]] || { echo "build the app first: ./scripts/build.sh" >&2; exit 1; }
 
-echo "== launching RemoteControl.app with RC_INPUT_SELFTEST=1"
+echo "== launching SkipperDesk.app with RC_INPUT_SELFTEST=1"
 echo "   (it will move this Mac's cursor for a few seconds — that is the test)"
-pkill -f "RemoteControl.app/Contents/MacOS/RemoteControl" 2>/dev/null; sleep 1
+pkill -f "SkipperDesk.app/Contents/MacOS/SkipperDesk" 2>/dev/null; sleep 1
 mkdir -p "$W/id"
 : > "$LOG"
 open -n "$APP_BUNDLE" \
@@ -66,10 +66,10 @@ fi
 
 if grep -q "SELFTEST accessibility FAIL" "$LOG"; then
   echo
-  echo "ACCESSIBILITY IS NOT GRANTED to RemoteControl.app."
+  echo "ACCESSIBILITY IS NOT GRANTED to SkipperDesk.app."
   echo
   echo "  1. System Settings > Privacy & Security > Accessibility"
-  echo "  2. Add / enable RemoteControl.app (${APP_BUNDLE})"
+  echo "  2. Add / enable SkipperDesk.app (${APP_BUNDLE})"
   echo "  3. Run this script again."
   echo
   echo "Without it macOS accepts every CGEvent we post and then discards it, so"
