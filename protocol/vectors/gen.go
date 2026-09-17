@@ -1,8 +1,9 @@
 // Command gen emits the cross-implementation wire vectors.
-// Regenerate with: go run ./vectors -out vectors/vectors.json
+// Regenerate with: go run ./vectors -out vectors/vectors.json -signing-out vectors/signing-vectors.json
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -36,6 +37,7 @@ func add(name, surface, msgType, note string, id, re string, ts int64, payload a
 
 func main() {
 	out := flag.String("out", "vectors/vectors.json", "output path")
+	signingOut := flag.String("signing-out", "vectors/signing-vectors.json", "signing-message vectors output path")
 	flag.Parse()
 
 	const ts = int64(1755600000000)
@@ -172,10 +174,11 @@ func main() {
 		p.PeerState{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Attached: false})
 
 	add("sdp_offer", "signaling", p.TypeSDP,
-		"fp, pubkey and sig are the signed DTLS fingerprints; the server relays them unchecked",
+		"fp, pubkey, sig and (v3) mac bind the DTLS fingerprints to the device key and the PAKE; the server relays them unchecked",
 		"", "", ts,
 		p.SDP{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SDPType: "offer",
-			SDP: signedOffer, FP: signedFP, Pubkey: controllerPubkey, Sig: "c2lnbmF0dXJl"})
+			SDP: signedOffer, FP: signedFP, Pubkey: controllerPubkey, Sig: "c2lnbmF0dXJl",
+			MAC: "bWFjbWFjbWFjbWFjbWFjbWFjbWFjbWFjbWFjbWFjbWE="})
 	add("sdp_restart", "signaling", p.TypeSDP, "restart is omitempty when false", "", "", ts,
 		p.SDP{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SDPType: "offer",
 			SDP: "v=0\r\n", Restart: true})
@@ -183,7 +186,7 @@ func main() {
 		"several fingerprints are sorted and joined with a newline", "", "", ts,
 		p.SDP{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", SDPType: "answer",
 			SDP: "v=0\r\n", FP: "sha-256 AA:01\nsha-256 BB:02",
-			Pubkey: hostPubkey, Sig: "c2lnbmF0dXJl"})
+			Pubkey: hostPubkey, Sig: "c2lnbmF0dXJl", MAC: "bWFj"})
 
 	add("ice_candidate", "signaling", p.TypeICE, "", "", "", ts,
 		p.ICE{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
@@ -308,13 +311,63 @@ func main() {
 		"seq is int64 and must not be narrowed to 32 bits", "", "", ts,
 		p.MouseMove{X: 0.5, Y: 0.5, Seq: 9007199254740993})
 
-	b, err := json.MarshalIndent(File{Version: p.Version, Cases: cases}, "", "  ")
+	write(*out, File{Version: p.Version, Cases: cases})
+	fmt.Fprintf(os.Stderr, "wrote %d cases to %s\n", len(cases), *out)
+	signing := signingCases()
+	write(*signingOut, SigningFile{Version: p.Version, Note: signingNote, Cases: signing})
+	fmt.Fprintf(os.Stderr, "wrote %d cases to %s\n", len(signing), *signingOut)
+}
+
+func write(path string, v any) {
+	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		panic(err)
 	}
 	b = append(b, '\n')
-	if err := os.WriteFile(*out, b, 0o644); err != nil {
+	if err := os.WriteFile(path, b, 0o644); err != nil {
 		panic(err)
 	}
-	fmt.Fprintf(os.Stderr, "wrote %d cases to %s\n", len(cases), *out)
+}
+
+type SigningCase struct {
+	Name       string `json:"name"`
+	Purpose    string `json:"purpose"`
+	PayloadHex string `json:"payloadHex"`
+	MessageHex string `json:"messageHex,omitempty"`
+	Valid      bool   `json:"valid"`
+	Note       string `json:"note,omitempty"`
+}
+
+type SigningFile struct {
+	Version int           `json:"version"`
+	Note    string        `json:"note"`
+	Cases   []SigningCase `json:"cases"`
+}
+
+const signingNote = "Device-key signing messages, PROTOCOL.md 3.1: \"skipperdesk/\" purpose \"/v1|\" followed by the payload. valid=false means every implementation must refuse to build the message."
+
+func signingCases() []SigningCase {
+	nonce := make([]byte, p.NonceLen)
+	for i := range nonce {
+		nonce[i] = byte(i)
+	}
+	sdp := []byte("8c7f1a2b3c4d5e6f708192a3b4c5d6e7|offer|sha-256 7B:8C")
+	one := func(name string, purpose p.SigningPurpose, payload []byte, note string) SigningCase {
+		c := SigningCase{Name: name, Purpose: string(purpose), PayloadHex: hex.EncodeToString(payload), Note: note}
+		if message, err := p.SigningMessage(purpose, payload); err == nil {
+			c.Valid, c.MessageHex = true, hex.EncodeToString(message)
+		}
+		return c
+	}
+	return []SigningCase{
+		one("hello", p.PurposeHello, nonce, "the challenge nonce's raw bytes"),
+		one("register", p.PurposeRegister, nonce, ""),
+		one("api_challenge", p.PurposeAPIChallenge, nonce, "API.md device challenge"),
+		one("sdp", p.PurposeSDP, sdp, "payload is sessionId|sdpType|fp; the message is what sdp.sig signs and sdp.mac MACs"),
+		one("hello_short_nonce", p.PurposeHello, nonce[:31], "refused: a nonce is exactly 32 bytes"),
+		one("register_long_nonce", p.PurposeRegister, append(append([]byte{}, nonce...), 0), "refused"),
+		one("hello_sdp_shaped_nonce", p.PurposeHello, append([]byte("skipperdesk/sdp/v1|"), sdp...),
+			"refused: a server cannot pass an sdp message off as a nonce"),
+		one("sdp_empty", p.PurposeSDP, nil, "refused"),
+	}
 }

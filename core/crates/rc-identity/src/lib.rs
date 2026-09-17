@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 
 pub mod pake;
 pub mod sdp;
+pub mod signing;
+
+pub use signing::{signing_message, SigningError, SigningPurpose};
 
 /// Crockford base32 alphabet.
 pub const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -137,15 +140,12 @@ impl DeviceKey {
         B64.encode(der.as_bytes())
     }
 
-    /// base64 of the ASN.1 DER ECDSA-SHA256 signature over the raw `message` bytes.
-    pub fn sign_base64(&self, message: &[u8]) -> String {
-        let sig: DerSignature = self.signing.sign(message);
-        B64.encode(sig.as_bytes())
-    }
-
-    /// Signs the raw challenge nonce bytes, not the base64 text.
-    pub fn sign_nonce_base64(&self, nonce: &[u8]) -> String {
-        self.sign_base64(nonce)
+    /// base64 of the ASN.1 DER ECDSA-SHA256 signature over
+    /// [`signing_message`]`(purpose, payload)`; nothing else is ever signed.
+    pub fn sign(&self, purpose: SigningPurpose, payload: &[u8]) -> Result<String, SigningError> {
+        let message = signing_message(purpose, payload)?;
+        let sig: DerSignature = self.signing.sign(&message);
+        Ok(B64.encode(sig.as_bytes()))
     }
 }
 

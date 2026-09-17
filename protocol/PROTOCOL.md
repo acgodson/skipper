@@ -1,6 +1,6 @@
 # RemoteControl wire protocol
 
-Version: **2** (`v: 2` in every envelope)
+Version: **3** (`v: 3` in every envelope)
 Status: normative. This document is the single source of truth. `protocol/protocol.go`
 (and the Swift mirror) must match it exactly; if they disagree, this file wins.
 
@@ -11,6 +11,26 @@ Three surfaces are specified:
 3. **`hi` data channel** — unreliable, unordered (`maxRetransmits: 0`), peer ↔ peer.
 
 The server sees only surface 1. It never sees, parses or stores anything from 2 or 3.
+
+---
+
+## v3 changes (summary)
+
+Version **3** is what the server, the shared core and the Mac app now speak. It closes three
+ways a compromised server could still get between two peers after v2. A v3 endpoint rejects a
+`v: 2` envelope with `error{unsupported_version}`; nothing below is negotiated.
+
+| # | Change | Why | Where |
+|---|---|---|---|
+| 1 | Every device-key signature is **domain-separated**: the key signs `"skipperdesk/" purpose "/v1\|" ‖ payload`, never raw bytes. Purposes: `hello`, `register`, `sdp`, `api-challenge`. | A server chose the challenge nonce, so under v2 it could send an SDP signing string as the "nonce" and harvest a valid `sdp` signature from `hello`. | §0, §3.1 |
+| 2 | `hello` and `register` sign `"skipperdesk/hello/v1\|" ‖ nonce` and `"skipperdesk/register/v1\|" ‖ nonce`. The nonce is **exactly 32 bytes**; both client and server refuse any other length. | Same attack; the fixed length also stops a nonce from carrying a structured message. | §2.1, §2.2, §2.4 |
+| 3 | `sdp` gains a required **`mac`**: HMAC-SHA256 under `sdpMacKey`, a key derived from the §2.17 session key, over the same bytes `sig` signs. An `sdp` that arrives before the exchange completes is dropped. | Channel binding: a signature proves *which device* sent the fingerprints; the MAC proves it was the device that just proved the access code **in this session**. The v2 session key was derived and never used. | §2.12, §2.17 |
+| 4 | A receiver refuses an `sdp` body containing a NUL byte or a CR that is not followed by LF, and, after `setRemoteDescription`, requires the fingerprints the WebRTC stack actually installed to equal the verified `fp`. | A NUL let the verifier (which read a C string) see a different SDP from the one the WebRTC stack installed. | §2.12 |
+| 5 | The host adds a **host-wide guess budget** (20 failures per rolling hour across all controllers) next to the per-key counter, and a failure is recorded **before** step 2 leaves the host, withdrawn only when step 3 verifies. | Under v2 a server could present a fresh `controllerPubkey` per guess, or end the exchange by starting a new session, and never be counted. | §2.17 |
+
+The `sdp` signing string itself is unchanged: `"skipperdesk/sdp/v1|" sessionId "|" sdpType "|" fp`
+is exactly the domain-separated message for purpose `sdp` with payload
+`sessionId "|" sdpType "|" fp`. `protocol/vectors/signing-vectors.json` pins every purpose.
 
 ---
 
@@ -56,7 +76,7 @@ only the envelope that carries it.
 | Coordinates | Normalised `double` in `[0.0, 1.0]`; `x` = left→right, `y` = top→bottom of the host's captured display. Receivers **must** clamp. |
 | IDs | `deviceId`: exactly 9 ASCII digits, e.g. `"481930275"`. Leading zeros are significant; it is a string, never a number. `sessionId`: 32 lowercase hex chars. Message `id`: opaque client string ≤ 64 chars. |
 | Keys | `pubkey`: base64 (std, padded) of the **DER SPKI** encoding of an ECDSA P-256 public key. |
-| Signatures | `sig`: base64 of the **ASN.1 DER** ECDSA signature over the raw challenge nonce bytes, hashed with SHA-256. |
+| Signatures | `sig`: base64 of the **ASN.1 DER** ECDSA-P256/SHA-256 signature over a **domain-separated message** (§3.1): `"skipperdesk/" purpose "/v1\|"` followed by the purpose's payload. A device key never signs anything else. |
 | Unknown fields | Receivers **must** ignore unknown object members. Senders **must not** rely on that. |
 | Unknown types | A receiver that does not recognise `type` ignores the message (server replies `error{unsupported}` for client→server only). |
 | Max frame | 256 KiB. Larger frames are closed with WebSocket code 1009. |
@@ -67,7 +87,7 @@ Every message on every surface uses the same envelope:
 
 ```json
 {
-  "v": 2,
+  "v": 3,
   "type": "connect_req",
   "id": "c-17",
   "re": null,
@@ -78,7 +98,7 @@ Every message on every surface uses the same envelope:
 
 | Field | Type | Req | Meaning |
 |---|---|:--:|---|
-| `v` | int | yes | Protocol version. Must be `2`. Server rejects anything else with `error{unsupported_version}` and closes. |
+| `v` | int | yes | Protocol version. Must be `3`. Server rejects anything else with `error{unsupported_version}` and closes. |
 | `type` | string | yes | Message type; see tables below. |
 | `id` | string | no | Sender-assigned correlation id. Required if the sender wants to match the reply. Servers echo it in `re`. |
 | `re` | string | no | Set on a reply/error to the `id` of the request it answers. Absent on unsolicited pushes. |
@@ -88,7 +108,7 @@ Every message on every surface uses the same envelope:
 **Every error is the same shape** (`type: "error"`), and carries `re` when it answers a request:
 
 ```json
-{"v":2,"type":"error","re":"c-17","ts":1755600000001,
+{"v":3,"type":"error","re":"c-17","ts":1755600000001,
  "payload":{"code":"entitlement","message":"trial has ended","reason":"trial_expired"}}
 ```
 
@@ -152,7 +172,7 @@ Every message on every surface uses the same envelope:
 
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
-| `nonce` | string | yes | base64 of 32 random bytes. Single-use, valid 20 s. |
+| `nonce` | string | yes | base64 of **exactly** 32 random bytes. Single-use, valid 20 s. *v3:* a client refuses to sign a nonce of any other length and drops the connection. |
 | `serverTime` | int64 | yes | Unix ms. |
 
 ### 2.2 `register` — client → server
@@ -162,7 +182,7 @@ First-run only. Creates a device record and mints a `deviceId`.
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
 | `pubkey` | string | yes | base64 DER SPKI, P-256. |
-| `sig` | string | yes | base64 DER ECDSA-SHA256 over the raw `nonce` bytes of the current challenge. Proves possession of the private key. |
+| `sig` | string | yes | *v3:* base64 DER ECDSA-SHA256 over `"skipperdesk/register/v1\|"` ‖ the raw 32 `nonce` bytes of the current challenge (§3.1). Proves possession of the private key. |
 | `label` | string | no | Human label, ≤ 64 chars, e.g. `"Studio Mac"`. Stored verbatim; not secret. |
 | `code` | object | yes | *v1 only.* Access-code verifier, see §2.3. **REMOVED in v2.** |
 
@@ -211,7 +231,7 @@ Crockford-style alphabet** (`23456789ABCDEFGHJKMNPQRSTVWXYZ` minus look-alikes),
 |---|---|:--:|---|
 | `deviceId` | string | yes | 9 digits. |
 | `pubkey` | string | yes | base64 DER SPKI. Must byte-equal the stored key for `deviceId`, else `error{bad_signature}`. |
-| `sig` | string | yes | base64 DER ECDSA-SHA256 over the current challenge nonce. |
+| `sig` | string | yes | *v3:* base64 DER ECDSA-SHA256 over `"skipperdesk/hello/v1\|"` ‖ the raw 32 bytes of the current challenge nonce (§3.1). A `register` or undomained signature is `error{bad_signature}`. |
 | `role` | string | yes | `"host"` or `"controller"`. Advisory: it describes the app's current mode and is used for logging and for rejecting nonsense (a `controller` cannot receive `connect_req`s). A device may reconnect with the other role. |
 
 Reply: **`hello_ok`**
@@ -362,12 +382,13 @@ same rules and errors as `resume`, but the connection must already be attached t
 | `restart` | bool | no | `true` marks an ICE-restart renegotiation. Advisory for the peer. |
 | `fp` | string | yes | *v2.* Every `a=fingerprint` value in `sdp`, de-duplicated, sorted, joined with `\n`. The value is the whole attribute value, e.g. `sha-256 7B:8C:…`. |
 | `pubkey` | string | yes | *v2.* The **sender's** device key, base64 DER SPKI (§0). |
-| `sig` | string | yes | *v2.* base64 DER ECDSA-SHA256 over the UTF-8 bytes of `"skipperdesk/sdp/v1|" sessionId "|" sdpType "|" fp`. |
+| `sig` | string | yes | *v2.* base64 DER ECDSA-SHA256 over the UTF-8 bytes of `"skipperdesk/sdp/v1|" sessionId "|" sdpType "|" fp` — the §3.1 message for purpose `sdp`. |
+| `mac` | string | yes | *v3.* base64 HMAC-SHA256 under `sdpMacKey` (§2.17) over exactly the bytes `sig` signs. |
 
 The server **routes and forgets**: it validates `sessionId` and attachment, rewrites nothing,
 parses nothing, stores nothing, logs no part of `sdp`. If the peer is detached, the server
 replies `error{peer_offline}`; SDP is **not** queued (a stale offer is worse than none).
-The server relays `fp`, `pubkey` and `sig` **unchanged and never validates `sig`**. It cannot —
+The server relays `fp`, `pubkey`, `sig` and `mac` **unchanged and never validates `sig` or `mac`**. It cannot —
 it holds neither device key — and it must not need to: the whole point of the signature is that
 it is checked by the peer, against a key the server did not choose.
 
@@ -378,16 +399,28 @@ the server relays the SDP, so a compromised one could put its own fingerprint in
 complete two DTLS handshakes and read the desktop. Signing the fingerprint with the device key
 closes that, because the server has neither private key.
 
-A receiver **must**, before `setRemoteDescription`:
+A peer neither sends nor accepts an `sdp` until its §2.17 exchange for this `sessionId` has
+completed: an `sdp` that arrives earlier is dropped. A receiver **must**, before
+`setRemoteDescription`:
 
-1. verify `sig` over `"skipperdesk/sdp/v1|" sessionId "|" sdpType "|" fp` with `pubkey`;
+1. refuse an `sdp` body that contains a NUL byte, or a CR that is not immediately followed by
+   LF, and treat the body as the exact bytes received — never as a terminated C string. Every
+   implementation passes it across language boundaries as (pointer, length);
 2. check that `fp` is exactly the fingerprint set in the `sdp` body (same de-duplication, same
    sort) — a signature over fingerprints that are not the ones being installed proves nothing;
-3. check that `pubkey` is **the peer it expects**:
+3. verify `mac` under its own `sdpMacKey` — a missing or wrong `mac` means the sender is not
+   the device that completed this session's exchange;
+4. verify `sig` over `"skipperdesk/sdp/v1|" sessionId "|" sdpType "|" fp` with `pubkey`;
+5. check that `pubkey` is **the peer it expects**:
    - the **host** expects the controller key it learned in the §2.17 exchange, where that key is
      bound into the SPAKE2 transcript and into the guess-policy counter;
    - the **controller** expects `connect_ok.hostPubkey`, and, once §2.17 completes, requires the
      host key it learned there to be the same one.
+
+And **after** `setRemoteDescription`, before applying any remote ICE candidate, it re-extracts
+the fingerprints from the description the WebRTC stack reports as installed
+(`remoteDescription.sdp`) and requires them to equal `fp` exactly. That closes any gap between
+the verifier's SDP parser and the WebRTC stack's.
 
 Any failure is terminal for the session: `bye{reason:"peer_auth_failed"}` (§2.14), tear the peer
 connection down, and tell the user the other device could not be verified. Never fall back to an
@@ -429,10 +462,9 @@ cases only — an exchange that broke for a non-authentication reason (a malform
 out of order, the 10-second timeout) is still `failed`.
 
 Either side may send it. A wrong code fails for the controller at step 2 and for the host at
-step 3, so in practice the **controller** speaks first and the host is the one told. The host
-must therefore treat a `bye` that arrives mid-exchange as the abandonment §2.17 already counts
-against its guess policy — otherwise a guesser gets unlimited attempts simply by hanging up
-before step 3. A controller that receives it shows "wrong access code", forgets any code it had
+step 3, so in practice the **controller** speaks first and the host is the one told. A guesser
+gains nothing by hanging up before step 3: the host counted the guess when it sent step 2
+(§2.17). A controller that receives it shows "wrong access code", forgets any code it had
 remembered for that host, and does not retry without the user.
 
 On `bye` the server closes the session **immediately and permanently**: both tokens die, the
@@ -539,16 +571,24 @@ transcript = len32("skipperdesk/pake/v1") ‖ len32(deviceId) ‖ len32(sessionI
              ‖ len32(controllerMessage) ‖ len32(hostMessage)
 prk        = HKDF-SHA256-Extract(salt = transcript, ikm = sharedKey)
 sessionKey = HKDF-Expand(prk, "skipperdesk/pake/v1 session-key", 32)
+sdpMacKey  = HKDF-SHA256(salt = "" , ikm = sessionKey, info = "skipperdesk/sdp-mac/v1", 32)
 kcC        = HKDF-Expand(prk, "skipperdesk/pake/v1 confirm skipperdesk-controller", 32)
 kcH        = HKDF-Expand(prk, "skipperdesk/pake/v1 confirm skipperdesk-host", 32)
 confirmC   = HMAC-SHA256(kcC, transcript)
 confirmH   = HMAC-SHA256(kcH, transcript)
 ```
 
+`sessionKey` never leaves the shared core; its one use is `sdpMacKey`, which MACs every `sdp`
+of the session (§2.12). Remembered-code and trusted-controller connects run this exchange
+too (§4.5), so every session has the key. `protocol/vectors/pake-vectors.json` pins
+`sdpMacKey` and one `sdp` MAC per case.
+
 A wrong code therefore fails for the controller at step 2 and for the **host** at step 3, before
 the host has done anything else with the session. Either side treats a failed confirmation, an
 out-of-order `step`, an oversized payload or a reflected message as the end of the exchange:
-`bye{reason:"failed"}`, and the state is not reusable.
+`bye`, and the state is not reusable. The reason follows §2.14: a failed confirmation is
+`auth_failed`; an out-of-order `step`, an oversized or malformed payload, a reflected message
+or the timeout is `failed`.
 
 #### Guessing
 
@@ -557,19 +597,31 @@ controller device key and per unit time, and refuses to start another one while 
 The server cannot do this for it, because a failed exchange is indistinguishable, from the
 server's side, from a dropped one.
 
-The policy the host applies, per controller public key and session:
+Step 2 carries `confirmH`, which lets whoever sent step 1 check **one** guess offline. So a
+guess costs the host exactly when step 2 leaves it, and the host accounts for it then:
 
-- A failure is a step 3 whose `confirmC` does not verify, or an exchange abandoned after step 1 —
-  including one the controller ends itself with `bye` after its own step-2 check fails (§2.14).
-- The **5th** failure locks that controller out; every further failure doubles the lockout:
-  `lockout = min(60 min, 1 min × 2^(failures − 5))` → 1, 2, 4, 8, 16, 32, 60, 60 … minutes.
-  A locked-out controller's `pake` step 1 is refused without the code being looked at: the host
-  answers `bye{auth_failed}` (§2.14) without running SPAKE2 at all, so a lockout costs it nothing.
-  The counter is keyed on `session_start.controllerPubkey`, which the host has before step 1
-  arrives, and which step 1's own key prefix must then match.
-- Failures are forgotten after **15 minutes** of quiet, measured from the later of the last
-  failure and the end of any lockout being served — so waiting out a long lockout does not also
-  reset the count that earned it. A completed exchange clears the counter.
+- **A failure is an exchange in which the host sent step 2 and step 3 never verified** — for
+  any reason: a wrong `confirmC`, the 10-second timeout, a `bye`, a new `session_start`, the
+  session being cleared, or the host process dying. The host records the failure **before** it
+  sends step 2 and withdraws it only when step 3 verifies, so no way of ending the exchange
+  escapes the count.
+- Two budgets are charged together, and step 1 is refused while **either** is exhausted:
+  - **per controller key**, keyed on `session_start.controllerPubkey` (which step 1's own key
+    prefix must match — a mismatch is refused before step 2 is sent). The **5th** failure
+    locks that key out and every further failure doubles the lockout:
+    `lockout = min(60 min, 1 min × 2^(failures − 5))` → 1, 2, 4, 8, 16, 32, 60, 60 … minutes.
+    Failures are forgotten after **15 minutes** of quiet, measured from the later of the last
+    failure and the end of any lockout being served. A verified step 3 clears this counter.
+  - **host-wide**, across every controller: at most **20** failures in any rolling hour. The
+    20th locks every controller out until the oldest of those failures is an hour old. A
+    verified step 3 withdraws only its own failure. This is what bounds a server that invents
+    a fresh `controllerPubkey` for every guess.
+- A refused step 1 is answered `bye{auth_failed}` (§2.14) without running SPAKE2 and **without
+  recording a failure** — no step 2 was sent, so no guess was spent, and a lockout costs the
+  host nothing.
+- Both budgets are pure policy in `core/crates/rc-identity` (`GuessLedger`), stored by the
+  host next to each other: the per-key counters by pubkey, the host-wide one under the key
+  `host` with its failure timestamps (`failureTimesMs`). Refresh Code (§2.15) clears both.
 
 ---
 
@@ -577,11 +629,28 @@ The policy the host applies, per controller public key and session:
 
 ### 3.1 Device authentication
 1. Server sends a 32-byte random `nonce`.
-2. Client signs the **raw nonce bytes** (not the base64 text) with ECDSA-P256/SHA-256 and
-   sends the DER signature, base64-encoded.
+2. Client decodes it, refuses anything that is not exactly 32 bytes, signs the
+   **domain-separated message** below with ECDSA-P256/SHA-256 and sends the DER signature,
+   base64-encoded.
 3. The server loads the stored SPKI for `deviceId`, requires the presented `pubkey` to be
-   byte-identical, and verifies the signature. Any failure ⇒ `error{bad_signature}`; the
-   server does not distinguish "unknown key" from "bad maths" in the message text.
+   byte-identical, and verifies the signature over the same message. Any failure ⇒
+   `error{bad_signature}`; the server does not distinguish "unknown key" from "bad maths" in
+   the message text.
+
+*v3.* A device key signs **only** `"skipperdesk/" purpose "/v1|"` followed by the purpose's
+payload, built by one function in the shared core (`rc_identity::signing_message`); the
+platform signing API accepts a purpose and a payload, never raw bytes.
+
+| Purpose | Payload | Used by |
+|---|---|---|
+| `hello` | the 32 raw nonce bytes | §2.4 |
+| `register` | the 32 raw nonce bytes | §2.2 |
+| `api-challenge` | the 32 raw nonce bytes | `API.md` device challenge |
+| `sdp` | `sessionId "\|" sdpType "\|" fp` (UTF-8) | §2.12 |
+
+A nonce purpose with a payload of any length but 32 is refused by every implementation, and
+the server never verifies an `sdp`-purpose signature. No prefix is a prefix of another, so a
+signature for one purpose never verifies for another.
 
 ### 3.2 Session tokens
 Opaque to clients. Structurally:
@@ -717,6 +786,9 @@ What "trusted" removes is the **prompt**, and it lives on the controller:
   is by definition allowed. It exists so the host can *show* who has connected and so Refresh
   Code has something concrete to revoke.
 
+Because the trusted path still runs §2.17 in full, it still derives `sdpMacKey`; there is no
+session whose `sdp` goes unMACed.
+
 **Refresh Code** (§2.15) is therefore the whole revocation story, and it is one button: the host
 mints a new code, the server bumps the epoch and kills every session and token, and the host
 clears its trusted list and its guess counters. Every remembered code on every controller now
@@ -766,7 +838,7 @@ Nothing else may be sent on `hi`.
 | Code | Meaning | Client action |
 |---|---|---|
 | `bad_request` | Malformed JSON, missing required field, bad type, out-of-range value. | Bug. Log and fix. |
-| `unsupported_version` | `v` ≠ 2. Socket is closed. | Prompt to update the app. |
+| `unsupported_version` | `v` ≠ 3. Socket is closed. | Prompt to update the app. |
 | `unsupported` | Unknown `type` for this surface. | Ignore. |
 | `unauthenticated` | Sent an authenticated message while `CHALLENGED`. | Complete `hello` first. |
 | `bad_signature` | Signature invalid, key mismatch, or nonce replayed/expired. | Re-challenge and retry once; then treat the identity as broken. |

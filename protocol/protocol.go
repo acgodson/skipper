@@ -9,7 +9,7 @@ import (
 )
 
 // Version is the only protocol version this build speaks.
-const Version = 2
+const Version = 3
 
 const (
 	HeartbeatSec       = 15
@@ -167,7 +167,7 @@ func (c CodeVerifier) Validate() error {
 // Register creates a device and mints a deviceId. Idempotent per pubkey.
 type Register struct {
 	Pubkey string       `json:"pubkey"` // base64 DER SPKI, P-256
-	Sig    string       `json:"sig"`    // base64 DER ECDSA-SHA256 over the nonce bytes
+	Sig    string       `json:"sig"`    // base64 DER ECDSA-SHA256 over SigningMessage(PurposeRegister, nonce)
 	Label  string       `json:"label,omitempty"`
 	Code   CodeVerifier `json:"code"`
 }
@@ -291,8 +291,10 @@ type SDP struct {
 	FP string `json:"fp,omitempty"`
 	// Pubkey is the sender's device key, base64 DER SPKI.
 	Pubkey string `json:"pubkey,omitempty"`
-	// Sig is base64 DER ECDSA-SHA256 over "skipperdesk/sdp/v1|"+SessionID+"|"+SDPType+"|"+FP.
+	// Sig is base64 DER ECDSA-SHA256 over SigningMessage(PurposeSDP, SessionID+"|"+SDPType+"|"+FP).
 	Sig string `json:"sig,omitempty"`
+	// MAC (v3) is base64 HMAC-SHA256 over the same bytes, keyed by the PAKE-derived sdpMacKey.
+	MAC string `json:"mac,omitempty"`
 }
 
 // ICE is relayed verbatim.

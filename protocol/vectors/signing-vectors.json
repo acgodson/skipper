@@ -1,0 +1,65 @@
+{
+  "version": 3,
+  "note": "Device-key signing messages, PROTOCOL.md 3.1: \"skipperdesk/\" purpose \"/v1|\" followed by the payload. valid=false means every implementation must refuse to build the message.",
+  "cases": [
+    {
+      "name": "hello",
+      "purpose": "hello",
+      "payloadHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "messageHex": "736b69707065726465736b2f68656c6c6f2f76317c000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "valid": true,
+      "note": "the challenge nonce's raw bytes"
+    },
+    {
+      "name": "register",
+      "purpose": "register",
+      "payloadHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "messageHex": "736b69707065726465736b2f72656769737465722f76317c000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "valid": true
+    },
+    {
+      "name": "api_challenge",
+      "purpose": "api-challenge",
+      "payloadHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "messageHex": "736b69707065726465736b2f6170692d6368616c6c656e67652f76317c000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "valid": true,
+      "note": "API.md device challenge"
+    },
+    {
+      "name": "sdp",
+      "purpose": "sdp",
+      "payloadHex": "38633766316132623363346435653666373038313932613362346335643665377c6f666665727c7368612d3235362037423a3843",
+      "messageHex": "736b69707065726465736b2f7364702f76317c38633766316132623363346435653666373038313932613362346335643665377c6f666665727c7368612d3235362037423a3843",
+      "valid": true,
+      "note": "payload is sessionId|sdpType|fp; the message is what sdp.sig signs and sdp.mac MACs"
+    },
+    {
+      "name": "hello_short_nonce",
+      "purpose": "hello",
+      "payloadHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e",
+      "valid": false,
+      "note": "refused: a nonce is exactly 32 bytes"
+    },
+    {
+      "name": "register_long_nonce",
+      "purpose": "register",
+      "payloadHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f00",
+      "valid": false,
+      "note": "refused"
+    },
+    {
+      "name": "hello_sdp_shaped_nonce",
+      "purpose": "hello",
+      "payloadHex": "736b69707065726465736b2f7364702f76317c38633766316132623363346435653666373038313932613362346335643665377c6f666665727c7368612d3235362037423a3843",
+      "valid": false,
+      "note": "refused: a server cannot pass an sdp message off as a nonce"
+    },
+    {
+      "name": "sdp_empty",
+      "purpose": "sdp",
+      "payloadHex": "",
+      "valid": false,
+      "note": "refused"
+    }
+  ]
+}

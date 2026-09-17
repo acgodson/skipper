@@ -201,6 +201,7 @@ async fn full_signaling_lifecycle_against_the_real_server() {
         fp: String::new(),
         pubkey: String::new(),
         sig: String::new(),
+        mac: String::new(),
     };
     ctrl.send(msg::SDP, &offer).await.unwrap();
     match next_push(&mut host_rx, "sdp offer").await {

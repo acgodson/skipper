@@ -12,9 +12,11 @@ public struct PakeMessage: Equatable, Sendable {
     }
 }
 
+/// The derived keys never leave the core; a completed exchange is used by
+/// handing it to `SdpAuth`, which MACs and checks every `sdp` with it.
 public final class PakeExchange {
 
-    private let handle: OpaquePointer
+    let handle: OpaquePointer
     public let role: SessionRole
     public private(set) var isComplete = false
     public private(set) var peerPublicKey: String?
@@ -29,10 +31,6 @@ public final class PakeExchange {
         let peerPubkey: String
     }
 
-    private struct KeyResult: Decodable {
-        let sessionKey: String
-    }
-
     public init(
         role: SessionRole,
         accessCode: String,
@@ -41,16 +39,16 @@ public final class PakeExchange {
         ownPublicKey: String
     ) throws {
         self.role = role
-        guard let handle = skipper_pake_new(
-            role == .host ? Int32(SKIPPER_ROLE_HOST) : Int32(SKIPPER_ROLE_CONTROLLER),
-            accessCode,
-            deviceID,
-            sessionID,
-            ownPublicKey)
-        else {
+        let created = CoreBoundary.withText([accessCode, deviceID, sessionID, ownPublicKey]) { text in
+            skipper_pake_new(
+                role == .host ? Int32(SKIPPER_ROLE_HOST) : Int32(SKIPPER_ROLE_CONTROLLER),
+                text[0].base, text[0].count, text[1].base, text[1].count,
+                text[2].base, text[2].count, text[3].base, text[3].count)
+        }
+        guard let created else {
             throw SkipperCoreError("the shared core refused the access code, the session context or the device key")
         }
-        self.handle = handle
+        self.handle = created
     }
 
     public static func controller(
@@ -77,21 +75,20 @@ public final class PakeExchange {
 
     deinit { skipper_pake_free(handle) }
 
+    /// A wrong access code throws a `SkipperCoreError` whose
+    /// `isAuthenticationFailure` is true; any other failure is a broken exchange.
     @discardableResult
     public func step(_ incoming: PakeMessage?) throws -> PakeMessage? {
-        let result: StepResult = try CoreBoundary.call {
-            skipper_pake_step(handle, Int32(incoming?.step ?? 0), incoming?.payload)
-        }
+        let result: StepResult = try CoreBoundary.withText([incoming?.payload]) { text in
+            Result {
+                try CoreBoundary.call {
+                    skipper_pake_step(handle, Int32(incoming?.step ?? 0), text[0].base, text[0].count)
+                }
+            }
+        }.get()
         isComplete = result.complete
         peerPublicKey = result.peerPubkey.isEmpty ? nil : result.peerPubkey
         guard let outgoing = result.outgoing else { return nil }
         return PakeMessage(step: outgoing.step, payload: outgoing.payload)
-    }
-
-    public var sessionKey: Data? {
-        guard isComplete else { return nil }
-        guard let result: KeyResult = try? CoreBoundary.call({ skipper_pake_session_key(handle) })
-        else { return nil }
-        return Data(base64Encoded: result.sessionKey)
     }
 }

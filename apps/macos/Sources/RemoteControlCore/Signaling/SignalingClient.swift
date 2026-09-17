@@ -222,7 +222,7 @@ public final class SignalingClient {
         let hello = HelloPayload(
             deviceId: identity.deviceID,
             pubkey: identity.publicKeyBase64,
-            sig: try signature(overNonce: challenge.nonce),
+            sig: try signature(.hello, overNonce: challenge.nonce),
             role: role.rawValue)
         let reply = try await request(type: Wire.MessageType.hello, payload: hello,
                                       expect: [Wire.MessageType.helloOK],
@@ -242,7 +242,7 @@ public final class SignalingClient {
     private func register(nonce: String, on task: URLSessionWebSocketTask) async throws -> RegisterOKPayload {
         let payload = RegisterPayload(
             pubkey: identity.publicKeyBase64,
-            sig: try signature(overNonce: nonce),
+            sig: try signature(.register, overNonce: nonce),
             label: config.deviceLabel)
         let reply = try await request(type: Wire.MessageType.register, payload: payload,
                                       expect: [Wire.MessageType.registerOK],
@@ -250,11 +250,15 @@ public final class SignalingClient {
         return try reply.decodePayload(RegisterOKPayload.self)
     }
 
-    private func signature(overNonce nonceBase64: String) throws -> String {
+    private func signature(_ purpose: SigningPurpose, overNonce nonceBase64: String) throws -> String {
         guard let nonce = Data(base64Encoded: nonceBase64) else {
             throw SignalingError.handshakeFailed("the server's nonce was not base64")
         }
-        return try identity.signatureBase64(for: nonce)
+        do {
+            return try identity.signatureBase64(purpose: purpose, nonce: nonce)
+        } catch let refused as SkipperCoreError {
+            throw SignalingError.handshakeFailed("the server's challenge was refused: \(refused.message)")
+        }
     }
 
     private func heartbeatLoop(on task: URLSessionWebSocketTask) async throws {
@@ -437,7 +441,8 @@ public final class SignalingClient {
                                 restart: restart ? true : nil,
                                 fp: signature?.fingerprints,
                                 pubkey: signature?.pubkey,
-                                sig: signature?.signature))
+                                sig: signature?.signature,
+                                mac: signature?.mac))
     }
 
     public func sendICE(sessionID: String, candidate: String, sdpMid: String?, sdpMLineIndex: Int?) async throws {
@@ -464,6 +469,8 @@ public final class SignalingClient {
 }
 
 // MARK: - AccessCodeSink
+
+extension IdentityStore: DeviceMessageSigner {}
 
 extension SignalingClient: AccessCodeSink {
     public nonisolated func accessCodeDidChange(deviceID: String) async throws {

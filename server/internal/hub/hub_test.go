@@ -259,7 +259,7 @@ func (p *peer) send(typ string, payload any) {
 	p.h.Handle(p.c, b)
 }
 
-func (p *peer) sig(mangle bool) string {
+func (p *peer) sig(purpose protocol.SigningPurpose, mangle bool) string {
 	p.t.Helper()
 	p.mu.Lock()
 	nb, err := base64.StdEncoding.DecodeString(p.nonce)
@@ -270,21 +270,25 @@ func (p *peer) sig(mangle bool) string {
 	if mangle {
 		nb[0] ^= 0xff
 	}
-	sum := sha256.Sum256(nb)
-	sig, err := ecdsa.SignASN1(rand.Reader, p.priv, sum[:])
-	if err != nil {
-		p.t.Fatal(err)
-	}
-	return base64.StdEncoding.EncodeToString(sig)
+	return p.signNonce(purpose, nb)
 }
 
-func (p *peer) sigOver(nonceB64 string) string {
+func (p *peer) sigOver(purpose protocol.SigningPurpose, nonceB64 string) string {
 	p.t.Helper()
 	nb, err := base64.StdEncoding.DecodeString(nonceB64)
 	if err != nil {
 		p.t.Fatal(err)
 	}
-	sum := sha256.Sum256(nb)
+	return p.signNonce(purpose, nb)
+}
+
+func (p *peer) signNonce(purpose protocol.SigningPurpose, nonce []byte) string {
+	p.t.Helper()
+	message, err := protocol.SigningMessage(purpose, nonce)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	sum := sha256.Sum256(message)
 	sig, err := ecdsa.SignASN1(rand.Reader, p.priv, sum[:])
 	if err != nil {
 		p.t.Fatal(err)
@@ -363,7 +367,7 @@ func unmarshal[T any](t *testing.T, e protocol.Envelope) T {
 func (p *peer) register(label string) string {
 	p.t.Helper()
 	p.send(protocol.TypeRegister, protocol.Register{
-		Pubkey: p.pubB64, Sig: p.sig(false), Label: label})
+		Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeRegister, false), Label: label})
 	ok := unmarshal[protocol.RegisterOK](p.t, p.last(protocol.TypeRegisterOK))
 	p.deviceID = ok.DeviceID
 	return ok.DeviceID
@@ -372,7 +376,7 @@ func (p *peer) register(label string) string {
 func (p *peer) hello(role string) protocol.HelloOK {
 	p.t.Helper()
 	p.send(protocol.TypeHello, protocol.Hello{
-		DeviceID: p.deviceID, Pubkey: p.pubB64, Sig: p.sig(false), Role: role})
+		DeviceID: p.deviceID, Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeHello, false), Role: role})
 	return unmarshal[protocol.HelloOK](p.t, p.last(protocol.TypeHelloOK))
 }
 
@@ -396,7 +400,7 @@ func TestRegisterMintsNineDigitIDAndIsIdempotent(t *testing.T) {
 	}
 
 	p.send(protocol.TypeRegister, protocol.Register{
-		Pubkey: p.pubB64, Sig: p.sig(false)})
+		Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeRegister, false)})
 	second := unmarshal[protocol.RegisterOK](t, p.last(protocol.TypeRegisterOK))
 	if second.DeviceID != id {
 		t.Fatalf("re-registering the same key minted a new id: %q vs %q", second.DeviceID, id)
@@ -458,7 +462,7 @@ func TestHelloForgedSignatureRejected(t *testing.T) {
 
 	p.reset()
 	p.send(protocol.TypeHello, protocol.Hello{
-		DeviceID: id, Pubkey: p.pubB64, Sig: p.sig(true), Role: protocol.RoleHost})
+		DeviceID: id, Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeHello, true), Role: protocol.RoleHost})
 	if p.has(protocol.TypeHelloOK) {
 		t.Fatal("a forged signature was accepted")
 	}
@@ -472,7 +476,7 @@ func TestHelloForgedSignatureRejected(t *testing.T) {
 	other := hn.newPeer()
 	p.reset()
 	p.send(protocol.TypeHello, protocol.Hello{
-		DeviceID: id, Pubkey: other.pubB64, Sig: other.sig(false), Role: protocol.RoleHost})
+		DeviceID: id, Pubkey: other.pubB64, Sig: other.sig(protocol.PurposeHello, false), Role: protocol.RoleHost})
 	if p.has(protocol.TypeHelloOK) {
 		t.Fatal("a signature from the wrong key was accepted")
 	}
@@ -485,7 +489,7 @@ func TestHelloForgedSignatureRejected(t *testing.T) {
 	q.mu.Lock()
 	firstNonce := q.nonce
 	q.mu.Unlock()
-	goodSig := q.sigOver(firstNonce)
+	goodSig := q.sigOver(protocol.PurposeHello, firstNonce)
 	q.send(protocol.TypeHello, protocol.Hello{
 		DeviceID: id, Pubkey: q.pubB64, Sig: "AAAA", Role: protocol.RoleHost})
 	q.reset()
@@ -500,9 +504,48 @@ func TestHelloForgedSignatureRejected(t *testing.T) {
 
 	q.reset()
 	q.send(protocol.TypeHello, protocol.Hello{
-		DeviceID: id, Pubkey: q.pubB64, Sig: q.sig(false), Role: protocol.RoleHost})
+		DeviceID: id, Pubkey: q.pubB64, Sig: q.sig(protocol.PurposeHello, false), Role: protocol.RoleHost})
 	if !q.has(protocol.TypeHelloOK) {
 		t.Fatalf("hello with the re-issued nonce failed: %s", q.typesLocked())
+	}
+}
+
+func TestHelloRequiresAHelloPurposeSignature(t *testing.T) {
+	hn := newHarness(t)
+	p := hn.newPeer()
+	id := p.register("host")
+
+	p.mu.Lock()
+	nonce, err := base64.StdEncoding.DecodeString(p.nonce)
+	p.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(nonce)
+	raw, err := ecdsa.SignASN1(rand.Reader, p.priv, sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, sig := range map[string]string{
+		"undomained": base64.StdEncoding.EncodeToString(raw),
+		"register":   p.sig(protocol.PurposeRegister, false),
+	} {
+		p.reset()
+		p.send(protocol.TypeHello, protocol.Hello{
+			DeviceID: id, Pubkey: p.pubB64, Sig: sig, Role: protocol.RoleHost})
+		if p.has(protocol.TypeHelloOK) {
+			t.Fatalf("a %s signature authenticated a hello", name)
+		}
+		if got := p.lastErr().Code; got != protocol.ErrBadSignature {
+			t.Fatalf("%s: error code = %q, want %q", name, got, protocol.ErrBadSignature)
+		}
+	}
+
+	p.reset()
+	p.send(protocol.TypeHello, protocol.Hello{
+		DeviceID: id, Pubkey: p.pubB64, Sig: p.sig(protocol.PurposeHello, false), Role: protocol.RoleHost})
+	if !p.has(protocol.TypeHelloOK) {
+		t.Fatalf("a hello-purpose signature over the re-issued nonce failed: %s", p.typesLocked())
 	}
 }
 
@@ -1235,7 +1278,7 @@ func TestRegistryOutageAnswersUnavailableAndNeverMintsAnID(t *testing.T) {
 
 	hn.reg.setDown(true)
 	fresh := hn.newPeer()
-	fresh.send(protocol.TypeRegister, protocol.Register{Pubkey: fresh.pubB64, Sig: fresh.sig(false)})
+	fresh.send(protocol.TypeRegister, protocol.Register{Pubkey: fresh.pubB64, Sig: fresh.sig(protocol.PurposeRegister, false)})
 	if fresh.has(protocol.TypeRegisterOK) {
 		t.Fatal("register succeeded while the registry was down")
 	}
@@ -1249,7 +1292,7 @@ func TestRegistryOutageAnswersUnavailableAndNeverMintsAnID(t *testing.T) {
 
 	known.reset()
 	known.send(protocol.TypeHello, protocol.Hello{
-		DeviceID: known.deviceID, Pubkey: known.pubB64, Sig: known.sig(false), Role: protocol.RoleHost})
+		DeviceID: known.deviceID, Pubkey: known.pubB64, Sig: known.sig(protocol.PurposeHello, false), Role: protocol.RoleHost})
 	if known.has(protocol.TypeHelloOK) {
 		t.Fatal("hello succeeded while the registry was down")
 	}
@@ -1278,7 +1321,7 @@ func TestRegistryCallDoesNotHoldTheHubLock(t *testing.T) {
 	go func() {
 		defer close(done)
 		slow.send(protocol.TypeHello, protocol.Hello{
-			DeviceID: slow.deviceID, Pubkey: slow.pubB64, Sig: slow.sig(false), Role: protocol.RoleHost})
+			DeviceID: slow.deviceID, Pubkey: slow.pubB64, Sig: slow.sig(protocol.PurposeHello, false), Role: protocol.RoleHost})
 	}()
 
 	online.reset()

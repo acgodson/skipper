@@ -1,6 +1,6 @@
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use rc_identity::{access_code, build_verifier, DeviceKey};
+use rc_identity::{access_code, build_verifier, DeviceKey, SigningPurpose};
 use std::process::{Command, Stdio};
 
 #[test]
@@ -18,7 +18,8 @@ fn the_go_server_accepts_rust_identity_material() {
     let payload = serde_json::json!({
         "pubkey": key.public_key_spki_base64(),
         "nonce": B64.encode(&nonce),
-        "sig": key.sign_nonce_base64(&nonce),
+        "sig": key.sign(SigningPurpose::Hello, &nonce).unwrap(),
+        "registerSig": key.sign(SigningPurpose::Register, &nonce).unwrap(),
         "plaintextCode": code,
         "code": verifier,
     });
@@ -48,34 +49,36 @@ fn the_go_server_accepts_rust_identity_material() {
     );
 }
 
-// TODO: push the SDP signing message itself through `go run ./cmd/rustcompat`.
-// Its stdin contract fixes `nonce` at 32 bytes, so widening it is a change in
-// `server/`.
 #[test]
 fn an_sdp_signature_uses_the_encodings_the_go_server_accepts() {
     const SDP: &str = "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
 a=fingerprint:sha-256 7B:8C:1D:4F:2A:90:33:AE:BB:01:5C:6D:77:E8:99:0A\r\n";
     const SESSION: &str = "8c7f1a2b3c4d5e6f708192a3b4c5d6e7";
+    let mac_key = rc_identity::sdp::mac_key(&[3u8; 32]);
 
     let key = DeviceKey::generate();
     let pubkey = key.public_key_spki_base64();
-    let (fingerprints, message) =
-        rc_identity::sdp::signing_material(SESSION, "offer", SDP).unwrap();
-    let signature = key.sign_base64(&B64.decode(&message).unwrap());
+    let signable = rc_identity::sdp::signable(&mac_key, SESSION, "offer", SDP).unwrap();
+    let payload = rc_identity::sdp::payload(SESSION, "offer", &signable.fingerprints).unwrap();
+    let signature = key.sign(SigningPurpose::Sdp, &payload).unwrap();
 
     rc_identity::sdp::verify(
+        &mac_key,
         SESSION,
         "offer",
         SDP,
-        &fingerprints,
-        &pubkey,
-        &signature,
+        &rc_identity::sdp::Presented {
+            fingerprints: &signable.fingerprints,
+            pubkey: &pubkey,
+            sig: &signature,
+            mac: &signable.mac,
+        },
         Some(&pubkey),
     )
     .unwrap();
 
     let nonce: Vec<u8> = (0u8..32).collect();
-    let handshake_signature = key.sign_nonce_base64(&nonce);
+    let handshake_signature = key.sign(SigningPurpose::Hello, &nonce).unwrap();
     assert_eq!(B64.decode(&pubkey).unwrap().len(), 91, "P-256 DER SPKI");
     for sig in [&signature, &handshake_signature] {
         let der = B64.decode(sig).unwrap();

@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"rc-signal/internal/auth"
+	"rcprotocol"
 )
 
 type emitted struct {
@@ -38,11 +39,11 @@ func main() {
 	}
 	fmt.Println("PASS  Go parsed the Swift public key as a P-256 DER SPKI key")
 
-	if err := auth.VerifyDeviceSig(in.Pubkey, in.Sig, nonce); err != nil {
+	if err := auth.VerifyDeviceSig(protocol.PurposeHello, in.Pubkey, in.Sig, nonce); err != nil {
 		fail("Go rejected a valid Swift signature: %v\n"+
-			"      Swift must send base64(ASN.1 DER ECDSA-SHA256) over the raw nonce bytes.", err)
+			"      Swift must send base64(ASN.1 DER ECDSA-SHA256) over \"skipperdesk/hello/v1|\" + the raw nonce bytes.", err)
 	}
-	fmt.Println("PASS  Go verified the Swift signature over the nonce")
+	fmt.Println("PASS  Go verified the Swift hello signature over the nonce")
 
 	raw, err := base64.StdEncoding.DecodeString(in.Sig)
 	if err != nil || len(raw) == 0 {
@@ -51,15 +52,20 @@ func main() {
 	tampered := make([]byte, len(raw))
 	copy(tampered, raw)
 	tampered[len(tampered)-1] ^= 0x01
-	if err := auth.VerifyDeviceSig(in.Pubkey, base64.StdEncoding.EncodeToString(tampered), nonce); err == nil {
+	if err := auth.VerifyDeviceSig(protocol.PurposeHello, in.Pubkey, base64.StdEncoding.EncodeToString(tampered), nonce); err == nil {
 		fail("a TAMPERED signature was accepted — the verifier is not actually checking")
 	}
 	fmt.Println("PASS  Go rejected the tampered signature")
 
+	if err := auth.VerifyDeviceSig(protocol.PurposeRegister, in.Pubkey, in.Sig, nonce); err == nil {
+		fail("the Swift hello signature was accepted as a register signature")
+	}
+	fmt.Println("PASS  Go rejected the hello signature for any other purpose")
+
 	other := make([]byte, len(nonce))
 	copy(other, nonce)
 	other[0] ^= 0xff
-	if err := auth.VerifyDeviceSig(in.Pubkey, in.Sig, other); err == nil {
+	if err := auth.VerifyDeviceSig(protocol.PurposeHello, in.Pubkey, in.Sig, other); err == nil {
 		fail("a signature over a DIFFERENT nonce was accepted")
 	}
 	fmt.Println("PASS  Go rejected the signature when checked against a different nonce")

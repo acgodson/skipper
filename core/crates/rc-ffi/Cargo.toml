@@ -13,3 +13,4 @@ crate-type = ["staticlib"]
 rc-session = { path = "../rc-session" }
 rc-identity = { path = "../rc-identity" }
 serde_json.workspace = true
+base64.workspace = true

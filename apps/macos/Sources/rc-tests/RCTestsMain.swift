@@ -42,7 +42,7 @@ struct RCTests {
                 "deviceId": identity.deviceID,
                 "pubkey": identity.publicKeyBase64,
                 "nonce": nonceBase64,
-                "sig": try identity.signatureBase64(for: nonce),
+                "sig": try identity.signatureBase64(purpose: .hello, nonce: nonce),
             ]
             let json = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
             FileHandle.standardOutput.write(json)

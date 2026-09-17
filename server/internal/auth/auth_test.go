@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"rcprotocol"
 )
 
 func newKey(t *testing.T) (*ecdsa.PrivateKey, string) {
@@ -28,7 +30,21 @@ func newKey(t *testing.T) (*ecdsa.PrivateKey, string) {
 	return k, base64.StdEncoding.EncodeToString(spki)
 }
 
-func sign(t *testing.T, k *ecdsa.PrivateKey, msg []byte) string {
+func sign(t *testing.T, k *ecdsa.PrivateKey, nonce []byte) string {
+	t.Helper()
+	return signPurpose(t, k, protocol.PurposeHello, nonce)
+}
+
+func signPurpose(t *testing.T, k *ecdsa.PrivateKey, purpose protocol.SigningPurpose, nonce []byte) string {
+	t.Helper()
+	message, err := protocol.SigningMessage(purpose, nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signRaw(t, k, message)
+}
+
+func signRaw(t *testing.T, k *ecdsa.PrivateKey, msg []byte) string {
 	t.Helper()
 	sum := sha256.Sum256(msg)
 	sig, err := ecdsa.SignASN1(rand.Reader, k, sum[:])
@@ -47,38 +63,38 @@ func TestVerifyDeviceSig(t *testing.T) {
 	if len(nonce) != 32 {
 		t.Fatalf("nonce length = %d, want 32", len(nonce))
 	}
-	if err := VerifyDeviceSig(pub, sign(t, k, nonce), nonce); err != nil {
+	if err := VerifyDeviceSig(protocol.PurposeHello, pub, sign(t, k, nonce), nonce); err != nil {
 		t.Fatalf("a valid signature was rejected: %v", err)
 	}
 
 	other := append([]byte{}, nonce...)
 	other[0] ^= 0xff
-	if err := VerifyDeviceSig(pub, sign(t, k, other), nonce); err == nil {
+	if err := VerifyDeviceSig(protocol.PurposeHello, pub, sign(t, k, other), nonce); err == nil {
 		t.Fatal("a signature over the wrong nonce was accepted")
 	}
 
 	k2, _ := newKey(t)
-	if err := VerifyDeviceSig(pub, sign(t, k2, nonce), nonce); err == nil {
+	if err := VerifyDeviceSig(protocol.PurposeHello, pub, sign(t, k2, nonce), nonce); err == nil {
 		t.Fatal("a signature from the wrong key was accepted")
 	}
 
 	_, pub2 := newKey(t)
-	if err := VerifyDeviceSig(pub2, sign(t, k, nonce), nonce); err == nil {
+	if err := VerifyDeviceSig(protocol.PurposeHello, pub2, sign(t, k, nonce), nonce); err == nil {
 		t.Fatal("a mismatched pubkey was accepted")
 	}
 
 	good := sign(t, k, nonce)
 	raw, _ := base64.StdEncoding.DecodeString(good)
 	raw[len(raw)-1] ^= 0x01
-	if err := VerifyDeviceSig(pub, base64.StdEncoding.EncodeToString(raw), nonce); err == nil {
+	if err := VerifyDeviceSig(protocol.PurposeHello, pub, base64.StdEncoding.EncodeToString(raw), nonce); err == nil {
 		t.Fatal("a tampered signature was accepted")
 	}
 
 	for _, bad := range []string{"", "not base64!!", base64.StdEncoding.EncodeToString([]byte("hello"))} {
-		if err := VerifyDeviceSig(bad, good, nonce); err == nil {
+		if err := VerifyDeviceSig(protocol.PurposeHello, bad, good, nonce); err == nil {
 			t.Fatalf("garbage pubkey %q was accepted", bad)
 		}
-		if err := VerifyDeviceSig(pub, bad, nonce); err == nil {
+		if err := VerifyDeviceSig(protocol.PurposeHello, pub, bad, nonce); err == nil {
 			t.Fatalf("garbage signature %q was accepted", bad)
 		}
 	}
@@ -90,6 +106,44 @@ func TestVerifyDeviceSig(t *testing.T) {
 	spki384, _ := x509.MarshalPKIXPublicKey(&k384.PublicKey)
 	if _, err := ParsePubkey(base64.StdEncoding.EncodeToString(spki384)); err == nil {
 		t.Fatal("a P-384 key was accepted")
+	}
+}
+
+func TestVerifyDeviceSigIsDomainSeparated(t *testing.T) {
+	k, pub := newKey(t)
+	nonce, _, err := NewNonce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyDeviceSig(protocol.PurposeHello, pub, signRaw(t, k, nonce), nonce); err == nil {
+		t.Fatal("a signature over the bare nonce (v2) was accepted")
+	}
+	nonces := []protocol.SigningPurpose{protocol.PurposeHello, protocol.PurposeRegister, protocol.PurposeAPIChallenge}
+	for _, signedAs := range nonces {
+		sig := signPurpose(t, k, signedAs, nonce)
+		for _, checkedAs := range nonces {
+			err := VerifyDeviceSig(checkedAs, pub, sig, nonce)
+			if (signedAs == checkedAs) != (err == nil) {
+				t.Fatalf("signed as %s, checked as %s: err=%v", signedAs, checkedAs, err)
+			}
+		}
+	}
+
+	sdpPayload := []byte("8c7f1a2b3c4d5e6f708192a3b4c5d6e7|answer|sha-256 AB")
+	sdpSig := signRaw(t, k, append([]byte("skipperdesk/sdp/v1|"), sdpPayload...))
+	if err := VerifyDeviceSig(protocol.PurposeSDP, pub, sdpSig, sdpPayload); err == nil {
+		t.Fatal("the server verified an sdp-purpose signature; it never should")
+	}
+}
+
+func TestVerifyDeviceSigRejectsNoncesThatAreNot32Bytes(t *testing.T) {
+	k, pub := newKey(t)
+	forged := []byte("skipperdesk/sdp/v1|8c7f1a2b3c4d5e6f708192a3b4c5d6e7|answer|sha-256 AB")
+	for _, nonce := range [][]byte{nil, make([]byte, 31), make([]byte, 33), forged} {
+		sig := signRaw(t, k, append([]byte("skipperdesk/hello/v1|"), nonce...))
+		if err := VerifyDeviceSig(protocol.PurposeHello, pub, sig, nonce); err == nil {
+			t.Fatalf("a %d-byte nonce was accepted", len(nonce))
+		}
 	}
 }
 

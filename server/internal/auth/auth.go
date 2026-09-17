@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"rcprotocol"
 )
 
 var (
@@ -51,7 +53,18 @@ func ParsePubkey(b64 string) (*ecdsa.PublicKey, error) {
 	return pub, nil
 }
 
-func VerifyDeviceSig(pubkeyB64, sigB64 string, nonce []byte) error {
+// VerifyDeviceSig checks a device-key signature over
+// protocol.SigningMessage(purpose, nonce). The nonce must be exactly
+// protocol.NonceLen bytes, so a signature made for one purpose never
+// authenticates another.
+func VerifyDeviceSig(purpose protocol.SigningPurpose, pubkeyB64, sigB64 string, nonce []byte) error {
+	if purpose == protocol.PurposeSDP {
+		return ErrBadSignature
+	}
+	message, err := protocol.SigningMessage(purpose, nonce)
+	if err != nil {
+		return ErrBadSignature
+	}
 	pub, err := ParsePubkey(pubkeyB64)
 	if err != nil {
 		return ErrBadSignature
@@ -60,7 +73,7 @@ func VerifyDeviceSig(pubkeyB64, sigB64 string, nonce []byte) error {
 	if err != nil {
 		return ErrBadSignature
 	}
-	sum := sha256.Sum256(nonce)
+	sum := sha256.Sum256(message)
 	if !ecdsa.VerifyASN1(pub, sum[:], sig) {
 		return ErrBadSignature
 	}

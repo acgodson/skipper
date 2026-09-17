@@ -9,12 +9,15 @@ import (
 	"os"
 
 	"rc-signal/internal/auth"
+	"rcprotocol"
 )
 
 type emitted struct {
 	Pubkey string `json:"pubkey"`
 	Nonce  string `json:"nonce"`
 	Sig    string `json:"sig"`
+	// RegisterSig is the same key's register-purpose signature over the same nonce.
+	RegisterSig string `json:"registerSig"`
 }
 
 func main() {
@@ -32,15 +35,23 @@ func main() {
 	}
 	fmt.Println("PASS  Go parsed the Rust public key as a P-256 DER SPKI key")
 
-	if err := auth.VerifyDeviceSig(in.Pubkey, in.Sig, nonce); err != nil {
-		fail("Go rejected a valid Rust signature: %v", err)
+	if err := auth.VerifyDeviceSig(protocol.PurposeHello, in.Pubkey, in.Sig, nonce); err != nil {
+		fail("Go rejected a valid Rust hello signature: %v", err)
 	}
-	fmt.Println("PASS  Go verified the Rust signature over the nonce")
+	fmt.Println("PASS  Go verified the Rust hello signature over the nonce")
+
+	if err := auth.VerifyDeviceSig(protocol.PurposeRegister, in.Pubkey, in.RegisterSig, nonce); err != nil {
+		fail("Go rejected a valid Rust register signature: %v", err)
+	}
+	if auth.VerifyDeviceSig(protocol.PurposeRegister, in.Pubkey, in.Sig, nonce) == nil {
+		fail("a hello signature was accepted as a register signature")
+	}
+	fmt.Println("PASS  Go keeps the Rust hello and register signatures apart")
 
 	raw, _ := base64.StdEncoding.DecodeString(in.Sig)
 	tampered := append([]byte(nil), raw...)
 	tampered[len(tampered)-1] ^= 0x01
-	if auth.VerifyDeviceSig(in.Pubkey, base64.StdEncoding.EncodeToString(tampered), nonce) == nil {
+	if auth.VerifyDeviceSig(protocol.PurposeHello, in.Pubkey, base64.StdEncoding.EncodeToString(tampered), nonce) == nil {
 		fail("a TAMPERED signature was accepted — the verifier is not actually checking")
 	}
 	fmt.Println("PASS  Go rejected the tampered signature")

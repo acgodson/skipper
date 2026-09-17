@@ -56,6 +56,13 @@ pub enum PakeError {
     NotComplete,
 }
 
+impl PakeError {
+    /// A wrong access code, as opposed to a broken or malformed exchange.
+    pub fn is_authentication(&self) -> bool {
+        matches!(self, PakeError::ConfirmationFailed)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PakeMessage {
     pub step: u32,
@@ -218,9 +225,12 @@ impl PakeExchange {
         }
     }
 
-    /// base64 (std, padded) — the form the FFI hands out.
-    pub fn session_key_base64(&self) -> Result<String, PakeError> {
-        self.session_key().map(|key| B64.encode(key))
+    /// The key that MACs every `sdp` of this session (PROTOCOL.md §2.12).
+    pub fn sdp_mac_key(&self) -> Result<[u8; crate::sdp::MAC_KEY_LEN], PakeError> {
+        let mut session = self.session_key()?;
+        let key = crate::sdp::mac_key(&session);
+        burn(&mut session);
+        Ok(key)
     }
 
     pub fn step(
@@ -505,7 +515,7 @@ impl Default for GuessPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuessCounter {
     #[serde(default)]
     pub failures: u32,
@@ -513,6 +523,12 @@ pub struct GuessCounter {
     pub last_failure_ms: i64,
     #[serde(default, rename = "lockedUntilMs")]
     pub locked_until_ms: i64,
+    #[serde(
+        default,
+        rename = "failureTimesMs",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub failure_times_ms: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -555,6 +571,7 @@ impl GuessPolicy {
             failures,
             last_failure_ms: now_ms,
             locked_until_ms,
+            failure_times_ms: Vec::new(),
         }
     }
 
@@ -569,6 +586,117 @@ impl GuessPolicy {
             .checked_mul(factor)
             .unwrap_or(i64::MAX)
             .min(self.max_lockout_ms)
+    }
+}
+
+/// The host-wide budget: failures from every controller together, so a relay
+/// that invents a fresh controller key per guess still runs out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostGuessBudget {
+    pub window_ms: i64,
+    pub max_failures: usize,
+}
+
+impl Default for HostGuessBudget {
+    fn default() -> Self {
+        Self {
+            window_ms: 60 * 60 * 1000,
+            max_failures: 20,
+        }
+    }
+}
+
+impl HostGuessBudget {
+    fn recent(&self, times: &[i64], now_ms: i64) -> Vec<i64> {
+        let since = now_ms.saturating_sub(self.window_ms);
+        let mut recent: Vec<i64> = times.iter().copied().filter(|&at| at > since).collect();
+        recent.sort_unstable();
+        let excess = recent.len().saturating_sub(self.max_failures);
+        recent.drain(..excess);
+        recent
+    }
+
+    fn counter(&self, recent: Vec<i64>, last_failure_ms: i64) -> GuessCounter {
+        let locked_until_ms = match recent.len() >= self.max_failures {
+            true => recent[0].saturating_add(self.window_ms),
+            false => 0,
+        };
+        GuessCounter {
+            failures: recent.len() as u32,
+            last_failure_ms,
+            locked_until_ms,
+            failure_times_ms: recent,
+        }
+    }
+
+    pub fn check(&self, counter: &GuessCounter, now_ms: i64) -> GuessDecision {
+        let recent = self.recent(&counter.failure_times_ms, now_ms);
+        match recent.len() >= self.max_failures {
+            true => GuessDecision::Locked {
+                retry_after_ms: recent[0].saturating_add(self.window_ms) - now_ms,
+            },
+            false => GuessDecision::Allowed,
+        }
+    }
+
+    pub fn record_failure(&self, counter: &GuessCounter, now_ms: i64) -> GuessCounter {
+        let mut times = counter.failure_times_ms.clone();
+        times.push(now_ms);
+        self.counter(self.recent(&times, now_ms), now_ms)
+    }
+
+    /// Withdraws the most recent failure: the one recorded for an exchange
+    /// that has now verified.
+    pub fn withdraw_latest(&self, counter: &GuessCounter) -> GuessCounter {
+        let mut times = counter.failure_times_ms.clone();
+        times.sort_unstable();
+        times.pop();
+        self.counter(times, counter.last_failure_ms)
+    }
+}
+
+/// Both of the host's counters for one exchange. A failure is recorded in
+/// both **before** step 2 leaves the host and withdrawn only when step 3
+/// verifies, so an exchange that ends any other way — timeout, `bye`, a new
+/// `session_start`, a crash — has already been counted.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuessLedger {
+    #[serde(default)]
+    pub controller: GuessCounter,
+    #[serde(default)]
+    pub host: GuessCounter,
+}
+
+impl GuessLedger {
+    pub fn admit(&self, now_ms: i64) -> GuessDecision {
+        let decisions = [
+            GuessPolicy::default().check(&self.controller, now_ms),
+            HostGuessBudget::default().check(&self.host, now_ms),
+        ];
+        decisions
+            .into_iter()
+            .filter_map(|decision| match decision {
+                GuessDecision::Locked { retry_after_ms } => Some(retry_after_ms),
+                GuessDecision::Allowed => None,
+            })
+            .max()
+            .map_or(GuessDecision::Allowed, |retry_after_ms| {
+                GuessDecision::Locked { retry_after_ms }
+            })
+    }
+
+    pub fn reply_sent(&self, now_ms: i64) -> Self {
+        Self {
+            controller: GuessPolicy::default().record_failure(&self.controller, now_ms),
+            host: HostGuessBudget::default().record_failure(&self.host, now_ms),
+        }
+    }
+
+    pub fn confirmed(&self) -> Self {
+        Self {
+            controller: GuessPolicy::default().record_success(&self.controller),
+            host: HostGuessBudget::default().withdraw_latest(&self.host),
+        }
     }
 }
 

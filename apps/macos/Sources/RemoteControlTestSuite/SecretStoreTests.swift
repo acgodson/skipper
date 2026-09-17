@@ -50,37 +50,57 @@ public let secretStoreSuite = TestSuite("SecretStore (PROTOCOL.md §4.5)", [
         try expectEqual(try store.trustedControllers().count, 1)
     },
 
-    TestCase("a guess counter survives being stored and read back") {
+    TestCase("a guess ledger survives being stored and read back") {
         let store = SecretStore(blobs: InMemorySecretStore())
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         try expectNil(try store.guessCounter(forController: controllerKey))
 
-        var counter = GuessCounter()
+        func load() throws -> GuessLedger {
+            GuessLedger(controller: try store.guessCounter(forController: controllerKey),
+                        host: try store.guessCounter(forController: GuessLedger.hostKey))
+        }
+        func save(_ ledger: GuessLedger) throws {
+            try store.saveGuessCounter(ledger.controller, forController: controllerKey)
+            try store.saveGuessCounter(ledger.host, forController: GuessLedger.hostKey)
+        }
+
         for attempt in 1...4 {
-            counter = try GuessPolicy.recordFailure(counter, now: now).counter
-            try store.saveGuessCounter(counter, forController: controllerKey)
-            counter = try expectNotNil(try store.guessCounter(forController: controllerKey))
-            try expectEqual(counter.failures, attempt)
-            try expect(try GuessPolicy.check(counter, now: now).isAllowed,
+            try save(try GuessPolicy.replySent(try load(), now: now).ledger)
+            let ledger = try load()
+            try expectEqual(ledger.controller.failures, attempt)
+            try expectEqual(ledger.host.failureTimesMs?.count, attempt,
+                            "the host-wide budget persists its timestamps")
+            try expect(try GuessPolicy.admit(ledger, now: now).isAllowed,
                        "four failures is still under the threshold")
         }
 
-        counter = try GuessPolicy.recordFailure(counter, now: now).counter
-        try store.saveGuessCounter(counter, forController: controllerKey)
-        let reloaded = try expectNotNil(try store.guessCounter(forController: controllerKey))
-        try expectEqual(reloaded.failures, 5)
-        let decision = try GuessPolicy.check(reloaded, now: now)
+        try save(try GuessPolicy.replySent(try load(), now: now).ledger)
+        let reloaded = try load()
+        try expectEqual(reloaded.controller.failures, 5)
+        let decision = try GuessPolicy.admit(reloaded, now: now)
         try expectFalse(decision.isAllowed, "the fifth failure locks this controller out")
         try expectEqual(decision.retryAfterMs, 60_000, "one minute, then doubling")
-        try expect(try GuessPolicy.check(reloaded, now: now.addingTimeInterval(61)).isAllowed,
+        try expect(try GuessPolicy.admit(reloaded, now: now.addingTimeInterval(61)).isAllowed,
                    "and the lockout ends on its own")
 
         try expectNil(try store.guessCounter(forController: otherKey))
 
-        let cleared = try GuessPolicy.recordSuccess(reloaded).counter
-        try store.saveGuessCounter(cleared, forController: controllerKey)
-        try expectEqual(try store.guessCounter(forController: controllerKey)?.failures, 0,
-                        "a completed exchange clears the count")
+        try save(try GuessPolicy.confirmed(reloaded, now: now).ledger)
+        let cleared = try load()
+        try expectEqual(cleared.controller.failures, 0, "a completed exchange clears the count")
+        try expectEqual(cleared.host.failures, 4,
+                        "and withdraws only its own failure from the host-wide budget")
+    },
+
+    TestCase("a counter written before the host-wide budget existed still loads") {
+        let store = SecretStore(blobs: InMemorySecretStore())
+        try store.saveGuessCounter(GuessCounter(failures: 2, lastFailureMs: 5), forController: controllerKey)
+        let legacy = try JSONEncoder().encode(GuessCounter(failures: 2, lastFailureMs: 5))
+        try expect(!String(decoding: legacy, as: UTF8.self).contains("failureTimesMs"),
+                   "a per-controller counter keeps its old shape on disk")
+        let ledger = GuessLedger(controller: try store.guessCounter(forController: controllerKey),
+                                 host: try store.guessCounter(forController: GuessLedger.hostKey))
+        try expect(try GuessPolicy.admit(ledger).isAllowed)
     },
 
     TestCase("revoking clears the trusted list and the counters, not the codes") {
