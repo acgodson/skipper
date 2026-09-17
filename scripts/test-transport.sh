@@ -28,7 +28,8 @@
 #   l. a controller refuses a host whose key changed for a pinned Device ID,
 #      before the access code is used, and keeps the remembered code until the
 #      user chooses "Trust the new Mac"
-#   m. a burst of connect requests is answered with rate_limited
+#   m. refused connects are free, and a burst of delivered connects is
+#      answered with rate_limited
 #   n. (dev-backend.sh with id-cert keys) a host holding a Device ID certificate
 #      keeps its Device ID after the backend's database is wiped
 #
@@ -325,7 +326,7 @@ MARK=$(( $(lines_in "$WORK/ctrl.log") + 1 ))
 HOST_MARK=$(( $(lines_in "$WORK/host.log") + 1 ))
 say ctrl "connect $HOST_ID $HOST_CODE remember"
 if wait_for "$WORK/ctrl.log" '"event":"session"' 30 "$MARK"; then
-  SESSION_ID="$(field "$WORK/ctrl.log" session sessionId)"
+  SESSION_ID="$(field_after "$WORK/ctrl.log" "$MARK" session sessionId)"
   pass "the correct access code opens a session ($SESSION_ID)"
 else
   fail "correct access code opens a session" "$(tail -n "+$MARK" "$WORK/ctrl.log")"; exit 1
@@ -366,8 +367,8 @@ echo
 # c. peer connection + both data channels
 # ---------------------------------------------------------------------------
 echo "== c. WebRTC"
-if wait_for "$WORK/ctrl.log" "\"event\":\"ice_servers\".*\"sessionId\":\"$SESSION_ID\",\"turn\":true" 60 "$MARK" &&
-   wait_for "$WORK/host.log" "\"event\":\"ice_servers\".*\"sessionId\":\"$SESSION_ID\",\"turn\":true" 30 "$HOST_MARK"; then
+if wait_for "$WORK/ctrl.log" "\"event\":\"ice_servers\".*\"sessionId\":\"$SESSION_ID\".*\"turn\":true" 60 "$MARK" &&
+   wait_for "$WORK/host.log" "\"event\":\"ice_servers\".*\"sessionId\":\"$SESSION_ID\".*\"turn\":true" 30 "$HOST_MARK"; then
   pass "the ice_servers push delivered server-minted TURN credentials to both Macs once metering started"
 else
   fail "ice_servers delivers TURN to both sides" \
@@ -738,9 +739,9 @@ echo
 # ---------------------------------------------------------------------------
 echo "== l. a pinned Device ID whose host key changed is refused"
 
-pinned_key() {  # pinned_key <file> <start-line> <device id>  -> the key the last `pins` event holds
+pinned_key() {  # pinned_key <file> <start-line> <device id> [pins|pending]  -> that key in the last `pins` event
   tail -n "+$2" "$1" > "$WORK/pins.tmp" 2>/dev/null
-  python3 - "$WORK/pins.tmp" "$3" <<'PY'
+  python3 - "$WORK/pins.tmp" "$3" "${4:-pins}" <<'PY'
 import json, sys
 found = ""
 for line in open(sys.argv[1]):
@@ -751,7 +752,7 @@ for line in open(sys.argv[1]):
         except Exception:
             continue
         if d.get("event") == "pins":
-            found = d.get("pins", {}).get(sys.argv[2], "")
+            found = d.get(sys.argv[3], {}).get(sys.argv[2], "")
 print(found)
 PY
 }
@@ -760,12 +761,12 @@ canonical_key() {
   python3 -c 'import base64,sys; print(base64.b64encode(base64.b64decode(sys.argv[1])).decode())' "$1" 2>/dev/null
 }
 
-ask_pins() {  # ask_pins <node>  -> the pinned key for HOST_ID
+ask_pins() {  # ask_pins <node> [pins|pending]  -> the pinned (or pending) key for HOST_ID
   local mark
   mark=$(( $(lines_in "$WORK/$1.log") + 1 ))
   say "$1" pins
   wait_for "$WORK/$1.log" '"event":"pins"' 10 "$mark"
-  pinned_key "$WORK/$1.log" "$mark" "$HOST_ID"
+  pinned_key "$WORK/$1.log" "$mark" "$HOST_ID" "${2:-pins}"
 }
 
 ask_remembered() {  # ask_remembered <node>  -> True / False
@@ -840,9 +841,10 @@ PY
   TMARK=$(( $(lines_in "$WORK/pctrl.log") + 1 ))
   say pctrl trust-new
   if wait_for "$WORK/pctrl.log" '"event":"trusted_new_mac"' 10 "$TMARK" &&
-     [[ "$(ask_pins pctrl)" == "$HOST_PUBKEY" ]] &&
+     [[ "$(canonical_key "$(ask_pins pctrl)")" == "$(canonical_key "$FOREIGN_KEY")" ]] &&
+     [[ "$(ask_pins pctrl pending)" == "$HOST_PUBKEY" ]] &&
      [[ "$(ask_remembered pctrl)" == "False" ]]; then
-    pass "Trust the new Mac replaced the pin and forgot the remembered code"
+    pass "Trust the new Mac kept the old pin, held the new key as pending and forgot the remembered code"
   else
     fail "Trust the new Mac" "$(tail -n "+$TMARK" "$WORK/pctrl.log")"
   fi
@@ -850,6 +852,11 @@ PY
   say pctrl "connect $HOST_ID $PIN_CODE"
   if wait_for "$WORK/pctrl.log" '"event":"pake_ok"' 30 "$PMARK"; then
     pass "after trusting, the typed code connects again"
+    if [[ "$(ask_pins pctrl)" == "$HOST_PUBKEY" && -z "$(ask_pins pctrl pending)" ]]; then
+      pass "the proved exchange replaced the pin with the new Mac's key"
+    else
+      fail "the pending key becomes the pin after the code is proved" "$(grep '"event":"pins"' "$WORK/pctrl.log" | tail -1)"
+    fi
     say pctrl bye
     sleep 2
   else
@@ -892,29 +899,50 @@ if [[ "$API_MODE" == "1" ]]; then
 fi
 
 say ctrl quit
-say host quit
 sleep 1
 
 echo
 # ---------------------------------------------------------------------------
-# m. connect_req rate limit (PROTOCOL.md v4 §5)
+# m. connect_req rate limits (PROTOCOL.md v5 §2.9, §3.3)
 # ---------------------------------------------------------------------------
-echo "== m. a burst of connect requests is rate limited"
+echo "== m. refusals are free; a burst of delivered connect requests is rate limited"
+say host quit
+sleep 2
 start_node rctrl controller "$WORK/id-rctrl"
 if wait_for "$WORK/rctrl.log" '"event":"hello_ok"' 30; then
   RMARK=$(( $(lines_in "$WORK/rctrl.log") + 1 ))
   for _ in $(seq 1 10); do
     say rctrl "connect $HOST_ID ZZZZZZZZZZZZ"
-    sleep 0.4
+    sleep 0.3
   done
-  if wait_for "$WORK/rctrl.log" '"code":"rate_limited"' 20 "$RMARK"; then
+  sleep 2
+  OFFLINE_COUNT="$(tail -n "+$RMARK" "$WORK/rctrl.log" | grep -c '"code":"offline"')"
+  if [[ "$OFFLINE_COUNT" -eq 10 ]] && must_not_appear "$WORK/rctrl.log" '"code":"rate_limited"' "$RMARK"; then
+    pass "ten connects to an offline host were all refused as offline and none was charged"
+  else
+    fail "refusals do not charge the controller's bucket" "$(tail -n "+$RMARK" "$WORK/rctrl.log" | grep connect_error | tail -3)"
+  fi
+
+  start_node host host "$WORK/id-host"
+  wait_for "$WORK/host.log" '"event":"hello_ok"' 30 || fail "the host comes back online" "see $WORK/host.log"
+  sleep 1
+  RMARK=$(( $(lines_in "$WORK/rctrl.log") + 1 ))
+  for _ in $(seq 1 15); do
+    AMARK=$(( $(lines_in "$WORK/rctrl.log") + 1 ))
+    say rctrl "connect $HOST_ID ZZZZZZZZZZZZ"
+    wait_for "$WORK/rctrl.log" '"event":"connect_error"' 15 "$AMARK"
+    must_not_appear "$WORK/rctrl.log" '"code":"rate_limited"' "$AMARK" || break
+    sleep 0.3
+  done
+  DELIVERED="$(tail -n "+$RMARK" "$WORK/rctrl.log" | grep -c '"event":"session"')"
+  if wait_for "$WORK/rctrl.log" '"code":"rate_limited"' 5 "$RMARK"; then
     RL_LINE="$(tail -n "+$RMARK" "$WORK/rctrl.log" | grep -m1 '"code":"rate_limited"')"
     RL_SENTENCE="$(printf '%s' "$RL_LINE" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["sentence"])')"
     RL_RETRY="$(printf '%s' "$RL_LINE" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("retryAfterSec", 0))')"
-    if [[ "$RL_SENTENCE" == "Too many attempts. Try again in "* && "$RL_RETRY" -gt 0 ]]; then
-      pass "the burst was refused with rate_limited (retry in ${RL_RETRY}s): \"$RL_SENTENCE\""
+    if [[ "$DELIVERED" -ge 6 && "$RL_SENTENCE" == "Too many attempts. Try again in "* && "$RL_RETRY" -gt 0 ]]; then
+      pass "after $DELIVERED delivered connects the burst was refused with rate_limited (retry in ${RL_RETRY}s): \"$RL_SENTENCE\""
     else
-      fail "rate_limited reads as a plain sentence with a retry" "$RL_LINE"
+      fail "rate_limited comes after six deliveries and reads as a plain sentence with a retry" "delivered $DELIVERED: $RL_LINE"
     fi
   else
     fail "a connect burst is rate limited" "$(tail -n "+$RMARK" "$WORK/rctrl.log" | grep connect_error | tail -3)"
@@ -923,6 +951,7 @@ else
   fail "the burst controller authenticates" "see $WORK/rctrl.log"
 fi
 say rctrl quit
+say host quit
 sleep 1
 
 echo

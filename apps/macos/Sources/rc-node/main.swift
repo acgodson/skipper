@@ -30,8 +30,10 @@ final class Node {
 
     private func answer(_ request: ConsentRequest) {
         guard let consentAnswer, consentAnswer != .timeout else { return }
+        let answerAt = request.allowsAnswerAt.addingTimeInterval(0.5)
         Task {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            let wait = max(0, answerAt.timeIntervalSinceNow)
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             emit("consent_answer", ["allow": consentAnswer == .allow, "promptId": request.promptID])
             await coordinator.answerConsent(allow: consentAnswer == .allow, promptID: request.promptID)
         }
@@ -380,7 +382,8 @@ final class Node {
 
         case "pins":
             let pins = (try? identity.secrets.hostKeyPins()) ?? [:]
-            emit("pins", ["count": pins.count, "pins": pins])
+            let pending = (try? identity.secrets.pendingHostKeys()) ?? [:]
+            emit("pins", ["count": pins.count, "pins": pins, "pending": pending])
 
         case "trust-new":
             do {
