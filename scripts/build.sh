@@ -210,24 +210,41 @@ else
     echo "==> No apps/macos/Resources/AppIcon.iconset; using the default system icon"
 fi
 
-# ---- Entitlements + signing -------------------------------------------------
+# ---- Provisioning profile, entitlements, secret storage mode ----------------
 #
-# The Secure Enclave is entitlement-gated. `SecureEnclave.P256.Signing.PrivateKey`
-# fails with errSecMissingEntitlement (-34018) unless the binary carries
-# com.apple.application-identifier, and that entitlement is only honoured under a
-# Developer ID signature. Team ID comes from SKIPPER_TEAM_ID or from the selected
-# identity's own "Developer ID Application: NAME (TEAMID)" suffix. Every Keychain
-# item lives in the data-protection keychain under the TEAMID.app.skipperdesk.desktop
-# access group, so keychain-access-groups is always added when a Team ID exists.
-# Without one the build still succeeds, but the app reads no Team ID from its own
-# signature and refuses to create an identity outside the dev file-identity mode.
+# keychain-access-groups and com.apple.application-identifier are the two
+# entitlements that unlock the data-protection keychain (and with it the Secure
+# Enclave's own storage). macOS refuses to launch a bundle that carries
+# keychain-access-groups without a matching embedded.provisionprofile —
+# `Launchd job spawn failed`, POSIX 153 — so the two travel together or not at
+# all. With a valid profile the build gets both and the app's secrets are kept
+# where the kernel enforces app identity; without one the build gets NEITHER and
+# the app falls back to the login keychain, which is what any build from source
+# does. The choice is recorded in the Info.plist so the release gate can check
+# that the bundle's entitlements and its own claim agree.
 KEYCHAIN_APP_IDENTIFIER="app.skipperdesk.desktop"
 TEAM_ID="${SKIPPER_TEAM_ID:-}"
 if [[ -z "${TEAM_ID}" && "${SIGN_IDENTITY}" == "Developer ID Application:"* ]]; then
     TEAM_ID="$(printf '%s' "${SIGN_IDENTITY}" | sed -n 's/.*(\([A-Z0-9]\{6,\}\))[[:space:]]*$/\1/p')"
 fi
 
-if [[ -n "${TEAM_ID}" ]]; then
+PROFILE="${SKIPPER_PROVISION_PROFILE:-}"
+DEFAULT_PROFILE="${HOME}/Library/SkipperDesk/signing/embedded.provisionprofile"
+if [[ -z "${PROFILE}" && -f "${DEFAULT_PROFILE}" ]]; then
+    PROFILE="${DEFAULT_PROFILE}"
+fi
+
+KEYCHAIN_ENTITLEMENTS=""
+SECRET_STORAGE_MODE="login"
+if [[ -n "${PROFILE}" ]]; then
+    if [[ -z "${TEAM_ID}" ]]; then
+        echo "error: a provisioning profile was given but no Team ID; set SKIPPER_TEAM_ID" >&2
+        exit 1
+    fi
+    PROFILE_EXPIRY="$("${REPO_ROOT}/scripts/check-provision-profile.sh" \
+        "${PROFILE}" "${TEAM_ID}" "${KEYCHAIN_APP_IDENTIFIER}")"
+    cp "${PROFILE}" "${CONTENTS}/embedded.provisionprofile"
+    SECRET_STORAGE_MODE="dataProtection"
     KEYCHAIN_ENTITLEMENTS="$(cat <<KC_ENTS
     <key>com.apple.application-identifier</key>
     <string>${TEAM_ID}.${KEYCHAIN_APP_IDENTIFIER}</string>
@@ -237,13 +254,18 @@ if [[ -n "${TEAM_ID}" ]]; then
     </array>
 KC_ENTS
 )"
-    echo "==> Keychain access group and Secure Enclave entitlements for team ${TEAM_ID} (${TEAM_ID}.${KEYCHAIN_APP_IDENTIFIER})"
+    echo "==> Embedded ${PROFILE}"
+    echo "    valid until ${PROFILE_EXPIRY}; secrets use the data-protection keychain"
+    echo "    access group ${TEAM_ID}.${KEYCHAIN_APP_IDENTIFIER}"
 else
-    KEYCHAIN_ENTITLEMENTS=""
-    echo "No Developer ID identity; this build cannot store keys"
-    echo "    The app refuses to create an identity unless SKIPPER_DEV_FILE_IDENTITY=1 or RC_IDENTITY_DIR is set."
-    echo "    Set SKIPPER_TEAM_ID, or sign with a Developer ID Application identity, to enable it."
+    echo "==> No provisioning profile: secrets use the login keychain, and another process running as"
+    echo "    you could read them. The data-protection keychain needs keychain-access-groups, and a"
+    echo "    bundle carrying it cannot launch without an embedded.provisionprofile. Set"
+    echo "    SKIPPER_PROVISION_PROFILE, or put one at ${DEFAULT_PROFILE}, to get it."
 fi
+
+/usr/libexec/PlistBuddy \
+    -c "Add :SKIPPERSecretStorageMode string ${SECRET_STORAGE_MODE}" "${CONTENTS}/Info.plist" >/dev/null
 
 ENTITLEMENTS="$(mktemp -t rc-entitlements).plist"
 cat > "${ENTITLEMENTS}" <<ENTS
