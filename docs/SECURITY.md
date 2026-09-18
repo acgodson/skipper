@@ -341,8 +341,22 @@ against malware that already runs as the same user:
 - It **can** make an update fail repeatedly, which only leaves the current version
   installed or shows the reinstall message.
 
-TODO: verify App Management protection on a notarized build (macOS 13+ may block
-same-user writes into a notarized app bundle, which would close the last two points).
+Verified on a notarized, stapled Developer ID build installed under `/Applications`
+(macOS 14.2.1, SIP on): the U2 race fails against the current updater. Over 60
+iterations each, driving real staged installs into `/Applications/SkipperDeskU2Test.app`,
+a write file descriptor held open on a staged file across the swap tampered with the
+installed bundle 0/60 times (the swap installs a fresh clone, so the fd points at the
+discarded staging inode), and a hard link to a staged file was refused before the swap
+60/60 times by the link-count check. Independently, macOS App Management blocks any
+process that is not SkipperDesk from writing into the installed bundle once the app has
+been registered and first launched (the `com.apple.macl` provenance is then set): a
+direct write returns `EPERM` both from a process under the parent app and from an
+unrelated binary launched by `launchd`, so this is a second, OS-level barrier and not a
+masking artefact of the launching process holding the permission. The barrier does not
+apply to a bundle placed by a command-line copy that has never been registered, and a
+process running as the same user can still modify `/Applications/SkipperDesk.app`
+before any update runs; the code signature and Gatekeeper at launch remain the checks
+for that case.
 
 If any check fails, the app discards the download and logs the reason. The user sees
 nothing alarming. The app does not retry that build during this run. Builds are
