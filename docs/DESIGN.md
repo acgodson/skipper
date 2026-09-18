@@ -200,7 +200,8 @@ Source PNGs: `apps/macos/Resources/AppIcon.iconset` (compiled by `scripts/build.
 
 Host: hero (Device ID, access code with Copy/Show/Refresh, status pill), permission banners when
 needed, Account (sign in), Access toggles (unattended, clipboard, launch at login, install updates automatically), the "ready to update" banner when a verified update is staged, Screen sharing state,
-Trusted controllers, Quality, key-storage footer. Controller: hero form (Device ID, access code,
+Trusted controllers, Quality, key-storage footer (which gains one line when a build from source
+keeps secrets in the login keychain, because the person can act on it by installing a signed build). Controller: hero form (Device ID, access code,
 label, Remember, Connect, state pill, failure banner, then "This Mac's fingerprint F660 085E 05D4
 830E" in `codeCaption`, `textTertiary`, selectable — the line a host owner compares with the
 prompt's "Fingerprint" line), Saved devices with presence, Quality.

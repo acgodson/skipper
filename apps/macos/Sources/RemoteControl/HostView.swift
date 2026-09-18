@@ -356,6 +356,13 @@ struct DeviceKeyFooter: View {
                         .foregroundStyle(SkipperColor.textTertiary)
                 }
 
+                if let note = identity.secretStorageNote {
+                    Text(note)
+                        .font(SkipperFont.caption)
+                        .foregroundStyle(SkipperColor.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 if let note = identity.keyStorageNote {
                     SkipperNote(note)
                 }
