@@ -11,6 +11,7 @@ public final class IdentityStore: ObservableObject {
     @Published public private(set) var isServerRegistered: Bool
 
     public let keyStorage: DeviceKeyStorage
+    public let secretStorageMode: SecretStorageMode?
     @Published public private(set) var keyStorageNote: String?
     public let publicKeyHex: String
     public let publicKeyBase64: String
@@ -27,6 +28,7 @@ public final class IdentityStore: ObservableObject {
     public var storagePath: String { fileStore.fileURL.path }
     public var storageDisplayPath: String { (storagePath as NSString).abbreviatingWithTildeInPath }
     public var keyStorageLabel: String { keyStorage.label }
+    public var secretStorageNote: String? { secretStorageMode?.footerNote }
 
     nonisolated public static func usesDevFileIdentity(fileStore: IdentityFileStore) -> Bool {
 #if DEBUG || SKIPPER_TEST_HOOKS
@@ -52,8 +54,14 @@ public final class IdentityStore: ObservableObject {
 
         let loaded = try fileStore.load()
         let devFileIdentity = devFileIdentity ?? Self.usesDevFileIdentity(fileStore: fileStore)
-        if !devFileIdentity, let keychain = blobStore as? KeychainBlobs<DeviceKeyAccount> {
-            LegacyKeychainMigration.run(identityCreatedAt: loaded?.record.createdAt, accessGroup: keychain.accessGroup)
+        let keychain = devFileIdentity ? nil : blobStore as? KeychainBlobs<DeviceKeyAccount>
+        self.secretStorageMode = keychain?.mode
+        if let keychain {
+            LegacyKeychainMigration.run(
+                identityCreatedAt: loaded?.record.createdAt,
+                mode: keychain.mode,
+                accessGroup: keychain.accessGroup
+            )
         }
 
         let storedCode = try secrets.accessCode()
