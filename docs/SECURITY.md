@@ -162,6 +162,49 @@ without an Apple-issued certificate has no Team ID, so library validation could
 never admit its own framework: such local builds are signed without the hardened
 runtime and are for development only.
 
+## Where this Mac's secrets are kept
+
+The device key, the access code, the remembered codes, the device-ID certificate,
+the pinned host keys, the trusted-controller list and the guess counters all live
+in a keychain. **Which** keychain is not a claim the build makes about itself; the
+app finds out at startup by writing, reading back and deleting a throwaway item in
+the data-protection keychain under its own access group. What that probe answers
+decides everything below, and the host screen's key-storage footer says which one
+is in use.
+
+| | Data-protection keychain | Login keychain |
+|---|---|---|
+| When | The bundle carries an `embedded.provisionprofile` and, with it, `com.apple.application-identifier` and `keychain-access-groups` — the signed, notarized download | Any build without that profile, including every build from source |
+| Who can read an item | Only code the kernel accepts as this app: the signature and the access group are checked on every call | **Any process running as the same user.** No app-identity check applies |
+| Access group | `<TEAMID>.app.skipperdesk.desktop` | none — items are keyed by service and account only |
+
+The login keychain is the Phase 2.2 threat model, unchanged from V1: SkipperDesk
+protects these secrets from other *users* and from anything off this Mac, not from
+malware already running as you. The data-protection keychain is strictly stronger,
+and it is what the released build uses.
+
+Both entitlements travel with the profile or not at all: macOS refuses to launch a
+bundle that carries `keychain-access-groups` without a matching
+`embedded.provisionprofile` (`Launchd job spawn failed`, POSIX 153), so a build
+with no profile is signed without either and falls back rather than failing. The
+build records its choice in the bundle's `SKIPPERSecretStorageMode`
+(`dataProtection` or `login`), and `scripts/check-isolation.sh` fails a release
+whose profile, entitlements and recorded mode do not agree.
+
+The Secure Enclave path works in both modes: the private half of an Enclave key
+never leaves the chip either way, and only its wrapped blob goes to whichever
+keychain is in use.
+
+On startup the app also reads the keychain it is *not* using. Anything found only
+there is written across, read back and then deleted from the original. Items
+adopted **from the login keychain** must survive the suspicion rules — the access
+code, trusted controllers, guess counters and the device token are refused if they
+predate this identity, because anything running as the user could have planted
+them. Items coming the other way were written under an enforced app identity and
+are adopted as they stand. The Device ID and the device key are never regenerated
+by either move. A build in login mode cannot read the data-protection keychain at
+all, so that direction only happens where the entitlement exists.
+
 ## Supply-chain gates
 
 Every push and PR to `main` runs, before anything else builds:
@@ -179,7 +222,11 @@ Every push and PR to `main` runs, before anything else builds:
 - `scripts/sbom.sh` — generates a CycloneDX SBOM per language (Rust, Go, Swift)
   and uploads it as a CI artifact on every run.
 - `scripts/check-isolation.sh` on the actual built `.app`, every PR and every push
-  to `main`.
+  to `main`. It also fails the build if the bundle's entitlements, its
+  `embedded.provisionprofile` and its recorded `SKIPPERSecretStorageMode` do not
+  agree, or if any entitlement outside the allowed set is signed in.
+- `scripts/test-provision-profile.sh` — the profile validator (team, application
+  identifier, expiry) against hand-made profile plists.
 
 `./scripts/build.sh --reproducible` pins `SOURCE_DATE_EPOCH` to the commit being
 built and normalises the Swift compiler's embedded debug paths, for anyone who

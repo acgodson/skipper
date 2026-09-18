@@ -3,10 +3,10 @@ import Security
 import RCTestKit
 import RemoteControlCore
 
-// TODO: verify on a Developer-ID-signed build. Real data-protection Keychain writes and the legacy move need the keychain-access-groups entitlement; these cases cover query construction and decisions only.
+// TODO: verify on a build with an embedded provisioning profile. Real data-protection Keychain writes need keychain-access-groups; these cases cover query construction and decisions only.
 
 @MainActor
-private func withUnsignedKeychain(
+private func withUnreachableKeychain(
     _ body: @MainActor (IdentityFileStore, KeychainBlobs<DeviceKeyAccount>, SecretStore) async throws -> Void
 ) async throws {
     let directory = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -14,8 +14,8 @@ private func withUnsignedKeychain(
     defer { try? FileManager.default.removeItem(at: directory) }
     try await body(
         IdentityFileStore(directory: directory),
-        KeychainBlobs<DeviceKeyAccount>(accessGroup: nil),
-        SecretStore(blobs: KeychainBlobs<SecretAccount>(accessGroup: nil))
+        KeychainBlobs<DeviceKeyAccount>(mode: .dataProtection, accessGroup: nil),
+        SecretStore(blobs: KeychainBlobs<SecretAccount>(mode: .dataProtection, accessGroup: nil))
     )
 }
 
@@ -39,8 +39,9 @@ public let keychainSuite = TestSuite("KeychainItem", [
         try expectNil(KeychainAccessGroup.named(teamID: "  "))
     },
 
-    TestCase("every query pins the data-protection keychain, the access group and no sync") {
-        let query = try KeychainItem.query(account: "access-code", accessGroup: "A1B2C3D4E5.app.skipperdesk.desktop")
+    TestCase("a data-protection query pins that keychain, the access group and no sync") {
+        let query = try KeychainItem.query(account: "access-code", mode: .dataProtection,
+                                           accessGroup: "A1B2C3D4E5.app.skipperdesk.desktop")
         try expectEqual(query[kSecClass as String] as? String, kSecClassGenericPassword as String)
         try expectEqual(query[kSecAttrService as String] as? String, "app.skipperdesk.desktop")
         try expectEqual(query[kSecAttrAccount as String] as? String, "access-code")
@@ -49,25 +50,62 @@ public let keychainSuite = TestSuite("KeychainItem", [
         try expectEqual(query[kSecAttrSynchronizable as String] as? Bool, false)
     },
 
-    TestCase("stored items are readable only after first unlock, on this device") {
-        let attributes = KeychainItem.attributes(storing: Data([1, 2, 3]))
+    TestCase("a login query names no access group, so it needs no entitlement") {
+        let query = try KeychainItem.query(account: "access-code", mode: .login,
+                                           accessGroup: "A1B2C3D4E5.app.skipperdesk.desktop")
+        try expectEqual(query[kSecAttrService as String] as? String, "app.skipperdesk.desktop")
+        try expectEqual(query[kSecAttrAccount as String] as? String, "access-code")
+        try expectEqual(query[kSecUseDataProtectionKeychain as String] as? Bool, false)
+        try expectNil(query[kSecAttrAccessGroup as String])
+        try expectNil(query[kSecAttrSynchronizable as String])
+    },
+
+    TestCase("the same account in the other keychain is the same account") {
+        let item = KeychainItem(account: "device-key", mode: .dataProtection, accessGroup: "A1B2C3D4E5.x")
+        try expectEqual(item.counterpart.account, "device-key")
+        try expectEqual(item.counterpart.mode, .login)
+        try expectEqual(item.counterpart.counterpart.mode, .dataProtection)
+    },
+
+    TestCase("data-protection items are readable only after first unlock, on this device") {
+        let attributes = KeychainItem.attributes(storing: Data([1, 2, 3]), mode: .dataProtection)
         try expectEqual(attributes[kSecValueData as String] as? Data, Data([1, 2, 3]))
         try expectEqual(attributes[kSecAttrAccessible as String] as? String,
                         kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+        let login = KeychainItem.attributes(storing: Data([1, 2, 3]), mode: .login)
+        try expectEqual(login[kSecValueData as String] as? Data, Data([1, 2, 3]))
+        try expectNil(login[kSecAttrAccessible as String], "the login keychain has no accessibility classes")
     },
 
-    TestCase("without a Team ID every operation fails closed before touching the Keychain") {
-        try expectUnsigned { _ = try KeychainItem.query(account: "device-key", accessGroup: nil) }
-        let item = KeychainItem(account: "device-token", accessGroup: nil)
+    TestCase("the data-protection keychain is chosen only with an access group and a working probe") {
+        let group = "A1B2C3D4E5.app.skipperdesk.desktop"
+        try expectEqual(SecretStorageMode.decide(accessGroup: group, dataProtectionUsable: true), .dataProtection)
+        try expectEqual(SecretStorageMode.decide(accessGroup: group, dataProtectionUsable: false), .login)
+        try expectEqual(SecretStorageMode.decide(accessGroup: nil, dataProtectionUsable: true), .login)
+        try expectEqual(SecretStorageMode.decide(accessGroup: nil, dataProtectionUsable: false), .login)
+    },
+
+    TestCase("the footer explains the login keychain and says nothing about the other one") {
+        try expectNil(SecretStorageMode.dataProtection.footerNote)
+        try expectEqual(SecretStorageMode.login.footerNote,
+                        "Kept in this Mac's login keychain. Another app running as you could read it. "
+                            + "A signed SkipperDesk build keeps it out of reach.")
+    },
+
+    TestCase("a data-protection build with no access group fails closed before touching the Keychain") {
+        try expectUnsigned {
+            _ = try KeychainItem.query(account: "device-key", mode: .dataProtection, accessGroup: nil)
+        }
+        let item = KeychainItem(account: "device-token", mode: .dataProtection, accessGroup: nil)
         try expectUnsigned { _ = try item.load() }
         try expectUnsigned { try item.save(Data([1])) }
         try expectUnsigned { try item.remove() }
         try expectEqual(KeychainError.unsigned.errorDescription,
-                        "This build is not signed by SkipperDesk and cannot store keys.")
+                        "This build cannot reach the data-protection Keychain and has no access group.")
     },
 
-    TestCase("an unsigned release build cannot create an identity, and writes no file") {
-        try await withUnsignedKeychain { fileStore, blobStore, secrets in
+    TestCase("a build whose selected keychain refuses everything creates no identity and writes no file") {
+        try await withUnreachableKeychain { fileStore, blobStore, secrets in
             try expectUnsigned {
                 _ = try IdentityStore(fileStore: fileStore, blobStore: blobStore, secrets: secrets,
                                       devFileIdentity: false)
@@ -76,8 +114,8 @@ public let keychainSuite = TestSuite("KeychainItem", [
         }
     },
 
-    TestCase("an unsigned build never falls back to a file key, even with a working secret store") {
-        try await withUnsignedKeychain { fileStore, blobStore, _ in
+    TestCase("a build whose keychain refuses never falls back to a file key, even with a working secret store") {
+        try await withUnreachableKeychain { fileStore, blobStore, _ in
             try expectUnsigned {
                 _ = try IdentityStore(fileStore: fileStore, blobStore: blobStore,
                                       secrets: SecretStore(blobs: InMemorySecretStore()), devFileIdentity: false)
@@ -86,8 +124,8 @@ public let keychainSuite = TestSuite("KeychainItem", [
         }
     },
 
-    TestCase("an unsigned build refuses to keep an existing file key in the file") {
-        try await withUnsignedKeychain { fileStore, blobStore, _ in
+    TestCase("a build whose keychain refuses will not keep an existing file key in the file") {
+        try await withUnreachableKeychain { fileStore, blobStore, _ in
             let record = IdentityRecord(deviceID: "482719351", key: DeviceKey(), createdAt: IdentityRecord.timestamp())
             try fileStore.save(record)
             try expectUnsigned {
@@ -195,7 +233,38 @@ public let legacyKeychainMigrationSuite = TestSuite("LegacyKeychainMigration", [
         try expectEqual(decisions["device-key"], .dropLegacy)
     },
 
-    TestCase("an unsigned build migrates nothing") {
-        try expectEqual(LegacyKeychainMigration.run(identityCreatedAt: identityCreated, accessGroup: nil), [:])
+    TestCase("a build that cannot reach the data-protection keychain migrates nothing, either way") {
+        try expectEqual(LegacyKeychainMigration.run(
+            identityCreatedAt: identityCreated, mode: .dataProtection,
+            accessGroup: nil, dataProtectionUsable: false), [:])
+        try expectEqual(LegacyKeychainMigration.run(
+            identityCreatedAt: identityCreated, mode: .login,
+            accessGroup: "A1B2C3D4E5.app.skipperdesk.desktop", dataProtectionUsable: false), [:])
+    },
+
+    TestCase("items coming back from the data-protection keychain are adopted without suspicion") {
+        let decisions = LegacyKeychainMigration.decide([
+            "device-key": present(aDayBefore),
+            "access-code": present(aDayBefore),
+            "trusted-controllers": present(nil),
+            "guess-counters": present(aDayBefore),
+            "device-token": present(aDayBefore),
+        ], identityCreatedAt: identityCreated, source: .dataProtection)
+        try expect(decisions.values.allSatisfy { $0 == .adopt }, "\(decisions)")
+    },
+
+    TestCase("a copy already in the login keychain still wins over the data-protection one") {
+        let decisions = LegacyKeychainMigration.decide([
+            "access-code": present(anHourAfter, migrated: true),
+            "peer-codes": present(anHourAfter),
+        ], identityCreatedAt: identityCreated, source: .dataProtection)
+        try expectEqual(decisions["access-code"], .dropLegacy)
+        try expectEqual(decisions["peer-codes"], .adopt)
+    },
+
+    TestCase("with no identity file, items from the data-protection keychain are still adopted") {
+        let decisions = LegacyKeychainMigration.decide(
+            ["device-key": present(aDayBefore)], identityCreatedAt: nil, source: .dataProtection)
+        try expectEqual(decisions["device-key"], .adopt)
     },
 ])
