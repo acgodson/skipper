@@ -180,6 +180,56 @@ else
   echo "  ok    DevelopmentHooks.swift reads only RC_DEBUG outside the development-only block"
 fi
 
+echo "== 3e. Secret storage: the profile, the entitlements and the bundle's own claim agree"
+# keychain-access-groups without an embedded.provisionprofile is a bundle macOS refuses to
+# launch (POSIX 153), so the profile and the two keychain entitlements are all present or all
+# absent. SKIPPERSecretStorageMode is what the build recorded; it must not contradict them.
+if [[ -n "$BIN" ]]; then
+  APP_IDENTIFIER_KEY='com.apple.application-identifier'
+  ACCESS_GROUP_KEY='keychain-access-groups'
+  ALLOWED_ENTS="com.apple.security.app-sandbox com.apple.security.network.client
+com.apple.security.device.camera com.apple.security.device.microphone"
+  PROFILE="${BUNDLE}/Contents/embedded.provisionprofile"
+  ents_plist=$(mktemp -t rc-ents).plist
+  codesign -d --entitlements - --xml "$BUNDLE" >"$ents_plist" 2>/dev/null || true
+  keys=$(plutil -convert xml1 -o - "$ents_plist" 2>/dev/null | sed -nE 's|.*<key>(.*)</key>.*|\1|p' | sort -u)
+  mode=$(/usr/libexec/PlistBuddy -c 'Print :SKIPPERSecretStorageMode' "$PLIST" 2>/dev/null || true)
+  team=$(sed -nE 's/^TeamIdentifier=(.*)$/\1/p' <<<"$(codesign -dvv "$BUNDLE" 2>&1)")
+  expected="${team}.app.skipperdesk.desktop"
+  has_app_identifier=$(grep -cx "$APP_IDENTIFIER_KEY" <<<"$keys" || true)
+  has_access_group=$(grep -cx "$ACCESS_GROUP_KEY" <<<"$keys" || true)
+  if [[ -z "$keys" ]]; then
+    report "could not read the bundle's signed entitlements"
+  elif [[ -f "$PROFILE" ]]; then
+    if [[ "$has_app_identifier" -ne 1 || "$has_access_group" -ne 1 ]]; then
+      report "an embedded.provisionprofile is present but $APP_IDENTIFIER_KEY / $ACCESS_GROUP_KEY are not both signed in"
+    elif [[ "$(/usr/libexec/PlistBuddy -c "Print :$APP_IDENTIFIER_KEY" "$ents_plist" 2>/dev/null)" != "$expected" \
+         || "$(/usr/libexec/PlistBuddy -c "Print :$ACCESS_GROUP_KEY:0" "$ents_plist" 2>/dev/null)" != "$expected" ]]; then
+      report "the keychain entitlements do not name exactly $expected"
+    elif [[ "$mode" != "dataProtection" ]]; then
+      report "SKIPPERSecretStorageMode is '${mode:-missing}' but the bundle is entitled for the data-protection keychain"
+    else
+      echo "  ok    profile embedded; $expected entitled; mode dataProtection"
+    fi
+  else
+    if [[ "$has_app_identifier" -ne 0 || "$has_access_group" -ne 0 ]]; then
+      report "$APP_IDENTIFIER_KEY / $ACCESS_GROUP_KEY are signed in with no embedded.provisionprofile -- this bundle cannot launch"
+    elif [[ "$mode" != "login" ]]; then
+      report "SKIPPERSecretStorageMode is '${mode:-missing}' but the bundle has no data-protection entitlement"
+    else
+      echo "  ok    no profile; neither keychain entitlement present; mode login"
+    fi
+  fi
+  strangers=$(comm -23 <(echo "$keys") <(printf '%s\n' $ALLOWED_ENTS "$APP_IDENTIFIER_KEY" "$ACCESS_GROUP_KEY" | sort -u))
+  if [[ -n "$strangers" ]]; then
+    echo "$strangers" | sed 's/^/        /'
+    report "the signed bundle carries entitlements outside the allowed set"
+  else
+    echo "  ok    no entitlement outside the allowed set"
+  fi
+  rm -f "$ents_plist"
+fi
+
 echo "== 4. WebRTC must be the NATIVE xcframework, never a webview's RTCPeerConnection"
 # Strip comments first — a mention of WebRTC in a comment is not a dependency.
 # The `[^:]` guard matters: a naive s|//.*|| also eats the "//" in
