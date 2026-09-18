@@ -18,7 +18,7 @@ public enum DeviceKeyStorage: Equatable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .secureEnclave: return "Hardware key in the Secure Enclave; the private half never leaves the chip"
-        case .keychain: return "Software key in the login Keychain, unlocked after first unlock, this device only"
+        case .keychain: return "Software key in the Keychain, unlocked after first unlock, this device only"
         case .file: return "Software key in an owner-only file (0600)"
         }
     }
