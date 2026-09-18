@@ -23,6 +23,7 @@ test -z "$(gofmt -l server protocol)" || { gofmt -l server protocol; exit 1; }
 step "macOS core, tests, app, release gate"
 ./scripts/build-core.sh >/dev/null
 (cd apps/macos && swift run rc-tests)
+./scripts/test-provision-profile.sh >/dev/null
 ./scripts/build.sh >/dev/null
 ./scripts/check-isolation.sh
 
