@@ -31,7 +31,8 @@ fi
 
 SIGN_IDENTITY="${RC_SIGN_IDENTITY:-}"
 NOTARY_PROFILE="${RC_NOTARY_PROFILE:-}"
-if codesign -dvv "$APP" 2>&1 | grep -q "^Authority=Developer ID Application"; then
+SIGN_INFO="$(codesign -dvv "$APP" 2>&1)"
+if grep -q "^Authority=Developer ID Application" <<<"$SIGN_INFO"; then
   DEVELOPER_ID_APP=1
   FIRST_LAUNCH="2. FIRST LAUNCH. Open the app from Applications. macOS confirms once that
    it was downloaded from the internet; click Open."
@@ -46,7 +47,7 @@ else
 fi
 
 if [[ "$DEVELOPER_ID_APP" -eq 1 ]]; then
-  codesign -dvv "$APP" 2>&1 | grep -qE '^CodeDirectory .*flags=0x[0-9a-f]*\(.*runtime' \
+  grep -qE '^CodeDirectory .*flags=0x[0-9a-f]*\(.*runtime' <<<"$SIGN_INFO" \
     || { echo "FAIL: Developer ID build without the hardened runtime" >&2; exit 1; }
   ./scripts/check-isolation.sh >/dev/null || { echo "FAIL: isolation check" >&2; exit 1; }
 fi

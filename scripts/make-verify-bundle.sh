@@ -21,6 +21,13 @@ TUNNEL_URL=""
 [[ -f "$DIST/tunnel-url.txt" ]] && TUNNEL_URL="$(cat "$DIST/tunnel-url.txt")"
 LAUNCH_URL="${TUNNEL_URL:-<paste the tunnel URL from the host Mac here>}"
 
+if xcrun stapler validate "$DIST/SkipperDesk.app" >/dev/null 2>&1; then
+  FIRST_LAUNCH_NOTE="   - Nothing else: this build is signed and notarised by Apple, so it opens normally."
+else
+  FIRST_LAUNCH_NOTE="   - Once: xattr -cr /Applications/SkipperDesk.app
+     (this build is not notarised; Gatekeeper otherwise blocks first launch)"
+fi
+
 echo "== assembling $BUNDLE_DIR"
 rm -rf "$BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR"
@@ -40,8 +47,7 @@ checklist).
    - Copy this whole folder to the second Mac (AirDrop, USB, or scp — not a
      browser download, which adds a quarantine flag).
    - Open the .dmg and drag SkipperDesk.app to Applications.
-   - Once: xattr -cr /Applications/SkipperDesk.app
-     (this build is not notarised; Gatekeeper otherwise blocks first launch)
+${FIRST_LAUNCH_NOTE}
 
 2. Permissions
    Launch the app once, then in System Settings > Privacy & Security grant:
