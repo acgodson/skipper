@@ -28,6 +28,10 @@ struct TrustedControllerEntry: Identifiable {
         label.isEmpty ? "Unnamed Mac" : label
     }
 
+    var fingerprintLine: String? {
+        fingerprint.map(DevicePublicKey.fingerprintLine)
+    }
+
     func lastSeenSentence(now: Date = Date()) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full

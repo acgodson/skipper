@@ -228,8 +228,8 @@ private struct TrustedControllersSection: View {
                         monospacedSubtitle: false
                     ) {
                         HStack(spacing: SkipperSpace.m) {
-                            if let fingerprint = entry.fingerprint {
-                                Text("Fingerprint \(fingerprint)")
+                            if let fingerprintLine = entry.fingerprintLine {
+                                Text(fingerprintLine)
                                     .font(SkipperFont.codeCaption)
                                     .foregroundStyle(SkipperColor.textTertiary)
                                     .textSelection(.enabled)

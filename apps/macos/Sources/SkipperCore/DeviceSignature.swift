@@ -51,6 +51,12 @@ public enum DevicePublicKey {
         return result.fingerprint
     }
 
+    /// The one spelling of a fingerprint the app shows about *another* Mac, so
+    /// the consent prompt and the trusted-controllers row always read alike.
+    public static func fingerprintLine(_ fingerprint: String) -> String {
+        "Fingerprint \(fingerprint)"
+    }
+
     private struct FingerprintResult: Decodable {
         let fingerprint: String
     }

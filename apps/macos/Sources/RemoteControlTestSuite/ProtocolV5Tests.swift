@@ -455,6 +455,14 @@ public let protocolV5Suite = TestSuite("Protocol v5 client", [
             try expectEqual(groups.count, 4)
             try expect(groups.allSatisfy { $0.count == 4 && $0.allSatisfy(\.isHexDigit) && $0.uppercased() == $0 })
             try await expectThrows("a non-key") { _ = try DevicePublicKey.fingerprint("host") }
+
+            let prompt = ConsentRequest(
+                promptID: "p", controllerLabel: "Other Mac", controllerDeviceID: "567397415",
+                controllerFingerprint: fingerprint, expiresAt: Date().addingTimeInterval(30))
+            try expectEqual(prompt.fingerprintLine, DevicePublicKey.fingerprintLine(fingerprint))
+            try expectEqual(prompt.fingerprintLine, "Fingerprint \(fingerprint)")
+            try expect(!fingerprint.hasPrefix("MFkwEwYHKoZIzj0"),
+                       "a trusted row must not fall back to the shared DER prefix of the key")
         }
     },
 ])

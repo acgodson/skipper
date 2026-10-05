@@ -166,9 +166,11 @@ This sets `RC_DEBUG=1` and `RC_LOG_FILE` and prints the log path on launch
 before running the launcher). **A log file is only written by a
 `scripts/build.sh --test-hooks` build**: `RC_LOG_FILE` is read through
 `DevelopmentHooks`, which is compiled out of a release build (`RCLog.swift`),
-so a release or notarised app launched with `--debug` leaves the file empty. Attach the relevant excerpt as evidence for any
-item above where the UI alone doesn't show what happened (lockout in #5,
-reconnect/backoff timing in #15-16, entitlement refusal in #17).
+so a release or notarised app launched with `--debug` leaves the file empty.
+
+Attach the relevant excerpt as evidence for any item above where the UI alone
+doesn't show what happened (lockout in #5, reconnect/backoff timing in #15-16,
+entitlement refusal in #17).
 
 The host backend's own logs (`rc-api`, `rc-signal`) live under
 `${RC_DEV_DATA:-$TMPDIR/skipperdesk-dev-backend}` while `scripts/dev-tunnel.sh`
@@ -261,6 +263,28 @@ Supporting suites, all green against this same backend:
    is disabled because `DevelopmentHooks.areCompiledIn` is true.
 5. **Cosmetic:** the Account card shows the raw `acct_…` id as the account
    name when the IdP returns no label.
+
+### All five fixed (2026-10-05)
+
+1. Sign out now unlinks this device: `DELETE /v1/devices/{deviceId}` accepts a
+   device token for **its own** id (API.md §3.6), marks the device unlinked so
+   `internalEntitlement` answers `unlinked`, revokes every token for it, and
+   asks rc-signal to close the live session over `POST
+   /internal/sessions/close`. The trial stays on the device record, so signing
+   back in grants no second one. The app ends the local session first, through
+   the same `AfterSessionEnds` path Refresh Code uses, and the Host screen
+   hides the code as it returns to signed-out. Covered by
+   `TestDeviceTokenSignOutUnlinksOnlyItself`, the `Account/sign out` suite and
+   `scripts/test-transport.sh` step (o).
+2. The trusted-controllers card now follows `SecretStore.changes`, so a
+   controller that proves the code appears while the Host screen is on screen.
+   No polling, and no `.onAppear` reload.
+3. The row shows the same `Fingerprint AA20 3851 43BE 7ADC` sentence as the
+   consent prompt, from the one `DevicePublicKey.fingerprintLine`.
+4. Updates-off names the reason that applies (`UpdateDisabledReason`), so a
+   `--test-hooks` build logs the hooks, not a missing Team ID.
+5. The device-token grant carries `accountEmail`; the Account card and the
+   menu-bar panel show that address, or "Signed in", never an account id.
 
 ### Doc and script problems fixed or noted
 
