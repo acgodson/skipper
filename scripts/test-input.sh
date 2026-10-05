@@ -87,13 +87,13 @@ print(total)
 PY
 }
 
-start_node() {  # start_node <name> <role> <dir>
-  local name="$1" role="$2" dir="$3"
+start_node() {  # start_node <name> <role> <dir> [rc-node args...]
+  local name="$1" role="$2" dir="$3"; shift 3
   mkdir -p "$dir"; mkfifo "$WORK/$name.in"
   env RC_ROLE="$role" RC_IDENTITY_DIR="$dir" SKIPPER_API_BASE_URL="$API_BASE_URL" \
       RC_DEVICE_LABEL="rc-input-$name" \
       RC_PASTEBOARD_NAME="app.skipperdesk.desktop.test.$name" \
-      "$BIN" < "$WORK/$name.in" > "$WORK/$name.log" 2>&1 &
+      "$BIN" "$@" < "$WORK/$name.in" > "$WORK/$name.log" 2>&1 &
   PIDS+=("$!")
   eval "exec ${NEXT_FD}> \"$WORK/$name.in\""
   eval "FD_${name}=${NEXT_FD}"
@@ -105,10 +105,21 @@ echo "== building rc-node"
 (cd "$APP_DIR" && swift build --product rc-node 2>&1 | grep -v "XCTest paths\|xcrun:" | tail -2)
 [[ -x "$BIN" ]] || { fail "build rc-node" "no binary"; exit 1; }
 
+# rc-api gates sessions on entitlement, so against it the host has to sign in
+# first; a bare rc-signal answers no REST health call and needs no sign-in.
+HOST_ARGS=()
+if curl -sk --max-time 10 "$API_BASE_URL/v1/health" | grep -q '"status":"ok"'; then
+  HOST_ARGS=(--dev-sign-in "rc-input-$$@example.com")
+  info "backend is rc-api: the host signs in so its trial entitles the session"
+fi
+
 echo "== bringing up a real session"
-start_node host host "$WORK/id-host"
+start_node host host "$WORK/id-host" ${HOST_ARGS[@]+"${HOST_ARGS[@]}"}
 start_node ctrl controller "$WORK/id-ctrl"
 wait_for "$WORK/host.log" '"state":"authenticated"' 30 || { fail "host authenticates" ""; exit 1; }
+if [[ ${#HOST_ARGS[@]} -gt 0 ]]; then
+  wait_for "$WORK/host.log" '"event":"signed_in"' 40 || { fail "host signs in" "see $WORK/host.log"; exit 1; }
+fi
 wait_for "$WORK/ctrl.log" '"state":"authenticated"' 30 || { fail "controller authenticates" ""; exit 1; }
 HOST_ID="$(python3 -c "import json;print(json.load(open('$WORK/id-host/identity.json'))['deviceId'])")"
 # The access code is in the Keychain (or, for this overridden identity

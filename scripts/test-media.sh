@@ -88,13 +88,16 @@ print(found)
 PY
 }
 
-start_node() {  # start_node <name> <role> <identity-dir> [extra env assignments...]
+start_node() {  # start_node <name> <role> <identity-dir> [env assignments...] [-- rc-node args...]
   local name="$1" role="$2" dir="$3"; shift 3
+  local envs=()
+  while [[ $# -gt 0 && "$1" != "--" ]]; do envs+=("$1"); shift; done
+  [[ "${1:-}" == "--" ]] && shift
   mkdir -p "$dir"
   mkfifo "$WORK/$name.in"
   env RC_ROLE="$role" RC_IDENTITY_DIR="$dir" SKIPPER_API_BASE_URL="$API_BASE_URL" \
-      RC_DEVICE_LABEL="rc-media-$name" "$@" \
-      "$BIN" < "$WORK/$name.in" > "$WORK/$name.log" 2>&1 &
+      RC_DEVICE_LABEL="rc-media-$name" ${envs[@]+"${envs[@]}"} \
+      "$BIN" "$@" < "$WORK/$name.in" > "$WORK/$name.log" 2>&1 &
   PIDS+=("$!")
   eval "exec ${NEXT_FD}> \"$WORK/$name.in\""
   eval "FD_${name}=${NEXT_FD}"
@@ -121,9 +124,19 @@ echo
 
 # ---------------------------------------------------------------------------
 echo "== a. session between two real instances"
-start_node host host "$WORK/id-host" RC_CAPTURE_SOURCE=synthetic
+# rc-api gates sessions on entitlement, so against it the host has to sign in
+# first; a bare rc-signal answers no REST health call and needs no sign-in.
+HOST_ARGS=()
+if curl -sk --max-time 10 "$API_BASE_URL/v1/health" | grep -q '"status":"ok"'; then
+  HOST_ARGS=(-- --dev-sign-in "rc-media-$$@example.com")
+  info "backend is rc-api: the host signs in so its trial entitles the session"
+fi
+start_node host host "$WORK/id-host" RC_CAPTURE_SOURCE=synthetic ${HOST_ARGS[@]+"${HOST_ARGS[@]}"}
 if ! wait_for "$WORK/host.log" '"event":"hello_ok"' 30; then
   fail "host authenticates" "see $WORK/host.log"; exit 1
+fi
+if [[ ${#HOST_ARGS[@]} -gt 0 ]] && ! wait_for "$WORK/host.log" '"event":"signed_in"' 40; then
+  fail "host signs in" "see $WORK/host.log"; exit 1
 fi
 HOST_ID="$(field "$WORK/host.log" hello_ok deviceId)"
 HOST_CODE="$(field "$WORK/host.log" ready accessCode)"

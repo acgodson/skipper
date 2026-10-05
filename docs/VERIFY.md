@@ -170,3 +170,116 @@ The host backend's own logs (`rc-api`, `rc-signal`) live under
 `${RC_DEV_DATA:-$TMPDIR/skipperdesk-dev-backend}` while `scripts/dev-tunnel.sh`
 is running; `cloudflared`'s own log is in the same directory as
 `cloudflared.log`.
+
+## One-Mac verification run (2026-10-05)
+
+Two real app instances on one Mac, against the real local backend
+(`scripts/dev-backend.sh`, `SKIPPER_API_BASE_URL=http://127.0.0.1:18080`).
+No tunnel, nothing against AWS.
+
+* **HOST** — `scripts/build.sh --test-hooks`, signed with the Developer ID
+  (`3UB3KZP9WH`, same designated requirement as the installed app), copied to a
+  scratch bundle and launched with `RC_IDENTITY_DIR` / `RC_SETTINGS_SUITE` /
+  `RC_PASTEBOARD_NAME` so it is genuinely a second identity. Device ID
+  `736 789 140`, signed in through the real `/link` page (dev IdP), entitlement
+  `trial`.
+* **CONTROLLER** — the installed, notarised `/Applications/SkipperDesk.app`,
+  no hooks, its own real identity (`567 397 415`).
+
+The host is the hooks build because **both** bundles share a designated
+requirement, so TCC treats them as the same app: whichever one hosts, it sees
+the same grants. Screen Recording is granted (`screenRecordingGranted=true`,
+real capture at 1920x1200 @2.0x); **Accessibility is not granted to
+`app.skipperdesk.desktop` on this Mac at all** — `scripts/verify-input.sh`
+refuses for that reason, and the installed build shows the same "Accessibility
+is off" banner. That, not the one-machine setup, is what blocks items 9-12
+and 14 from being driven through the GUI.
+
+| # | Item | Result | Evidence |
+|---|------|--------|----------|
+| 1 | Host sign-in | PASS | `/link` page: "Signed in as verify-onemac@example.com."; host log `account: accepted the skipperdesk://link callback` → `account: linked device 736789140` → `account: entitlement status=trial tier=base` |
+| 2 | "Online" + plan line | PASS | Host hero reads **Online**; Account card reads **Trial · ends in 6 days**, "This Mac appears in your account as Verify Host" |
+| 3 | Controller connects with Device ID + code | PASS | Controller window shows live video of the host; host log `capture started 1920x1200 @2.0x`, `local answer prefers H264` |
+| 4 | Wrong code refused | PASS | Controller banner: "Wrong access code. Check it on the other Mac." (doc said "Wrong access code"; that is the real sentence) |
+| 5 | Five wrong codes lock out | PASS (host side) | `guess-counters.json`: `failures:5`, `lockedUntilMs` set 60 s out; host log `ERROR access-code exchange failed: access-code attempts are locked out for another 30s`; a 6th attempt inside the window did **not** increment the counter. The controller is shown the same "Wrong access code" sentence on purpose — PROTOCOL.md §2.14 maps a lockout to `auth_failed`, so the checklist's "not just another wrong code message" is wrong about the controller, not about the host. |
+| 6 | Reconnect with remembered code, no typing | PASS | After End Session the saved device is listed and the code is pre-filled; Connect re-opened the session with no code entry |
+| 7 | Refresh code → controller asked again | PASS | New code minted, `trusted-controllers.json` deleted; the controller's remembered code then gets "Wrong access code. Check it on the other Mac." |
+| 8 | Trusted list, per-row Remove | PASS (with a refresh bug) | Row `567 397 415 · Last connected 1 minute ago` present, Remove empties the card immediately. **Bug:** the row only appears after the Host screen re-appears — see below. |
+| 9 | Drag a window by its title bar | N/A — needs the Accessibility grant | Covered at the OS-event level by `scripts/test-input.sh`: "the drag arrived intact: 1 down, 5 drag, 1 up" and "drags arrived as mouse_drag on the reliable channel, not as moves" |
+| 10 | Scroll a long page | N/A — needs the Accessibility grant | `scripts/test-input.sh`: "three scroll phases became 3 OS events". The pixel-unit (`isContinuous`) assertion lives in `verify-input.sh`, which needs the same grant. |
+| 11 | ⌘Space via "Send shortcuts" | N/A — needs the Accessibility grant | Modifier transport covered by `scripts/test-input.sh`: "Cmd+C crossed as 2 key-downs and 2 key-ups". Note the UI is a *toggle* ("Send shortcuts to <Mac>"), not a menu as this doc says. |
+| 12 | Gesture palette → Mission Control | N/A — needs the Accessibility grant | `scripts/test-input.sh`: "the host executed mission_control as 4 OS events" |
+| 13 | Clipboard both ways | PASS | Measured on the two real pasteboards: host `skipper.verify.host` → controller general = `HOST-TO-CONTROLLER-9f3a`; general → host = `CONTROLLER-TO-HOST-7b21`. `scripts/test-input.sh` adds the hash match and the no-echo-loop checks. |
+| 14 | Cursor becomes an I-beam over text | N/A — needs the Accessibility grant and a real pointer on the host | Not covered by any script |
+| 15 | 20 s outage → "Reconnecting…" → recovers, no code | PARTIAL | A 22 s backend outage (`SIGSTOP` on `rc-api` and `rc-signal`) left the session **live** and asked for no code — correct, because the media path is peer-to-peer and was never cut. "Reconnecting…" needs the *media* path cut, which on one Mac means loopback ICE and therefore `pfctl`/sudo. Wire equivalent: `scripts/test-transport.sh` (f) — controller WebSocket killed mid-session, session RESUMED, "the access code was NOT requested again", "the peer connection was NEVER torn down". |
+| 16 | 2-minute outage closes cleanly | N/A — same reason as 15 | `scripts/test-transport.sh` (h): clean `bye` on both ends, "the host is back to a closed session with no stuck state"; stuck modifiers covered by its `input_reset` checks in `test-input.sh` |
+| 17 | Sign out on host → controller refused | **FAIL** | After Sign Out the host card returned to "Sign in to SkipperDesk", yet the controller's next connect was **not** refused — the session opened and reached the consent prompt ("Waiting for the other Mac to accept…"). See the bug list. |
+| 18 | Footer reads "Kept in Secure Enclave" | PASS | `/Applications/SkipperDesk.app` (Developer ID, notarised) footer reads **Kept in Secure Enclave**. The hooks host reads "Kept in file (dev)" because `RC_IDENTITY_DIR` forces a dev file identity — expected, not a defect. |
+| 19 | Relaunch keeps the Device ID | PASS (relaunch half) | `736 789 140` before and after quit+relaunch. The reboot half was not run — the user's Mac was not rebooted. `scripts/test-transport.sh` (n) separately proves the ID survives a wipe of the backend database. |
+
+Also exercised, beyond the numbered list: host consent **allow** (session opened),
+**decline** ("The other Mac declined the connection."), and **no answer**
+(auto-declined after 30 s, same sentence on the controller).
+
+Supporting suites, all green against this same backend:
+`scripts/test-transport.sh` 84/84, `scripts/test-input.sh` 18/18,
+`scripts/test-media.sh` 22/22 (27.1 fps, 383 kbps, VideoToolbox).
+
+### Product bugs found
+
+1. **Signing out does not stop remote sessions.** The sign-out sheet promises
+   "This Mac stops accepting remote sessions until you sign in again", and
+   item 17 expects the entitlement refusal. `AccountLinker.unlink()`
+   (`apps/macos/Sources/RemoteControlCore/Account/AccountLinker.swift:246`)
+   only revokes the device token, `authRevoke`
+   (`server/internal/apisrv/auth.go:329`) only marks that token hash revoked,
+   and `internalEntitlement`
+   (`server/internal/apisrv/entitlement.go:71`) decides from the *device
+   record*, which is still linked to the account and still on trial. The
+   suite's entitlement test only covers a host that **never** signed in, so
+   this path is untested.
+2. **Trusted controllers list does not refresh live.** `HostView`'s
+   `.onAppear { model.reloadTrustedControllers() }`
+   (`apps/macos/Sources/RemoteControl/HostView.swift:33`) is the only reload,
+   so a controller that proves the code while the Host screen is already on
+   screen leaves the card reading "No Mac has proved this Mac's access code
+   yet" until the view re-appears.
+3. **The trusted-controller "short key" identifies nothing.**
+   `TrustedControllerEntry.shortKey`
+   (`apps/macos/Sources/RemoteControl/UIState.swift:24`) is the first 10
+   characters of the base64 SPKI, which for P-256 is the fixed DER prefix
+   `MFkwEwYHKoZIzj0` for *every* controller. The app already renders a real
+   fingerprint (`AA20 3851 43BE 7ADC`) in the consent prompt.
+4. **Misleading update log line.** `UpdateChecker`
+   (`apps/macos/Sources/RemoteControlCore/Update/UpdateChecker.swift:123`)
+   always logs "The running app has no Developer ID Team ID." when updates are
+   off, including for a `--test-hooks` build that *is* Developer ID signed and
+   is disabled because `DevelopmentHooks.areCompiledIn` is true.
+5. **Cosmetic:** the Account card shows the raw `acct_…` id as the account
+   name when the IdP returns no label.
+
+### Doc and script problems fixed or noted
+
+* `scripts/test-input.sh` and `scripts/test-media.sh` could not run against
+  `scripts/dev-backend.sh` at all: their host never signed in, so rc-api
+  refused every session with `entitlement/unlinked`. Both now sign the host in
+  with `rc-node --dev-sign-in` when the backend answers `/v1/health`, the way
+  `scripts/test-transport.sh` already did. Fixed in this run.
+* `--debug` promises a log file a **release** build never writes: `RC_LOG_FILE`
+  is read through `DevelopmentHooks`, which is compiled out of release builds
+  (`RCLog.swift:8`). The controller side of this run produced an empty log for
+  that reason. The **Logs** section above applies only to a `--test-hooks`
+  build.
+* Item 11 says "Send shortcuts menu"; the control is a toggle button.
+* Item 5's expectation that the controller sees something other than a wrong
+  code message contradicts PROTOCOL.md §2.14.
+
+### Still needs two machines
+
+* Cross-network NAT traversal, and the TURN relay path (no coturn locally).
+* Items 15 and 16 as written — a real network cut of the **media** path, which
+  on one Mac would mean `pfctl`/sudo.
+* Items 9, 10, 11, 12 and 14 through the GUI: they need Accessibility granted
+  to SkipperDesk, which only the user can do in System Settings.
+* Item 19's reboot half.
+* Item 17 re-run once the sign-out/entitlement bug above is fixed.
