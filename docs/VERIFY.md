@@ -286,6 +286,49 @@ Supporting suites, all green against this same backend:
 5. The device-token grant carries `accountEmail`; the Account card and the
    menu-bar panel show that address, or "Signed in", never an account id.
 
+Checked against a second local backend (`scripts/dev-backend.sh` on
+`127.0.0.1:18090`, nothing against AWS): `./scripts/ci-local.sh` PREFLIGHT
+PASSED, `scripts/test-transport.sh` **89/89** (the five new step (o)
+assertions included), `scripts/test-input.sh` 18/18, `scripts/test-media.sh`
+22/22 (27.2 fps, 391 kbps). Then on a `scripts/build.sh --test-hooks` bundle
+run with `RC_IDENTITY_DIR`, as the host, with a headless `rc-node` controller:
+
+* The Account card read **verify-ui@example.com**, never the `acct_…` id.
+* The Trusted controllers card went from "No Mac has proved this Mac's access
+  code yet" to `986 651 994 · Last connected 15 seconds ago ·
+  Fingerprint 939B 1E0E 6E24 45A5` **while the Host screen stayed on screen**.
+* The consent prompt for the same controller read `Fingerprint 939B 1E0E 6E24
+  45A5` — the row and the prompt agree, letter for letter.
+* The app log reads `update: Updates are disabled in development builds. This
+  build has the test hooks compiled in.`
+* Sign Out returned the screen to "Sign in to SkipperDesk" with the access code
+  hidden, logged `account: unlinked device 715875943`, and the backend then
+  answered `entitlement/unlinked` for that device.
+
+Observed again on one Mac against the same local backend, with a signed
+`--test-hooks` host (Device ID `328 540 994`, signed in as
+`verify-gui@example.com`) and a headless `rc-node` controller
+(`868 465 246`):
+
+* Item 17 now **PASSES**. With the session live, Sign Out ended it first
+  (controller: `bye{user_ended}`), then `account: unlinked device 328540994`;
+  the Host screen returned to "Sign in to SkipperDesk" with the access code
+  hidden, and the controller's next connect was refused
+  `entitlement{unlinked}` — "That Mac isn't signed in to SkipperDesk yet."
+* Item 8's refresh bug is gone: the Trusted controllers card went from "No Mac
+  has proved this Mac's access code yet" to
+  `868 465 246 · Last connected 9 seconds ago` without the Host screen ever
+  re-appearing.
+* That row reads `Fingerprint A5A7 A838 FEC2 5C12`, the same four groups the
+  consent prompt had just shown for the same Mac.
+* The Account card read `verify-gui@example.com`; no `acct_…` id anywhere.
+* The hooks build logs "Updates are disabled in development builds. This build
+  has the test hooks compiled in." — no Team ID is blamed.
+
+`scripts/test-transport.sh` 89/89 (including the new sign-out step o),
+`scripts/test-input.sh` 18/18, `scripts/test-media.sh` 22/22,
+`scripts/ci-local.sh` green.
+
 ### Doc and script problems fixed or noted
 
 * `scripts/test-input.sh` and `scripts/test-media.sh` could not run against
@@ -310,4 +353,5 @@ Supporting suites, all green against this same backend:
 * Items 9, 10, 11, 12 and 14 through the GUI: they need Accessibility granted
   to SkipperDesk, which only the user can do in System Settings.
 * Item 19's reboot half.
-* Item 17 re-run once the sign-out/entitlement bug above is fixed.
+* Item 17 across two machines. It now passes on one Mac, against the real
+  backend, with the fix above.
