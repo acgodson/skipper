@@ -9,6 +9,11 @@ struct TrustedControllerEntry: Identifiable {
     let firstSeen: Date
     let lastSeen: Date
 
+    /// The four groups the consent prompt and the controller's own screen show,
+    /// so an owner can compare them. The first bytes of the key cannot: for every
+    /// P-256 key they are the same DER prefix.
+    let fingerprint: String?
+
     var id: String { pubkey }
 
     init(pubkey: String, controller: TrustedController) {
@@ -16,17 +21,11 @@ struct TrustedControllerEntry: Identifiable {
         self.label = controller.label
         self.firstSeen = controller.firstSeen
         self.lastSeen = controller.lastSeen
+        self.fingerprint = try? DevicePublicKey.fingerprint(pubkey)
     }
 
     var displayName: String {
         label.isEmpty ? "Unnamed Mac" : label
-    }
-
-    /// The four groups the consent prompt and the controller's own screen show,
-    /// so an owner can compare them. The first bytes of the key cannot: for every
-    /// P-256 key they are the same DER prefix.
-    var fingerprint: String? {
-        try? DevicePublicKey.fingerprint(pubkey)
     }
 
     func lastSeenSentence(now: Date = Date()) -> String {
