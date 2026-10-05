@@ -59,7 +59,8 @@ Each item: the exact expected observation, and what to capture as evidence.
    ID visible in the same screenshot or a paired one.
 
 4. **Wrong code refused.** Enter an intentionally wrong access code. Expected:
-   the controller shows the sentence "Wrong access code" and does not connect.
+   the controller shows the sentence "Wrong access code. Check it on the other
+   Mac." and does not connect.
    Evidence: screenshot of that message.
 
 5. **Five wrong codes lock out.** Repeat #4 five times in a row (same host,
@@ -97,9 +98,9 @@ Each item: the exact expected observation, and what to capture as evidence.
     single large jumps.
     Evidence: short screen recording.
 
-11. **⌘Space via "Send shortcuts".** From the controller's "Send shortcuts"
-    menu, send ⌘Space. Expected: Spotlight (or the host's configured ⌘Space
-    action) opens on the host.
+11. **⌘Space via "Send shortcuts".** Turn on the controller's "Send shortcuts
+    to <Mac>" toggle and press ⌘Space. Expected: Spotlight (or the host's
+    configured ⌘Space action) opens on the host.
     Evidence: screenshot of Spotlight open on the host, taken from the
     controller's view.
 
@@ -162,7 +163,10 @@ Launch either side with `--debug` for diagnostics:
 
 This sets `RC_DEBUG=1` and `RC_LOG_FILE` and prints the log path on launch
 (default `$TMPDIR/skipperdesk-verify.log`; override with `RC_LOG_FILE=<path>`
-before running the launcher). Attach the relevant excerpt as evidence for any
+before running the launcher). **A log file is only written by a
+`scripts/build.sh --test-hooks` build**: `RC_LOG_FILE` is read through
+`DevelopmentHooks`, which is compiled out of a release build (`RCLog.swift`),
+so a release or notarised app launched with `--debug` leaves the file empty. Attach the relevant excerpt as evidence for any
 item above where the UI alone doesn't show what happened (lockout in #5,
 reconnect/backoff timing in #15-16, entitlement refusal in #17).
 
