@@ -14,6 +14,7 @@ public struct DeviceTokenGrant: Decodable, Equatable {
     public let ttlSec: Int?
     public let deviceId: String
     public let accountId: String
+    public let accountEmail: String?
 }
 
 public struct DeviceRecord: Decodable, Equatable {

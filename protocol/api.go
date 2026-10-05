@@ -207,12 +207,15 @@ type DeviceRefreshRequest struct {
 	Sig      string `json:"sig"`
 }
 
+// DeviceTokenResponse.AccountEmail is what the app shows as the signed-in
+// account; it is absent when the identity provider gave none.
 type DeviceTokenResponse struct {
-	DeviceToken string `json:"deviceToken"`
-	ExpiresAt   int64  `json:"expiresAt"`
-	TTLSec      int    `json:"ttlSec"`
-	DeviceID    string `json:"deviceId"`
-	AccountID   string `json:"accountId"`
+	DeviceToken  string `json:"deviceToken"`
+	ExpiresAt    int64  `json:"expiresAt"`
+	TTLSec       int    `json:"ttlSec"`
+	DeviceID     string `json:"deviceId"`
+	AccountID    string `json:"accountId"`
+	AccountEmail string `json:"accountEmail,omitempty"`
 }
 
 // Device: the stored record also holds a server-salted hardwareHash, which no response ever carries.

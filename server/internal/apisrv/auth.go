@@ -162,7 +162,19 @@ func (s *Server) issueToken(device *apidb.Device) (protocol.DeviceTokenResponse,
 	return protocol.DeviceTokenResponse{
 		DeviceToken: token, ExpiresAt: expiresAt, TTLSec: protocol.DeviceTokenTTLSec,
 		DeviceID: device.DeviceID, AccountID: device.AccountID,
+		AccountEmail: s.accountEmail(device.AccountID),
 	}, nil
+}
+
+func (s *Server) accountEmail(accountID string) string {
+	if accountID == "" {
+		return ""
+	}
+	account, err := s.opt.DB.AccountByID(accountID)
+	if err != nil {
+		return ""
+	}
+	return account.Email
 }
 
 func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {

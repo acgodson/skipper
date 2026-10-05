@@ -15,6 +15,7 @@ public let allSuites: [TestSuite] = [
     identitySuite,
     accountSuite,
     linkCallbackSuite,
+    signOutSuite,
     entitlementPresentationSuite,
     settingsSuite,
     observationSuite,

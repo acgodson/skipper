@@ -144,6 +144,10 @@ final class AppModel: ObservableObject {
         bind(account)
         bindPresence(presence)
 
+        identity?.secrets.changes.$trustedControllers
+            .sink { [weak self] _ in self?.reloadTrustedControllers() }
+            .store(in: &cancellables)
+
         ClipboardSecrets.shared.replace(with: [])
         identity?.$accessCode
             .sink { ClipboardSecrets.shared.replace(with: [$0]) }
@@ -339,7 +343,8 @@ final class AppModel: ObservableObject {
     func cancelAccountLink() { account?.cancelLink() }
 
     func unlinkAccount() {
-        Task { await account?.unlink() }
+        guard let account else { return }
+        Task { try? await afterSessionEnds({ await account.unlink() }).run() }
     }
 
     func retryAccount() {
@@ -391,12 +396,7 @@ final class AppModel: ObservableObject {
 
     func refreshAccessCode() {
         guard let identity else { return }
-        let rotation = AccessCodeRotation(
-            sessionIsOpen: { [weak self] in self?.hostSessionIsOpen ?? false },
-            endSession: { [weak self] in self?.endSession() },
-            forceStop: { [weak self] in self?.restartTransport() },
-            rotate: { _ = try await identity.refreshAccessCode() }
-        )
+        let rotation = afterSessionEnds { _ = try await identity.refreshAccessCode() }
         Task {
             do {
                 try await rotation.run()
@@ -405,6 +405,15 @@ final class AppModel: ObservableObject {
             }
             reloadTrustedControllers()
         }
+    }
+
+    private func afterSessionEnds(_ action: @escaping () async throws -> Void) -> AfterSessionEnds {
+        AfterSessionEnds(
+            sessionIsOpen: { [weak self] in self?.hostSessionIsOpen ?? false },
+            endSession: { [weak self] in self?.endSession() },
+            forceStop: { [weak self] in self?.restartTransport() },
+            then: action
+        )
     }
 
     // MARK: - Trusted controllers

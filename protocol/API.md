@@ -213,8 +213,10 @@ Body: `code`, `nonce` (the step 1 app nonce), `pubkey`, `sig`, `platform`, `hard
 optional `label`. The `nonce` check (§1.1 rule 2) runs before the `pubkey` check. `sig` is over
 the newest live §1.3 nonce requested for this `code`; the server finds and spends that nonce in
 a single SQL statement, so two requests can never both use it, and then checks the signature.
-Response `200`: `deviceToken`, `expiresAt`, `ttlSec`, `deviceId`, `accountId`. The server stores
-only `SHA-256(deviceToken)`. A repeat with the same `Idempotency-Key` is
+Response `200`: `deviceToken`, `expiresAt`, `ttlSec`, `deviceId`, `accountId`, and
+`accountEmail` when the identity provider gave one — the app shows that address as the
+signed-in account and never the `accountId`, which is ours, not the person's (DESIGN.md §4
+rule 8). The server stores only `SHA-256(deviceToken)`. A repeat with the same `Idempotency-Key` is
 `409 idempotency_replay_unavailable` (§0.6).
 
 This call **never mints a `deviceId`**. The key must already be in the device registry, which

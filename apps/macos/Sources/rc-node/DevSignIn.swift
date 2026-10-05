@@ -27,7 +27,7 @@ final class DevSignIn {
     private let email: String
     private let identity: IdentityStore
     private let apiBaseURL: URL
-    private var linker: AccountLinker!
+    private(set) var linker: AccountLinker!
     private var linkFailure: Error?
 
     init(email: String, identity: IdentityStore, apiBaseURL: URL = RCConfig.current.apiBaseURL) {
@@ -43,15 +43,15 @@ final class DevSignIn {
         )
     }
 
-    func run() async throws -> (device: DeviceRecord, accountId: String, entitlement: Entitlement?) {
+    func run() async throws -> (device: DeviceRecord, account: String, entitlement: Entitlement?) {
         linkFailure = nil
         linker.beginLink()
         let deadline = Date().addingTimeInterval(Self.timeout)
         while Date() < deadline {
             if let linkFailure { throw linkFailure }
             switch linker.state {
-            case .linked(let accountId, let device):
-                return (device, accountId ?? "", linker.entitlement?.value)
+            case .linked(let accountLabel, let device):
+                return (device, accountLabel ?? "", linker.entitlement?.value)
             case .error(let message):
                 throw Failure.failed(message)
             case .unlinked, .linking:

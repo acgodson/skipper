@@ -16,6 +16,7 @@ final class Node {
     let coordinator: SessionCoordinator
     let identity: IdentityStore
     private var devSignIn: DevSignIn?
+    private var account: AccountLinker?
     private let consentAnswer: ConsentAnswer?
 
     init(role: Wire.Role, devSignInEmail: String?, consentAnswer: ConsentAnswer?) throws {
@@ -42,13 +43,14 @@ final class Node {
     private func signInOnce(signalingDeviceID: String) {
         guard let signIn = devSignIn else { return }
         devSignIn = nil
+        account = signIn.linker
         Task {
             do {
                 let linked = try await signIn.run()
                 emit("signed_in", [
                     "deviceId": linked.device.deviceId,
                     "signalingDeviceId": signalingDeviceID,
-                    "accountId": linked.accountId,
+                    "account": linked.account,
                     "status": linked.entitlement?.status.rawValue ?? "",
                 ])
             } catch {
@@ -397,6 +399,23 @@ final class Node {
             guard parts.count >= 2 else { return }
             let code = (try? identity.secrets.peerCode(forHost: parts[1])) ?? nil
             emit("remembered", ["deviceId": parts[1], "present": code != nil])
+
+        case "sign-out":
+            guard let account else {
+                emit("error", ["message": "this node never signed in"])
+                return
+            }
+            let signOut = AfterSessionEnds(
+                sessionIsOpen: { [unowned self] in
+                    AccessCodeExposure.sessionIsOpen(phase: coordinator.phase, captureState: coordinator.captureState)
+                },
+                endSession: { [unowned self] in coordinator.disconnect(reason: Wire.ByeReason.userEnded) },
+                forceStop: { [unowned self] in coordinator.dropSignalingSocket() },
+                then: { await account.unlink() })
+            Task {
+                try? await signOut.run()
+                emit("signed_out", ["linked": account.state.isLinked])
+            }
 
         case "refresh-code":
             Task {

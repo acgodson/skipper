@@ -17,26 +17,29 @@ public enum AccessCodeExposure {
     }
 }
 
+/// A host action that must not run while a session is live: refreshing the
+/// access code, and signing out. It ends the session, cuts it off if it will not
+/// close, and only then performs the action.
 @MainActor
-public struct AccessCodeRotation {
+public struct AfterSessionEnds {
 
     public var sessionIsOpen: () -> Bool
     public var endSession: () -> Void
     public var forceStop: () -> Void
-    public var rotate: () async throws -> Void
+    public var then: () async throws -> Void
     public var pollInterval: TimeInterval
     public var gracePeriod: TimeInterval
 
     public init(sessionIsOpen: @escaping () -> Bool,
                 endSession: @escaping () -> Void,
                 forceStop: @escaping () -> Void,
-                rotate: @escaping () async throws -> Void,
+                then: @escaping () async throws -> Void,
                 pollInterval: TimeInterval = 0.05,
                 gracePeriod: TimeInterval = 3) {
         self.sessionIsOpen = sessionIsOpen
         self.endSession = endSession
         self.forceStop = forceStop
-        self.rotate = rotate
+        self.then = then
         self.pollInterval = pollInterval
         self.gracePeriod = gracePeriod
     }
@@ -48,7 +51,7 @@ public struct AccessCodeRotation {
                 forceStop()
             }
         }
-        try await rotate()
+        try await then()
     }
 
     private func waitUntilClosed() async -> Bool {

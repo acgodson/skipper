@@ -6,12 +6,15 @@ public struct DeviceToken: Codable, Equatable {
     public let token: String
     public let deviceId: String
     public let accountId: String
+    public let accountEmail: String?
     public let expiresAt: Int64
 
-    public init(token: String, deviceId: String, accountId: String, expiresAt: Int64) {
+    public init(token: String, deviceId: String, accountId: String,
+                accountEmail: String? = nil, expiresAt: Int64) {
         self.token = token
         self.deviceId = deviceId
         self.accountId = accountId
+        self.accountEmail = accountEmail
         self.expiresAt = expiresAt
     }
 
@@ -20,6 +23,7 @@ public struct DeviceToken: Codable, Equatable {
             token: grant.deviceToken,
             deviceId: grant.deviceId,
             accountId: grant.accountId,
+            accountEmail: grant.accountEmail,
             expiresAt: grant.expiresAt
         )
     }

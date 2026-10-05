@@ -97,11 +97,11 @@ public let codeRotationSuite = TestSuite("hardening/access code rotation", [
     TestCase("refresh during a session ends the session before rotating") {
         var steps: [String] = []
         var open = true
-        let rotation = AccessCodeRotation(
+        let rotation = AfterSessionEnds(
             sessionIsOpen: { open },
             endSession: { steps.append("end"); open = false },
             forceStop: { steps.append("force") },
-            rotate: { steps.append(open ? "rotate-while-open" : "rotate") },
+            then: { steps.append(open ? "rotate-while-open" : "rotate") },
             pollInterval: 0.001, gracePeriod: 1)
         try await rotation.run()
         try expectEqual(steps, ["end", "rotate"])
@@ -110,11 +110,11 @@ public let codeRotationSuite = TestSuite("hardening/access code rotation", [
     TestCase("a session that will not close is cut off before the code rotates") {
         var steps: [String] = []
         var open = true
-        let rotation = AccessCodeRotation(
+        let rotation = AfterSessionEnds(
             sessionIsOpen: { open },
             endSession: { steps.append("end") },
             forceStop: { steps.append("force"); open = false },
-            rotate: { steps.append(open ? "rotate-while-open" : "rotate") },
+            then: { steps.append(open ? "rotate-while-open" : "rotate") },
             pollInterval: 0.001, gracePeriod: 0.02)
         try await rotation.run()
         try expectEqual(steps, ["end", "force", "rotate"])
@@ -122,11 +122,11 @@ public let codeRotationSuite = TestSuite("hardening/access code rotation", [
 
     TestCase("with no session the code simply rotates") {
         var steps: [String] = []
-        let rotation = AccessCodeRotation(
+        let rotation = AfterSessionEnds(
             sessionIsOpen: { false },
             endSession: { steps.append("end") },
             forceStop: { steps.append("force") },
-            rotate: { steps.append("rotate") })
+            then: { steps.append("rotate") })
         try await rotation.run()
         try expectEqual(steps, ["rotate"])
     },

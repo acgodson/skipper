@@ -223,7 +223,7 @@ public final class AccountLinker: ObservableObject {
         }
     }
 
-    // MARK: - §1.5 refresh, §1.6 revoke
+    // MARK: - §1.5 refresh, §3.6 sign out
 
     private func refreshToken() async throws {
         guard let current = token else { throw APIError.transport("This Mac holds no account token.") }
@@ -243,6 +243,8 @@ public final class AccountLinker: ObservableObject {
         RCLog.info("account: refreshed the device token for \(fresh.deviceId)")
     }
 
+    /// Signing out unlinks this device (API.md §3.6): revoking the token alone
+    /// would leave the device linked, entitled and still able to host.
     public func unlink() async {
         let current = token
         token = nil
@@ -251,12 +253,13 @@ public final class AccountLinker: ObservableObject {
         try? tokens.remove()
         guard let current else { return }
         do {
-            try await client.revokeDeviceToken(current.token)
-            RCLog.info("account: revoked the device token for \(current.deviceId)")
+            try await client.unlinkDevice(id: current.deviceId, token: current.token)
+            RCLog.info("account: unlinked device \(current.deviceId)")
         } catch let error as APIError {
-            RCLog.error("account: revoke failed (\(error.code.wire)); the token is gone from this Mac anyway")
+            RCLog.error("account: unlink failed (\(error.code.wire)); this Mac is signed out locally, "
+                + "but the account still lists it")
         } catch {
-            RCLog.error("account: revoke failed; the token is gone from this Mac anyway")
+            RCLog.error("account: unlink failed; this Mac is signed out locally, but the account still lists it")
         }
     }
 
@@ -282,10 +285,18 @@ public final class AccountLinker: ObservableObject {
             return
         }
         let record = try await authorized { try await self.client.device(id: current.deviceId, token: $0) }
-        state = .linked(accountLabel: current.accountId, device: record)
+        state = .linked(accountLabel: Self.accountLabel(current), device: record)
         let fresh = try await authorized { try await self.client.entitlement(token: $0) }
         entitlement = CachedEntitlement(value: fresh, fetchedAt: Date())
         RCLog.info("account: entitlement status=\(fresh.status.rawValue) tier=\(fresh.tier)")
+    }
+
+    /// DESIGN.md §4 rule 8: the person sees the address they signed in with, or
+    /// nothing. Our account id is infrastructure and is never shown.
+    nonisolated static func accountLabel(_ token: DeviceToken) -> String? {
+        guard let email = token.accountEmail?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !email.isEmpty else { return nil }
+        return email
     }
 
     private func authorized<T>(_ call: (String) async throws -> T) async throws -> T {

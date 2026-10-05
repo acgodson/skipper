@@ -1037,6 +1037,67 @@ else
 fi
 
 echo
+# ---------------------------------------------------------------------------
+# o. sign-out ends the live session and un-entitles the host (API.md §3.6)
+# ---------------------------------------------------------------------------
+if [[ "$API_MODE" == "1" ]]; then
+  echo "== o. the host signs out: the live session ends and the next connect is refused"
+  SO_EMAIL="signout-$RUN_TAG@example.com"
+  start_node sohost host "$WORK/id-sohost" --dev-sign-in "$SO_EMAIL"
+  if wait_for "$WORK/sohost.log" '"event":"signed_in"' 40; then
+    SO_ID="$(field "$WORK/sohost.log" signed_in deviceId)"
+    SO_CODE="$(field "$WORK/sohost.log" ready accessCode)"
+    pass "the signing-out host signed in ($SO_ID)"
+    start_node soctrl controller "$WORK/id-soctrl"
+    if wait_for "$WORK/soctrl.log" '"event":"hello_ok"' 30; then
+      SOMARK=$(( $(lines_in "$WORK/soctrl.log") + 1 ))
+      say soctrl "connect $SO_ID $SO_CODE"
+      if wait_for "$WORK/soctrl.log" '"event":"session"' 30 "$SOMARK" &&
+         wait_for "$WORK/soctrl.log" '"event":"pake_ok"' 25 "$SOMARK"; then
+        pass "a session is open before the host signs out"
+        SOMARK=$(( $(lines_in "$WORK/soctrl.log") + 1 ))
+        HMARK=$(( $(lines_in "$WORK/sohost.log") + 1 ))
+        say sohost sign-out
+        if wait_for "$WORK/sohost.log" '"event":"signed_out","linked":false' 40 "$HMARK"; then
+          pass "the host signed out and holds no account"
+        else
+          fail "the host signs out" "$(tail -n "+$HMARK" "$WORK/sohost.log" | tail -5)"
+        fi
+        if wait_for "$WORK/soctrl.log" '"event":"bye"' 30 "$SOMARK" ||
+           wait_for "$WORK/soctrl.log" '"event":"phase","phase":"idle"' 10 "$SOMARK"; then
+          pass "signing out ended the controller's live session"
+        else
+          fail "sign-out ends the live session" "$(tail -n "+$SOMARK" "$WORK/soctrl.log" | tail -5)"
+        fi
+        SOMARK=$(( $(lines_in "$WORK/soctrl.log") + 1 ))
+        say soctrl "connect $SO_ID $SO_CODE"
+        if wait_for "$WORK/soctrl.log" '"event":"connect_error"' 30 "$SOMARK"; then
+          SO_CODE_ERR="$(field_after "$WORK/soctrl.log" "$SOMARK" connect_error code)"
+          SO_REASON="$(field_after "$WORK/soctrl.log" "$SOMARK" connect_error reason)"
+          SO_SENTENCE="$(field_after "$WORK/soctrl.log" "$SOMARK" connect_error sentence)"
+          if [[ "$SO_CODE_ERR" == "entitlement" && "$SO_REASON" == "unlinked" ]]; then
+            pass "the next connect to the signed-out host is refused entitlement/unlinked: \"$SO_SENTENCE\""
+          else
+            fail "a signed-out host is refused entitlement/unlinked" "got $SO_CODE_ERR/$SO_REASON"
+          fi
+        else
+          fail "a signed-out host refuses the next connect" "$(tail -n "+$SOMARK" "$WORK/soctrl.log" | tail -5)"
+        fi
+      else
+        fail "a session opens before sign-out" "$(tail -n "+$SOMARK" "$WORK/soctrl.log" | tail -5)"
+      fi
+    else
+      fail "the sign-out controller authenticates" "see $WORK/soctrl.log"
+    fi
+    say soctrl quit
+  else
+    fail "the signing-out host signs in" "$(grep -E 'sign_in_error' "$WORK/sohost.log" || tail -5 "$WORK/sohost.log")"
+  fi
+  say sohost quit
+  sleep 1
+  echo
+fi
+
 echo "-----------------------------------------------------------------------"
 echo "$((steps - failures))/$steps steps passed"
 if [[ "$failures" -gt 0 ]]; then

@@ -207,28 +207,35 @@ public final class APIClient: @unchecked Sendable {
         )
     }
 
-    public func revokeDeviceToken(
-        _ token: String,
-        idempotencyKey: String = APIClient.newIdempotencyKey()
-    ) async throws {
-        _ = try await sendExpectingNoContent(
-            .post,
-            "/v1/auth/device/revoke",
-            body: [String: String](),
-            credential: .deviceToken(token),
-            idempotencyKey: idempotencyKey
-        )
-    }
-
     // MARK: - §3, §4 reads
 
     public func device(id: String, token: String) async throws -> DeviceRecord {
         try await send(
             .get,
-            "/v1/devices/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)",
+            Self.devicePath(id),
             body: Optional<[String: String]>.none,
             credential: .deviceToken(token)
         )
+    }
+
+    /// API.md §3.6, with a device token: signing out unlinks this device, which
+    /// revokes its tokens, ends any live session and stops it hosting.
+    public func unlinkDevice(
+        id: String,
+        token: String,
+        idempotencyKey: String = APIClient.newIdempotencyKey()
+    ) async throws {
+        _ = try await sendExpectingNoContent(
+            .delete,
+            Self.devicePath(id),
+            body: Optional<[String: String]>.none,
+            credential: .deviceToken(token),
+            idempotencyKey: idempotencyKey
+        )
+    }
+
+    private static func devicePath(_ id: String) -> String {
+        "/v1/devices/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)"
     }
 
     public func entitlement(token: String) async throws -> Entitlement {
@@ -255,6 +262,7 @@ public final class APIClient: @unchecked Sendable {
     public enum Method: String {
         case get = "GET"
         case post = "POST"
+        case delete = "DELETE"
     }
 
     private func send<Body: Encodable, Response: Decodable>(
