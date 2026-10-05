@@ -2,6 +2,7 @@ package apisrv
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -46,6 +47,24 @@ func (c *clock) advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
+type closeRecorder struct {
+	mu     sync.Mutex
+	closed []protocol.InternalSessionClose
+}
+
+func (c *closeRecorder) close(_ context.Context, deviceID, reason string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = append(c.closed, protocol.InternalSessionClose{DeviceID: deviceID, Reason: reason})
+	return nil
+}
+
+func (c *closeRecorder) calls() []protocol.InternalSessionClose {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]protocol.InternalSessionClose(nil), c.closed...)
+}
+
 type harness struct {
 	t           *testing.T
 	url         string
@@ -55,6 +74,7 @@ type harness struct {
 	db          *apidb.DB
 	dbPath      string
 	authority   *idcert.Authority
+	closes      *closeRecorder
 }
 
 func newHarness(t *testing.T) *harness {
@@ -74,9 +94,11 @@ func newHarnessWith(t *testing.T, proxies clientip.Resolver) *harness {
 		t.Fatal(err)
 	}
 	c := &clock{now: time.UnixMilli(1_800_000_000_000)}
+	closes := &closeRecorder{}
 	api, err := New(Options{
 		DB: db, IdP: idp.Dev{}, IDCert: authority, InternalToken: internalToken, HardwareSalt: []byte("salt"),
 		ClientIP: proxies, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: c.Now,
+		CloseSessions: closes.close,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +107,8 @@ func newHarnessWith(t *testing.T, proxies clientip.Resolver) *harness {
 	t.Cleanup(srv.Close)
 	internal := httptest.NewServer(api.InternalHandler())
 	t.Cleanup(internal.Close)
-	return &harness{t: t, url: srv.URL, internalURL: internal.URL, clock: c, api: api, db: db, dbPath: path, authority: authority}
+	return &harness{t: t, url: srv.URL, internalURL: internal.URL, clock: c, api: api, db: db, dbPath: path,
+		authority: authority, closes: closes}
 }
 
 type reply struct {
@@ -625,5 +648,67 @@ func TestDevLinkPageEchoesTheAppNonce(t *testing.T) {
 	page, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK || !bytes.Contains(page, []byte("nonce=nonce-from-app")) {
 		t.Fatalf("handoff page: %d %s", resp.StatusCode, page)
+	}
+}
+
+// Sign-out in the app: the device token unlinks its own device (API.md §3.6), so
+// entitlement answers unlinked, every token for it dies, the live session is closed,
+// and signing back in does not start a second trial.
+func TestDeviceTokenSignOutUnlinksOnlyItself(t *testing.T) {
+	h := newHarness(t)
+	mac := newDevice(t)
+	grant := h.link("gail@example.com", mac, "SERIAL-G")
+	other := newDevice(t)
+	otherGrant := h.link("gail@example.com", other, "SERIAL-H")
+	trialEndsAt := h.entitlementFor(grant.DeviceToken).TrialEndsAt
+	if trialEndsAt == nil {
+		t.Fatal("the first link did not start a trial")
+	}
+
+	r := h.call("POST", protocol.PathAuthDeviceChallenge, "", "", protocol.DeviceChallengeRequest{DeviceID: grant.DeviceID})
+	var challenge protocol.DeviceChallengeResponse
+	r.decode(t, &challenge)
+	r = h.call("POST", protocol.PathAuthDeviceRefresh, "", idem(), protocol.DeviceRefreshRequest{
+		DeviceID: grant.DeviceID, Pubkey: mac.pubkey, Nonce: challenge.Nonce, Sig: mac.sign(t, challenge.Nonce),
+	})
+	var second protocol.DeviceTokenResponse
+	r.decode(t, &second)
+	if r.status != http.StatusOK || second.DeviceToken == grant.DeviceToken {
+		t.Fatalf("refresh: %d %s", r.status, r.body)
+	}
+
+	if r := h.call("DELETE", protocol.PathDevices+"/"+otherGrant.DeviceID, grant.DeviceToken, idem(), nil); r.status != http.StatusForbidden ||
+		r.apiError(t).Code != protocol.APIErrForbidden {
+		t.Fatalf("a device token unlinking another device: %d %s", r.status, r.body)
+	}
+	if status, got := h.internalEntitlement(otherGrant.DeviceID); status != http.StatusOK || got != protocol.StatusTrial {
+		t.Fatalf("the other device after the refused unlink: %d %s", status, got)
+	}
+
+	if r := h.call("DELETE", protocol.PathDevices+"/"+grant.DeviceID, grant.DeviceToken, idem(), nil); r.status != http.StatusNoContent {
+		t.Fatalf("sign-out unlink: %d %s", r.status, r.body)
+	}
+	if status, got := h.internalEntitlement(grant.DeviceID); status != http.StatusPaymentRequired ||
+		got != protocol.EntitlementUnlinked {
+		t.Fatalf("entitlement after sign-out: %d %s, want 402 unlinked", status, got)
+	}
+	for name, token := range map[string]string{"the signing-out token": grant.DeviceToken, "the refreshed token": second.DeviceToken} {
+		if r := h.call("GET", protocol.PathEntitlement, token, "", nil); r.status != http.StatusUnauthorized {
+			t.Fatalf("%s still works after sign-out: %d %s", name, r.status, r.body)
+		}
+	}
+	calls := h.closes.calls()
+	if len(calls) != 1 || calls[0].DeviceID != grant.DeviceID || !protocol.ValidByeReason(calls[0].Reason) {
+		t.Fatalf("signaling was not asked to close the live session: %+v", calls)
+	}
+
+	h.clock.advance(24 * time.Hour)
+	relinked := h.redeem("gail@example.com", mac, "SERIAL-G")
+	if relinked.DeviceID != grant.DeviceID {
+		t.Fatalf("signing back in changed the Device ID: %+v", relinked)
+	}
+	ent := h.entitlementFor(relinked.DeviceToken)
+	if ent.Status != protocol.StatusTrial || ent.TrialEndsAt == nil || *ent.TrialEndsAt != *trialEndsAt {
+		t.Fatalf("signing back in restarted the trial: %+v, want it to end at %d", ent, *trialEndsAt)
 	}
 }

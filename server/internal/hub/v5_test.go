@@ -403,3 +403,36 @@ func TestHelloSignsOnlyAProvedBinding(t *testing.T) {
 		t.Fatal("the proved hello carried no certificate")
 	}
 }
+
+// rc-api's POST /internal/sessions/close after a sign-out unlinks the host (API.md §3.6).
+func TestCloseSessionsForDeviceEndsTheHostsLiveSession(t *testing.T) {
+	hn := newHarness(t)
+	host, ctrl, sid, _, _ := hn.openSession(t)
+	host.send(protocol.TypeSDP, protocol.SDP{SessionID: sid, SDPType: "offer", SDP: "v=0\r\n"})
+	hn.ent.awaitReports(t, 1, 0)
+	if live := hn.hub.LiveMeteredSessions(); len(live.SessionIDs) != 1 {
+		t.Fatalf("live metered sessions = %v, want the open one", live.SessionIDs)
+	}
+
+	host.reset()
+	ctrl.reset()
+	if closed := hn.hub.CloseSessionsForDevice(host.deviceID, protocol.ByeHostEnded); closed != 1 {
+		t.Fatalf("closed %d sessions, want 1", closed)
+	}
+	for name, p := range map[string]*peer{"host": host, "controller": ctrl} {
+		b := unmarshal[protocol.Bye](t, p.last(protocol.TypeBye))
+		if b.SessionID != sid || b.Reason != protocol.ByeHostEnded {
+			t.Fatalf("%s bye = %+v, want host_ended for %s", name, b, sid)
+		}
+	}
+	if got := hn.hub.SessionState(sid); got != "" {
+		t.Fatalf("session state after the internal close = %q, want gone", got)
+	}
+	_, stops := hn.ent.awaitReports(t, 1, 1)
+	if stops[0].SessionID != sid || stops[0].Reason != protocol.ByeHostEnded {
+		t.Fatalf("stop report = %+v", stops[0])
+	}
+	if closed := hn.hub.CloseSessionsForDevice(host.deviceID, protocol.ByeHostEnded); closed != 0 {
+		t.Fatalf("a second close found %d sessions, want none", closed)
+	}
+}

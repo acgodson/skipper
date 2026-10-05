@@ -128,6 +128,10 @@ func (s *Server) renameDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) unlinkDevice(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.opt.DB.TokenByHash(tokenHash(bearer(r))); err == nil {
+		s.unlinkOwnDevice(w, r)
+		return
+	}
 	account, ok := s.userSession(w, r)
 	if !ok {
 		return
@@ -144,10 +148,42 @@ func (s *Server) unlinkDevice(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		if err := s.opt.DB.UnlinkDevice(device.DeviceID); err != nil {
-			s.internalError(w, r, err)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
+		s.unlink(w, r, device.DeviceID)
 	})
+}
+
+// unlinkOwnDevice is the app's sign-out: a device token may unlink only itself (API.md §3.6).
+func (s *Server) unlinkOwnDevice(w http.ResponseWriter, r *http.Request) {
+	device, _, ok := s.deviceAuth(w, r)
+	if !ok {
+		return
+	}
+	if !s.allow(w, r, limitDeviceWrite, device.DeviceID) {
+		return
+	}
+	if device.DeviceID != r.PathValue("deviceId") {
+		s.fail(w, r, http.StatusForbidden, protocol.APIErrForbidden,
+			"a device token may unlink only its own device")
+		return
+	}
+	body, ok := s.readBody(w, r)
+	if !ok {
+		return
+	}
+	s.idempotent(w, r, device.DeviceID, body, replayable, func(w http.ResponseWriter) {
+		s.unlink(w, r, device.DeviceID)
+	})
+}
+
+func (s *Server) unlink(w http.ResponseWriter, r *http.Request, deviceID string) {
+	if err := s.opt.DB.UnlinkDevice(deviceID); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if s.opt.CloseSessions != nil {
+		if err := s.opt.CloseSessions(r.Context(), deviceID, protocol.ByeHostEnded); err != nil {
+			s.opt.Logger.Warn("live sessions were not closed on unlink", "deviceId", deviceID, "err", err)
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

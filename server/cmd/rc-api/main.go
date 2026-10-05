@@ -110,6 +110,7 @@ func main() {
 	api, err := apisrv.New(apisrv.Options{
 		DB: db, IdP: provider, IDCert: authority, InternalToken: *internal, HardwareSalt: []byte(*salt),
 		WebBaseURL: *webBase, SignalUpstream: *upstream, ClientIP: resolver, Logger: log,
+		CloseSessions: closeSessions(signaling),
 	})
 	if err != nil {
 		exit(err.Error())
@@ -191,6 +192,24 @@ func purge(ctx context.Context, db *apidb.DB, log *slog.Logger) {
 				log.Warn("gift expiry failed", "err", err)
 			}
 		}
+	}
+}
+
+// closeSessions is API.md §3.6 effect 3: unlinking a device ends its live session.
+func closeSessions(signaling *internalapi.Client) apisrv.CloseSessions {
+	if signaling == nil {
+		return nil
+	}
+	return func(ctx context.Context, deviceID, reason string) error {
+		resp, err := signaling.Do(ctx, http.MethodPost, protocol.PathInternalSessionClose,
+			protocol.InternalSessionClose{DeviceID: deviceID, Reason: reason})
+		if err != nil {
+			return err
+		}
+		if !resp.OK() {
+			return fmt.Errorf("signaling session close: status %d", resp.Status)
+		}
+		return nil
 	}
 }
 

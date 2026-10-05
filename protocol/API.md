@@ -192,7 +192,7 @@ The website then redirects to `skipperdesk://link?code=<code>&nonce=<nonce>`, ec
 it was given at step 1 unchanged.
 
 Linking a key that is already linked to **another** account is `409 conflict` with
-`reason: linked_elsewhere`; the owner must unlink it first (§3.5).
+`reason: linked_elsewhere`; the owner must unlink it first (§3.6).
 
 ### 1.3 `POST /v1/auth/device/challenge` — unauthenticated
 
@@ -233,7 +233,7 @@ The device token is:
 - **Long-lived**: TTL **90 days**, refreshed by §1.5.
 - **Device-scoped**: it names one `deviceId` and one account. It grants nothing about any other
   device, and it is never accepted on a user-session endpoint.
-- **Revocable**: by §1.6, by unlinking the device (§3.5), or by the account being closed. Revocation
+- **Revocable**: by §1.6, by unlinking the device (§3.6), or by the account being closed. Revocation
   is effective server-side within 5 seconds; there is no client-side expiry to wait out.
 - **A secret**: Keychain (macOS) or DPAPI/TPM-wrapped storage (Windows). Never logged, never in a
   URL, never in a query string.
@@ -268,9 +268,10 @@ The app should refresh when the remaining TTL drops below **7 days**, and on any
 
 ### 1.6 `POST /v1/auth/device/revoke` — device token, idem
 
-Revokes **the calling token only**. Body `{}`. Response `204`. Used on sign-out in the app. The
-device stays linked; a later §1.5 refresh mints a new token. To break the link entirely, unlink
-the device (§3.5).
+Revokes **the calling token only**. Body `{}`. Response `204`. The device stays linked; a later
+§1.5 refresh mints a new token. To break the link entirely — which is what the app's sign out
+does, because a revoked token alone leaves the device linked, entitled and still able to host —
+unlink the device (§3.6).
 
 ---
 
@@ -326,18 +327,25 @@ A device token may read only its own record; any other `deviceId` is `forbidden`
 
 Body: `label`. The only mutable field. Response: the updated record.
 
-### 3.6 `DELETE /v1/devices/{deviceId}` — user session, idem
+### 3.6 `DELETE /v1/devices/{deviceId}` — user session, **or** device token for itself, idem
 
-Unlinks the device from the account. Effects, all immediate:
+Unlinks the device from the account. A device token may unlink **only its own** `deviceId`; any
+other id is `403 forbidden`. That is what the app's **sign out** does, so a Mac can stop
+accepting remote sessions without the owner returning to the website.
 
-1. Every device token for that device is revoked.
+Effects, all immediate:
+
+1. Every device token for that device is revoked, including the one that made the call.
 2. The device's entitlement becomes `unlinked`; the next `connect_req` naming it as host is
    refused with `error{entitlement, reason: "unlinked"}` (PROTOCOL.md §2.9).
-3. TODO: close any live session with that device as host or controller with
-   `bye{reason:"replaced"}`; that needs an rc-api → rc-signal push (Phase 5). Today such a
-   session runs until it ends, and no new one can start.
-4. The device record is retained, unlinked, so that a re-link keeps the same `deviceId` and the
-   same trial history. Unlinking is not a way to restart a trial.
+3. Any live session with that device as host or controller is closed with
+   `bye{reason:"host_ended"}`: rc-api asks rc-signal over `POST /internal/sessions/close` (§6).
+   A deployment with no signaling URL configured, or a signaling server that cannot be reached,
+   logs the failure and leaves that one session to the §6.2 sweep; no new session can start
+   either way.
+4. The device record is retained, unlinked, with its `trialEndsAt` intact, so that a re-link
+   keeps the same `deviceId` and the same trial history. Unlinking is not a way to restart a
+   trial, and signing back in does not grant a second one.
 
 Response `204`.
 
@@ -476,6 +484,7 @@ rc-signal's internal listener:
 | Call | Body | Effect |
 |---|---|---|
 | `GET /internal/sessions/live` | — | `{sessionIds: [string], serverTime: int64}`: every **metered** session rc-signal still holds, sorted, and its clock. Used by §6.2. |
+| `POST /internal/sessions/close` | `deviceId` (9 digits, else `400`), `reason` (a PROTOCOL.md §2.14 reason, else `400`) | Closes every live session that device takes part in, as host or controller, with `bye{reason}` to both sides and a stop report for a metered one. Answers `204`, including when it holds no session for that device. Used by §3.6. |
 
 rc-signal sends start and stop reports through one ordered lane per session (PROTOCOL.md
 §3.4): at most one report per session in flight, the stop never before the start, retries with

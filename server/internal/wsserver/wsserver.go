@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -235,6 +236,24 @@ func InternalHandler(h *hub.Hub, token string) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)
+	})
+	mux.HandleFunc("POST "+protocol.PathInternalSessionClose, func(w http.ResponseWriter, r *http.Request) {
+		if !internalapi.Authorized(r, token) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var req protocol.InternalSessionClose
+		raw, err := io.ReadAll(io.LimitReader(r.Body, protocol.APIMaxBodyBytes))
+		if err != nil || json.Unmarshal(raw, &req) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if !protocol.ValidDeviceID(req.DeviceID) || !protocol.ValidByeReason(req.Reason) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		h.CloseSessionsForDevice(req.DeviceID, req.Reason)
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

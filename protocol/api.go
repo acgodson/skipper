@@ -32,6 +32,7 @@ const (
 	PathInternalPairs        = "/internal/pairs"
 
 	PathInternalLiveSessions = "/internal/sessions/live"
+	PathInternalSessionClose = "/internal/sessions/close"
 )
 
 const (
@@ -401,6 +402,12 @@ type InternalCertRequest struct {
 // InternalPair says whether the controller has had a metered session with the host before.
 type InternalPair struct {
 	Known bool `json:"known"`
+}
+
+// InternalSessionClose asks rc-signal to end every live session a device takes part in.
+type InternalSessionClose struct {
+	DeviceID string `json:"deviceId"`
+	Reason   string `json:"reason"`
 }
 
 // InternalLiveSessions is rc-signal's answer to rc-api's reconciliation sweep:

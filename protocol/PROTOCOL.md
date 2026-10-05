@@ -670,6 +670,11 @@ gains nothing by hanging up before step 3: the host counted the guess when it se
 (§2.17). A controller that receives it shows "wrong access code", forgets any code it had
 remembered for that host, and does not retry without the user.
 
+`host_ended` is also pushed by the server on its own initiative when the host device is
+unlinked from its account — the app's **sign out** (API.md §3.6) — because the owner of that Mac
+ended the session by signing it out. The controller is refused `entitlement{unlinked}` if it
+tries again.
+
 On a `bye` with a defined reason the server closes the session **immediately and permanently**:
 both tokens die, the host's 1:1 slot frees, and the peer (if attached) receives the same `bye`. A later `resume` for
 that `sessionId` returns `no_session`. `bye` is also pushed by the server on its own initiative

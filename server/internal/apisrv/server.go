@@ -42,9 +42,14 @@ type Options struct {
 	WebBaseURL     string
 	SignalUpstream string
 	ClientIP       clientip.Resolver
+	CloseSessions  CloseSessions
 	Logger         *slog.Logger
 	Now            func() time.Time
 }
+
+// CloseSessions ends every live session a device takes part in, over rc-signal's
+// internal surface (API.md §6). It is absent in a deployment without signaling.
+type CloseSessions func(ctx context.Context, deviceID, reason string) error
 
 type Server struct {
 	opt      Options

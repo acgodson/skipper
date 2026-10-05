@@ -245,12 +245,27 @@ func (h *Hub) closeSessionLocked(s *Session, reason string) {
 	h.log.Info("session closed", "sessionId", s.ID, "reason", reason, "metered", s.metered)
 }
 
-func (h *Hub) closeSessionsForDeviceLocked(deviceID, reason string) {
+func (h *Hub) closeSessionsForDeviceLocked(deviceID, reason string) int {
+	closed := 0
 	for _, s := range h.sessions {
 		if s.Host.deviceID == deviceID || s.Ctrl.deviceID == deviceID {
 			h.closeSessionLocked(s, reason)
+			closed++
 		}
 	}
+	return closed
+}
+
+// CloseSessionsForDevice ends every live session the device takes part in; it is
+// what rc-api asks for when the device is unlinked from its account (API.md §3.6).
+func (h *Hub) CloseSessionsForDevice(deviceID, reason string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	closed := h.closeSessionsForDeviceLocked(deviceID, reason)
+	if closed > 0 {
+		h.log.Info("sessions closed for device", "deviceId", deviceID, "reason", reason, "closed", closed)
+	}
+	return closed
 }
 
 // displaceStaleBindingLocked ends everything the hub holds for deviceID under a
