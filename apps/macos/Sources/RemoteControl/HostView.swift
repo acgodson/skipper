@@ -36,7 +36,6 @@ struct HostView: View {
 
             DeviceKeyFooter()
         }
-        .onAppear { model.reloadTrustedControllers() }
     }
 }
 
@@ -114,10 +113,15 @@ private struct HostHero: View {
             .onChange(of: sessionOpen) { open in
                 if open { codeVisible = false }
             }
+            .onChange(of: signedIn) { signedIn in
+                if !signedIn { codeVisible = false }
+            }
         }
     }
 
     private var sessionOpen: Bool { model.hostSessionIsOpen }
+
+    private var signedIn: Bool { model.account?.state.isLinked ?? false }
 
     private var revealed: Bool { codeVisible && !sessionOpen }
 }
@@ -224,9 +228,12 @@ private struct TrustedControllersSection: View {
                         monospacedSubtitle: false
                     ) {
                         HStack(spacing: SkipperSpace.m) {
-                            Text(entry.shortKey)
-                                .font(SkipperFont.codeCaption)
-                                .foregroundStyle(SkipperColor.textTertiary)
+                            if let fingerprint = entry.fingerprint {
+                                Text("Fingerprint \(fingerprint)")
+                                    .font(SkipperFont.codeCaption)
+                                    .foregroundStyle(SkipperColor.textTertiary)
+                                    .textSelection(.enabled)
+                            }
                             QuietDestructiveButton(title: "Remove") {
                                 model.removeTrustedController(pubkey: entry.pubkey)
                             }

@@ -101,7 +101,24 @@ public struct HostSettings: Codable, Equatable {
     }
 }
 
+/// What the store changed, for views that show it. Copies of a `SecretStore`
+/// share one of these, so a write made anywhere reaches whoever is observing.
+public final class SecretStoreChanges: ObservableObject {
+
+    @Published public private(set) var trustedControllers = 0
+
+    func trustedControllersChanged() {
+        if Thread.isMainThread {
+            trustedControllers += 1
+        } else {
+            DispatchQueue.main.async { self.trustedControllers += 1 }
+        }
+    }
+}
+
 public struct SecretStore {
+
+    public let changes = SecretStoreChanges()
 
     private let blobs: SecretBlobStore
 
@@ -210,6 +227,7 @@ public struct SecretStore {
         let keptLabel = label.isEmpty ? (trusted[pubkey]?.label ?? "") : label
         trusted[pubkey] = TrustedController(label: keptLabel, firstSeen: firstSeen, lastSeen: now)
         try write(trusted, to: .trustedControllers)
+        changes.trustedControllersChanged()
     }
 
     // MARK: The guess policy's counters (host side)
@@ -229,12 +247,14 @@ public struct SecretStore {
         var trusted: [String: TrustedController] = try map(.trustedControllers)
         guard trusted.removeValue(forKey: pubkey) != nil else { return }
         try write(trusted, to: .trustedControllers)
+        changes.trustedControllersChanged()
     }
 
     // MARK: Revocation
 
     public func revokeControllers() throws {
         try blobs.remove(.trustedControllers)
+        changes.trustedControllersChanged()
     }
 
     public func resetControllerGuessCounters() throws {
@@ -248,6 +268,7 @@ public struct SecretStore {
         for account in SecretAccount.allCases where !SecretAccount.survivesIdentityReset.contains(account) {
             try? blobs.remove(account)
         }
+        changes.trustedControllersChanged()
     }
 
     // MARK: Boundary

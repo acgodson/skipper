@@ -1,5 +1,6 @@
 import Foundation
 import RemoteControlCore
+import SkipperCore
 import SkipperDesign
 
 struct TrustedControllerEntry: Identifiable {
@@ -21,8 +22,11 @@ struct TrustedControllerEntry: Identifiable {
         label.isEmpty ? "Unnamed Mac" : label
     }
 
-    var shortKey: String {
-        String(pubkey.prefix(10))
+    /// The four groups the consent prompt and the controller's own screen show,
+    /// so an owner can compare them. The first bytes of the key cannot: for every
+    /// P-256 key they are the same DER prefix.
+    var fingerprint: String? {
+        try? DevicePublicKey.fingerprint(pubkey)
     }
 
     func lastSeenSentence(now: Date = Date()) -> String {
