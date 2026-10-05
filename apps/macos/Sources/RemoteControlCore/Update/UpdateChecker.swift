@@ -114,13 +114,18 @@ public final class UpdateChecker: ObservableObject {
     ) {
         self.api = api
         self.track = track
-        if case .enabled(let requirement) = availability, let runningBuild {
-            installer = UpdateInstaller(requirement: requirement, runningBuild: runningBuild)
+        switch (availability, runningBuild) {
+        case (.enabled(let requirement), .some(let build)):
+            installer = UpdateInstaller(requirement: requirement, runningBuild: build)
             status = .idle
-        } else {
+        case (.enabled, .none):
             installer = nil
             status = .disabledInDevelopment
-            RCLog.info("update: \(UpdateAvailability.disabledSentence) The running app has no Developer ID Team ID.")
+            RCLog.info("update: \(UpdateAvailability.disabledSentence) \(UpdateDisabledReason.noBuildNumber.sentence)")
+        case (.disabledInDevelopment(let reason), _):
+            installer = nil
+            status = .disabledInDevelopment
+            RCLog.info("update: \(UpdateAvailability.disabledSentence) \(reason.sentence)")
         }
     }
 

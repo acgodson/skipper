@@ -129,16 +129,23 @@ let updatePolicyCases: [TestCase] = [
         }
     },
 
-    TestCase("updates are disabled without a Team ID, an app bundle, or a self-consistent signature") {
+    TestCase("updates off name the reason that applies, not the first one in the list") {
         func resolve(_ team: String?, app: Bool = true, hooks: Bool = false, satisfies: @escaping (String) -> Bool) -> UpdateAvailability {
             UpdateAvailability.resolve(teamID: team, isAppBundle: app, hooksCompiledIn: hooks, runningSatisfies: satisfies)
         }
-        try expectEqual(resolve(nil, satisfies: { _ in true }), .disabledInDevelopment)
-        try expectEqual(resolve(teamID, app: false, satisfies: { _ in true }), .disabledInDevelopment)
-        try expectEqual(resolve(teamID, satisfies: { _ in false }), .disabledInDevelopment)
         let requirement = try UpdateTrust.designatedRequirement(teamID: teamID)
+        try expectEqual(resolve(nil, satisfies: { _ in true }), .disabledInDevelopment(reason: .noTeamID))
+        try expectEqual(resolve(teamID, app: false, satisfies: { _ in true }),
+                        .disabledInDevelopment(reason: .notAnAppBundle))
+        try expectEqual(resolve(teamID, satisfies: { _ in false }),
+                        .disabledInDevelopment(reason: .requirementNotSatisfied))
         try expectEqual(resolve(teamID, satisfies: { $0 == requirement }), .enabled(requirement: requirement))
-        try expectEqual(resolve(teamID, hooks: true, satisfies: { $0 == requirement }), .disabledInDevelopment)
+        try expectEqual(resolve(teamID, hooks: true, satisfies: { $0 == requirement }),
+                        .disabledInDevelopment(reason: .testHooksCompiledIn))
+        try expectEqual(resolve(nil, hooks: true, satisfies: { _ in false }),
+                        .disabledInDevelopment(reason: .testHooksCompiledIn))
+        try expect(!UpdateDisabledReason.testHooksCompiledIn.sentence.contains("Team ID"),
+                   "a hooks build must not be blamed on a missing Team ID")
         try expectEqual(UpdateStatus.disabledInDevelopment.sentence, "Updates are disabled in development builds.")
     },
 

@@ -63,9 +63,34 @@ public enum UpdateTrust {
     }
 }
 
+/// Why this build does not update itself. It goes to the log, never to the UI,
+/// which says only `UpdateAvailability.disabledSentence`.
+public enum UpdateDisabledReason: Equatable, Sendable {
+    case testHooksCompiledIn
+    case notAnAppBundle
+    case noTeamID
+    case requirementNotSatisfied
+    case noBuildNumber
+
+    public var sentence: String {
+        switch self {
+        case .testHooksCompiledIn:
+            return "This build has the test hooks compiled in."
+        case .notAnAppBundle:
+            return "The running binary is not an app bundle."
+        case .noTeamID:
+            return "The running app has no Developer ID Team ID."
+        case .requirementNotSatisfied:
+            return "The running app does not satisfy its own designated requirement."
+        case .noBuildNumber:
+            return "The running app has no build number."
+        }
+    }
+}
+
 public enum UpdateAvailability: Equatable, Sendable {
     case enabled(requirement: String)
-    case disabledInDevelopment
+    case disabledInDevelopment(reason: UpdateDisabledReason)
 
     public static let disabledSentence = "Updates are disabled in development builds."
 
@@ -75,9 +100,13 @@ public enum UpdateAvailability: Equatable, Sendable {
         hooksCompiledIn: Bool,
         runningSatisfies: (String) -> Bool
     ) -> UpdateAvailability {
-        guard !hooksCompiledIn, isAppBundle, let requirement = try? UpdateTrust.designatedRequirement(teamID: teamID),
-              runningSatisfies(requirement) else {
-            return .disabledInDevelopment
+        if hooksCompiledIn { return .disabledInDevelopment(reason: .testHooksCompiledIn) }
+        if !isAppBundle { return .disabledInDevelopment(reason: .notAnAppBundle) }
+        guard let requirement = try? UpdateTrust.designatedRequirement(teamID: teamID) else {
+            return .disabledInDevelopment(reason: .noTeamID)
+        }
+        guard runningSatisfies(requirement) else {
+            return .disabledInDevelopment(reason: .requirementNotSatisfied)
         }
         return .enabled(requirement: requirement)
     }
