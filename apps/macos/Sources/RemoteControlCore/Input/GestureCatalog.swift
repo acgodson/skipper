@@ -5,10 +5,12 @@ public struct KeyCombo: Equatable {
 
     public let keycode: CGKeyCode
     public let modifiers: KeyModifiers
+    public let tap: PostingTap?
 
-    public init(_ keycode: CGKeyCode, _ modifiers: KeyModifiers = []) {
+    public init(_ keycode: CGKeyCode, _ modifiers: KeyModifiers = [], tap: PostingTap? = nil) {
         self.keycode = keycode
         self.modifiers = modifiers
+        self.tap = tap
     }
 
     static let pressOrder: [(KeyModifiers, CGKeyCode)] = [
@@ -21,6 +23,7 @@ public struct KeyCombo: Equatable {
 
     public var events: [InjectedEvent] {
         var events: [InjectedEvent] = []
+        if let tap { events.append(.postingTap(tap)) }
         var held: KeyModifiers = []
         let pressed = KeyCombo.pressOrder.filter { modifiers.contains($0.0) }
         for (modifier, keycode) in pressed {
@@ -70,9 +73,12 @@ public enum GestureCatalog {
         case .screenshotRegion:
             return .combo(KeyCombo(VirtualKey.four, [.command, .shift]))
         case .forceQuit:
-            return .combo(KeyCombo(VirtualKey.escape, [.command, .option]))
+            return .combo(KeyCombo(VirtualKey.escape, [.command, .option], tap: .annotatedSession))
+        // TODO: verify Lock Screen on a machine that can be locked. It is the other
+        // loginwindow-owned shortcut, so it ships on the tap Force Quit needs; a passing
+        // test by consequence locks the Mac, so this one is reasoned, not observed.
         case .lockScreen:
-            return .combo(KeyCombo(VirtualKey.q, [.control, .command]))
+            return .combo(KeyCombo(VirtualKey.q, [.control, .command], tap: .annotatedSession))
         }
     }
 

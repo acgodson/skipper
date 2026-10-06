@@ -1,6 +1,22 @@
 import Foundation
 import CoreGraphics
 
+// Shortcuts owned by `loginwindow` (Force Quit, Lock Screen) ignore events posted to
+// the HID tap; window-server shortcuts (Mission Control, App Expose) only match there.
+// A gesture therefore names the tap its combo needs; everything else uses the sink's own.
+public enum PostingTap: Equatable {
+
+    case hid
+    case annotatedSession
+
+    public var location: CGEventTapLocation {
+        switch self {
+        case .hid: return .cghidEventTap
+        case .annotatedSession: return .cgAnnotatedSessionEventTap
+        }
+    }
+}
+
 public enum InjectedEvent: Equatable {
 
     case mouse(MouseEvent)
@@ -8,6 +24,7 @@ public enum InjectedEvent: Equatable {
     case key(keycode: CGKeyCode, down: Bool, flags: KeyModifiers)
     case flagsChanged(keycode: CGKeyCode, flags: KeyModifiers)
     case launchApplication(path: String)
+    case postingTap(PostingTap)
 
     public struct MouseEvent: Equatable {
         public enum Kind: Equatable { case moved, down, up, dragged }

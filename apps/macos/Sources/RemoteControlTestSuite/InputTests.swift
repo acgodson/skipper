@@ -416,8 +416,8 @@ public let gestureSuite = TestSuite("input/gestures", [
         try expectEqual(GestureCatalog.action(for: .spotlight), .combo(KeyCombo(VirtualKey.space, [.command])))
         try expectEqual(GestureCatalog.action(for: .appSwitcher), .combo(KeyCombo(VirtualKey.tab, [.command])))
         try expectEqual(GestureCatalog.action(for: .screenshotRegion), .combo(KeyCombo(VirtualKey.four, [.command, .shift])))
-        try expectEqual(GestureCatalog.action(for: .forceQuit), .combo(KeyCombo(VirtualKey.escape, [.command, .option])))
-        try expectEqual(GestureCatalog.action(for: .lockScreen), .combo(KeyCombo(VirtualKey.q, [.control, .command])))
+        try expectEqual(GestureCatalog.action(for: .forceQuit), .combo(KeyCombo(VirtualKey.escape, [.command, .option], tap: .annotatedSession)))
+        try expectEqual(GestureCatalog.action(for: .lockScreen), .combo(KeyCombo(VirtualKey.q, [.control, .command], tap: .annotatedSession)))
         try expectEqual(GestureCatalog.action(for: .launchpad), .launchApplication(path: GestureCatalog.launchpadPath))
     },
 
@@ -459,6 +459,49 @@ public let gestureSuite = TestSuite("input/gestures", [
         let events = try expectNotNil(injector.handle(ctrl: try envelope(CtrlType.gesture, GesturePayload(.spotlight))))
         try expectEqual(events, GestureCatalog.events(for: .spotlight))
         try expect(injector.isIdle, "a gesture leaves nothing held")
+    },
+
+    TestCase("only the loginwindow-owned gestures ask for a posting tap") {
+        var asking: Set<String> = []
+        for gesture in GestureName.allCases {
+            let taps = GestureCatalog.events(for: gesture).compactMap { event -> PostingTap? in
+                guard case .postingTap(let tap) = event else { return nil }
+                return tap
+            }
+            try expectLessThan(taps.count, 2, "\(gesture.rawValue) names its posting tap more than once")
+            if let tap = taps.first {
+                try expectEqual(tap, .annotatedSession)
+                asking.insert(gesture.rawValue)
+            }
+        }
+        try expectEqual(asking, ["force_quit", "lock_screen"],
+                        "Force Quit and Lock Screen are the loginwindow shortcuts; nothing else may pick a tap")
+    },
+
+    TestCase("a gesture names its tap before any event it applies to") {
+        guard case .postingTap = GestureCatalog.events(for: .forceQuit).first else {
+            throw fail("the posting tap must come first, or the key is posted on the wrong tap")
+        }
+    },
+
+    TestCase("ordinary mouse and keyboard input never picks a posting tap") {
+        let injector = InputInjector(target: unitTarget)
+        var events: [InjectedEvent] = []
+        events += injector.mouseMove(MouseMovePayload(x: 0.4, y: 0.4, seq: 1))
+        events += injector.mouseDown(MouseButtonPayload(button: .left, x: 0.4, y: 0.4))
+        events += injector.mouseDrag(MouseButtonPayload(button: .left, x: 0.5, y: 0.5))
+        events += injector.mouseUp(MouseButtonPayload(button: .left, x: 0.5, y: 0.5))
+        events += injector.click(ClickPayload(button: .left, x: 0.5, y: 0.5, count: 1))
+        events += injector.scroll(ScrollPayload(dx: 0, dy: -20, phase: .changed))
+        events += injector.keyDown(KeyPayload(keycode: Int(VirtualKey.command), mods: [.command]))
+        events += injector.keyDown(KeyPayload(keycode: 0, mods: [.command]))
+        events += injector.keyUp(KeyPayload(keycode: 0, mods: [.command]))
+        events += injector.keyUp(KeyPayload(keycode: Int(VirtualKey.command), mods: [.command]))
+        events += injector.reset()
+        try expectGreaterThan(events.count, 0)
+        for event in events {
+            if case .postingTap = event { throw fail("remote input must stay on the sink's own tap") }
+        }
     },
 ])
 

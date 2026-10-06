@@ -48,7 +48,14 @@ public final class CGEventSink: InputEventSink {
             }
         }
         guard trusted else { return }
-        for event in events { postOne(event) }
+        var location = tap
+        for event in events {
+            if case .postingTap(let requested) = event {
+                location = requested.location
+                continue
+            }
+            postOne(event, to: location)
+        }
     }
 
     public func makeEvent(_ event: InjectedEvent) -> CGEvent? {
@@ -102,12 +109,12 @@ public final class CGEventSink: InputEventSink {
             cgEvent.flags = flags.cgFlags
             return cgEvent
 
-        case .launchApplication:
+        case .launchApplication, .postingTap:
             return nil
         }
     }
 
-    private func postOne(_ event: InjectedEvent) {
+    private func postOne(_ event: InjectedEvent, to location: CGEventTapLocation) {
         if case .launchApplication(let path) = event {
             #if canImport(AppKit)
             let url = URL(fileURLWithPath: path)
@@ -123,7 +130,7 @@ public final class CGEventSink: InputEventSink {
             return
         }
         guard let cgEvent = makeEvent(event) else { return }
-        cgEvent.post(tap: tap)
+        cgEvent.post(tap: location)
         postedEvents += 1
     }
 
