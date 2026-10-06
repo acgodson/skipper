@@ -117,11 +117,12 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
 - **Consent prompt** (`SkipperConsentPrompt`) — asks the host's owner whether a controller that
   has just proved the access code may connect. Raised-hand glyph in `accent`, title "Allow
   <controller> to control this Mac?" (the trusted-controller label, else "another Mac"), a
-  `caption` sentence saying the code was entered and that no answer declines, then two detail
-  lines in `codeCaption`: the controller's Device ID ("Device ID 123 456 789") and its key
-  fingerprint ("Fingerprint F660 085E 05D4 830E" — the first four groups of four uppercase hex
-  digits of SHA-256 over the controller's canonical key, the same text that Mac shows as "This
-  Mac's fingerprint", so the owner can compare the two). When this prompt replaced one that was
+  `caption` sentence saying the code was entered and that no answer declines, then one detail
+  line in `codeCaption` naming the controller plainly: its Device ID ("Device ID 123 456 789").
+  Its key fingerprint ("Fingerprint F660 085E 05D4 830E" — the first four groups of four uppercase
+  hex digits of SHA-256 over the controller's canonical key, the same text that Mac shows as "This
+  Mac's fingerprint", so the owner can compare the two) sits behind the Details disclosure, never
+  in normal view. When this prompt replaced one that was
   still open, a semibold `caption` notice in `attention` sits above the sentence: "A different
   request replaced the previous one." Then an `attention` status pill with the live countdown
   ("Declines in 30 seconds") and two buttons on the right: *Decline* (secondary, Esc) and *Allow*
@@ -135,6 +136,13 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
   time-sensitive notification with the same title (permission is asked the first time; if it is
   refused the window prompt still appears). Only one prompt is ever open; answering in either
   place closes both.
+- **Details disclosure** (`SkipperDetails`) — a quiet, collapsed `caption` "Details" row in
+  `textTertiary` with a chevron that rotates on `standard`. Open, it lists `codeCaption` lines in
+  `textTertiary`, selectable. It is the only place security and networking facts appear: the
+  controller's fingerprint in the consent prompt and in a trusted-controller row, this Mac's own
+  Device ID and fingerprint on the controller screen, the key-storage mechanics under the host
+  screen, and the raw reason on the identity-failure screen. It shows nothing and takes no space
+  when it has no lines.
 - **Stage overlay card** — `scrim` fill, `large` radius, small spinner, `heading` title, `caption`
   message in white. Used for "waiting for video" and "Reconnecting…".
 
@@ -161,8 +169,9 @@ awake follows being a reachable host, not this toggle, and the reachable note sa
 is reachable. Another Mac can connect with the Device ID and access code above, and this Mac will
 not fall asleep on its own while it is."
 
-Nothing is shown for a healthy permission. Trusted controllers list each Mac with its label and
-when it last connected; each row has a quiet destructive "Remove" for just that one (no
+Nothing is shown for a healthy permission. Trusted controllers list each Mac with its label (the
+Device ID formatted 3-3-3 until that Mac is named) and when it last connected, with its fingerprint
+behind the row's Details disclosure; each row has a quiet destructive "Remove" for just that one (no
 confirmation), and "Remove All…" forgets them all after a confirmation (Refresh also does).
 
 ## 4. Copy rules
@@ -181,7 +190,14 @@ confirmation), and "Remove All…" forgets them all after a confirmation (Refres
    action of its own — signing in always goes to the website, which decides whether the person
    is new.
 7. The product name is always "SkipperDesk"; the other computer is "the other Mac" / "this Mac".
-8. **Never narrate our own infrastructure.** Backend resets, re-registration, reassigned ids,
+8. **No security or networking internals in normal view.** A fingerprint, key, keychain, token,
+   certificate, handshake, session id, "Secure Enclave", "entitlement", ICE/TURN/SDP/PAKE or any
+   hex/base64 blob never appears on a screen the owner reads in normal use: it is jargon, and it
+   advertises our internals to anyone looking over their shoulder. The **Details disclosure** is
+   where those facts live, and `RC_DEBUG=1` is where the rest goes. The one exception is a warning
+   the person must act on — a saved Mac whose identity changed — which is written in plain words
+   and carries no jargon around it.
+9. **Never narrate our own infrastructure.** Backend resets, re-registration, reassigned ids,
    migrations and key moves are logged, not shown. The UI shows the current state (the Device ID
    on screen is simply the right one); a notice appears only when the person must act and can
    act. Messages that reveal how much the service can change on someone's Mac erode trust.
@@ -203,9 +219,12 @@ Source PNGs: `apps/macos/Resources/AppIcon.iconset` (compiled by `scripts/build.
 
 Host: hero (Device ID, access code with Copy/Show/Refresh, status pill), permission banners when
 needed, Account (sign in), Access toggles (unattended, clipboard, launch at login, install updates automatically), the "ready to update" banner when a verified update is staged, Screen sharing state,
-Trusted controllers, Quality, key-storage footer (which gains one line when a build from source
-keeps secrets in the login keychain, because the person can act on it by installing a signed build). Controller: hero form (Device ID, access code,
-label, Remember, Connect, state pill, failure banner, then "This Mac's fingerprint F660 085E 05D4
-830E" in `codeCaption`, `textTertiary`, selectable — the line a host owner compares with the
-prompt's "Fingerprint" line), Saved devices with presence, Quality.
+Trusted controllers, Quality, key-storage footer. That footer says nothing at all when this Mac
+holds its credentials the strongest way it can; when anything is weaker it shows one plain
+sentence, "This Mac can't protect its credentials as strongly as usual." — never a claim of the
+strongest storage when it fell back. Its Details disclosure carries the mechanics either way.
+Controller: hero form (Device ID, access code, label, Remember, Connect, state pill, failure
+banner, then a Details disclosure holding this Mac's Device ID and its fingerprint "This Mac's
+fingerprint F660 085E 05D4 830E" — the line a host owner compares with the prompt's "Fingerprint"
+line), Saved devices with presence, Quality.
 Session: full-window desktop with the floating toolbar and gesture palette.
