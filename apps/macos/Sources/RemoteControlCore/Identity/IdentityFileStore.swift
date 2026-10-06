@@ -99,7 +99,7 @@ public enum IdentityFileError: Error, LocalizedError, Equatable {
                 + "code, and any Mac that has saved them would stop connecting. "
                 + "Restore the file from a backup, or choose Reset Identity to deliberately start over."
         case .unsupportedSchema(let path, let found, let supported):
-            return "The identity file at \(path) was written by a newer version of RemoteControl "
+            return "The identity file at \(path) was written by a newer version of SkipperDesk "
                 + "(format \(found); this build understands \(supported)). Update the app, or choose "
                 + "Reset Identity to discard it and start over."
         case .invalidContents(let path, let reason):

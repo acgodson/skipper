@@ -20,8 +20,8 @@ final class LaunchAtLogin: ObservableObject {
 
     func set(_ enabled: Bool) {
         guard isAvailable else {
-            lastError = "Launch at Login needs the packaged RemoteControl.app. "
-                + "Build it with scripts/build.sh and run it from there."
+            lastError = "Launch at login needs the installed SkipperDesk app. "
+                + "Move SkipperDesk to your Applications folder and open it from there."
             return
         }
         do {
