@@ -8,9 +8,11 @@
 # runs the real .app three times and reads `pmset -g assertions` each time:
 #
 #   1. controller role          -> no SkipperDesk assertion at all
-#   2. host, online, UNATTENDED OFF -> "SkipperDesk is reachable"
-#   3. host with a live session -> idle-sleep AND display-sleep, both named
-#                                  "SkipperDesk remote session"
+#   2. host, online, UNATTENDED OFF -> the idle-sleep assertion only
+#   3. host with a live session -> idle-sleep AND display-sleep
+#
+# Every assertion is named "SkipperDesk", in every state: the reason string is
+# world-readable, so it must not say whether a session is live.
 #
 # It injects no input, and it never asks a display or a Mac to sleep.
 #
@@ -103,7 +105,7 @@ launch_app "$W/id-reachable" "$SUITE_REACH" "$W/reachable.log"
 wait_for "$W/reachable.log" "holding idleSystemSleep" 30
 reading "host online, unattended OFF"
 HOST_ASSERTIONS="$(skipper_assertions)"
-grep -q "SkipperDesk is reachable" <<<"$HOST_ASSERTIONS" \
+grep -q "PreventUserIdleSystemSleep.*SkipperDesk" <<<"$HOST_ASSERTIONS" \
   && check 0 "a reachable host holds the idle-sleep assertion with unattended access OFF" \
   || check 1 "a reachable host holds NO idle-sleep assertion with unattended access OFF"
 grep -q "PreventUserIdleDisplaySleep" <<<"$HOST_ASSERTIONS" \
@@ -149,10 +151,10 @@ fi
 sleep 3
 reading "live session"
 SESSION_ASSERTIONS="$(skipper_assertions)"
-grep -q "PreventUserIdleSystemSleep.*SkipperDesk remote session" <<<"$SESSION_ASSERTIONS" \
+grep -q "PreventUserIdleSystemSleep.*SkipperDesk" <<<"$SESSION_ASSERTIONS" \
   && check 0 "a live session keeps the Mac from idle-sleeping" \
   || check 1 "a live session does NOT keep the Mac from idle-sleeping"
-grep -q "PreventUserIdleDisplaySleep.*SkipperDesk remote session" <<<"$SESSION_ASSERTIONS" \
+grep -q "PreventUserIdleDisplaySleep.*SkipperDesk" <<<"$SESSION_ASSERTIONS" \
   && check 0 "a live session keeps the display on, so capture keeps working" \
   || check 1 "a live session does NOT keep the display on"
 grep -q "declared local user activity" "$W/session-host.log" \
@@ -163,7 +165,7 @@ echo "bye" >&9
 sleep 4
 reading "after the session ended"
 AFTER="$(skipper_assertions)"
-grep -q "SkipperDesk is reachable" <<<"$AFTER" \
+grep -q "PreventUserIdleSystemSleep.*SkipperDesk" <<<"$AFTER" \
   && check 0 "the host drops back to the reachable assertion when the session ends" \
   || check 1 "the host did not drop back to the reachable assertion"
 grep -q "PreventUserIdleDisplaySleep" <<<"$AFTER" \

@@ -63,9 +63,9 @@ bypass privacy dialogs.
 A Mac in the host role keeps itself from idle-sleeping for as long as it is online and reachable,
 so that someone can connect to it later; no setting controls this. While a session is connecting,
 waiting for consent, live or reconnecting, the display is kept on as well, because capture stops
-when it sleeps. Both are power assertions named in `pmset -g assertions` ("SkipperDesk is
-reachable", "SkipperDesk remote session") and both are dropped when the Mac leaves the host role,
-goes offline, or the session ends. When a controller connects, the host declares local user
+when it sleeps. Both are power assertions, named "SkipperDesk" in `pmset -g assertions` whatever
+the state, because that listing is readable by every process on the Mac; both are dropped when the
+Mac leaves the host role, goes offline, or the session ends. When a controller connects, the host declares local user
 activity, which brings a display that has gone dark back on.
 
 What this cannot do: a Mac already in system sleep stays asleep — nothing in an app can wake it

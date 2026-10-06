@@ -16,9 +16,10 @@ public let stayAwakeSuite = TestSuite("StayAwake", [
         try expectEqual(StayAwakeState.session.assertions, [.idleSystemSleep, .displaySleep])
     },
 
-    TestCase("each state names itself in pmset") {
-        try expectEqual(StayAwakeState.reachableHost.reason, "SkipperDesk is reachable")
-        try expectEqual(StayAwakeState.session.reason, "SkipperDesk remote session")
+    TestCase("every state gives pmset the same reason, so it never leaks when a session is live") {
+        for state in [StayAwakeState.idle, .reachableHost, .session] {
+            try expectEqual(state.reason, "SkipperDesk")
+        }
     },
 
     TestCase("a host that is online is reachable, whatever unattended access says") {
