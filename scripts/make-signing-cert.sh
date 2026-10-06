@@ -28,8 +28,16 @@
 # Gatekeeper or for distribution — see PLAN.md §2.5 and build.sh). It only makes
 # the identity stable on THIS machine, which is what the permission loop needs.
 #
+# WHAT THIS INSTALLS
+# ------------------
+# One self-signed code-signing certificate and its private key in YOUR login
+# keychain, trusted for code signing by you only (never the system store). The
+# key is usable by /usr/bin/codesign alone (-T), not by every process on the
+# Mac, and `--undo` removes both the certificate and the trust setting.
+#
 # Run once:   ./scripts/make-signing-cert.sh
 # Then:       ./scripts/build.sh          (picks the identity up automatically)
+# Remove it:  ./scripts/make-signing-cert.sh --undo
 #
 # macOS will ask for your login password when the certificate is marked as
 # trusted for code signing. That is the one-time cost.
@@ -39,6 +47,26 @@ IDENTITY_NAME="${RC_LOCAL_IDENTITY:-RemoteControl Local Signing}"
 KEYCHAIN="${HOME}/Library/Keychains/login.keychain-db"
 WORK="$(mktemp -d -t rc-signing)"
 trap 'rm -rf "${WORK}"' EXIT
+
+if [[ "${1:-}" == "--undo" ]]; then
+    if ! security find-certificate -c "${IDENTITY_NAME}" -Z >/dev/null 2>&1; then
+        echo "==> '${IDENTITY_NAME}' is not in the login keychain. Nothing to undo."
+        exit 0
+    fi
+    echo "==> Removing the trust setting for '${IDENTITY_NAME}' (macOS may ask for your password)"
+    security find-certificate -c "${IDENTITY_NAME}" -p > "${WORK}/installed.pem"
+    security remove-trusted-cert "${WORK}/installed.pem" 2>/dev/null ||
+        echo "    (no user trust setting to remove)"
+    echo "==> Deleting the certificate and its private key"
+    security delete-identity -c "${IDENTITY_NAME}" -t "${KEYCHAIN}" >/dev/null 2>&1 ||
+        security delete-certificate -c "${IDENTITY_NAME}" -t "${KEYCHAIN}" >/dev/null 2>&1 || true
+    if security find-certificate -c "${IDENTITY_NAME}" >/dev/null 2>&1; then
+        echo "'${IDENTITY_NAME}' is still in the login keychain. Remove it in Keychain Access."
+        exit 1
+    fi
+    echo "DONE. '${IDENTITY_NAME}' is gone; builds fall back to ad-hoc signing."
+    exit 0
+fi
 
 if security find-certificate -c "${IDENTITY_NAME}" >/dev/null 2>&1; then
     echo "==> '${IDENTITY_NAME}' already exists in the login keychain."
@@ -65,10 +93,11 @@ else
         -out "${WORK}/identity.p12" -passout pass:remotecontrol
 
     echo "==> Importing into the login keychain"
-    # -T /usr/bin/codesign + -A: codesign may use the key without a prompt on
-    # every single build, which is the other half of the annoyance.
+    # -T /usr/bin/codesign lets codesign, and only codesign, use the key without
+    # a prompt on every build. Never -A: that lets ANY process on this Mac sign
+    # with it silently.
     security import "${WORK}/identity.p12" -k "${KEYCHAIN}" \
-        -P remotecontrol -T /usr/bin/codesign -A >/dev/null
+        -P remotecontrol -T /usr/bin/codesign >/dev/null
 fi
 
 echo "==> Marking it trusted for code signing (macOS will ask for your password)"
