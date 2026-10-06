@@ -193,6 +193,36 @@ type LiveSessions func(ctx context.Context) (protocol.InternalLiveSessions, erro
 // signaling is asked, so a session that starts in between is never closed.
 // TODO: with several rc-signal instances in Phase 5, ask every instance and close only what none holds.
 func (s *Server) Reconcile(ctx context.Context, live LiveSessions) (int, error) {
+	pending := s.retryPendingCloses(ctx)
+	closed, err := s.reconcileOpenSessions(ctx, live)
+	return closed, errors.Join(err, pending)
+}
+
+// retryPendingCloses re-issues every unlink whose session close signaling did
+// not confirm, and keeps the record until it does.
+func (s *Server) retryPendingCloses(ctx context.Context) error {
+	if s.opt.CloseSessions == nil {
+		return nil
+	}
+	pending, err := s.opt.DB.PendingCloses()
+	if err != nil || len(pending) == 0 {
+		return err
+	}
+	var failures error
+	for _, p := range pending {
+		if err := s.opt.CloseSessions(ctx, p.DeviceID, p.Reason); err != nil {
+			failures = errors.Join(failures, err)
+			continue
+		}
+		if err := s.opt.DB.ClearPendingClose(p.DeviceID); err != nil {
+			return errors.Join(failures, err)
+		}
+		s.opt.Logger.Info("pending session close confirmed", "deviceId", p.DeviceID)
+	}
+	return failures
+}
+
+func (s *Server) reconcileOpenSessions(ctx context.Context, live LiveSessions) (int, error) {
 	open, err := s.opt.DB.OpenSessions()
 	if err != nil || len(open) == 0 {
 		return 0, err

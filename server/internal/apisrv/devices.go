@@ -1,6 +1,7 @@
 package apisrv
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -175,15 +176,36 @@ func (s *Server) unlinkOwnDevice(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// unlink always unlinks the row and revokes the tokens; it answers 204 only once
+// signaling has confirmed the device is in no live session, because an unlink
+// that leaves the session running keeps metering it (API.md §3.6).
 func (s *Server) unlink(w http.ResponseWriter, r *http.Request, deviceID string) {
 	if err := s.opt.DB.UnlinkDevice(deviceID); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	if s.opt.CloseSessions != nil {
-		if err := s.opt.CloseSessions(r.Context(), deviceID, protocol.ByeHostEnded); err != nil {
-			s.opt.Logger.Warn("live sessions were not closed on unlink", "deviceId", deviceID, "err", err)
-		}
+	if err := s.closeDeviceSessions(r.Context(), deviceID); err != nil {
+		s.fail(w, r, http.StatusServiceUnavailable, protocol.APIErrUnavailable,
+			"this device is signed out, but a session it was in may still be running; try again")
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// closeDeviceSessions asks signaling to end the device's live sessions and
+// records a pending close when it cannot, so the reconciliation sweep re-issues
+// it until signaling confirms the device holds no session.
+func (s *Server) closeDeviceSessions(ctx context.Context, deviceID string) error {
+	if s.opt.CloseSessions == nil {
+		return nil
+	}
+	if err := s.opt.CloseSessions(ctx, deviceID, protocol.ByeHostEnded); err != nil {
+		s.opt.Logger.Warn("live sessions were not closed on unlink", "deviceId", deviceID, "err", err)
+		if recordErr := s.opt.DB.AddPendingClose(deviceID, protocol.ByeHostEnded, s.nowMS()); recordErr != nil {
+			s.opt.Logger.Error("the pending session close was not recorded",
+				"deviceId", deviceID, "err", recordErr)
+		}
+		return err
+	}
+	return s.opt.DB.ClearPendingClose(deviceID)
 }
