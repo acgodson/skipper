@@ -25,7 +25,6 @@ A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone 
 | Item | State |
 |---|---|
 | Host stays awake while reachable; display wakes on connect; no sleep during a session | implementing |
-| Lock-screen access design (privileged helper) | researching → `docs/LOCKSCREEN.md` |
 
 ## Queued, in order
 
@@ -37,10 +36,17 @@ A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone 
 | 4 | **Phase 5 — AWS backend** | Fresh account: Cognito, API, signaling, relays, the domain, TURN. First real money | Two Macs connect through `skipperdesk.app`, relay fallback proven |
 | 5 | **Phase 6 — business logic** | Trial length, rate per hour, lock-outs, credits, gifting, tiers | Priced, metered and enforced end to end |
 | 6 | **Phase 7 — Skipper agent** | Observability and liveness for paid tiers; also explains *why* a Mac is offline | Opt-in, never silent |
-| 7 | **Lock-screen support** | A locked Mac is a dead end today; this is what AnyDesk does. Ships a root component, so it follows its own design + review | See `docs/LOCKSCREEN.md` phases |
+| 7 | **Lock-screen support** | Designed (`docs/LOCKSCREEN.md`). Viewing is feasible on Apple's supported path; typing needs DriverKit HID entitlements Apple grants by request, the same route Karabiner uses. Ships a root component, so it keeps its own review | L1: the lock screen is visible from a controller |
 | 8 | **Phase 8 — crypto payments** | x402-style streaming, USDC/USDT, on the user's criteria | Deferred until the criteria are given |
 | 9 | **Phase 9 — Windows host** | Parked Rust port in `apps/windows/`, still protocol v1 | Windows Mac↔PC session |
 | 10 | **Open the repo** | Deliberately after launch, not before | The user says so |
+
+## Waiting on Apple (request early — they take time)
+
+| Entitlement | Needed for |
+|---|---|
+| `com.apple.developer.persistent-content-capture` | Unattended capture without macOS 15 re-asking for Screen Recording weekly and after every reboot |
+| DriverKit HID (five) | Typing and clicking at the lock screen at all |
 
 ## Smaller items, not blocking
 
