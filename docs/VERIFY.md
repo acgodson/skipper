@@ -216,7 +216,7 @@ below records what it took and what one machine still cannot show.
 | 9 | Drag a window by its title bar | **Not provable on one Mac** (not a permission problem) | The controller's press crosses correctly — a listen-only event tap recorded the host injecting `leftMouseDown` at exactly the mapped point on the target window's title bar. The rest of the gesture never arrives: the host's injected mouse-down takes the window server's implicit pointer grab away from the controller window, so the controller never sees the drag or the release and the host is left holding the button until the session's `input_reset`. One pointer cannot be in two places. OS-event level stays covered by `scripts/test-input.sh`: "the drag arrived intact: 1 down, 5 drag, 1 up". |
 | 10 | Scroll a long page | **PASS** | Scrolling inside the controller's session window moved a 600-line document on the host from scroll offset 0 to 1028. Eight pixel-unit events of 160 px were injected, each with `isContinuous=1`; ten further events of 8 px moved it exactly 100 px (10 px each), i.e. pixel-accurate rather than single large jumps. Scrolling the other way returned it to 0. |
 | 11 | ⌘Space via "Send shortcuts" | **PASS with the toggle off; the "on" half is only partly observable on one Mac** | Off: ⌘Space opened Spotlight on the controller's own Mac and a head-of-chain event tap recorded **nothing** injected on the host — the shortcut stayed local, which is the behaviour the toggle promises. On: the controller's capture tap swallowed the local ⌘Space (no local Spotlight) and the host injected ⌘Space, so the keystroke does reach the remote Mac. It cannot then open the host's Spotlight *on one machine*, because the controller's own capture tap is on the same Mac and re-captures the host's injected keystroke, which loops. The same host-side injection does open Spotlight when the loop is absent — see item 12's Spotlight check. The UI is a *toggle* ("Send shortcuts to <Mac>"), not a menu as this doc says. |
-| 12 | Gesture palette → Mission Control | **FAIL** | The palette opens, the click does not leak into the remote view, and the host injects exactly the four documented OS events (`flagsChanged` Control, key-down 126, key-up 126, `flagsChanged` none). The host **does not enter Mission Control**. The same shortcut sent on that Mac through `System Events key code 126 using control down` does enter it, reproducibly. App Exposé (Control+Down) fails the same way, while the palette's **Spotlight** entry (⌘Space) works end to end and opens Spotlight on the host — so the path and the permission are fine and the defect is specific to the Control-modified combos. See the bug list. |
+| 12 | Gesture palette → Mission Control | **PASS** (after the 2026-10-06 fix) | Originally FAIL: the palette opened, the click did not leak into the remote view, the host injected the documented OS events and macOS did nothing. Root cause and fix in "Fixed 2026-10-06" below — the combo was missing `secondaryFn`, which the Mission Control hotkey is registered with. `scripts/verify-input.sh` now asserts the host really enters Mission Control and App Exposé. |
 | 13 | Clipboard both ways | PASS | Measured on the two real pasteboards: host `skipper.verify.host` → controller general = `HOST-TO-CONTROLLER-9f3a`; general → host = `CONTROLLER-TO-HOST-7b21`. `scripts/test-input.sh` adds the hash match and the no-echo-loop checks. |
 | 14 | Cursor becomes an I-beam over text | **Not provable on one Mac** (not a permission problem) | macOS only applies a window's cursor rects while that window's application is active: measured on this Mac, TextEdit in front gives the I-beam (9x18, hot spot 4,9) and the identical hover with TextEdit in the background gives the arrow (17x23, hot spot 4,4). On one Mac the controller must be the active application to receive the driving input, so the host's pointer is always over a background window and the host never has an I-beam to report. The controller's own drawn cursor is also unphotographable in a steady state: the host warps the real pointer out of the controller's view, which hides the cursor layer. Still not covered by any script. |
 | 15 | 20 s outage → "Reconnecting…" → recovers, no code | PARTIAL | A 22 s backend outage (`SIGSTOP` on `rc-api` and `rc-signal`) left the session **live** and asked for no code — correct, because the media path is peer-to-peer and was never cut. "Reconnecting…" needs the *media* path cut, which on one Mac means loopback ICE and therefore `pfctl`/sudo. Wire equivalent: `scripts/test-transport.sh` (f) — controller WebSocket killed mid-session, session RESUMED, "the access code was NOT requested again", "the peer connection was NEVER torn down". |
@@ -347,26 +347,66 @@ Observed again on one Mac against the same local backend, with a signed
 * Item 5's expectation that the controller sees something other than a wrong
   code message contradicts PROTOCOL.md §2.14.
 
-### Open bug, found 2026-10-06
+### Fixed 2026-10-06 — Control-modified gestures did not take effect
 
-**Control-modified gesture combos do not take effect on the host.** Mission
-Control (Control+Up) and App Exposé (Control+Down) from the gesture palette
-reach the host and are injected as the four documented OS events, and the
-window server accepts them, but macOS does not act on them. The palette's
-Spotlight entry (⌘Space) through the identical path does open Spotlight, and
-Control+Up sent on the same Mac through `System Events` does open Mission
-Control — so this is neither a permission problem nor a disabled shortcut.
-The suspect is how the modifier is delivered: `KeyCombo.events`
-(`apps/macos/Sources/RemoteControlCore/Input/GestureCatalog.swift:22`) presses
-a modifier as `.flagsChanged`, and `CGEventSink.makeEvent`
-(`apps/macos/Sources/RemoteControlCore/Input/CGEventSink.swift:97`) builds that
-by creating a key-down `CGEvent` and overwriting its `type`, which carries no
-device-dependent left/right modifier bit. Setting that bit alone did not fix it
-in a standalone replay, so the exact cause is still open. `scripts/test-input.sh`
-cannot see this: it counts the OS events, not whether macOS acted on them.
-Worth re-checking on two Macs before any fix, and worth an assertion in
-`scripts/verify-input.sh`, which is the script that already tests consequences
-rather than event counts.
+**Symptom.** Mission Control (Control+Up) and App Exposé (Control+Down) from the
+gesture palette reached the host and were injected as the documented OS events,
+the window server accepted them, and macOS did nothing. Spotlight (⌘Space)
+through the identical path worked.
+
+**Root cause.** Not the modifier, and not the device-dependent left/right bit.
+Arrow keys on an Apple keyboard raise `kCGEventFlagMaskSecondaryFn`, so the
+system hotkeys for Mission Control and App Exposé are registered as
+**Control+fn+Arrow** (NSEvent mask `0x840000`), not Control+Arrow. Our combos
+declared `[.control]` only, so the key-down carried `0x40000` and never matched
+the registered hotkey.
+
+**Evidence.** A listen-only `CGEventTap` compared our posted events with what
+`System Events` posts for the same shortcut:
+
+```
+System Events:  flagsChanged flags=0x40001        keyDown kc=126 flags=0xa40001
+ours (before):  flagsChanged flags=0x40000        keyDown kc=126 flags=0x40000
+```
+
+`0xa40001` = control + left-control device bit + **secondaryFn (0x800000)** +
+numericPad (0x200000). Replaying our sequence with only the device bit added did
+nothing; adding `secondaryFn` to the arrow key-down opened Mission Control every
+time, with or without the device bit and with or without the numericPad bit.
+
+**Fix.** `GestureCatalog` declares Mission Control and App Exposé as
+`[.control, .function]`, the shortcut macOS actually registers. No change to the
+sink, the wire, or the shared core.
+
+**Regression guard.** `scripts/verify-input.sh` now requires
+`mission_control_takes_effect`, `mission_control_left_cleanly`,
+`app_expose_takes_effect` and `app_expose_left_cleanly`. The self-test reads the
+Dock's on-screen window count before and after the gesture (2 -> 4 for Mission
+Control, 2 -> 3 for App Exposé, back to 2 after it is dismissed), so it asserts
+what macOS *did*, not what we posted. Reverting the catalog change makes both
+`*_takes_effect` checks fail. `scripts/test-input.sh` counts OS events and by
+design cannot see this.
+
+### Open bug, found 2026-10-06 — Force Quit needs a different posting tap
+
+**Force Quit (⌘⌥Esc) does not take effect either, for an unrelated reason.**
+`System Events` opens the dialog; our sequence does not, at any delay, with or
+without the device-dependent bits, from any `CGEventSource` state
+(`nil`, `.hidSystemState`, `.combinedSessionState`, `.privateState`). The one
+thing that changes the outcome is the posting tap:
+
+| tap | Force Quit | Mission Control |
+|---|---|---|
+| `.cghidEventTap` (what `CGEventSink` uses) | no | **yes** |
+| `.cgSessionEventTap` | no | no |
+| `.cgAnnotatedSessionEventTap` | **yes** | no |
+
+So the two gestures want opposite taps, and `loginwindow`-owned shortcuts appear
+to ignore HID-posted synthetic events. **Lock Screen (⌃⌘Q) is the other
+`loginwindow` shortcut and is likely to be in the same position; it was not
+tested by consequence because a pass would lock the machine.** Fixing this means
+giving the sink a per-gesture posting tap, which is a bigger change than the
+`secondaryFn` fix above and is deliberately not in it.
 
 ### GUI input run (2026-10-06)
 
