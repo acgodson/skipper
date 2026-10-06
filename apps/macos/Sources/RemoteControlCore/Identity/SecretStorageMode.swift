@@ -23,7 +23,7 @@ public enum SecretStorageMode: String, Equatable, CaseIterable {
 
     public var usesDataProtectionKeychain: Bool { self == .dataProtection }
 
-    public var footerNote: String? {
+    public var detailNote: String? {
         switch self {
         case .dataProtection:
             return nil

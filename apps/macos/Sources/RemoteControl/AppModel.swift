@@ -455,6 +455,15 @@ final class AppModel: ObservableObject {
         identity.flatMap { try? DevicePublicKey.fingerprint($0.publicKeyBase64) }
     }
 
+    var ownDetailLines: [String] {
+        guard let identity else { return [] }
+        var lines = ["Device ID \(identity.formattedDeviceID)"]
+        if let fingerprint = ownFingerprint {
+            lines.append("This Mac\u{2019}s fingerprint \(fingerprint)")
+        }
+        return lines
+    }
+
     var hostKeyMismatch: HostKeyMismatch? {
         settings.role == .controller ? identity?.hostKeyPins.mismatch : nil
     }

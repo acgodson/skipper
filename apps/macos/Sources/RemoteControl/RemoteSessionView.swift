@@ -191,7 +191,7 @@ private struct QualityMenu: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("Sent to the other Mac, which changes what it encodes.")
+        .help("Changes how sharply the other Mac sends its screen.")
     }
 }
 

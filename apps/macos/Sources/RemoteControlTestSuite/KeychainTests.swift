@@ -85,9 +85,9 @@ public let keychainSuite = TestSuite("KeychainItem", [
         try expectEqual(SecretStorageMode.decide(accessGroup: nil, dataProtectionUsable: false), .login)
     },
 
-    TestCase("the footer explains the login keychain and says nothing about the other one") {
-        try expectNil(SecretStorageMode.dataProtection.footerNote)
-        try expectEqual(SecretStorageMode.login.footerNote,
+    TestCase("the detail note explains the login keychain and says nothing about the other one") {
+        try expectNil(SecretStorageMode.dataProtection.detailNote)
+        try expectEqual(SecretStorageMode.login.detailNote,
                         "Kept in this Mac's login keychain. Another app running as you could read it. "
                             + "A signed SkipperDesk build keeps it out of reach.")
     },

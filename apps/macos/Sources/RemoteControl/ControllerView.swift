@@ -150,12 +150,7 @@ struct ControllerView: View {
                 )
             }
 
-            if let fingerprint = model.ownFingerprint {
-                Text("This Mac\u{2019}s fingerprint \(fingerprint)")
-                    .font(SkipperFont.codeCaption)
-                    .foregroundStyle(SkipperColor.textTertiary)
-                    .textSelection(.enabled)
-            }
+            SkipperDetails(lines: model.ownDetailLines)
         }
     }
 

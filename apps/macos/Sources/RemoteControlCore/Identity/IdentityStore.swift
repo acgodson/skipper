@@ -28,7 +28,12 @@ public final class IdentityStore: ObservableObject {
     public var storagePath: String { fileStore.fileURL.path }
     public var storageDisplayPath: String { (storagePath as NSString).abbreviatingWithTildeInPath }
     public var keyStorageLabel: String { keyStorage.label }
-    public var secretStorageNote: String? { secretStorageMode?.footerNote }
+    public var keyProtection: KeyProtectionSummary {
+        KeyProtectionSummary.make(
+            keyStorage: keyStorage,
+            secretStorageMode: secretStorageMode,
+            keyStorageNote: keyStorageNote)
+    }
 
     nonisolated public static func usesDevFileIdentity(fileStore: IdentityFileStore) -> Bool {
 #if DEBUG || SKIPPER_TEST_HOOKS
@@ -225,8 +230,8 @@ public final class IdentityStore: ObservableObject {
         do {
             try await sink?.accessCodeDidChange(deviceID: deviceID)
         } catch {
-            lastRefreshError = "New code saved on this Mac, but it could not be "
-                + "sent to the signaling server yet: \(error.localizedDescription)"
+            lastRefreshError = "The new access code is saved on this Mac, but SkipperDesk could not be "
+                + "told about it yet. It will try again."
             throw error
         }
         return fresh
@@ -331,8 +336,8 @@ public enum IdentityRegistrationError: Error, LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .malformedDeviceID: return "The server assigned a Device ID that is not 9 digits."
-        case .malformedCertificate: return "The server sent a malformed Device ID certificate."
+        case .malformedDeviceID: return "SkipperDesk could not give this Mac a Device ID. Try again in a moment."
+        case .malformedCertificate: return "SkipperDesk could not confirm this Mac\u{2019}s Device ID. Try again in a moment."
         }
     }
 }

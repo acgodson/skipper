@@ -111,7 +111,7 @@ public final class AccountLinker: ObservableObject {
 
     public func beginLink() {
         guard let nonce = try? Self.freshNonce() else {
-            state = .error(message: "This Mac could not generate a secure link request.")
+            state = .error(message: "This Mac could not start the sign-in. Try again.")
             return
         }
         var parts = URLComponents(url: webBaseURL.appendingPathComponent("link"), resolvingAgainstBaseURL: false)
@@ -120,7 +120,7 @@ public final class AccountLinker: ObservableObject {
             URLQueryItem(name: "device", value: Self.queryEncoded(identity.publicKeyBase64)),
         ]
         guard let url = parts?.url else {
-            state = .error(message: "The sign-in address could not be built from \(webBaseURL.absoluteString).")
+            state = .error(message: "The sign-in page could not be opened. Try again.")
             return
         }
         attempt = LinkAttempt(nonce: nonce, startedAt: Date())
@@ -148,13 +148,13 @@ public final class AccountLinker: ObservableObject {
             RCLog.error("account: ignored a link callback; no sign-in is in progress")
         case .expired:
             attempt = nil
-            state = .error(message: "That sign-in took too long. Try linking this Mac again.")
+            state = .error(message: "That sign-in took too long. Try again.")
         case .nonceMismatch:
             RCLog.error("account: rejected a link callback whose nonce did not match; the sign-in attempt was abandoned")
             cancelLink()
         case .missingCode:
             attempt = nil
-            state = .error(message: "The sign-in page came back without a code. Try linking this Mac again.")
+            state = .error(message: "That sign-in did not complete. Try again.")
         case .accepted(let code, let nonce):
             RCLog.info("account: accepted the \(Self.callbackScheme)://\(Self.callbackHost) callback")
             attempt = nil
@@ -199,7 +199,7 @@ public final class AccountLinker: ObservableObject {
         do {
             let challenge = try await client.deviceChallenge(code: code)
             guard let nonceBytes = challenge.nonceBytes else {
-                state = .error(message: "The server's sign-in challenge was not readable.")
+                state = .error(message: "SkipperDesk could not complete the sign-in. Try again.")
                 return
             }
             let grant = try await client.deviceToken(
@@ -226,10 +226,10 @@ public final class AccountLinker: ObservableObject {
     // MARK: - §1.5 refresh, §3.6 sign out
 
     private func refreshToken() async throws {
-        guard let current = token else { throw APIError.transport("This Mac holds no account token.") }
+        guard let current = token else { throw APIError.transport("This Mac is not signed in.") }
         let challenge = try await client.deviceChallenge(deviceId: current.deviceId)
         guard let nonceBytes = challenge.nonceBytes else {
-            throw APIError.transport("The server's refresh challenge was not readable.")
+            throw APIError.transport("SkipperDesk could not confirm the sign-in. Try again.")
         }
         let grant = try await client.refreshDeviceToken(
             deviceId: current.deviceId,
@@ -300,7 +300,7 @@ public final class AccountLinker: ObservableObject {
     }
 
     private func authorized<T>(_ call: (String) async throws -> T) async throws -> T {
-        guard let current = token else { throw APIError.transport("This Mac holds no account token.") }
+        guard let current = token else { throw APIError.transport("This Mac is not signed in.") }
         do {
             return try await call(current.token)
         } catch let error as APIError where error.code == .unauthenticated {
@@ -319,7 +319,7 @@ public final class AccountLinker: ObservableObject {
             token = nil
             try? tokens.remove()
             entitlement = nil
-            state = .error(message: "This Mac's sign-in is no longer valid. Link it again.")
+            state = .error(message: "This Mac is signed out. Sign in again to host it.")
         case .forbidden where error.reason == "unlinked" || error.reason == "revoked":
             token = nil
             try? tokens.remove()

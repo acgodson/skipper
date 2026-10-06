@@ -221,14 +221,48 @@ public let deviceKeyStorageSuite = TestSuite("DeviceKeyStorage", [
                                                keychainFailure: KeychainError.unsigned),
                         .refuse(.unsigned))
         let message = try expectNotNil(DeviceKeyRefusal.notStoredSecurely(detail: "x").error.localizedDescription)
-        try expect(message.hasPrefix("SkipperDesk could not store its key securely."), message)
+        try expect(message.hasPrefix("SkipperDesk could not store this Mac\u{2019}s credentials safely"), message)
+        try expect(!message.contains("Secure Enclave") && !message.contains("Keychain"), message)
+    },
+
+    // MARK: - What the owner is told about key storage
+
+    TestCase("key protection says nothing in the best case and never hides a weaker one") {
+        let best = KeyProtectionSummary.make(keyStorage: .secureEnclave,
+                                             secretStorageMode: .dataProtection,
+                                             keyStorageNote: nil)
+        try expect(best.isStrongest)
+        try expectNil(best.sentence, "the best case needs no sentence")
+        try expect(!best.details.isEmpty, "the facts stay reachable under Details")
+
+        for weaker in [
+            KeyProtectionSummary.make(keyStorage: .keychain,
+                                      secretStorageMode: .dataProtection, keyStorageNote: nil),
+            KeyProtectionSummary.make(keyStorage: .secureEnclave,
+                                      secretStorageMode: .login, keyStorageNote: nil),
+            KeyProtectionSummary.make(keyStorage: .secureEnclave,
+                                      secretStorageMode: .dataProtection,
+                                      keyStorageNote: DeviceKeyPolicy.keyNotMovedNote),
+            KeyProtectionSummary.make(keyStorage: .file(URL(fileURLWithPath: "/tmp/x")),
+                                      secretStorageMode: nil, keyStorageNote: nil),
+        ] {
+            try expect(!weaker.isStrongest)
+            try expectEqual(weaker.sentence, KeyProtectionSummary.weakerSentence)
+        }
+    },
+
+    TestCase("the sentence the owner reads carries no storage mechanics") {
+        let sentence = KeyProtectionSummary.weakerSentence
+        for word in ["Secure Enclave", "Keychain", "keychain", "key", "token", "certificate"] {
+            try expect(!sentence.contains(word), "\(word) must stay behind Details: \(sentence)")
+        }
     },
 
     TestCase("policy: an existing file key moves, or is used for this launch with a visible note, never regenerates") {
         let sealed = KeychainError.status(errSecNotAvailable)
         try expectEqual(DeviceKeyPolicy.existingFileKey(migrationFailure: nil), .moveToKeychain)
         try expectEqual(DeviceKeyPolicy.existingFileKey(migrationFailure: sealed),
-                        .useFileForThisLaunch(note: "This Mac's key could not be moved to secure storage."),
+                        .useFileForThisLaunch(note: "This Mac could not move its credentials to safer storage."),
                         "a failed move is never silently fine")
         try expectEqual(DeviceKeyPolicy.existingFileKey(migrationFailure: KeychainError.unsigned), .refuse(.unsigned))
     },
@@ -246,7 +280,7 @@ public let deviceKeyStorageSuite = TestSuite("DeviceKeyStorage", [
             guard case .notStoredSecurely = error as? DeviceKeyStorageError else {
                 throw fail("expected DeviceKeyStorageError.notStoredSecurely, got \(error)")
             }
-            try expect(error.localizedDescription.hasPrefix("SkipperDesk could not store its key securely."))
+            try expect(error.localizedDescription.hasPrefix("SkipperDesk could not store this Mac\u{2019}s credentials safely"))
             try expectNil(try fileStore.load(), "no identity file may be written, least of all one holding a key")
         }
     },

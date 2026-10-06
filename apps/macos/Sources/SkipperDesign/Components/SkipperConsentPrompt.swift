@@ -11,6 +11,7 @@ public struct SkipperConsentPrompt: View {
     private let message: String
     private let notice: String?
     private let details: [String]
+    private let moreDetails: [String]
     private let countdown: String
     private let style: SkipperConsentPromptStyle
     private let allowEnabled: Bool
@@ -22,6 +23,7 @@ public struct SkipperConsentPrompt: View {
         message: String,
         notice: String? = nil,
         details: [String] = [],
+        moreDetails: [String] = [],
         countdown: String,
         style: SkipperConsentPromptStyle = .window,
         allowEnabled: Bool = true,
@@ -32,6 +34,7 @@ public struct SkipperConsentPrompt: View {
         self.message = message
         self.notice = notice
         self.details = details
+        self.moreDetails = moreDetails
         self.countdown = countdown
         self.style = style
         self.allowEnabled = allowEnabled
@@ -66,6 +69,8 @@ public struct SkipperConsentPrompt: View {
                             .font(SkipperFont.codeCaption)
                             .foregroundStyle(SkipperColor.textTertiary)
                     }
+                    SkipperDetails(lines: moreDetails)
+                        .padding(.top, SkipperSpace.xxs)
                 }
             }
 

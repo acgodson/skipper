@@ -99,16 +99,12 @@ struct IdentityFailureView: View {
             SkipperBanner(
                 tone: .critical,
                 symbol: "exclamationmark.triangle.fill",
-                title: "Device identity unavailable",
-                message: "SkipperDesk could not read this Mac's identity, so it has no Device ID or access code. Nothing will connect until this is resolved. Your existing identity has not been changed or deleted."
+                title: "This Mac cannot be shared right now",
+                message: "SkipperDesk could not read this Mac's identity, so it has no Device ID or access code. Nothing will connect until this is resolved. Nothing has been changed or deleted."
             )
 
             SkipperCard(title: "What happened") {
-                Text(message)
-                    .font(SkipperFont.code)
-                    .foregroundStyle(SkipperColor.textSecondary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+                SkipperDetails(lines: [message])
 
                 if canReset {
                     SkipperDivider()

@@ -32,6 +32,10 @@ struct TrustedControllerEntry: Identifiable {
         fingerprint.map(DevicePublicKey.fingerprintLine)
     }
 
+    var detailLines: [String] {
+        [fingerprintLine].compactMap { $0 }
+    }
+
     func lastSeenSentence(now: Date = Date()) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full

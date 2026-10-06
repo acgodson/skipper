@@ -118,7 +118,7 @@ public final class SignalingClient {
         supervisor = Task { [weak self] in await self?.supervise() }
     }
 
-    public func stop(reason: String = "stopped by the app") {
+    public func stop(reason: String = "This Mac is not available for connections right now.") {
         supervisor?.cancel()
         supervisor = nil
         closeSocket()
@@ -141,7 +141,7 @@ public final class SignalingClient {
                 delegate?.signaling(self, didDisconnect: error)
 
                 if (error as? WireError)?.serverCode == Wire.ErrorCode.displaced {
-                    state = .stopped("another instance of RemoteControl took over this Device ID")
+                    state = .stopped("SkipperDesk is open on another Mac using this Device ID. Only one can be reachable at a time.")
                     return
                 }
 

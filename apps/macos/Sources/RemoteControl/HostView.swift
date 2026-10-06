@@ -227,19 +227,12 @@ private struct TrustedControllersSection: View {
                         subtitle: entry.lastSeenSentence(),
                         monospacedSubtitle: false
                     ) {
-                        HStack(spacing: SkipperSpace.m) {
-                            if let fingerprintLine = entry.fingerprintLine {
-                                Text(fingerprintLine)
-                                    .font(SkipperFont.codeCaption)
-                                    .foregroundStyle(SkipperColor.textTertiary)
-                                    .textSelection(.enabled)
-                            }
-                            QuietDestructiveButton(title: "Remove") {
-                                model.removeTrustedController(pubkey: entry.pubkey)
-                            }
-                            .help("Forgets this Mac. It has to enter this Mac's access code again before it can connect.")
+                        QuietDestructiveButton(title: "Remove") {
+                            model.removeTrustedController(pubkey: entry.pubkey)
                         }
+                        .help("Forgets this Mac. It has to enter this Mac's access code again before it can connect.")
                     }
+                    SkipperDetails(lines: entry.detailLines)
                 }
                 SkipperDivider()
                 HStack {
@@ -353,26 +346,21 @@ struct DeviceKeyFooter: View {
 
     var body: some View {
         if let identity = model.identity {
+            let protection = identity.keyProtection
             VStack(alignment: .leading, spacing: SkipperSpace.xs) {
-                HStack(spacing: SkipperSpace.s) {
-                    Image(systemName: "key.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(SkipperColor.textTertiary)
-                    Text("Kept in \(identity.keyStorageLabel)")
-                        .font(SkipperFont.caption)
-                        .foregroundStyle(SkipperColor.textTertiary)
+                if let sentence = protection.sentence {
+                    HStack(spacing: SkipperSpace.s) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 10))
+                            .foregroundStyle(SkipperColor.attention)
+                        Text(sentence)
+                            .font(SkipperFont.caption)
+                            .foregroundStyle(SkipperColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
-                if let note = identity.secretStorageNote {
-                    Text(note)
-                        .font(SkipperFont.caption)
-                        .foregroundStyle(SkipperColor.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if let note = identity.keyStorageNote {
-                    SkipperNote(note)
-                }
+                SkipperDetails(lines: protection.details)
 
                 if let warning = identity.permissionWarning {
                     SkipperNote(warning, tone: .attention)

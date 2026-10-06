@@ -30,7 +30,7 @@ public enum CaptureFailure: Swift.Error, LocalizedError, Equatable {
         case .noDisplay:
             return "No display was found to capture."
         case .streamStopped(let reason):
-            return "Screen capture stopped: \(reason)"
+            return RCLog.enabled ? "Screen capture stopped: \(reason)" : "This Mac stopped sharing its screen."
         case .other(let message):
             return message
         }

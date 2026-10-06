@@ -6,9 +6,9 @@ public enum DeviceKeyStorageError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .notStoredSecurely(let detail):
-            return "SkipperDesk could not store its key securely. Neither the Secure Enclave nor the Keychain "
-                + "would hold it, and SkipperDesk never creates a key in a file. Restart this Mac and open "
-                + "SkipperDesk again. (\(detail))"
+            let sentence = "SkipperDesk could not store this Mac\u{2019}s credentials safely, so it will not "
+                + "create them at all. Restart this Mac and open SkipperDesk again."
+            return RCLog.enabled ? sentence + " (\(detail))" : sentence
         }
     }
 }
@@ -51,7 +51,7 @@ public enum DeviceKeyPolicy {
         case refuse(DeviceKeyRefusal)
     }
 
-    public static let keyNotMovedNote = "This Mac's key could not be moved to secure storage."
+    public static let keyNotMovedNote = "This Mac could not move its credentials to safer storage."
 
     public static func newKey(secureEnclaveFailure: Error?, keychainFailure: Error?) -> NewKey {
         guard let secureEnclaveFailure else { return .secureEnclave }

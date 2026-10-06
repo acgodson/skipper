@@ -33,7 +33,7 @@ public protocol PeerPresenceSource: AnyObject {
 @MainActor
 public final class SelfPresence: ObservableObject {
     @Published public private(set) var state: PresenceState = .unknown
-    @Published public private(set) var explanation = "Connecting to the signaling server\u{2026}"
+    @Published public private(set) var explanation = "Connecting to SkipperDesk\u{2026}"
 
     public init() {}
 
@@ -64,12 +64,12 @@ public final class SignalingPresenceSource: PeerPresenceSource, ObservableObject
     public var explanation: String {
         guard let watchedDeviceID else { return "No saved Mac to watch." }
         if !serverReachable {
-            return "Not connected to the signaling server, so the status of \(DeviceID.formatted(watchedDeviceID)) is unknown."
+            return "Not connected to SkipperDesk, so it is not known whether \(DeviceID.formatted(watchedDeviceID)) is online."
         }
         switch state {
         case .online: return "\(DeviceID.formatted(watchedDeviceID)) is online and reachable."
-        case .offline: return "\(DeviceID.formatted(watchedDeviceID)) is not running RemoteControl, or has no internet."
-        case .unknown: return "Waiting for the server to report the status of \(DeviceID.formatted(watchedDeviceID))."
+        case .offline: return "\(DeviceID.formatted(watchedDeviceID)) is not running SkipperDesk, or has no internet."
+        case .unknown: return "Checking whether \(DeviceID.formatted(watchedDeviceID)) is online\u{2026}"
         }
     }
 
