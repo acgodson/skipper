@@ -231,12 +231,13 @@ public let observationSuite = TestSuite("Observation", [
             a.removePersistentDomain(forName: suiteA)
             b.removePersistentDomain(forName: suiteB)
         }
-        let settingsA = AppSettings(defaults: a)
-        let settingsB = AppSettings(defaults: b)
+        let secrets = SecretStore(blobs: InMemorySecretStore())
+        let settingsA = AppSettings(defaults: a, secrets: secrets)
+        let settingsB = AppSettings(defaults: b, secrets: secrets)
 
         settingsA.role = .controller
         try expectEqual(settingsA.role, .controller)
         try expectEqual(settingsB.role, .host)
-        try expectEqual(AppSettings(defaults: b).role, .host)
+        try expectEqual(AppSettings(defaults: b, secrets: secrets).role, .host)
     },
 ])
