@@ -14,6 +14,25 @@ public enum SecretStorageMode: String, Equatable, CaseIterable {
         return .dataProtection
     }
 
+    /// What the build says about itself, which `scripts/check-isolation.sh`
+    /// checks against the profile and the entitlements at release time.
+    public static func declared(in info: [String: Any]?) -> SecretStorageMode? {
+        guard let raw = info?[infoPlistKey] as? String else { return nil }
+        return SecretStorageMode(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    public static func declared(in bundle: Bundle = .main) -> SecretStorageMode? {
+        declared(in: bundle.infoDictionary)
+    }
+
+    /// A build stamped for the data-protection keychain whose probe disagrees
+    /// has either lost an entitlement or hit a transient failure. Writing to the
+    /// login keychain instead would silently weaken every secret for that
+    /// launch, so nothing is read or written at all.
+    public static func refusesDowngrade(declared: SecretStorageMode?, decided: SecretStorageMode) -> Bool {
+        declared == .dataProtection && decided != .dataProtection
+    }
+
     public var other: SecretStorageMode {
         switch self {
         case .dataProtection: return .login
@@ -43,10 +62,24 @@ public enum SecretStorage {
         return probe(accessGroup: accessGroup)
     }()
 
+    public static let declaredMode: SecretStorageMode? = SecretStorageMode.declared()
+
     public static let mode: SecretStorageMode = {
         let mode = SecretStorageMode.decide(accessGroup: accessGroup, dataProtectionUsable: dataProtectionUsable)
         RCLog.info("keychain: secrets use the \(mode.rawValue) keychain")
         return mode
+    }()
+
+    /// True when this launch would otherwise write a build's secrets to a
+    /// weaker keychain than the build was made for; every item then fails
+    /// closed instead.
+    public static let downgradeRefused: Bool = {
+        let refused = SecretStorageMode.refusesDowngrade(declared: declaredMode, decided: mode)
+        if refused {
+            RCLog.error("keychain: this build is stamped \(SecretStorageMode.dataProtection.rawValue) "
+                + "but the probe could not reach that keychain; no secret is read or written this launch")
+        }
+        return refused
     }()
 
     /// The one answer that cannot be wrong: write, read back and delete a throwaway item
