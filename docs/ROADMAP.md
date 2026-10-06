@@ -31,7 +31,7 @@ Nothing — the queue below is next.
 | # | Item | Why it is here | Done when |
 |---|---|---|---|
 | 1 | **Cross-network + relay proof** | The riskiest untested thing: two endpoints on different networks, and the TURN fallback. Needs TURN, so it rides with Phase 5; a cloud peer stands in for a second Mac (the headless host must come from v1 to v5 first) | A session across two real networks, and one forced onto the relay |
-| 2 | **Fourth security review** | The v5 change set is large and has not been reviewed since | No HIGH or CRITICAL findings |
+| 2 | **Fourth security review** | Read-only pass done 2026-10-06; its one HIGH and the nine other findings are fixed on `sec/review4-fixes`. What remains is a re-read of the fixes | No HIGH or CRITICAL findings outstanding |
 | 3 | **Phase 5 — AWS backend** | Fresh account: Cognito, API, signaling, relays, the domain, TURN. First real money | Two Macs connect through `skipperdesk.app`, relay fallback proven |
 | 4 | **Phase 6 — business logic** | Trial length, rate per hour, lock-outs, credits, gifting, tiers | Priced, metered and enforced end to end |
 | 5 | **Phase 7 — Skipper agent** | Observability and liveness for paid tiers; also explains *why* a Mac is offline | Opt-in, never silent |
