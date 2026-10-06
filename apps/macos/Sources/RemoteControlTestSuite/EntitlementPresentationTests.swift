@@ -187,7 +187,7 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
 
     // MARK: - API.md §4.1 host status line
 
-    TestCase("trial shows a relative end date, active shows tier and an optional balance") {
+    TestCase("trial shows a relative end date, active shows the balance and never a tier slug") {
         let now = Date(timeIntervalSince1970: 1_756_000_000)
         let trial = try entitlement(
             status: "trial", tier: "base",
@@ -195,12 +195,13 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
         try expect(EntitlementPresentation.statusLine(for: trial, now: now).hasPrefix("Trial \u{00B7} ends"))
 
         let activeNoBalance = try entitlement(status: "active", tier: "base")
-        try expectEqual(EntitlementPresentation.statusLine(for: activeNoBalance), "Active \u{00B7} base")
+        try expectEqual(EntitlementPresentation.statusLine(for: activeNoBalance), "Active")
 
         let activeWithBalance = try entitlement(status: "active", tier: "skipper", balanceCents: 1234)
         try expectEqual(
             EntitlementPresentation.statusLine(for: activeWithBalance),
-            "Active \u{00B7} skipper \u{00B7} $12.34 balance")
+            "Active \u{00B7} $12.34 balance",
+            "the tier slug is an internal name and never reaches the screen")
 
         let exhausted = try entitlement(status: "exhausted", tier: "base")
         try expectEqual(

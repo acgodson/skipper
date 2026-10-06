@@ -38,12 +38,11 @@ final class LaunchAtLogin: ObservableObject {
     }
 
     var statusDescription: String {
-        guard isAvailable else { return "Unavailable outside the app bundle" }
+        guard isAvailable else { return "Move SkipperDesk to your Applications folder to use this" }
         switch SMAppService.mainApp.status {
         case .enabled: return "Enabled"
         case .requiresApproval: return "Needs approval in System Settings \u{203A} General \u{203A} Login Items"
-        case .notFound: return "Not registered"
-        case .notRegistered: return "Not registered"
+        case .notFound, .notRegistered: return "Off"
         @unknown default: return "Unknown"
         }
     }

@@ -10,11 +10,8 @@ public enum EntitlementPresentation {
             guard let endsAt = entitlement.trialEndsAt else { return "Trial" }
             return "Trial \u{00B7} ends \(relativeDate(endsAt, from: now))"
         case .active:
-            var line = "Active \u{00B7} \(entitlement.tier)"
-            if let cents = entitlement.balanceCents {
-                line += " \u{00B7} \(moneyString(cents: cents)) balance"
-            }
-            return line
+            guard let cents = entitlement.balanceCents else { return "Active" }
+            return "Active \u{00B7} \(moneyString(cents: cents)) balance"
         case .exhausted:
             return "No balance \u{2014} top up at skipperdesk.app"
         case .unlinked:
