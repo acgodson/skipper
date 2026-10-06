@@ -37,3 +37,5 @@ Read `docs/SCOPE.md` first. These rules are binding for every agent working in t
 - When two options exist, pick the one that best serves `docs/SCOPE.md` — do not ask.
 - A phase is complete only when observed working between two real Macs.
 - Commit small, on branches; PR descriptions list new dependencies and any protocol change.
+- GitHub Actions is out of free minutes while the repo is private (jobs are cancelled before a runner
+  starts). `scripts/ci-local.sh` is the gate until the repo goes public — run it before every push.
