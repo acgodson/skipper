@@ -216,7 +216,7 @@ below records what it took and what one machine still cannot show.
 | 9 | Drag a window by its title bar | **Not provable on one Mac** (not a permission problem) | The controller's press crosses correctly — a listen-only event tap recorded the host injecting `leftMouseDown` at exactly the mapped point on the target window's title bar. The rest of the gesture never arrives: the host's injected mouse-down takes the window server's implicit pointer grab away from the controller window, so the controller never sees the drag or the release and the host is left holding the button until the session's `input_reset`. One pointer cannot be in two places. OS-event level stays covered by `scripts/test-input.sh`: "the drag arrived intact: 1 down, 5 drag, 1 up". |
 | 10 | Scroll a long page | **PASS** | Scrolling inside the controller's session window moved a 600-line document on the host from scroll offset 0 to 1028. Eight pixel-unit events of 160 px were injected, each with `isContinuous=1`; ten further events of 8 px moved it exactly 100 px (10 px each), i.e. pixel-accurate rather than single large jumps. Scrolling the other way returned it to 0. |
 | 11 | ⌘Space via "Send shortcuts" | **PASS with the toggle off; the "on" half is only partly observable on one Mac** | Off: ⌘Space opened Spotlight on the controller's own Mac and a head-of-chain event tap recorded **nothing** injected on the host — the shortcut stayed local, which is the behaviour the toggle promises. On: the controller's capture tap swallowed the local ⌘Space (no local Spotlight) and the host injected ⌘Space, so the keystroke does reach the remote Mac. It cannot then open the host's Spotlight *on one machine*, because the controller's own capture tap is on the same Mac and re-captures the host's injected keystroke, which loops. The same host-side injection does open Spotlight when the loop is absent — see item 12's Spotlight check. The UI is a *toggle* ("Send shortcuts to <Mac>"), not a menu as this doc says. |
-| 12 | Gesture palette → Mission Control | **PASS** (after the 2026-10-06 fix) | Originally FAIL: the palette opened, the click did not leak into the remote view, the host injected the documented OS events and macOS did nothing. Root cause and fix in "Fixed 2026-10-06" below — the combo was missing `secondaryFn`, which the Mission Control hotkey is registered with. `scripts/verify-input.sh` now asserts the host really enters Mission Control and App Exposé. |
+| 12 | Gesture palette → Mission Control | **PASS** (after the two 2026-10-06 fixes) | Originally FAIL: the palette opened, the click did not leak into the remote view, the host injected the documented OS events and macOS did nothing. Root cause and fix in "Fixed 2026-10-06" below — the combo was missing `secondaryFn`, which the Mission Control hotkey is registered with. `scripts/verify-input.sh` now asserts the host really enters Mission Control and App Exposé. |
 | 13 | Clipboard both ways | PASS | Measured on the two real pasteboards: host `skipper.verify.host` → controller general = `HOST-TO-CONTROLLER-9f3a`; general → host = `CONTROLLER-TO-HOST-7b21`. `scripts/test-input.sh` adds the hash match and the no-echo-loop checks. |
 | 14 | Cursor becomes an I-beam over text | **Not provable on one Mac** (not a permission problem) | macOS only applies a window's cursor rects while that window's application is active: measured on this Mac, TextEdit in front gives the I-beam (9x18, hot spot 4,9) and the identical hover with TextEdit in the background gives the arrow (17x23, hot spot 4,4). On one Mac the controller must be the active application to receive the driving input, so the host's pointer is always over a background window and the host never has an I-beam to report. The controller's own drawn cursor is also unphotographable in a steady state: the host warps the real pointer out of the controller's view, which hides the cursor layer. Still not covered by any script. |
 | 15 | 20 s outage → "Reconnecting…" → recovers, no code | PARTIAL | A 22 s backend outage (`SIGSTOP` on `rc-api` and `rc-signal`) left the session **live** and asked for no code — correct, because the media path is peer-to-peer and was never cut. "Reconnecting…" needs the *media* path cut, which on one Mac means loopback ICE and therefore `pfctl`/sudo. Wire equivalent: `scripts/test-transport.sh` (f) — controller WebSocket killed mid-session, session RESUMED, "the access code was NOT requested again", "the peer connection was NEVER torn down". |
@@ -387,26 +387,73 @@ what macOS *did*, not what we posted. Reverting the catalog change makes both
 `*_takes_effect` checks fail. `scripts/test-input.sh` counts OS events and by
 design cannot see this.
 
-### Open bug, found 2026-10-06 — Force Quit needs a different posting tap
+### Fixed 2026-10-06 — Force Quit needed a different posting tap
 
-**Force Quit (⌘⌥Esc) does not take effect either, for an unrelated reason.**
-`System Events` opens the dialog; our sequence does not, at any delay, with or
-without the device-dependent bits, from any `CGEventSource` state
-(`nil`, `.hidSystemState`, `.combinedSessionState`, `.privateState`). The one
-thing that changes the outcome is the posting tap:
+**Symptom.** Force Quit (⌘⌥Esc) from the palette did not open the dialog.
+`System Events` opens it; our sequence did not, at any delay, with or without
+the device-dependent bits, from any `CGEventSource` state (`nil`,
+`.hidSystemState`, `.combinedSessionState`, `.privateState`).
 
-| tap | Force Quit | Mission Control |
+**Root cause.** The posting tap, which was a single sink-wide constant. The
+shortcuts split by owner:
+
+| tap | Force Quit (`loginwindow`) | Mission Control (window server) |
 |---|---|---|
-| `.cghidEventTap` (what `CGEventSink` uses) | no | **yes** |
+| `.cghidEventTap` (what `CGEventSink` used for everything) | no | **yes** |
 | `.cgSessionEventTap` | no | no |
 | `.cgAnnotatedSessionEventTap` | **yes** | no |
 
-So the two gestures want opposite taps, and `loginwindow`-owned shortcuts appear
-to ignore HID-posted synthetic events. **Lock Screen (⌃⌘Q) is the other
-`loginwindow` shortcut and is likely to be in the same position; it was not
-tested by consequence because a pass would lock the machine.** Fixing this means
-giving the sink a per-gesture posting tap, which is a bigger change than the
-`secondaryFn` fix above and is deliberately not in it.
+`loginwindow`-owned shortcuts ignore HID-posted synthetic events; window-server
+shortcuts only match there. One tap cannot serve both.
+
+**Fix.** The posting tap became per gesture, in the Swift input layer only — no
+wire, protocol or shared-core change. `KeyCombo` carries an optional
+`PostingTap`; a combo that names one emits `InjectedEvent.postingTap` ahead of
+its key events, and `CGEventSink` honours it for the rest of that one `post`
+call before falling back to its own configured tap. Only the catalog names a
+tap, so remote keyboard and mouse input is untouched — `input/gestures` pins
+that ("ordinary mouse and keyboard input never picks a posting tap", "only the
+loginwindow-owned gestures ask for a posting tap").
+
+**Evidence.** `scripts/verify-input.sh` now asserts the dialog by consequence,
+from `loginwindow`'s on-screen window count rather than from the events we
+posted:
+
+```
+force_quit_takes_effect PASS — force_quit: loginwindow's on-screen windows went 0 -> 1
+force_quit_left_cleanly PASS — the Force Quit dialog was dismissed (1 -> 0)
+```
+
+Reverting the catalog to the HID tap turns the first line into
+`FAIL — ... went 0 -> 0`, so the guard bites. The self-test dismisses the dialog
+with Escape and leaves nothing on screen.
+
+**Every other palette entry was re-checked by consequence after the change**, in
+the same signed `--test-hooks` build, and all seven still work:
+
+| gesture | consequence observed |
+|---|---|
+| Mission Control | Dock on-screen windows 2 → 4 → 2 (asserted by the script) |
+| App Exposé | Dock on-screen windows 2 → 3 → 2 (asserted by the script) |
+| Show Desktop | Dock on-screen windows 2 → 3, back to 2 |
+| Spotlight | Spotlight on-screen windows 1 → 2, back to 1 |
+| App Switcher | frontmost application SkipperDesk → WhatsApp → SkipperDesk |
+| Screenshot region | `screencaptureui` not running → running, then exits on Escape |
+| Launchpad | Dock on-screen windows 2 → 3, back to 2 |
+
+Those five extra observations came from a temporary probe in the self-test; only
+the Force Quit pair was kept as a standing assertion, because the others open UI
+that is slower and noisier to dismiss reliably on every run.
+
+**Lock Screen (⌃⌘Q) is shipped on the same tap but is NOT verified.** It is the
+other `loginwindow`-owned shortcut, so the mechanism above says it needs
+`.cgAnnotatedSessionEventTap`, and that is what `GestureCatalog` declares. No
+test asserts it and none was run: the only consequence that would prove it is
+the screen locking, and no safe proxy exists — the shortcut is handled inside
+`loginwindow`, and rebinding or disabling the symbolic hotkey to observe it
+would be a change to the machine's settings. It is marked in the catalog with
+`TODO: verify Lock Screen on a machine that can be locked`. Treat it as
+reasoned, not observed, until someone runs it on a Mac that may lock.
 
 ### GUI input run (2026-10-06)
 
