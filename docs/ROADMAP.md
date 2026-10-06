@@ -40,6 +40,19 @@ Nothing — the queue below is next.
 | 8 | **Phase 9 — Windows host** | Parked Rust port in `apps/windows/`, still protocol v1 | Windows Mac↔PC session |
 | 9 | **Open the repo** | Deliberately after launch, not before | The user says so |
 
+## Before the repo is ever public (history rewrite — plan deliberately)
+
+Found by the fourth security review. Nothing is exposed today (the repo is private), but each needs removing from the tree AND from history:
+
+| Item | Where |
+|---|---|
+| Full targeting details for the frozen EC2 box (account, instance, region, IAM profile, security group, public IP, open ports) | `infra/legacy/**`, `docs/archive/aws.md`, `docs/archive/PLAN.md` |
+| Another company's private image reference | `infra/legacy/.baseline.txt` |
+| That public IP baked into generated vectors and the parked Windows host | `protocol/vectors/*`, `apps/windows/**` — regenerate against `192.0.2.1` |
+| A deleted 17 MB server binary still in history (936 local build paths) | blob from commit `8f7080b` |
+| Decide first, since they need the same pass | commit author email; bundle id still `com.godson.remotecontrol` while the product is SkipperDesk |
+| Re-check immediately before the first public push | `infra/legacy/.env` and `certs/server.key` are gitignored and were never committed |
+
 ## Waiting on Apple (request early — they take time)
 
 | Entitlement | Needed for |
