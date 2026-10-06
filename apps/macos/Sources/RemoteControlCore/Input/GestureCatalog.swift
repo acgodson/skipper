@@ -56,9 +56,9 @@ public enum GestureCatalog {
     public static func action(for gesture: GestureName) -> GestureAction {
         switch gesture {
         case .missionControl:
-            return .combo(KeyCombo(VirtualKey.upArrow, [.control]))
+            return .combo(KeyCombo(VirtualKey.upArrow, [.control, .function]))
         case .appExpose:
-            return .combo(KeyCombo(VirtualKey.downArrow, [.control]))
+            return .combo(KeyCombo(VirtualKey.downArrow, [.control, .function]))
         case .showDesktop:
             return .combo(KeyCombo(VirtualKey.f11, [.function]))
         case .launchpad:

@@ -410,8 +410,8 @@ public let gestureSuite = TestSuite("input/gestures", [
     },
 
     TestCase("each gesture is the documented public shortcut") {
-        try expectEqual(GestureCatalog.action(for: .missionControl), .combo(KeyCombo(VirtualKey.upArrow, [.control])))
-        try expectEqual(GestureCatalog.action(for: .appExpose), .combo(KeyCombo(VirtualKey.downArrow, [.control])))
+        try expectEqual(GestureCatalog.action(for: .missionControl), .combo(KeyCombo(VirtualKey.upArrow, [.control, .function])))
+        try expectEqual(GestureCatalog.action(for: .appExpose), .combo(KeyCombo(VirtualKey.downArrow, [.control, .function])))
         try expectEqual(GestureCatalog.action(for: .showDesktop), .combo(KeyCombo(VirtualKey.f11, [.function])))
         try expectEqual(GestureCatalog.action(for: .spotlight), .combo(KeyCombo(VirtualKey.space, [.command])))
         try expectEqual(GestureCatalog.action(for: .appSwitcher), .combo(KeyCombo(VirtualKey.tab, [.command])))
