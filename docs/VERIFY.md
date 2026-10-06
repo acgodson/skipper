@@ -195,11 +195,13 @@ No tunnel, nothing against AWS.
 The host is the hooks build because **both** bundles share a designated
 requirement, so TCC treats them as the same app: whichever one hosts, it sees
 the same grants. Screen Recording is granted (`screenRecordingGranted=true`,
-real capture at 1920x1200 @2.0x); **Accessibility is not granted to
+real capture at 1920x1200 @2.0x); **Accessibility was not granted to
 `app.skipperdesk.desktop` on this Mac at all** — `scripts/verify-input.sh`
-refuses for that reason, and the installed build shows the same "Accessibility
-is off" banner. That, not the one-machine setup, is what blocks items 9-12
-and 14 from being driven through the GUI.
+refused for that reason, and the installed build showed the same "Accessibility
+is off" banner. That is what blocked items 9-12 and 14 on that date. The grant
+was added on 2026-10-06 and those five items were then driven through the GUI;
+the rows below carry the result of that run, and **GUI input run (2026-10-06)**
+below records what it took and what one machine still cannot show.
 
 | # | Item | Result | Evidence |
 |---|------|--------|----------|
@@ -211,12 +213,12 @@ and 14 from being driven through the GUI.
 | 6 | Reconnect with remembered code, no typing | PASS | After End Session the saved device is listed and the code is pre-filled; Connect re-opened the session with no code entry |
 | 7 | Refresh code → controller asked again | PASS | New code minted, `trusted-controllers.json` deleted; the controller's remembered code then gets "Wrong access code. Check it on the other Mac." |
 | 8 | Trusted list, per-row Remove | PASS (with a refresh bug) | Row `567 397 415 · Last connected 1 minute ago` present, Remove empties the card immediately. **Bug:** the row only appears after the Host screen re-appears — see below. |
-| 9 | Drag a window by its title bar | N/A — needs the Accessibility grant | Covered at the OS-event level by `scripts/test-input.sh`: "the drag arrived intact: 1 down, 5 drag, 1 up" and "drags arrived as mouse_drag on the reliable channel, not as moves" |
-| 10 | Scroll a long page | N/A — needs the Accessibility grant | `scripts/test-input.sh`: "three scroll phases became 3 OS events". The pixel-unit (`isContinuous`) assertion lives in `verify-input.sh`, which needs the same grant. |
-| 11 | ⌘Space via "Send shortcuts" | N/A — needs the Accessibility grant | Modifier transport covered by `scripts/test-input.sh`: "Cmd+C crossed as 2 key-downs and 2 key-ups". Note the UI is a *toggle* ("Send shortcuts to <Mac>"), not a menu as this doc says. |
-| 12 | Gesture palette → Mission Control | N/A — needs the Accessibility grant | `scripts/test-input.sh`: "the host executed mission_control as 4 OS events" |
+| 9 | Drag a window by its title bar | **Not provable on one Mac** (not a permission problem) | The controller's press crosses correctly — a listen-only event tap recorded the host injecting `leftMouseDown` at exactly the mapped point on the target window's title bar. The rest of the gesture never arrives: the host's injected mouse-down takes the window server's implicit pointer grab away from the controller window, so the controller never sees the drag or the release and the host is left holding the button until the session's `input_reset`. One pointer cannot be in two places. OS-event level stays covered by `scripts/test-input.sh`: "the drag arrived intact: 1 down, 5 drag, 1 up". |
+| 10 | Scroll a long page | **PASS** | Scrolling inside the controller's session window moved a 600-line document on the host from scroll offset 0 to 1028. Eight pixel-unit events of 160 px were injected, each with `isContinuous=1`; ten further events of 8 px moved it exactly 100 px (10 px each), i.e. pixel-accurate rather than single large jumps. Scrolling the other way returned it to 0. |
+| 11 | ⌘Space via "Send shortcuts" | **PASS with the toggle off; the "on" half is only partly observable on one Mac** | Off: ⌘Space opened Spotlight on the controller's own Mac and a head-of-chain event tap recorded **nothing** injected on the host — the shortcut stayed local, which is the behaviour the toggle promises. On: the controller's capture tap swallowed the local ⌘Space (no local Spotlight) and the host injected ⌘Space, so the keystroke does reach the remote Mac. It cannot then open the host's Spotlight *on one machine*, because the controller's own capture tap is on the same Mac and re-captures the host's injected keystroke, which loops. The same host-side injection does open Spotlight when the loop is absent — see item 12's Spotlight check. The UI is a *toggle* ("Send shortcuts to <Mac>"), not a menu as this doc says. |
+| 12 | Gesture palette → Mission Control | **FAIL** | The palette opens, the click does not leak into the remote view, and the host injects exactly the four documented OS events (`flagsChanged` Control, key-down 126, key-up 126, `flagsChanged` none). The host **does not enter Mission Control**. The same shortcut sent on that Mac through `System Events key code 126 using control down` does enter it, reproducibly. App Exposé (Control+Down) fails the same way, while the palette's **Spotlight** entry (⌘Space) works end to end and opens Spotlight on the host — so the path and the permission are fine and the defect is specific to the Control-modified combos. See the bug list. |
 | 13 | Clipboard both ways | PASS | Measured on the two real pasteboards: host `skipper.verify.host` → controller general = `HOST-TO-CONTROLLER-9f3a`; general → host = `CONTROLLER-TO-HOST-7b21`. `scripts/test-input.sh` adds the hash match and the no-echo-loop checks. |
-| 14 | Cursor becomes an I-beam over text | N/A — needs the Accessibility grant and a real pointer on the host | Not covered by any script |
+| 14 | Cursor becomes an I-beam over text | **Not provable on one Mac** (not a permission problem) | macOS only applies a window's cursor rects while that window's application is active: measured on this Mac, TextEdit in front gives the I-beam (9x18, hot spot 4,9) and the identical hover with TextEdit in the background gives the arrow (17x23, hot spot 4,4). On one Mac the controller must be the active application to receive the driving input, so the host's pointer is always over a background window and the host never has an I-beam to report. The controller's own drawn cursor is also unphotographable in a steady state: the host warps the real pointer out of the controller's view, which hides the cursor layer. Still not covered by any script. |
 | 15 | 20 s outage → "Reconnecting…" → recovers, no code | PARTIAL | A 22 s backend outage (`SIGSTOP` on `rc-api` and `rc-signal`) left the session **live** and asked for no code — correct, because the media path is peer-to-peer and was never cut. "Reconnecting…" needs the *media* path cut, which on one Mac means loopback ICE and therefore `pfctl`/sudo. Wire equivalent: `scripts/test-transport.sh` (f) — controller WebSocket killed mid-session, session RESUMED, "the access code was NOT requested again", "the peer connection was NEVER torn down". |
 | 16 | 2-minute outage closes cleanly | N/A — same reason as 15 | `scripts/test-transport.sh` (h): clean `bye` on both ends, "the host is back to a closed session with no stuck state"; stuck modifiers covered by its `input_reset` checks in `test-input.sh` |
 | 17 | Sign out on host → controller refused | **FAIL** | After Sign Out the host card returned to "Sign in to SkipperDesk", yet the controller's next connect was **not** refused — the session opened and reached the consent prompt ("Waiting for the other Mac to accept…"). See the bug list. |
@@ -345,13 +347,80 @@ Observed again on one Mac against the same local backend, with a signed
 * Item 5's expectation that the controller sees something other than a wrong
   code message contradicts PROTOCOL.md §2.14.
 
+### Open bug, found 2026-10-06
+
+**Control-modified gesture combos do not take effect on the host.** Mission
+Control (Control+Up) and App Exposé (Control+Down) from the gesture palette
+reach the host and are injected as the four documented OS events, and the
+window server accepts them, but macOS does not act on them. The palette's
+Spotlight entry (⌘Space) through the identical path does open Spotlight, and
+Control+Up sent on the same Mac through `System Events` does open Mission
+Control — so this is neither a permission problem nor a disabled shortcut.
+The suspect is how the modifier is delivered: `KeyCombo.events`
+(`apps/macos/Sources/RemoteControlCore/Input/GestureCatalog.swift:22`) presses
+a modifier as `.flagsChanged`, and `CGEventSink.makeEvent`
+(`apps/macos/Sources/RemoteControlCore/Input/CGEventSink.swift:97`) builds that
+by creating a key-down `CGEvent` and overwriting its `type`, which carries no
+device-dependent left/right modifier bit. Setting that bit alone did not fix it
+in a standalone replay, so the exact cause is still open. `scripts/test-input.sh`
+cannot see this: it counts the OS events, not whether macOS acted on them.
+Worth re-checking on two Macs before any fix, and worth an assertion in
+`scripts/verify-input.sh`, which is the script that already tests consequences
+rather than event counts.
+
+### GUI input run (2026-10-06)
+
+Accessibility granted to `/Applications/SkipperDesk.app` (`app.skipperdesk.desktop`),
+Screen Recording already granted. Same shape as the run above but the roles are
+swapped, because the host is the side that injects input and captures the screen
+and only the installed bundle holds the grants:
+
+* **HOST** — `/Applications/SkipperDesk.app`, launched by
+  `scripts/launch-with-backend.sh http://127.0.0.1:18080`. Device ID
+  `567 397 415`, signed in through the real `/link` dev page as
+  `verify-gui@example.com`. **Unattended access was already on** and was left
+  on, so no run was gated on a consent prompt.
+* **CONTROLLER** — `scripts/build.sh --test-hooks` signed with the Developer ID
+  (`3UB3KZP9WH`), run from `dist/` with its own `RC_IDENTITY_DIR` /
+  `RC_SETTINGS_SUITE` / `RC_PASTEBOARD_NAME`, so a second identity
+  (`378 080 437`). Session window 720x572 at 5,25; the host streamed
+  1920x1200 @2x.
+
+The controller's session window was driven with real CGEvents, with the
+frontmost application, its pid and the topmost window at the click point all
+checked before every click and keystroke, and the target was a purpose-built
+floating panel rather than any of the user's own windows. Pointer mapping was
+calibrated against the host rather than assumed, and came out exactly linear:
+controller view (547,208) landed on host screen (1084,154), the target's title
+bar, to the pixel.
+
+What one machine cannot show, in each case for a reason that has nothing to do
+with permissions:
+
+* **Pointer grab (item 9).** Posting a mouse-down over the controller's view
+  makes the host inject a mouse-down somewhere else on the same screen. That
+  second down takes the window server's implicit grab, so every later drag and
+  the release go to the dragged window instead of the controller, and the host
+  keeps the button held until `teardownPeerConnection` runs `input_reset`.
+* **Active-application cursor (item 14).** macOS applies cursor rects only for
+  the active application, and on one Mac that has to be the controller.
+* **Keyboard capture (item 11, toggle on).** The controller's capture tap and
+  the host's injector are on the same Mac, so the host's injected ⌘Space is
+  immediately re-captured and forwarded again, unbounded.
+
 ### Still needs two machines
 
 * Cross-network NAT traversal, and the TURN relay path (no coturn locally).
 * Items 15 and 16 as written — a real network cut of the **media** path, which
   on one Mac would mean `pfctl`/sudo.
-* Items 9, 10, 11, 12 and 14 through the GUI: they need Accessibility granted
-  to SkipperDesk, which only the user can do in System Settings.
+* Items 9 and 14, and the "on" half of item 11. Accessibility is granted now and
+  items 10 and 12 were driven through the GUI, but these three turn on there
+  being **two** pointers, two keyboards and two active applications. One Mac has
+  one of each: the host's injected mouse-down takes the pointer grab away from
+  the controller window (9), the host's pointer is always over a background
+  window so macOS never shows an I-beam (14), and the controller's capture tap
+  re-captures the host's injected keystrokes (11). See **GUI input run
+  (2026-10-06)**.
 * Item 19's reboot half.
 * Item 17 across two machines. It now passes on one Mac, against the real
   backend, with the fix above.
