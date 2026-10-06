@@ -30,7 +30,7 @@ Nothing — the queue below is next.
 
 | # | Item | Why it is here | Done when |
 |---|---|---|---|
-| 1 | **Two-Mac run** | Only a second machine can prove window drag, the I-beam cursor, shortcut capture, cross-network connection and the relay path | `docs/VERIFY.md` items 9, 11 (on), 14 and the NAT/TURN rows pass between two Macs |
+| 1 | **Cross-network + relay proof** | The riskiest untested thing: two endpoints on different networks, and the TURN fallback. Needs TURN, so it rides with Phase 5; a cloud peer stands in for a second Mac (the headless host must come from v1 to v5 first) | A session across two real networks, and one forced onto the relay |
 | 2 | **Fourth security review** | The v5 change set is large and has not been reviewed since | No HIGH or CRITICAL findings |
 | 3 | **Phase 5 — AWS backend** | Fresh account: Cognito, API, signaling, relays, the domain, TURN. First real money | Two Macs connect through `skipperdesk.app`, relay fallback proven |
 | 4 | **Phase 6 — business logic** | Trial length, rate per hour, lock-outs, credits, gifting, tiers | Priced, metered and enforced end to end |
@@ -46,6 +46,17 @@ Nothing — the queue below is next.
 |---|---|
 | `com.apple.developer.persistent-content-capture` | Unattended capture without macOS 15 re-asking for Screen Recording weekly and after every reboot |
 | DriverKit HID (five) | Typing and clicking at the lock screen at all |
+
+## Deferred to beta (decided 2026-10-06, recorded as unproven)
+
+| Item | Why it is safe to defer |
+|---|---|
+| Window drag by title bar (VERIFY 9) | One Mac has one pointer: the host's injected mouse-down steals the grab from the controller window. The wire half passes (`test-input.sh`: drags cross as drags, not moves) |
+| "Send shortcuts" ON half (VERIFY 11) | The controller's capture tap re-captures the host's injected keystroke on the same Mac. The OFF half passes, and the ON half is proven to reach the host |
+| I-beam cursor over text (VERIFY 14) | macOS only sets cursor rects for the active app, and on one Mac that must be the controller |
+| Lock Screen gesture | Proving it locks this Mac |
+
+These are observed on a second machine during beta, not before.
 
 ## Smaller items, not blocking
 
