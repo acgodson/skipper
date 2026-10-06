@@ -45,6 +45,7 @@ final class InputSelfTest {
             await checkModifierFlagsReachTheSession()
             await checkInputResetReleasesHeldButton()
             await checkGesturesTakeEffect()
+            await checkForceQuitTakesEffect()
             moveCursor(to: restore)
             finish()
         }
@@ -171,9 +172,31 @@ final class InputSelfTest {
         }
     }
 
-    private func dockWindowCount() -> Int {
+    // Force Quit is owned by `loginwindow`, which ignores HID-posted synthetic events;
+    // this passes only while the catalog asks for the annotated-session tap.
+    private func checkForceQuitTakesEffect() async {
+        let before = onScreenWindowCount(ownedBy: "loginwindow")
+        sink.post(GestureCatalog.events(for: .forceQuit))
+        await settle(1.5)
+        let during = onScreenWindowCount(ownedBy: "loginwindow")
+        check(during > before, "force_quit_takes_effect",
+              "force_quit: loginwindow's on-screen windows went \(before) -> \(during)")
+
+        var after = during
+        for tap in [PostingTap.annotatedSession, .hid] where after > before {
+            sink.post(KeyCombo(VirtualKey.escape, [], tap: tap).events)
+            await settle(1.0)
+            after = onScreenWindowCount(ownedBy: "loginwindow")
+        }
+        check(after <= before, "force_quit_left_cleanly",
+              "the Force Quit dialog was dismissed (\(during) -> \(after))")
+    }
+
+    private func dockWindowCount() -> Int { onScreenWindowCount(ownedBy: "Dock") }
+
+    private func onScreenWindowCount(ownedBy owner: String) -> Int {
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
-        return windows.filter { ($0[kCGWindowOwnerName as String] as? String) == "Dock" }.count
+        return windows.filter { ($0[kCGWindowOwnerName as String] as? String) == owner }.count
     }
 
     private func checkInputResetReleasesHeldButton() async {

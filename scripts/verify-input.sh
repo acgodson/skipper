@@ -19,6 +19,8 @@
 #   * the host ACTUALLY entering Mission Control and App Expose, read from the
 #     Dock's on-screen window count rather than from the events we posted
 #     (scripts/test-input.sh counts those events and so cannot see this)
+#   * the Force Quit dialog ACTUALLY appearing, read from loginwindow's on-screen
+#     window count, then dismissed with Escape so nothing is left on screen
 #
 # If injection were a no-op, or posted moves instead of drags, none of these
 # could pass.
@@ -61,7 +63,7 @@ open -n "$APP_BUNDLE" \
   --env RC_DEBUG=1 \
   --env RC_LOG_FILE="$LOG"
 
-for _ in $(seq 1 60); do
+for _ in $(seq 1 120); do
   grep -q "SELFTEST end" "$LOG" 2>/dev/null && break
   sleep 1
 done
@@ -120,6 +122,8 @@ require mission_control_takes_effect
 require mission_control_left_cleanly
 require app_expose_takes_effect
 require app_expose_left_cleanly
+require force_quit_takes_effect
+require force_quit_left_cleanly
 
 if grep -q "SELFTEST summary .* 0 failed" "$LOG"; then
   echo "PASS  the self-test reported no failures"
