@@ -421,6 +421,19 @@ public let gestureSuite = TestSuite("input/gestures", [
         try expectEqual(GestureCatalog.action(for: .launchpad), .launchApplication(path: GestureCatalog.launchpadPath))
     },
 
+    TestCase("the palette offers every verified gesture, and holds Lock Screen back") {
+        try expectEqual(GestureCatalog.palette, [
+            .missionControl, .appExpose, .showDesktop, .launchpad,
+            .spotlight, .appSwitcher, .screenshotRegion, .forceQuit,
+        ])
+        try expectFalse(GestureCatalog.palette.contains(.lockScreen),
+                        "Lock Screen is unverified and locks a host we cannot unlock from here")
+        try expectEqual(Set(GestureName.allCases).subtracting(GestureCatalog.palette), [.lockScreen],
+                        "a gesture other than Lock Screen is missing from the palette")
+        try expectEqual(GestureCatalog.events(for: .lockScreen).isEmpty, false,
+                        "the wire and gesture plumbing for Lock Screen stays")
+    },
+
     TestCase("a gesture never leaves a modifier held") {
         for gesture in GestureName.allCases {
             var held: KeyModifiers = []

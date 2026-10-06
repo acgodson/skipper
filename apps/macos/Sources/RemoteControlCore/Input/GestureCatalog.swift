@@ -56,6 +56,16 @@ public enum GestureCatalog {
 
     public static let launchpadPath = "/System/Applications/Launchpad.app"
 
+    /// What the gesture palette offers, in order. Lock Screen is deliberately
+    /// absent: it is reasoned, not observed, and a host it locks cannot be
+    /// unlocked from the controller until lock-screen viewing lands. The wire
+    /// name, the catalog entry and the rest of the plumbing all stay.
+    /// TODO: offer lockScreen again once it is observed on a Mac that may lock.
+    public static let palette: [GestureName] = [
+        .missionControl, .appExpose, .showDesktop, .launchpad,
+        .spotlight, .appSwitcher, .screenshotRegion, .forceQuit,
+    ]
+
     public static func action(for gesture: GestureName) -> GestureAction {
         switch gesture {
         case .missionControl:
