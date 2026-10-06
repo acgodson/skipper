@@ -10,12 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"rc-signal/internal/envx"
 	protocol "rcprotocol"
 )
 
@@ -69,6 +71,58 @@ func CheckSeparate(public, internal string) error {
 		return errors.New("the internal listener must not share the public listener's port")
 	}
 	return nil
+}
+
+// Secret names every way the internal bearer can be given, in the order they
+// are preferred: a file, the environment, and last the flag form.
+type Secret struct {
+	FilePath     string
+	FileFlagName string
+	Env          string
+	EnvName      string
+	Flag         string
+	FlagName     string
+}
+
+// ResolveSecret reads the internal bearer, preferring the file form. The flag
+// form still works and is warned about: a process argument is readable by every
+// local user through ps and /proc/<pid>/cmdline.
+func ResolveSecret(s Secret, log *slog.Logger) (string, error) {
+	secret, err := envx.SecretFile(s.FilePath, "internal token")
+	if err != nil || secret != "" {
+		return secret, err
+	}
+	if fromEnv := strings.TrimSpace(s.Env); fromEnv != "" {
+		return fromEnv, nil
+	}
+	if fromFlag := strings.TrimSpace(s.Flag); fromFlag != "" {
+		log.Warn("the internal token was passed as a process argument, where every local user can read it; "+
+			"pass it in a file instead",
+			"deprecated", "-"+s.FlagName, "use", "-"+s.FileFlagName, "or", s.EnvName)
+		return fromFlag, nil
+	}
+	return "", nil
+}
+
+// CheckLoopback refuses an internal listener reachable from off this machine.
+// The internal surface carries a shared bearer and nothing else (API.md §6), so
+// exposing it is an explicit choice, never a default.
+func CheckLoopback(addr string, allowPublic bool) error {
+	if allowPublic {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("internal listen address %q: %w", addr, err)
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(strings.TrimSpace(host)); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("the internal listener %q is reachable from outside this machine: "+
+		"bind it to 127.0.0.1 or pass -internal-listen-public", addr)
 }
 
 // Authorized reports whether r carries the shared internal bearer secret.

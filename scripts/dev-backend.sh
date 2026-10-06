@@ -96,7 +96,8 @@ if ! (cd "$SERVER_DIR" && go build -o "$BIN/rc-signal" ./cmd/rc-signal && go bui
   exit 1
 fi
 
-INTERNAL_TOKEN="$(secret internal-token)"
+secret internal-token >/dev/null
+INTERNAL_TOKEN_FILE="$DATA/internal-token"
 HARDWARE_SALT="$(secret hardware-salt)"
 
 ID_CERT_KEY="$DATA/id-cert-key.pem"
@@ -122,7 +123,7 @@ echo "== starting rc-api on $API_URL (dev identity provider; internal surface on
   -db "$DATA/rc-api.db" \
   -claims-db "$DATA/rc-api-claims.db" \
   -idp dev \
-  -internal-token "$INTERNAL_TOKEN" \
+  -internal-token-file "$INTERNAL_TOKEN_FILE" \
   -id-cert-key-file "$ID_CERT_KEY" \
   -hardware-salt "$HARDWARE_SALT" \
   -web-base-url "${RC_DEV_WEB_BASE_URL:-$API_URL}" \
@@ -141,7 +142,7 @@ echo "== starting rc-signal on $SIGNAL_URL (device registry and entitlement from
   -internal-listen "127.0.0.1:$SIGNAL_INTERNAL_PORT" \
   -entitlement http \
   -api-internal-url "$API_INTERNAL_URL" \
-  -internal-token "$INTERNAL_TOKEN" \
+  -internal-token-file "$INTERNAL_TOKEN_FILE" \
   -trusted-proxies "127.0.0.1/32" \
   -register-per-ip-hour "${RC_DEV_REGISTER_PER_IP_HOUR:-1000}" \
   -connect-per-ip-min "${RC_DEV_CONNECT_PER_IP_MIN:-1000}" \
