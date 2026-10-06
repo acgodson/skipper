@@ -26,7 +26,8 @@ at the remote Mac. No session time limit.
 - Online/offline status · Unattended access on/off · Clipboard sync on/off.
 - Unattended access off (the default on a new install): after a controller proves the code, the
   host asks "Allow … to control this Mac?" and waits up to 30 s; no answer declines. On: the code
-  alone is permission, and the Mac is kept awake.
+  alone is permission. The toggle decides consent only; keeping the Mac awake follows being a
+  reachable host (see Background operation).
 - A visible "Remote session active" indicator and a local way to end the session.
   Never covert.
 
@@ -57,6 +58,19 @@ Detect and name missing **Screen Recording** / **Accessibility** grants — neve
 Keep running from the menu bar after the window closes; Launch at Login; unattended access is
 an explicit setting. Current user's desktop only (no login-screen/FileVault control). Never
 bypass privacy dialogs.
+
+## Background operation
+A Mac in the host role keeps itself from idle-sleeping for as long as it is online and reachable,
+so that someone can connect to it later; no setting controls this. While a session is connecting,
+waiting for consent, live or reconnecting, the display is kept on as well, because capture stops
+when it sleeps. Both are power assertions named in `pmset -g assertions` ("SkipperDesk is
+reachable", "SkipperDesk remote session") and both are dropped when the Mac leaves the host role,
+goes offline, or the session ends. When a controller connects, the host declares local user
+activity, which brings a display that has gone dark back on.
+
+What this cannot do: a Mac already in system sleep stays asleep — nothing in an app can wake it
+(that is Wake-on-LAN, outside V1) — and none of this unlocks a locked Mac or shows the login
+screen, which needs a privileged helper and is a separate future phase.
 
 ## Security rules
 TLS for signaling · WebRTC encryption · CSPRNG access codes · no plaintext code on the server or

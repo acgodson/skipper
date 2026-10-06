@@ -79,7 +79,7 @@ final class AppModel: ObservableObject {
     func restartToUpdate() { updates.restartToUpdate() }
 
     private func applyStayAwake() {
-        stayAwake.update(enabled: settings.role == .host && settings.unattendedAccess)
+        stayAwake.update(role: settings.role, isOnline: signalingReady, phase: coordinator?.phase)
     }
 
     // MARK: - Keyboard capture
@@ -181,7 +181,6 @@ final class AppModel: ObservableObject {
             .dropFirst()
             .sink { [weak self] _ in
                 Task { @MainActor in
-                    self?.applyStayAwake()
                     self?.applyConsentRequirement()
                 }
             }
@@ -253,7 +252,7 @@ final class AppModel: ObservableObject {
             case .authenticated:
                 signalingReady = true
                 selfPresence.update(reachable: true,
-                    detail: "This Mac is reachable. Another Mac can connect with the Device ID and access code above.")
+                    detail: "This Mac is reachable. Another Mac can connect with the Device ID and access code above, and this Mac will not fall asleep on its own while it is.")
             case .connecting, .authenticating:
                 signalingReady = false
                 selfPresence.setUnknown(detail: "Connecting to SkipperDesk\u{2026}")
@@ -286,6 +285,7 @@ final class AppModel: ObservableObject {
             break
         }
         sessionState = coordinator.state
+        applyStayAwake()
     }
 
     private func loadIdentity() {

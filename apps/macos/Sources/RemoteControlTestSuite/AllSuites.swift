@@ -20,6 +20,7 @@ public let allSuites: [TestSuite] = [
     settingsSuite,
     observationSuite,
     cursorSuite,
+    stayAwakeSuite,
     backoffSuite,
     configSuite,
     wireCodecSuite,

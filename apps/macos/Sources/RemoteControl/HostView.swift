@@ -135,7 +135,7 @@ private struct AccessSection: View {
             SkipperToggleRow(
                 title: "Unattended access",
                 detail: model.settings.unattendedAccess
-                    ? "Anyone with the code can connect without you here."
+                    ? "Anyone with the code can connect without being asked here."
                     : "You will be asked to allow each connection.",
                 isOn: Binding(
                     get: { model.settings.unattendedAccess },

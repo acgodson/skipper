@@ -153,10 +153,13 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
 | Waiting to be accepted | Controller hero | attention note "Waiting for the other Mac to accept…", pill "Waiting…"; after a decline the critical banner "The other Mac declined the connection." |
 
 **Unattended access** is a toggle row whose detail follows its state — on: "Anyone with the code
-can connect without you here."; off: "You will be asked to allow each connection." It is off on a
-new install (an existing install keeps what it had). While it is off the host hero carries one
-extra note: "Leaving this Mac on its own? Turn on Unattended access below so connections do not
-wait for someone to click Allow." The keep-awake assertion follows the same toggle.
+can connect without being asked here."; off: "You will be asked to allow each connection." It is
+off on a new install (an existing install keeps what it had). While it is off the host hero carries
+one extra note: "Leaving this Mac on its own? Turn on Unattended access below so connections do not
+wait for someone to click Allow." The toggle decides consent and nothing else: keeping the Mac
+awake follows being a reachable host, not this toggle, and the reachable note says so — "This Mac
+is reachable. Another Mac can connect with the Device ID and access code above, and this Mac will
+not fall asleep on its own while it is."
 
 Nothing is shown for a healthy permission. Trusted controllers list each Mac with its label and
 when it last connected; each row has a quiet destructive "Remove" for just that one (no
