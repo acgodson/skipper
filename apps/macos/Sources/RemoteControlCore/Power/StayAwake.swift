@@ -1,47 +1,111 @@
 import Foundation
 import IOKit.pwr_mgt
+import SkipperCore
+
+public enum StayAwakeAssertion: String, CaseIterable, Equatable, Sendable {
+    case idleSystemSleep
+    case displaySleep
+
+    var ioKitType: String {
+        switch self {
+        case .idleSystemSleep: return kIOPMAssertPreventUserIdleSystemSleep
+        case .displaySleep: return kIOPMAssertPreventUserIdleDisplaySleep
+        }
+    }
+}
+
+public enum StayAwakeState: String, Equatable, Sendable {
+    case idle
+    case reachableHost
+    case session
+
+    public init(role: AppRole, isOnline: Bool, phase: SessionPhase?) {
+        switch phase {
+        case .connecting, .awaitingConsent, .live, .reconnecting:
+            self = .session
+        case .idle, .closed, .none:
+            self = (role == .host && isOnline) ? .reachableHost : .idle
+        }
+    }
+
+    public var assertions: Set<StayAwakeAssertion> {
+        switch self {
+        case .idle: return []
+        case .reachableHost: return [.idleSystemSleep]
+        case .session: return [.idleSystemSleep, .displaySleep]
+        }
+    }
+
+    public var reason: String {
+        switch self {
+        case .idle: return "SkipperDesk"
+        case .reachableHost: return "SkipperDesk is reachable"
+        case .session: return "SkipperDesk remote session"
+        }
+    }
+}
 
 @MainActor
 public final class StayAwake {
 
-    private var assertionID: IOPMAssertionID = IOPMAssertionID(0)
-    private(set) public var isHeld = false
+    private(set) public var state: StayAwakeState = .idle
+    private var held: [StayAwakeAssertion: IOPMAssertionID] = [:]
+    private var userActivityID = IOPMAssertionID(0)
 
     public init() {}
 
-    private static let reason = "RemoteControl: unattended access enabled" as CFString
+    public var heldAssertions: Set<StayAwakeAssertion> { Set(held.keys) }
 
-    public func update(enabled: Bool) {
-        enabled ? acquire() : release()
+    public func update(role: AppRole, isOnline: Bool, phase: SessionPhase?) {
+        let next = StayAwakeState(role: role, isOnline: isOnline, phase: phase)
+        guard next != state else { return }
+        let entersSession = (next == .session && state != .session)
+        state = next
+        releaseAll()
+        for assertion in next.assertions.sorted(by: { $0.rawValue < $1.rawValue }) {
+            acquire(assertion, reason: next.reason)
+        }
+        if entersSession && role == .host { declareUserActivity() }
     }
 
-    private func acquire() {
-        guard !isHeld else { return }
+    private func acquire(_ assertion: StayAwakeAssertion, reason: String) {
         var id = IOPMAssertionID(0)
         let result = IOPMAssertionCreateWithName(
-            kIOPMAssertPreventUserIdleSystemSleep as CFString,
+            assertion.ioKitType as CFString,
             IOPMAssertionLevel(kIOPMAssertionLevelOn),
-            Self.reason,
+            reason as CFString,
             &id
         )
         if result == kIOReturnSuccess {
-            assertionID = id
-            isHeld = true
-            RCLog.info("power: holding idle-sleep assertion")
+            held[assertion] = id
+            RCLog.info("power: holding \(assertion.rawValue) as \"\(reason)\"")
         } else {
-            RCLog.error("power: could not hold the sleep assertion (IOReturn \(result))")
+            RCLog.error("power: could not hold \(assertion.rawValue) (IOReturn \(result))")
         }
     }
 
-    private func release() {
-        guard isHeld else { return }
-        IOPMAssertionRelease(assertionID)
-        assertionID = IOPMAssertionID(0)
-        isHeld = false
-        RCLog.info("power: released idle-sleep assertion")
+    private func releaseAll() {
+        for (assertion, id) in held {
+            IOPMAssertionRelease(id)
+            RCLog.info("power: released \(assertion.rawValue)")
+        }
+        held.removeAll()
+    }
+
+    private func declareUserActivity() {
+        let result = IOPMAssertionDeclareUserActivity(
+            StayAwakeState.session.reason as CFString,
+            kIOPMUserActiveLocal,
+            &userActivityID
+        )
+        if result == kIOReturnSuccess {
+            RCLog.info("power: declared local user activity so the display comes back")
+        } else {
+            RCLog.error("power: could not declare user activity (IOReturn \(result))")
+        }
     }
 
     deinit {
-        if isHeld { IOPMAssertionRelease(assertionID) }
+        for (_, id) in held { IOPMAssertionRelease(id) }
     }
 }
