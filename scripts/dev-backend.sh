@@ -14,23 +14,7 @@ DATA="${RC_DEV_DATA:-${TMPDIR:-/tmp}/skipperdesk-dev-backend}"
 BIN="$DATA/bin"
 PIDS=()
 
-port_free() {
-  python3 - "$1" <<'PY'
-import socket, sys
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-try:
-    s.bind(("127.0.0.1", int(sys.argv[1])))
-except OSError:
-    sys.exit(1)
-finally:
-    s.close()
-PY
-}
-
-any_free_port() {
-  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
-}
+source "$ROOT/scripts/ports.sh"
 
 if [[ -n "${RC_DEV_SIGNAL_PORT:-}" ]]; then
   SIGNAL_PORT="$RC_DEV_SIGNAL_PORT"
@@ -81,7 +65,10 @@ trap stop_all EXIT
 wait_healthy() {
   local url="$1" name="$2" pid="$3"
   for _ in $(seq 1 100); do
-    if [[ "$(curl -fsS "$url/healthz" 2>/dev/null)" == "ok" ]]; then return 0; fi
+    if [[ "$(curl -fsS "$url/healthz" 2>/dev/null)" == "ok" ]]; then
+      still_running "$pid" "$name" || exit 1
+      return 0
+    fi
     if ! kill -0 "$pid" 2>/dev/null; then break; fi
     sleep 0.1
   done
