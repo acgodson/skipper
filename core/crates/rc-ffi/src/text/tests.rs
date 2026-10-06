@@ -436,7 +436,7 @@ fn the_consent_budget_and_ledger_keys_cross_the_boundary() {
     assert_eq!(refused["ok"], false);
     let fingerprint =
         take(unsafe { crate::consent::skipper_pubkey_fingerprint(key.as_ptr(), key.len()) });
-    assert_eq!(fingerprint["fingerprint"].as_str().map(str::len), Some(19));
+    assert_eq!(fingerprint["fingerprint"].as_str().map(str::len), Some(29));
     let refused = take(unsafe { crate::consent::skipper_pubkey_fingerprint("host".as_ptr(), 4) });
     assert_eq!(refused["ok"], false);
 

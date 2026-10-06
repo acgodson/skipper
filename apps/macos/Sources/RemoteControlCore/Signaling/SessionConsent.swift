@@ -44,7 +44,7 @@ public struct ConsentRequest: Equatable, Sendable {
         controllerDeviceID.map { "Device ID \(DeviceID.formatted($0))" }
     }
 
-    /// The same four groups the other Mac shows as "This Mac\u{2019}s fingerprint".
+    /// The same six groups the other Mac shows as "This Mac\u{2019}s fingerprint".
     public var fingerprintLine: String? {
         controllerFingerprint.map(DevicePublicKey.fingerprintLine)
     }

@@ -110,7 +110,7 @@ pub fn canonical_public_key(pubkey_base64: &str) -> Result<String, VerifyError> 
     Ok(B64.encode(canonical.as_bytes()))
 }
 
-pub const FINGERPRINT_GROUPS: usize = 4;
+pub const FINGERPRINT_GROUPS: usize = 6;
 pub const FINGERPRINT_GROUP_LEN: usize = 4;
 
 /// What a person compares between two Macs: the first

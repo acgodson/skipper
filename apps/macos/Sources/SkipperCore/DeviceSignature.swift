@@ -42,8 +42,8 @@ public enum DevicePublicKey {
         return (try? canonical(second)) == key
     }
 
-    /// Four groups of four hex digits of SHA-256 over the key, for a person
-    /// to compare between two Macs.
+    /// Six groups of four hex digits of SHA-256 over the key, for a person to
+    /// compare between two Macs. The formatter lives in the shared Rust core.
     public static func fingerprint(_ pubkey: String) throws -> String {
         let result: FingerprintResult = try CoreBoundary.withText([pubkey]) { text in
             Swift.Result { try CoreBoundary.call { skipper_pubkey_fingerprint(text[0].base, text[0].count) } }
