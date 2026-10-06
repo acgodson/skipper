@@ -19,12 +19,11 @@ A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone 
 | — | Signed + notarized build, Developer ID, data-protection keychain | `spctl` → "Notarized Developer ID" |
 | — | One-Mac verification | `docs/VERIFY.md`, all items except those needing two machines |
 | — | Gesture palette acts on the host (Mission Control, App Exposé and the rest) | fixed 2026-10-06; `verify-input.sh` now asserts the host really enters them |
+| — | A host Mac stays awake while reachable, never sleeps during a session, and wakes its display on connect — no setting | `pmset -g assertions` readings in `scripts/verify-stay-awake.sh` |
 
 ## In progress
 
-| Item | State |
-|---|---|
-| Host stays awake while reachable; display wakes on connect; no sleep during a session | implementing |
+Nothing — the queue below is next.
 
 ## Queued, in order
 

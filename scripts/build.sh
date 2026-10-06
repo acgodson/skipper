@@ -63,8 +63,15 @@ NOTARY_PROFILE="${RC_NOTARY_PROFILE:-}"
 # does not move when the code does. This buys nothing for Gatekeeper or for
 # distribution, but it is the difference between granting Screen Recording once
 # and granting it after every local build.
+TEAM_DEVELOPER_ID=""
+if [[ -z "${RC_SIGN_IDENTITY:-}" && -n "${SKIPPER_TEAM_ID:-}" ]]; then
+    TEAM_DEVELOPER_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n "s/.*\"\(Developer ID Application: .*(${SKIPPER_TEAM_ID})\)\".*/\1/p" | head -1)"
+fi
 if [[ -n "${RC_SIGN_IDENTITY:-}" ]]; then
     SIGN_IDENTITY="${RC_SIGN_IDENTITY}"
+elif [[ -n "${TEAM_DEVELOPER_ID}" ]]; then
+    SIGN_IDENTITY="${TEAM_DEVELOPER_ID}"
 elif security find-identity -v -p codesigning 2>/dev/null | grep -q "${LOCAL_IDENTITY}"; then
     SIGN_IDENTITY="${LOCAL_IDENTITY}"
 else
