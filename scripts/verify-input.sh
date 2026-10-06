@@ -16,6 +16,9 @@
 #   * scroll events carrying isContinuous=1, i.e. pixel units
 #   * a key event carrying maskCommand
 #   * a held button released by input_reset, and a second reset posting nothing
+#   * the host ACTUALLY entering Mission Control and App Expose, read from the
+#     Dock's on-screen window count rather than from the events we posted
+#     (scripts/test-input.sh counts those events and so cannot see this)
 #
 # If injection were a no-op, or posted moves instead of drags, none of these
 # could pass.
@@ -113,6 +116,10 @@ require modifier_flags_reach_the_session
 require input_reset_releases_the_button
 require input_reset_clears_state
 require input_reset_is_idempotent
+require mission_control_takes_effect
+require mission_control_left_cleanly
+require app_expose_takes_effect
+require app_expose_left_cleanly
 
 if grep -q "SELFTEST summary .* 0 failed" "$LOG"; then
   echo "PASS  the self-test reported no failures"

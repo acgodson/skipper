@@ -44,6 +44,7 @@ final class InputSelfTest {
             await checkScrollIsPixelUnits()
             await checkModifierFlagsReachTheSession()
             await checkInputResetReleasesHeldButton()
+            await checkGesturesTakeEffect()
             moveCursor(to: restore)
             finish()
         }
@@ -148,6 +149,31 @@ final class InputSelfTest {
         check(sawCommand, "modifier_flags_reach_the_session",
               "a key event carrying maskCommand was observed (\(observedKeyFlags.count) key events seen)")
         check(injector.isIdle, "keys_released", "nothing is left held after the key sequence")
+    }
+
+    // A gesture that crosses the wire and is posted as the right OS events can still
+    // leave the host untouched, so this check looks at what macOS did, not at what we sent.
+    private func checkGesturesTakeEffect() async {
+        for (gesture, name) in [(GestureName.missionControl, "mission_control_takes_effect"),
+                                (GestureName.appExpose, "app_expose_takes_effect")] {
+            let before = dockWindowCount()
+            sink.post(GestureCatalog.events(for: gesture))
+            await settle(1.5)
+            let during = dockWindowCount()
+            check(during > before, name,
+                  "\(gesture.rawValue): the Dock's on-screen windows went \(before) -> \(during)")
+
+            sink.post(GestureCatalog.events(for: gesture))
+            await settle(1.5)
+            let after = dockWindowCount()
+            check(after <= before, "\(gesture.rawValue)_left_cleanly",
+                  "the full-screen effect was dismissed (\(during) -> \(after))")
+        }
+    }
+
+    private func dockWindowCount() -> Int {
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        return windows.filter { ($0[kCGWindowOwnerName as String] as? String) == "Dock" }.count
     }
 
     private func checkInputResetReleasesHeldButton() async {
