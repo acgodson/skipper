@@ -9,7 +9,7 @@ struct TrustedControllerEntry: Identifiable {
     let firstSeen: Date
     let lastSeen: Date
 
-    /// The four groups the consent prompt and the controller's own screen show,
+    /// The groups the consent prompt and the controller's own screen show,
     /// so an owner can compare them. The first bytes of the key cannot: for every
     /// P-256 key they are the same DER prefix.
     let fingerprint: String?

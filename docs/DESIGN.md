@@ -119,7 +119,7 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
   <controller> to control this Mac?" (the trusted-controller label, else "another Mac"), a
   `caption` sentence saying the code was entered and that no answer declines, then one detail
   line in `codeCaption` naming the controller plainly: its Device ID ("Device ID 123 456 789").
-  Its key fingerprint ("Fingerprint F660 085E 05D4 830E" — the first four groups of four uppercase
+  Its key fingerprint ("Fingerprint F660 085E 05D4 830E 1C92 77AB" — the first six groups of four uppercase
   hex digits of SHA-256 over the controller's canonical key, the same text that Mac shows as "This
   Mac's fingerprint", so the owner can compare the two) sits behind the Details disclosure, never
   in normal view. When this prompt replaced one that was

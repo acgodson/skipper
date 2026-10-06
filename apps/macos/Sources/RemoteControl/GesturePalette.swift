@@ -7,16 +7,11 @@ struct GesturePalette: View {
     @EnvironmentObject private var model: AppModel
     @Binding var isExpanded: Bool
 
-    private static let order: [GestureName] = [
-        .missionControl, .appExpose, .showDesktop, .launchpad,
-        .spotlight, .appSwitcher, .screenshotRegion, .forceQuit, .lockScreen,
-    ]
-
     var body: some View {
         VStack(alignment: .trailing, spacing: SkipperSpace.s) {
             if isExpanded {
                 VStack(spacing: SkipperSpace.xxs) {
-                    ForEach(GesturePalette.order, id: \.self) { gesture in
+                    ForEach(GestureCatalog.palette, id: \.self) { gesture in
                         GestureButton(gesture: gesture) { model.coordinator?.sendGesture(gesture) }
                     }
                 }
