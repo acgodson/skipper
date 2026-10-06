@@ -19,6 +19,7 @@ A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone 
 | — | Signed + notarized build, Developer ID, data-protection keychain | `spctl` → "Notarized Developer ID" |
 | — | One-Mac verification | `docs/VERIFY.md`, all items except those needing two machines |
 | — | Gesture palette acts on the host (Mission Control, App Exposé and the rest) | fixed 2026-10-06; `verify-input.sh` now asserts the host really enters them |
+| — | Every gesture-palette entry acts on the host, including Force Quit | `verify-input.sh` 19 checks; Lock Screen ships on the same route but is unverified (a pass locks the Mac) |
 | — | A host Mac stays awake while reachable, never sleeps during a session, and wakes its display on connect — no setting | `pmset -g assertions` readings in `scripts/verify-stay-awake.sh` |
 
 ## In progress
@@ -29,16 +30,15 @@ Nothing — the queue below is next.
 
 | # | Item | Why it is here | Done when |
 |---|---|---|---|
-| 1 | **Force Quit / Lock Screen gestures** | They need a different event-posting route than the rest; see the open bug in `docs/VERIFY.md` | Both act on the host, proven by consequence |
-| 2 | **Two-Mac run** | Only a second machine can prove window drag, the I-beam cursor, shortcut capture, cross-network connection and the relay path | `docs/VERIFY.md` items 9, 11 (on), 14 and the NAT/TURN rows pass between two Macs |
-| 3 | **Fourth security review** | The v5 change set is large and has not been reviewed since | No HIGH or CRITICAL findings |
-| 4 | **Phase 5 — AWS backend** | Fresh account: Cognito, API, signaling, relays, the domain, TURN. First real money | Two Macs connect through `skipperdesk.app`, relay fallback proven |
-| 5 | **Phase 6 — business logic** | Trial length, rate per hour, lock-outs, credits, gifting, tiers | Priced, metered and enforced end to end |
-| 6 | **Phase 7 — Skipper agent** | Observability and liveness for paid tiers; also explains *why* a Mac is offline | Opt-in, never silent |
-| 7 | **Lock-screen support** | Designed (`docs/LOCKSCREEN.md`). Viewing is feasible on Apple's supported path; typing needs DriverKit HID entitlements Apple grants by request, the same route Karabiner uses. Ships a root component, so it keeps its own review | L1: the lock screen is visible from a controller |
-| 8 | **Phase 8 — crypto payments** | x402-style streaming, USDC/USDT, on the user's criteria | Deferred until the criteria are given |
-| 9 | **Phase 9 — Windows host** | Parked Rust port in `apps/windows/`, still protocol v1 | Windows Mac↔PC session |
-| 10 | **Open the repo** | Deliberately after launch, not before | The user says so |
+| 1 | **Two-Mac run** | Only a second machine can prove window drag, the I-beam cursor, shortcut capture, cross-network connection and the relay path | `docs/VERIFY.md` items 9, 11 (on), 14 and the NAT/TURN rows pass between two Macs |
+| 2 | **Fourth security review** | The v5 change set is large and has not been reviewed since | No HIGH or CRITICAL findings |
+| 3 | **Phase 5 — AWS backend** | Fresh account: Cognito, API, signaling, relays, the domain, TURN. First real money | Two Macs connect through `skipperdesk.app`, relay fallback proven |
+| 4 | **Phase 6 — business logic** | Trial length, rate per hour, lock-outs, credits, gifting, tiers | Priced, metered and enforced end to end |
+| 5 | **Phase 7 — Skipper agent** | Observability and liveness for paid tiers; also explains *why* a Mac is offline | Opt-in, never silent |
+| 6 | **Lock-screen support** | Designed (`docs/LOCKSCREEN.md`). Viewing is feasible on Apple's supported path; typing needs DriverKit HID entitlements Apple grants by request, the same route Karabiner uses. Ships a root component, so it keeps its own review | L1: the lock screen is visible from a controller |
+| 7 | **Phase 8 — crypto payments** | x402-style streaming, USDC/USDT, on the user's criteria | Deferred until the criteria are given |
+| 8 | **Phase 9 — Windows host** | Parked Rust port in `apps/windows/`, still protocol v1 | Windows Mac↔PC session |
+| 9 | **Open the repo** | Deliberately after launch, not before | The user says so |
 
 ## Waiting on Apple (request early — they take time)
 
@@ -56,3 +56,5 @@ Nothing — the queue below is next.
 | Relay path untested end to end | Needs TURN, so Phase 5 |
 | GitHub Actions out of minutes while private | `scripts/ci-local.sh` is the gate |
 | macOS has no "busy" or diagonal-resize cursor | Cosmetic, documented |
+| Lock Screen gesture unverified | Shipped on the same route as Force Quit; proving it locks the Mac, so it waits for the two-Mac run |
+| `ci-local.sh` fails if a dev backend holds its ports | Stop `dev-backend.sh` first |
