@@ -34,6 +34,7 @@ private func withLinker(_ body: @MainActor (AccountLinker, () -> URL?) async thr
         identity: identity,
         client: APIClient(baseURL: URL(string: "http://127.0.0.1:9")!),
         tokens: DeviceTokenStore(blobs: InMemoryDeviceTokenStore()),
+        pendingUnlinks: PendingUnlinkStore(blobs: InMemoryDeviceTokenStore()),
         webBaseURL: URL(string: "https://skipperdesk.invalid")!,
         openInBrowser: { opened = $0 },
         hardwareIdentifier: { "test" }

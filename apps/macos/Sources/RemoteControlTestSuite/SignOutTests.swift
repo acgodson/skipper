@@ -16,12 +16,22 @@ final class StubbedAPI: URLProtocol {
     private static let lock = NSLock()
     private static var recorded: [Call] = []
     private static var accountEmail: String?
+    private static var unlinkStatus = 204
 
     static func reset(accountEmail: String?) {
         lock.lock()
         defer { lock.unlock() }
         recorded = []
+        unlinkStatus = 204
         self.accountEmail = accountEmail
+    }
+
+    /// What `DELETE /v1/devices/{id}` answers: 503 is rc-api saying it could not
+    /// confirm the live session was closed.
+    static func answerUnlink(with status: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        unlinkStatus = status
     }
 
     static var calls: [Call] {
@@ -74,7 +84,11 @@ final class StubbedAPI: URLProtocol {
     private static func answer(method: String, path: String) -> (Int, String) {
         switch (method, path) {
         case ("DELETE", let path) where path.hasPrefix("/v1/devices/"):
-            return (204, "")
+            lock.lock()
+            let status = unlinkStatus
+            lock.unlock()
+            if status == 204 { return (204, "") }
+            return (status, #"{"error":{"code":"unavailable","message":"try again","requestId":"r"}}"#)
         case ("GET", let path) where path.hasPrefix("/v1/devices/"):
             return (200, """
             {"deviceId":"736789140","label":"Verify Host","platform":"macos","pubkey":"",
@@ -94,7 +108,8 @@ final class StubbedAPI: URLProtocol {
 @MainActor
 private func withSignedInLinker(
     accountEmail: String?,
-    _ body: @MainActor (AccountLinker, DeviceTokenStore) async throws -> Void
+    openInBrowser: @escaping (URL) -> Void = { _ in },
+    _ body: @MainActor (AccountLinker, DeviceTokenStore, PendingUnlinkStore) async throws -> Void
 ) async throws {
     StubbedAPI.reset(accountEmail: accountEmail)
     let directory = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -103,6 +118,7 @@ private func withSignedInLinker(
     let identity = try IdentityStore(fileStore: IdentityFileStore(directory: directory),
                                      secrets: SecretStore(blobs: InMemorySecretStore()))
     let tokens = DeviceTokenStore(blobs: InMemoryDeviceTokenStore())
+    let pending = PendingUnlinkStore(blobs: InMemoryDeviceTokenStore())
     try tokens.save(StubbedAPI.token(deviceId: "736789140"))
     let session = StubbedAPI.session()
     let linker = AccountLinker(
@@ -110,20 +126,21 @@ private func withSignedInLinker(
         client: APIClient(baseURL: URL(string: "https://api.skipperdesk.invalid")!,
                           session: session),
         tokens: tokens,
+        pendingUnlinks: pending,
         webBaseURL: URL(string: "https://skipperdesk.invalid")!,
-        openInBrowser: { _ in },
+        openInBrowser: openInBrowser,
         hardwareIdentifier: { "test" }
     )
     await linker.restore()
     try expect(linker.state.isLinked, "the linker did not restore a signed-in state: \(linker.state)")
     defer { session.invalidateAndCancel() }
-    try await body(linker, tokens)
+    try await body(linker, tokens, pending)
 }
 
 public let signOutSuite = TestSuite("Account/sign out", [
 
     TestCase("signing out unlinks this device instead of only revoking its token") {
-        try await withSignedInLinker(accountEmail: "verify-onemac@example.com") { linker, tokens in
+        try await withSignedInLinker(accountEmail: "verify-onemac@example.com") { linker, tokens, _ in
             await linker.unlink()
 
             let unlink = try expectNotNil(StubbedAPI.calls.last)
@@ -141,7 +158,7 @@ public let signOutSuite = TestSuite("Account/sign out", [
     TestCase("sign-out ends the live session before it clears the account") {
         var steps: [String] = []
         var sessionOpen = true
-        try await withSignedInLinker(accountEmail: "verify-onemac@example.com") { linker, _ in
+        try await withSignedInLinker(accountEmail: "verify-onemac@example.com") { linker, _, _ in
             let signOut = AfterSessionEnds(
                 sessionIsOpen: { sessionOpen },
                 endSession: { steps.append("end session"); sessionOpen = false },
@@ -157,19 +174,73 @@ public let signOutSuite = TestSuite("Account/sign out", [
         try expectEqual(steps, ["end session", "sign out", "account cleared"])
     },
 
+    TestCase("a sign-out the server refused keeps this Mac signed in and says so") {
+        try await withSignedInLinker(accountEmail: "verify-onemac@example.com") { linker, tokens, pending in
+            StubbedAPI.answerUnlink(with: 503)
+            await linker.unlink()
+
+            try expectEqual(linker.state, .error(message: AccountLinker.signOutUnfinished))
+            try expectNotNil(try tokens.load(), "the credential was thrown away before the server confirmed")
+            let queued = try expectNotNil(try pending.load())
+            try expectEqual(queued.deviceId, "736789140")
+            try expectEqual(queued.token, "opaque.device.token")
+            try expect(linker.hasPendingUnlink)
+        }
+    },
+
+    TestCase("the unfinished sign-out is retried at the next launch") {
+        try await withSignedInLinker(accountEmail: "verify-onemac@example.com") { linker, tokens, pending in
+            StubbedAPI.answerUnlink(with: 503)
+            await linker.unlink()
+            try expect(linker.hasPendingUnlink)
+
+            StubbedAPI.answerUnlink(with: 204)
+            await linker.restore()
+
+            try expectFalse(linker.hasPendingUnlink, "the pending sign-out survived a successful retry")
+            try expectNil(try pending.load())
+            try expectNil(try tokens.load())
+            try expectEqual(linker.state, .unlinked)
+            try expectNil(linker.entitlement)
+        }
+    },
+
+    TestCase("signing in again finishes the unfinished sign-out first") {
+        var opened: [URL] = []
+        try await withSignedInLinker(
+            accountEmail: "verify-onemac@example.com",
+            openInBrowser: { opened.append($0) }
+        ) { linker, _, pending in
+            StubbedAPI.answerUnlink(with: 503)
+            await linker.unlink()
+
+            linker.beginLink()
+            await Task.yield()
+            try expectEqual(opened.count, 0, "a browser sign-in started while this Mac was still linked elsewhere")
+            try expectEqual(linker.state, .error(message: AccountLinker.signOutUnfinished))
+            try expectNotNil(try pending.load())
+
+            StubbedAPI.answerUnlink(with: 204)
+            linker.beginLink()
+            for _ in 0..<100 where opened.isEmpty { await Task.yield() }
+            try expectEqual(opened.count, 1, "sign-in never started once the sign-out finished")
+            try expectNil(try pending.load())
+        }
+    },
+
     TestCase("the account card names the signed-in email, never the account id") {
-        try await withSignedInLinker(accountEmail: "verify-onemac@example.com") { linker, _ in
+        try await withSignedInLinker(accountEmail: "verify-onemac@example.com") { linker, _, _ in
             try expectEqual(linker.state, .linked(
                 accountLabel: "verify-onemac@example.com",
                 device: try expectNotNil(linker.state.device)))
         }
-        try await withSignedInLinker(accountEmail: nil) { linker, _ in
+        try await withSignedInLinker(accountEmail: nil) { linker, _, _ in
             guard case .linked(let label, _) = linker.state else {
                 throw fail("state = \(linker.state)")
             }
             try expectNil(label)
         }
-        try await withSignedInLinker(accountEmail: "   ") { linker, _ in
+        try await withSignedInLinker(accountEmail: "   ") { linker, _, _ in
             guard case .linked(let label, _) = linker.state else {
                 throw fail("state = \(linker.state)")
             }

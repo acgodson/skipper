@@ -36,13 +36,12 @@ public enum StayAwakeState: String, Equatable, Sendable {
         }
     }
 
-    public var reason: String {
-        switch self {
-        case .idle: return "SkipperDesk"
-        case .reachableHost: return "SkipperDesk is reachable"
-        case .session: return "SkipperDesk remote session"
-        }
-    }
+    /// One string for every state: `pmset -g assertions` is world-readable, and
+    /// a reason that changes with the state tells any local process when a
+    /// session is live.
+    public static let reason = "SkipperDesk"
+
+    public var reason: String { Self.reason }
 }
 
 @MainActor

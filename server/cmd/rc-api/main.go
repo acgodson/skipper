@@ -36,12 +36,16 @@ const (
 )
 
 func main() {
+	internalEnv := envx.Env("RC_API_INTERNAL_TOKEN", "")
 	var (
-		addr         = flag.String("listen", envx.Env("RC_API_LISTEN", "127.0.0.1:18080"), "public listen address (RC_API_LISTEN)")
-		internalAddr = flag.String("internal-listen", envx.Env("RC_API_INTERNAL_LISTEN", "127.0.0.1:18081"), "internal listen address for rc-signal (RC_API_INTERNAL_LISTEN)")
+		addr           = flag.String("listen", envx.Env("RC_API_LISTEN", "127.0.0.1:18080"), "public listen address (RC_API_LISTEN)")
+		internalAddr   = flag.String("internal-listen", envx.Env("RC_API_INTERNAL_LISTEN", "127.0.0.1:18081"), "internal listen address for rc-signal (RC_API_INTERNAL_LISTEN)")
+		internalPublic = flag.Bool("internal-listen-public", envx.Env("RC_API_INTERNAL_LISTEN_PUBLIC", "") == "1",
+			"allow an -internal-listen address reachable from off this machine (RC_API_INTERNAL_LISTEN_PUBLIC=1)")
 		dbPath       = flag.String("db", envx.Env("RC_API_DB", "rc-api.db"), "SQLite path (RC_API_DB)")
 		claimsPath   = flag.String("claims-db", envx.Env("RC_API_CLAIMS_DB", ""), "SQLite device-id claims path, backed up separately and never reset with -db; default <db>-claims (RC_API_CLAIMS_DB)")
-		internal     = flag.String("internal-token", envx.Env("RC_API_INTERNAL_TOKEN", ""), "shared bearer secret for the internal surfaces (RC_API_INTERNAL_TOKEN)")
+		internalFile = flag.String("internal-token-file", envx.Env("RC_API_INTERNAL_TOKEN_FILE", ""), "file holding the shared bearer secret for the internal surfaces; preferred over -internal-token (RC_API_INTERNAL_TOKEN_FILE)")
+		internal     = flag.String("internal-token", "", "DEPRECATED, readable by every local user in ps: use -internal-token-file or RC_API_INTERNAL_TOKEN")
 		idCertKey    = flag.String("id-cert-key-file", envx.Env("RC_API_ID_CERT_KEY_FILE", ""), "PEM PKCS#8 P-256 key that signs device-id certificates (RC_API_ID_CERT_KEY_FILE)")
 		signalURL    = flag.String("signal-internal-url", envx.Env("RC_API_SIGNAL_INTERNAL_URL", ""), "rc-signal's internal base URL for the session reconciliation sweep (RC_API_SIGNAL_INTERNAL_URL)")
 		trusted      = flag.String("trusted-proxies", envx.Env("RC_API_TRUSTED_PROXIES", ""), "comma-separated CIDRs whose X-Forwarded-For is honoured (RC_API_TRUSTED_PROXIES)")
@@ -64,13 +68,24 @@ func main() {
 	if !*insecure && (*tlsCert == "" || *tlsKey == "") {
 		exit("-tls-cert and -tls-key are required unless -insecure-http is set")
 	}
-	if strings.TrimSpace(*internal) == "" {
-		exit("-internal-token is required; it must match rc-signal's -internal-token")
+	internalToken, err := internalapi.ResolveSecret(internalapi.Secret{
+		FilePath: *internalFile, FileFlagName: "internal-token-file",
+		Env: internalEnv, EnvName: "RC_API_INTERNAL_TOKEN",
+		Flag: *internal, FlagName: "internal-token",
+	}, log)
+	if err != nil {
+		exit(err.Error())
+	}
+	if internalToken == "" {
+		exit("-internal-token-file is required; the secret in it must match rc-signal's")
 	}
 	if strings.TrimSpace(*salt) == "" {
 		exit("-hardware-salt is required")
 	}
 	if err := internalapi.CheckSeparate(*addr, *internalAddr); err != nil {
+		exit(err.Error())
+	}
+	if err := internalapi.CheckLoopback(*internalAddr, *internalPublic); err != nil {
 		exit(err.Error())
 	}
 	resolver, err := clientip.Parse(*trusted)
@@ -90,7 +105,7 @@ func main() {
 	}
 	var signaling *internalapi.Client
 	if strings.TrimSpace(*signalURL) != "" {
-		if signaling, err = internalapi.New(*signalURL, *internal); err != nil {
+		if signaling, err = internalapi.New(*signalURL, internalToken); err != nil {
 			exit(err.Error())
 		}
 	} else {
@@ -108,7 +123,7 @@ func main() {
 	defer db.Close()
 
 	api, err := apisrv.New(apisrv.Options{
-		DB: db, IdP: provider, IDCert: authority, InternalToken: *internal, HardwareSalt: []byte(*salt),
+		DB: db, IdP: provider, IDCert: authority, InternalToken: internalToken, HardwareSalt: []byte(*salt),
 		WebBaseURL: *webBase, SignalUpstream: *upstream, ClientIP: resolver, Logger: log,
 		CloseSessions: closeSessions(signaling),
 	})

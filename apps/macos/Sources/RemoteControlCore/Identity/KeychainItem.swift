@@ -3,6 +3,7 @@ import Security
 
 public enum KeychainError: Error, LocalizedError, Equatable {
     case unsigned
+    case downgradeRefused
     case status(OSStatus)
     case readBackMismatch
 
@@ -10,6 +11,9 @@ public enum KeychainError: Error, LocalizedError, Equatable {
         switch self {
         case .unsigned:
             return "This build cannot reach the data-protection Keychain and has no access group."
+        case .downgradeRefused:
+            return "SkipperDesk could not reach the Keychain it keeps this Mac's secrets in, and will not "
+                + "put them anywhere weaker. Quit SkipperDesk and open it again."
         case .status(let status):
             let detail = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
             return "The Keychain could not hold this Mac's secrets (\(detail))."
@@ -50,19 +54,22 @@ public struct KeychainItem {
     public let account: String
     public let mode: SecretStorageMode
     public let accessGroup: String?
+    public let sealed: Bool
 
     public init(
         account: String,
         mode: SecretStorageMode = SecretStorage.mode,
-        accessGroup: String? = SecretStorage.accessGroup
+        accessGroup: String? = SecretStorage.accessGroup,
+        sealed: Bool = SecretStorage.downgradeRefused
     ) {
         self.account = account
         self.mode = mode
         self.accessGroup = accessGroup
+        self.sealed = sealed
     }
 
     public var counterpart: KeychainItem {
-        KeychainItem(account: account, mode: mode.other, accessGroup: accessGroup)
+        KeychainItem(account: account, mode: mode.other, accessGroup: accessGroup, sealed: sealed)
     }
 
     public static func query(account: String, mode: SecretStorageMode, accessGroup: String?) throws -> [String: Any] {
@@ -88,7 +95,8 @@ public struct KeychainItem {
     }
 
     private func query() throws -> [String: Any] {
-        try Self.query(account: account, mode: mode, accessGroup: accessGroup)
+        guard !sealed else { throw KeychainError.downgradeRefused }
+        return try Self.query(account: account, mode: mode, accessGroup: accessGroup)
     }
 
     public func load() throws -> Data? {
@@ -131,14 +139,20 @@ public struct KeychainBlobs<Account: RawRepresentable> where Account.RawValue ==
 
     public let mode: SecretStorageMode
     public let accessGroup: String?
+    public let sealed: Bool
 
-    public init(mode: SecretStorageMode = SecretStorage.mode, accessGroup: String? = SecretStorage.accessGroup) {
+    public init(
+        mode: SecretStorageMode = SecretStorage.mode,
+        accessGroup: String? = SecretStorage.accessGroup,
+        sealed: Bool = SecretStorage.downgradeRefused
+    ) {
         self.mode = mode
         self.accessGroup = accessGroup
+        self.sealed = sealed
     }
 
     public func item(_ account: Account) -> KeychainItem {
-        KeychainItem(account: account.rawValue, mode: mode, accessGroup: accessGroup)
+        KeychainItem(account: account.rawValue, mode: mode, accessGroup: accessGroup, sealed: sealed)
     }
 
     public func load(_ account: Account) throws -> Data? { try item(account).load() }

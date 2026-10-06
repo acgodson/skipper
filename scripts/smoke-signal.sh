@@ -16,6 +16,8 @@ ADDR="127.0.0.1:$PORT"
 WORK="$(mktemp -d)"
 PID=""
 
+source "$ROOT/scripts/ports.sh"
+
 cleanup() {
   if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then
     kill "$PID" 2>/dev/null
@@ -24,6 +26,8 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+
+require_port_free "$PORT" "stop it (scripts/dev-backend.sh holds this port) or set RC_SMOKE_PORT" || exit 1
 
 echo "== building rc-signal and smokeclient"
 if ! (cd "$SERVER_DIR" && go build -o "$WORK/rc-signal" ./cmd/rc-signal && go build -o "$WORK/smokeclient" ./cmd/smokeclient); then
@@ -61,6 +65,10 @@ for _ in $(seq 1 100); do
 done
 if [[ "$ready" -ne 1 ]]; then
   echo "FAIL  server did not become healthy"
+  sed -e 's/^/      /' "$WORK/server.log"
+  exit 1
+fi
+if ! still_running "$PID" "the rc-signal this script started"; then
   sed -e 's/^/      /' "$WORK/server.log"
   exit 1
 fi

@@ -47,6 +47,7 @@ public final class AccountLinker: ObservableObject {
     private let identity: IdentityStore
     private let client: APIClient
     private let tokens: DeviceTokenStore
+    private let pendingUnlinks: PendingUnlinkStore
     private let webBaseURL: URL
     private let openInBrowser: (URL) -> Void
     private let hardwareIdentifier: () -> String
@@ -60,6 +61,7 @@ public final class AccountLinker: ObservableObject {
         identity: IdentityStore,
         client: APIClient = APIClient(),
         tokens: DeviceTokenStore = DeviceTokenStore.forThisMac(),
+        pendingUnlinks: PendingUnlinkStore = PendingUnlinkStore.forThisMac(),
         webBaseURL: URL = AccountLinker.defaultWebBaseURL(),
         openInBrowser: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) },
         hardwareIdentifier: @escaping () -> String = AccountLinker.platformSerialNumber
@@ -67,6 +69,7 @@ public final class AccountLinker: ObservableObject {
         self.identity = identity
         self.client = client
         self.tokens = tokens
+        self.pendingUnlinks = pendingUnlinks
         self.webBaseURL = webBaseURL
         self.openInBrowser = openInBrowser
         self.hardwareIdentifier = hardwareIdentifier
@@ -90,6 +93,7 @@ public final class AccountLinker: ObservableObject {
     // MARK: - Restore
 
     public func restore() async {
+        await retryPendingUnlink()
         do {
             guard let stored = try tokens.load() else {
                 state = .unlinked
@@ -110,6 +114,10 @@ public final class AccountLinker: ObservableObject {
     // MARK: - §1.1 link
 
     public func beginLink() {
+        if hasPendingUnlink {
+            Task { await finishSignOutThenLink() }
+            return
+        }
         guard let nonce = try? Self.freshNonce() else {
             state = .error(message: "This Mac could not start the sign-in. Try again.")
             return
@@ -127,6 +135,17 @@ public final class AccountLinker: ObservableObject {
         state = .linking
         RCLog.info("account: opening browser sign-in at \(webBaseURL.absoluteString)/link")
         openInBrowser(url)
+    }
+
+    /// An unfinished sign-out is finished before this Mac is signed in again,
+    /// so a second account never inherits a device the first one still holds.
+    private func finishSignOutThenLink() async {
+        await retryPendingUnlink()
+        guard !hasPendingUnlink else {
+            state = .error(message: Self.signOutUnfinished)
+            return
+        }
+        beginLink()
     }
 
     public func cancelLink() {
@@ -244,23 +263,81 @@ public final class AccountLinker: ObservableObject {
     }
 
     /// Signing out unlinks this device (API.md §3.6): revoking the token alone
-    /// would leave the device linked, entitled and still able to host.
+    /// would leave the device linked, entitled and still able to host. Local
+    /// state is cleared only once the server has confirmed it, because a Mac
+    /// that only *looks* signed out is still reachable and still metered.
     public func unlink() async {
-        let current = token
+        guard let current = token else {
+            clearLocalAccount()
+            return
+        }
+        do {
+            try await client.unlinkDevice(id: current.deviceId, token: current.token)
+            try? pendingUnlinks.remove()
+            clearLocalAccount()
+            RCLog.info("account: unlinked device \(current.deviceId)")
+        } catch {
+            keepTrying(current, after: error)
+        }
+    }
+
+    private func keepTrying(_ current: DeviceToken, after error: Error) {
+        let code = (error as? APIError).map { " (\($0.code.wire))" } ?? ""
+        RCLog.error("account: sign-out failed\(code); this Mac is still linked, and the sign-out will be retried")
+        try? pendingUnlinks.save(PendingUnlink(deviceId: current.deviceId, token: current.token))
+        state = .error(message: Self.signOutUnfinished)
+    }
+
+    /// DESIGN.md §4 rules 2 and 6: what happened, what will happen, no jargon.
+    public static let signOutUnfinished =
+        "Sign-out did not finish, so this Mac is still signed in. "
+        + "SkipperDesk will finish it as soon as it can reach the account again."
+
+    private func clearLocalAccount() {
         token = nil
         entitlement = nil
         state = .unlinked
         try? tokens.remove()
-        guard let current else { return }
+    }
+
+    /// Finishes a sign-out the server never confirmed. Everything the pending
+    /// marker holds stays until the server answers, or says the device is
+    /// already gone.
+    public func retryPendingUnlink() async {
+        guard let pending = loadPendingUnlink() else { return }
         do {
-            try await client.unlinkDevice(id: current.deviceId, token: current.token)
-            RCLog.info("account: unlinked device \(current.deviceId)")
-        } catch let error as APIError {
-            RCLog.error("account: unlink failed (\(error.code.wire)); this Mac is signed out locally, "
-                + "but the account still lists it")
+            try await client.unlinkDevice(id: pending.deviceId, token: pending.token)
+            RCLog.info("account: the pending sign-out of \(pending.deviceId) completed")
+        } catch let error as APIError where Self.unlinkIsDone(error) {
+            RCLog.info("account: the pending sign-out of \(pending.deviceId) was already done (\(error.code.wire))")
         } catch {
-            RCLog.error("account: unlink failed; this Mac is signed out locally, but the account still lists it")
+            RCLog.error("account: the pending sign-out of \(pending.deviceId) failed again; it stays queued")
+            return
         }
+        try? pendingUnlinks.remove()
+        if token?.deviceId == pending.deviceId {
+            clearLocalAccount()
+        }
+    }
+
+    /// A token the server no longer honours, or a device it no longer lists,
+    /// both mean this Mac is signed out there — nothing left to retry.
+    nonisolated static func unlinkIsDone(_ error: APIError) -> Bool {
+        switch error.code {
+        case .unauthenticated, .notFound:
+            return true
+        case .forbidden:
+            return error.reason == "unlinked" || error.reason == "revoked"
+        default:
+            return false
+        }
+    }
+
+    public var hasPendingUnlink: Bool { loadPendingUnlink() != nil }
+
+    private func loadPendingUnlink() -> PendingUnlink? {
+        guard let pending = try? pendingUnlinks.load() else { return nil }
+        return pending
     }
 
     // MARK: - §3.4 / §4.1 reads

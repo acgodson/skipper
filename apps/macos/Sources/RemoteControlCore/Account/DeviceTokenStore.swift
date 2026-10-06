@@ -56,8 +56,8 @@ public struct DeviceTokenFile: DeviceTokenBlobStore {
 
     private let url: URL
 
-    public init(directory: URL) {
-        self.url = directory.appendingPathComponent(Self.fileName)
+    public init(directory: URL, name: String = DeviceTokenFile.fileName) {
+        self.url = directory.appendingPathComponent(name)
     }
 
     public var fileURL: URL { url }
@@ -99,9 +99,8 @@ public final class InMemoryDeviceTokenStore: DeviceTokenBlobStore {
     }
 }
 
-public struct DeviceTokenStore {
-
-    public static let keychainAccount = "device-token"
+/// One JSON value in whichever store holds this Mac's secrets.
+public struct SecretValueStore<Value: Codable> {
 
     private let blobs: DeviceTokenBlobStore
 
@@ -109,27 +108,98 @@ public struct DeviceTokenStore {
         self.blobs = blobs
     }
 
-    public static func forThisMac(fileStore: IdentityFileStore = IdentityFileStore()) -> DeviceTokenStore {
-        if IdentityStore.usesDevFileIdentity(fileStore: fileStore) {
-            return DeviceTokenStore(blobs: DeviceTokenFile(directory: fileStore.fileURL.deletingLastPathComponent()))
-        }
-        return DeviceTokenStore(blobs: KeychainItem(account: keychainAccount))
-    }
-
-    public func load() throws -> DeviceToken? {
+    public func load() throws -> Value? {
         guard let blob = try blobs.load() else { return nil }
         do {
-            return try JSONDecoder().decode(DeviceToken.self, from: blob)
+            return try JSONDecoder().decode(Value.self, from: blob)
         } catch {
             throw DeviceTokenStoreError.unreadable("it is not in the expected format")
         }
     }
 
-    public func save(_ token: DeviceToken) throws {
-        try blobs.save(try JSONEncoder().encode(token))
+    public func save(_ value: Value) throws {
+        try blobs.save(try JSONEncoder().encode(value))
     }
 
     public func remove() throws {
         try blobs.remove()
     }
+}
+
+public struct DeviceTokenStore {
+
+    public static let keychainAccount = "device-token"
+
+    private let values: SecretValueStore<DeviceToken>
+
+    public init(blobs: DeviceTokenBlobStore) {
+        self.values = SecretValueStore(blobs: blobs)
+    }
+
+    public static func forThisMac(fileStore: IdentityFileStore = IdentityFileStore()) -> DeviceTokenStore {
+        DeviceTokenStore(blobs: blobStore(
+            keychainAccount: keychainAccount, fileName: DeviceTokenFile.fileName, fileStore: fileStore))
+    }
+
+    public func load() throws -> DeviceToken? {
+        try values.load()
+    }
+
+    public func save(_ token: DeviceToken) throws {
+        try values.save(token)
+    }
+
+    public func remove() throws {
+        try values.remove()
+    }
+}
+
+/// A sign-out the server has not confirmed. Until it does, this Mac is still
+/// linked and entitled server-side and its token still works, so the marker
+/// keeps what the retry needs (API.md §3.6).
+public struct PendingUnlink: Codable, Equatable {
+
+    public let deviceId: String
+    public let token: String
+
+    public init(deviceId: String, token: String) {
+        self.deviceId = deviceId
+        self.token = token
+    }
+}
+
+public struct PendingUnlinkStore {
+
+    public static let keychainAccount = "pending-unlink"
+    public static let fileName = "pending-unlink.json"
+
+    private let values: SecretValueStore<PendingUnlink>
+
+    public init(blobs: DeviceTokenBlobStore) {
+        self.values = SecretValueStore(blobs: blobs)
+    }
+
+    public static func forThisMac(fileStore: IdentityFileStore = IdentityFileStore()) -> PendingUnlinkStore {
+        PendingUnlinkStore(blobs: blobStore(
+            keychainAccount: keychainAccount, fileName: fileName, fileStore: fileStore))
+    }
+
+    public func load() throws -> PendingUnlink? {
+        try values.load()
+    }
+
+    public func save(_ pending: PendingUnlink) throws {
+        try values.save(pending)
+    }
+
+    public func remove() throws {
+        try values.remove()
+    }
+}
+
+func blobStore(keychainAccount: String, fileName: String, fileStore: IdentityFileStore) -> DeviceTokenBlobStore {
+    if IdentityStore.usesDevFileIdentity(fileStore: fileStore) {
+        return DeviceTokenFile(directory: fileStore.fileURL.deletingLastPathComponent(), name: fileName)
+    }
+    return KeychainItem(account: keychainAccount)
 }

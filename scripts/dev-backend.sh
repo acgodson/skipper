@@ -14,23 +14,7 @@ DATA="${RC_DEV_DATA:-${TMPDIR:-/tmp}/skipperdesk-dev-backend}"
 BIN="$DATA/bin"
 PIDS=()
 
-port_free() {
-  python3 - "$1" <<'PY'
-import socket, sys
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-try:
-    s.bind(("127.0.0.1", int(sys.argv[1])))
-except OSError:
-    sys.exit(1)
-finally:
-    s.close()
-PY
-}
-
-any_free_port() {
-  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
-}
+source "$ROOT/scripts/ports.sh"
 
 if [[ -n "${RC_DEV_SIGNAL_PORT:-}" ]]; then
   SIGNAL_PORT="$RC_DEV_SIGNAL_PORT"
@@ -81,7 +65,10 @@ trap stop_all EXIT
 wait_healthy() {
   local url="$1" name="$2" pid="$3"
   for _ in $(seq 1 100); do
-    if [[ "$(curl -fsS "$url/healthz" 2>/dev/null)" == "ok" ]]; then return 0; fi
+    if [[ "$(curl -fsS "$url/healthz" 2>/dev/null)" == "ok" ]]; then
+      still_running "$pid" "$name" || exit 1
+      return 0
+    fi
     if ! kill -0 "$pid" 2>/dev/null; then break; fi
     sleep 0.1
   done
@@ -96,7 +83,8 @@ if ! (cd "$SERVER_DIR" && go build -o "$BIN/rc-signal" ./cmd/rc-signal && go bui
   exit 1
 fi
 
-INTERNAL_TOKEN="$(secret internal-token)"
+secret internal-token >/dev/null
+INTERNAL_TOKEN_FILE="$DATA/internal-token"
 HARDWARE_SALT="$(secret hardware-salt)"
 
 ID_CERT_KEY="$DATA/id-cert-key.pem"
@@ -122,7 +110,7 @@ echo "== starting rc-api on $API_URL (dev identity provider; internal surface on
   -db "$DATA/rc-api.db" \
   -claims-db "$DATA/rc-api-claims.db" \
   -idp dev \
-  -internal-token "$INTERNAL_TOKEN" \
+  -internal-token-file "$INTERNAL_TOKEN_FILE" \
   -id-cert-key-file "$ID_CERT_KEY" \
   -hardware-salt "$HARDWARE_SALT" \
   -web-base-url "${RC_DEV_WEB_BASE_URL:-$API_URL}" \
@@ -141,7 +129,7 @@ echo "== starting rc-signal on $SIGNAL_URL (device registry and entitlement from
   -internal-listen "127.0.0.1:$SIGNAL_INTERNAL_PORT" \
   -entitlement http \
   -api-internal-url "$API_INTERNAL_URL" \
-  -internal-token "$INTERNAL_TOKEN" \
+  -internal-token-file "$INTERNAL_TOKEN_FILE" \
   -trusted-proxies "127.0.0.1/32" \
   -register-per-ip-hour "${RC_DEV_REGISTER_PER_IP_HOUR:-1000}" \
   -connect-per-ip-min "${RC_DEV_CONNECT_PER_IP_MIN:-1000}" \

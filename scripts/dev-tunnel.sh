@@ -21,22 +21,7 @@ mkdir -p "$DATA" "$DIST"
 
 command -v "$CLOUDFLARED" >/dev/null 2>&1 || { echo "FAIL  cloudflared not found at $CLOUDFLARED"; exit 1; }
 
-port_free() {
-  python3 - "$1" <<'PY'
-import socket, sys
-s = socket.socket()
-try:
-    s.bind(("127.0.0.1", int(sys.argv[1])))
-except OSError:
-    sys.exit(1)
-finally:
-    s.close()
-PY
-}
-
-any_free_port() {
-  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
-}
+source "$ROOT/scripts/ports.sh"
 
 if [[ -n "${RC_DEV_API_PORT:-}" ]]; then
   API_PORT="$RC_DEV_API_PORT"

@@ -158,18 +158,18 @@ fn another_spelling_of_the_same_key_canonicalises_but_is_not_accepted_as_is() {
 }
 
 #[test]
-fn a_fingerprint_is_four_groups_of_the_key_hash_whatever_the_spelling() {
+fn a_fingerprint_is_six_groups_of_the_key_hash_whatever_the_spelling() {
     let key = DeviceKey::generate();
     let canonical = key.public_key_spki_base64();
     let fingerprint = public_key_fingerprint(&canonical).unwrap();
     let digest = Sha256::digest(B64.decode(&canonical).unwrap());
-    let expected = digest[..8]
+    let expected = digest[..12]
         .chunks(2)
         .map(|pair| format!("{:02X}{:02X}", pair[0], pair[1]))
         .collect::<Vec<_>>()
         .join(" ");
     assert_eq!(fingerprint, expected);
-    assert_eq!(fingerprint.len(), 19);
+    assert_eq!(fingerprint.len(), 29);
     assert_eq!(
         public_key_fingerprint(&compressed_spki(&key)).unwrap(),
         fingerprint

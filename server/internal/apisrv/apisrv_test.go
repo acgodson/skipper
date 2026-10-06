@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -50,13 +51,21 @@ func (c *clock) advance(d time.Duration) {
 type closeRecorder struct {
 	mu     sync.Mutex
 	closed []protocol.InternalSessionClose
+	err    error
 }
 
 func (c *closeRecorder) close(_ context.Context, deviceID, reason string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed = append(c.closed, protocol.InternalSessionClose{DeviceID: deviceID, Reason: reason})
-	return nil
+	return c.err
+}
+
+// failWith makes signaling unreachable, as a dead -signal-internal-url is.
+func (c *closeRecorder) failWith(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.err = err
 }
 
 func (c *closeRecorder) calls() []protocol.InternalSessionClose {
@@ -710,5 +719,62 @@ func TestDeviceTokenSignOutUnlinksOnlyItself(t *testing.T) {
 	ent := h.entitlementFor(relinked.DeviceToken)
 	if ent.Status != protocol.StatusTrial || ent.TrialEndsAt == nil || *ent.TrialEndsAt != *trialEndsAt {
 		t.Fatalf("signing back in restarted the trial: %+v, want it to end at %d", ent, *trialEndsAt)
+	}
+}
+
+// A sign-out whose session close signaling never confirms must not answer 204:
+// the row is unlinked and the tokens are revoked, the caller is told to retry,
+// and the minute sweep re-issues the close until signaling confirms it.
+func TestUnlinkSaysSoWhenTheLiveSessionWasNotClosed(t *testing.T) {
+	h := newHarness(t)
+	mac := newDevice(t)
+	grant := h.link("dead-signal@example.com", mac, "SERIAL-D")
+	h.closes.failWith(errors.New("signaling session close: connection refused"))
+
+	r := h.call("DELETE", protocol.PathDevices+"/"+grant.DeviceID, grant.DeviceToken, idem(), nil)
+	if r.status != http.StatusServiceUnavailable || r.apiError(t).Code != protocol.APIErrUnavailable {
+		t.Fatalf("unlink with signaling down: %d %s, want 503 %s", r.status, r.body, protocol.APIErrUnavailable)
+	}
+
+	if status, got := h.internalEntitlement(grant.DeviceID); status != http.StatusPaymentRequired ||
+		got != protocol.EntitlementUnlinked {
+		t.Fatalf("entitlement after the failed unlink: %d %s, want 402 unlinked", status, got)
+	}
+	if r := h.call("GET", protocol.PathEntitlement, grant.DeviceToken, "", nil); r.status != http.StatusUnauthorized {
+		t.Fatalf("the token survived the failed unlink: %d %s", r.status, r.body)
+	}
+
+	pending, err := h.db.PendingCloses()
+	if err != nil || len(pending) != 1 || pending[0].DeviceID != grant.DeviceID {
+		t.Fatalf("no pending close was persisted: %+v (%v)", pending, err)
+	}
+
+	live := func(context.Context) (protocol.InternalLiveSessions, error) {
+		return protocol.InternalLiveSessions{ServerTime: h.clock.Now().UnixMilli()}, nil
+	}
+	if _, err := h.api.Reconcile(context.Background(), live); err == nil {
+		t.Fatal("the sweep reported success while signaling was still down")
+	}
+	if pending, err := h.db.PendingCloses(); err != nil || len(pending) != 1 {
+		t.Fatalf("the pending close was dropped before signaling confirmed it: %+v (%v)", pending, err)
+	}
+
+	h.closes.failWith(nil)
+	before := len(h.closes.calls())
+	if _, err := h.api.Reconcile(context.Background(), live); err != nil {
+		t.Fatalf("the sweep failed once signaling was back: %v", err)
+	}
+	calls := h.closes.calls()
+	if len(calls) != before+1 || calls[len(calls)-1].DeviceID != grant.DeviceID {
+		t.Fatalf("the sweep did not re-issue the close: %+v", calls)
+	}
+	if pending, err := h.db.PendingCloses(); err != nil || len(pending) != 0 {
+		t.Fatalf("the confirmed close was not cleared: %+v (%v)", pending, err)
+	}
+	if _, err := h.api.Reconcile(context.Background(), live); err != nil {
+		t.Fatalf("a later sweep failed: %v", err)
+	}
+	if got := len(h.closes.calls()); got != before+1 {
+		t.Fatalf("the close was re-issued after it was confirmed: %d calls, want %d", got, before+1)
 	}
 }

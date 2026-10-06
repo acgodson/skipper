@@ -3,7 +3,7 @@
 This is the factual security page for skipperdesk.app. No marketing language; every
 claim below traces to `docs/SCOPE.md` §5, `docs/DECISIONS.md` ("Protocol v2", "second
 review / protocol v4"), and `protocol/PROTOCOL.md`/`protocol/API.md` (the normative wire
-contract, currently v4). See `SECURITY.md` at the repo root for how to report a vulnerability.
+contract, currently v5). See `SECURITY.md` at the repo root for how to report a vulnerability.
 
 ## Threat model, in plain words
 
@@ -75,6 +75,41 @@ No hand-written primitives. All of the above come from audited libraries
 The Mac app's former hand-written BLAKE2b/Argon2id target (`RCCrypto`, used only by
 the protocol v1 server-side code check) has been deleted; nothing in the client
 implements a primitive itself.
+
+## Signing out
+
+Signing out of SkipperDesk on a Mac **unlinks that Mac from the account**; revoking its token
+alone would leave it linked, entitled and still able to host. One sign-out therefore does three
+things on the server: the device row is unlinked, every token issued to it is revoked, and any
+live session it is in is ended.
+
+The app clears its local sign-in only once the server has confirmed all three. If the call fails,
+the Mac stays signed in, says so, and finishes the sign-out at the next launch and before any new
+sign-in — it never shows "signed out" over a device the account still lists. On the server side,
+an unlink whose session close the signaling server did not confirm answers `503` with a retryable
+error and is re-issued by the reconciliation sweep until signaling confirms the device holds no
+session, so a sign-out can never leave a session running and metered.
+
+## Gestures that the login window owns
+
+Two keyboard shortcuts — Force Quit (⌘⌥⎋) and Lock Screen (⌃⌘Q) — are handled by `loginwindow`
+rather than by the frontmost app, and only reach it when they are posted on the annotated-session
+event tap instead of the normal one. The gesture catalog names that tap for exactly those two
+gestures and nothing else; a test asserts that no other gesture may pick a tap. Nothing about this
+widens what a controller can do: a controller can already type, and these are the same key
+combinations typed on the host.
+
+Lock Screen is **held back from the gesture palette** until lock-screen viewing ships. It is
+reasoned, not observed, and if it works, one click would lock a host that cannot then be unlocked
+from the controller. The wire name and the plumbing stay; only the palette entry is gone.
+
+## Power assertions
+
+A host Mac holds IOKit power assertions so it does not idle-sleep while it is reachable, and so
+neither it nor its display sleeps during a session. `pmset -g assertions` is readable by every
+process on the Mac, so all of them carry one constant reason, `"SkipperDesk"`, in every state. The
+assertion a host holds therefore does not reveal whether a session is live. They are dropped when
+the Mac leaves the host role, goes offline, or the session ends.
 
 ## What is logged
 
@@ -191,6 +226,11 @@ build records its choice in the bundle's `SKIPPERSecretStorageMode`
 (`dataProtection` or `login`), and `scripts/check-isolation.sh` fails a release
 whose profile, entitlements and recorded mode do not agree.
 
+The app reads that recorded mode at startup. If the build says `dataProtection` and the probe
+disagrees — a lost entitlement, or a transient failure — it does **not** quietly fall back to the
+login keychain: no secret is read or written for that launch, and the app says it could not reach
+the Keychain. A build that records nothing, which is every build from source, is unaffected.
+
 The Secure Enclave path works in both modes: the private half of an Enclave key
 never leaves the chip either way, and only its wrapped blob goes to whichever
 keychain is in use.
@@ -207,7 +247,15 @@ all, so that direction only happens where the entitlement exists.
 
 ## Supply-chain gates
 
-Every push and PR to `main` runs, before anything else builds:
+**Who runs these today.** The GitHub Actions workflow (`.github/workflows/ci.yml`) is written and
+configured, but it does not run: the repository is private and the account is out of free Actions
+minutes, so jobs are cancelled before a runner starts. Until the repository is public, the gate is
+`scripts/ci-local.sh`, run on a maintainer's machine before every push. It is not enforced by a
+server, and a commit on `main` is not evidence that CI passed. The local gate runs everything
+below except `cargo audit`, `govulncheck` and `scripts/sbom.sh`, which are run by hand and whose
+automation waits on Actions minutes.
+
+The gate runs, before anything else builds:
 
 - `scripts/verify-deps.sh` — fails the build if a lockfile is missing, if a git
   dependency isn't pinned to an exact commit, if the Swift WebRTC package isn't
@@ -219,10 +267,10 @@ Every push and PR to `main` runs, before anything else builds:
 - `cargo fmt --check` and `cargo clippy -D warnings` on every crate in the shared
   core.
 - The full cross-language protocol test vectors (`protocol/vectors/`).
-- `scripts/sbom.sh` — generates a CycloneDX SBOM per language (Rust, Go, Swift)
-  and uploads it as a CI artifact on every run.
-- `scripts/check-isolation.sh` on the actual built `.app`, every PR and every push
-  to `main`. It also fails the build if the bundle's entitlements, its
+- `scripts/sbom.sh` — generates a CycloneDX SBOM per language (Rust, Go, Swift);
+  the workflow uploads it as an artifact once Actions runs again.
+- `scripts/check-isolation.sh` on the actual built `.app`. It also fails the build if the
+  bundle's entitlements, its
   `embedded.provisionprofile` and its recorded `SKIPPERSecretStorageMode` do not
   agree, or if any entitlement outside the allowed set is signed in.
 - `scripts/test-provision-profile.sh` — the profile validator (team, application
@@ -311,9 +359,13 @@ leaves whatever is at the install location, keeps the backup in its private
 directory, stops checking for updates for this run, and shows "SkipperDesk could not
 finish updating. Reinstall from skipperdesk.app."
 
-The review race harness (`review3/client-upd`) measured this against a process that
-kept swapping the staged bundle with an unsigned one, and another that kept swapping
-any `.SkipperDesk.app.previous-*` item next to the app with an attacker bundle:
+A race harness written for the third security review (`review3/client-upd`) measured this against
+a process that kept swapping the staged bundle with an unsigned one, and another that kept
+swapping any `.SkipperDesk.app.previous-*` item next to the app with an attacker bundle. **That
+harness is not in this repository and the run below cannot currently be reproduced** — the numbers
+are a record of what was observed on one machine on one day, not a standing check. They are kept
+here because they are what the design was changed in response to; treat them as a review note, not
+as evidence a reader can verify:
 
 | Run | Iterations | Verified installs | Refused before the swap | Unverified bundle installed | Install path deleted |
 | --- | --- | --- | --- | --- | --- |
@@ -323,6 +375,9 @@ any `.SkipperDesk.app.previous-*` item next to the app with an attacker bundle:
 
 The previous flow left the attacker's bundle installed by rollback in 9 to 13 of 400
 runs, and deleted the app folder in 141 to 168 of 400.
+
+The U2 run described below *is* reproducible on a notarized build, and it is the evidence this
+page relies on for the current updater.
 
 ### What another process running as the same user can still do
 
@@ -383,4 +438,4 @@ Because the designated requirement does not change between versions, macOS keeps
 Screen Recording and Accessibility grants.
 
 This page will be updated as Phase 4 (client security pass) and Phase 5 (backend)
-land. Last updated 2026-09-17.
+land. Last updated 2026-10-06 (fourth security review).

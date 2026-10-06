@@ -44,6 +44,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/ports.sh"
 APP_DIR="$ROOT/apps/macos"
 WORK="$(mktemp -d -t rc-transport)"
 BIN="$APP_DIR/.build/debug/rc-node"
@@ -963,10 +964,9 @@ if ! grep -qi 'id.cert' "$ROOT/scripts/dev-backend.sh"; then
   skip "Device ID survives a backend reset" \
        "scripts/dev-backend.sh does not generate an id-cert key yet (lands with the server v4 branch)"
 else
-  free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'; }
   PRIV_DATA="$WORK/private-backend"
-  PRIV_API_PORT="$(free_port)"
-  PRIV_SIGNAL_PORT="$(free_port)"
+  PRIV_API_PORT="$(any_free_port)"
+  PRIV_SIGNAL_PORT="$(any_free_port)"
   PRIV_URL="http://127.0.0.1:$PRIV_API_PORT"
   PRIV_PID=""
 
@@ -976,7 +976,10 @@ else
     PRIV_PID="$!"
     PIDS+=("$PRIV_PID")
     for _ in $(seq 1 900); do
-      [[ "$(curl -s --max-time 2 "$PRIV_URL/healthz")" == "ok" ]] && return 0
+      if [[ "$(curl -s --max-time 2 "$PRIV_URL/healthz")" == "ok" ]]; then
+        still_running "$PRIV_PID" "the private backend" || return 1
+        return 0
+      fi
       kill -0 "$PRIV_PID" 2>/dev/null || return 1
       sleep 0.2
     done

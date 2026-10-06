@@ -321,7 +321,7 @@ Observed again on one Mac against the same local backend, with a signed
   has proved this Mac's access code yet" to
   `868 465 246 · Last connected 9 seconds ago` without the Host screen ever
   re-appearing.
-* That row reads `Fingerprint A5A7 A838 FEC2 5C12`, the same four groups the
+* That row reads `Fingerprint A5A7 A838 FEC2 5C12`, the same groups the
   consent prompt had just shown for the same Mac.
 * The Account card read `verify-gui@example.com`; no `acct_…` id anywhere.
 * The hooks build logs "Updates are disabled in development builds. This build
@@ -454,6 +454,15 @@ the screen locking, and no safe proxy exists — the shortcut is handled inside
 would be a change to the machine's settings. It is marked in the catalog with
 `TODO: verify Lock Screen on a machine that can be locked`. Treat it as
 reasoned, not observed, until someone runs it on a Mac that may lock.
+
+**It is therefore held back from the palette** (fourth security review, 2026-10-06).
+`GestureCatalog.palette` is the list the palette offers and Lock Screen is not in
+it; the wire name `lock_screen`, the catalog entry, the shared vectors and the
+rest of the plumbing are unchanged, so nothing about the protocol moves. The
+reason to hold it back is not that it might fail — it is that if it works, one
+click locks a host that cannot then be unlocked from the controller. It returns
+to the palette when lock-screen viewing lands (ROADMAP "Lock-screen support",
+L1), together with a run of this check on a Mac that may lock.
 
 ### GUI input run (2026-10-06)
 

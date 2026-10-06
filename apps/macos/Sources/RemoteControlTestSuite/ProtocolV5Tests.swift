@@ -448,11 +448,11 @@ public let protocolV5Suite = TestSuite("Protocol v5 client", [
         }
     },
 
-    TestCase("this Mac's fingerprint is the four-group form the other Mac's prompt shows") {
+    TestCase("this Mac's fingerprint is the six-group form the other Mac's prompt shows") {
         try await withStore { store, _, _ in
             let fingerprint = try DevicePublicKey.fingerprint(store.publicKeyBase64)
             let groups = fingerprint.split(separator: " ")
-            try expectEqual(groups.count, 4)
+            try expectEqual(groups.count, 6)
             try expect(groups.allSatisfy { $0.count == 4 && $0.allSatisfy(\.isHexDigit) && $0.uppercased() == $0 })
             try await expectThrows("a non-key") { _ = try DevicePublicKey.fingerprint("host") }
 

@@ -245,6 +245,11 @@ CREATE TABLE IF NOT EXISTS idempotency (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (scope, key)
 );
+CREATE TABLE IF NOT EXISTS pending_closes (
+  device_id    TEXT PRIMARY KEY,
+  reason       TEXT NOT NULL,
+  requested_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS releases (
   platform     TEXT NOT NULL,
   arch         TEXT NOT NULL,
@@ -710,6 +715,43 @@ func (d *DB) StopSession(id string, endedAt int64, relayUsed bool, bytesRelayed 
 		return ErrNotFound
 	}
 	return nil
+}
+
+// --- pending session closes -------------------------------------------------
+
+// PendingClose is an unlink whose live sessions signaling did not confirm closed.
+type PendingClose struct {
+	DeviceID    string
+	Reason      string
+	RequestedAt int64
+}
+
+func (d *DB) AddPendingClose(deviceID, reason string, at int64) error {
+	_, err := d.db.Exec(`INSERT INTO pending_closes (device_id, reason, requested_at) VALUES (?,?,?)
+ ON CONFLICT(device_id) DO UPDATE SET reason=excluded.reason`, deviceID, reason, at)
+	return err
+}
+
+func (d *DB) PendingCloses() ([]PendingClose, error) {
+	rows, err := d.db.Query(`SELECT device_id, reason, requested_at FROM pending_closes ORDER BY requested_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PendingClose
+	for rows.Next() {
+		var p PendingClose
+		if err := rows.Scan(&p.DeviceID, &p.Reason, &p.RequestedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) ClearPendingClose(deviceID string) error {
+	_, err := d.db.Exec(`DELETE FROM pending_closes WHERE device_id=?`, deviceID)
+	return err
 }
 
 // PairKnown reports whether the controller has had a metered session with the host.

@@ -32,9 +32,12 @@ import (
 )
 
 func main() {
+	internalEnv := envx.Env("RC_INTERNAL_TOKEN", "")
 	var (
 		addr           = flag.String("listen", envx.Env("RC_LISTEN", "0.0.0.0:8443"), "public listen address (RC_LISTEN)")
 		internalAddr   = flag.String("internal-listen", envx.Env("RC_INTERNAL_LISTEN", "127.0.0.1:18444"), "http mode only: internal listener for rc-api's reconciliation sweep (RC_INTERNAL_LISTEN)")
+		internalPublic = flag.Bool("internal-listen-public", envx.Env("RC_INTERNAL_LISTEN_PUBLIC", "") == "1",
+			"allow an -internal-listen address reachable from off this machine (RC_INTERNAL_LISTEN_PUBLIC=1)")
 		tlsCert        = flag.String("tls-cert", envx.Env("RC_TLS_CERT", ""), "TLS certificate path (RC_TLS_CERT)")
 		tlsKey         = flag.String("tls-key", envx.Env("RC_TLS_KEY", ""), "TLS private key path (RC_TLS_KEY)")
 		insecure       = flag.Bool("insecure-http", envx.Env("RC_INSECURE_HTTP", "") == "1", "serve plain HTTP — LOCAL TESTING ONLY (RC_INSECURE_HTTP=1)")
@@ -49,7 +52,8 @@ func main() {
 		entMode        = flag.String("entitlement", envx.Env("RC_ENTITLEMENT", ""), "static|http — how connect_req is authorised (RC_ENTITLEMENT)")
 		entDeny        = flag.String("entitlement-deny", envx.Env("RC_ENTITLEMENT_DENY", ""), "static mode only: comma-separated <deviceId>|label:<label>[=<reason>] deny list (RC_ENTITLEMENT_DENY)")
 		apiURL         = flag.String("api-internal-url", envx.Env("RC_API_INTERNAL_URL", ""), "http mode only: rc-api internal base URL; it owns the device registry and entitlement (RC_API_INTERNAL_URL)")
-		apiToken       = flag.String("internal-token", envx.Env("RC_INTERNAL_TOKEN", ""), "http mode only: shared bearer secret for the internal surfaces (RC_INTERNAL_TOKEN)")
+		apiTokenFile   = flag.String("internal-token-file", envx.Env("RC_INTERNAL_TOKEN_FILE", ""), "http mode only: file holding the shared bearer secret for the internal surfaces; preferred over -internal-token (RC_INTERNAL_TOKEN_FILE)")
+		apiTokenFlag   = flag.String("internal-token", "", "DEPRECATED, readable by every local user in ps: use -internal-token-file or RC_INTERNAL_TOKEN")
 		trusted        = flag.String("trusted-proxies", envx.Env("RC_TRUSTED_PROXIES", ""), "comma-separated CIDRs whose X-Forwarded-For is honoured (RC_TRUSTED_PROXIES)")
 		registerPerIP  = flag.Int("register-per-ip-hour", envx.Int("RC_REGISTER_PER_IP_HOUR", 0), "register limit per client IP per hour; 0 is the protocol default (RC_REGISTER_PER_IP_HOUR)")
 		connectPerIP   = flag.Int("connect-per-ip-min", envx.Int("RC_CONNECT_PER_IP_MIN", 0), "connect_req limit per client IP per minute; 0 is the protocol default (RC_CONNECT_PER_IP_MIN)")
@@ -66,12 +70,20 @@ func main() {
 	if err != nil {
 		exit(err.Error())
 	}
+	apiToken, err := internalapi.ResolveSecret(internalapi.Secret{
+		FilePath: *apiTokenFile, FileFlagName: "internal-token-file",
+		Env: internalEnv, EnvName: "RC_INTERNAL_TOKEN",
+		Flag: *apiTokenFlag, FlagName: "internal-token",
+	}, log)
+	if err != nil {
+		exit(err.Error())
+	}
 	signer, err := makeSigner(*tokenKey)
 	if err != nil {
 		log.Error("could not build the token signer", "err", err)
 		os.Exit(1)
 	}
-	turnSecret, err := readSecretFile(*turnSecretFile)
+	turnSecret, err := envx.SecretFile(*turnSecretFile, "TURN secret")
 	if err != nil {
 		exit(err.Error())
 	}
@@ -80,7 +92,7 @@ func main() {
 	}
 
 	mode := entitlementMode(*entMode, *insecure)
-	backend, err := makeBackend(mode, *insecure, *entDeny, *apiURL, *apiToken, *dbPath, *claimsPath, *idCertKey, log)
+	backend, err := makeBackend(mode, *insecure, *entDeny, *apiURL, apiToken, *dbPath, *claimsPath, *idCertKey, log)
 	if err != nil {
 		exit(err.Error())
 	}
@@ -116,8 +128,11 @@ func main() {
 		if err := internalapi.CheckSeparate(*addr, *internalAddr); err != nil {
 			exit(err.Error())
 		}
+		if err := internalapi.CheckLoopback(*internalAddr, *internalPublic); err != nil {
+			exit(err.Error())
+		}
 		internalSrv = &http.Server{
-			Addr: *internalAddr, Handler: wsserver.InternalHandler(h, *apiToken), ReadHeaderTimeout: 10 * time.Second,
+			Addr: *internalAddr, Handler: wsserver.InternalHandler(h, apiToken), ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() { errCh <- ignoreClosed(internalSrv.ListenAndServe()) }()
 	}
@@ -165,21 +180,6 @@ func internalAddrFor(mode, addr string) string {
 		return addr
 	}
 	return ""
-}
-
-func readSecretFile(path string) (string, error) {
-	if path == "" {
-		return "", nil
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("TURN secret file: %w", err)
-	}
-	secret := strings.TrimSpace(string(raw))
-	if secret == "" {
-		return "", errors.New("TURN secret file is empty")
-	}
-	return secret, nil
 }
 
 func entitlementMode(mode string, insecure bool) string {

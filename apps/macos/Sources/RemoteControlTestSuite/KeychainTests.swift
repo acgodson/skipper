@@ -21,13 +21,17 @@ private func withUnreachableKeychain(
 
 @MainActor
 private func expectUnsigned(_ operation: () throws -> Void) throws {
+    try expectKeychainError(.unsigned, operation)
+}
+
+private func expectKeychainError(_ wanted: KeychainError, _ operation: () throws -> Void) throws {
     do {
         try operation()
     } catch let error as KeychainError {
-        try expectEqual(error, .unsigned)
+        try expectEqual(error, wanted)
         return
     }
-    throw fail("expected KeychainError.unsigned")
+    throw fail("expected KeychainError.\(wanted)")
 }
 
 public let keychainSuite = TestSuite("KeychainItem", [
@@ -85,9 +89,38 @@ public let keychainSuite = TestSuite("KeychainItem", [
         try expectEqual(SecretStorageMode.decide(accessGroup: nil, dataProtectionUsable: false), .login)
     },
 
-    TestCase("the detail note explains the login keychain and says nothing about the other one") {
-        try expectNil(SecretStorageMode.dataProtection.detailNote)
-        try expectEqual(SecretStorageMode.login.detailNote,
+    TestCase("the build's recorded storage mode is read back from its Info.plist") {
+        try expectEqual(SecretStorageMode.declared(in: ["SKIPPERSecretStorageMode": "dataProtection"]),
+                        .dataProtection)
+        try expectEqual(SecretStorageMode.declared(in: ["SKIPPERSecretStorageMode": " login\n"]), .login)
+        try expectNil(SecretStorageMode.declared(in: ["SKIPPERSecretStorageMode": "enclave"]))
+        try expectNil(SecretStorageMode.declared(in: [:]))
+        try expectNil(SecretStorageMode.declared(in: nil))
+    },
+
+    TestCase("a probe that disagrees with the build downgrades nothing; it stops") {
+        try expect(SecretStorageMode.refusesDowngrade(declared: .dataProtection, decided: .login),
+                   "a notarized build whose probe failed would have used the login keychain")
+        try expectFalse(SecretStorageMode.refusesDowngrade(declared: .dataProtection, decided: .dataProtection))
+        try expectFalse(SecretStorageMode.refusesDowngrade(declared: .login, decided: .login))
+        try expectFalse(SecretStorageMode.refusesDowngrade(declared: nil, decided: .login),
+                        "a build from source records nothing and keeps working")
+
+        let sealed = KeychainItem(account: "device-key", mode: .login,
+                                  accessGroup: "A1B2C3D4E5.app.skipperdesk.desktop", sealed: true)
+        try expectKeychainError(.downgradeRefused) { _ = try sealed.load() }
+        try expectKeychainError(.downgradeRefused) { try sealed.save(Data([1])) }
+        try expectKeychainError(.downgradeRefused) { try sealed.remove() }
+        try expectKeychainError(.downgradeRefused) { _ = try sealed.counterpart.load() }
+        try expectKeychainError(.downgradeRefused) {
+            _ = try KeychainBlobs<SecretAccount>(
+                mode: .login, accessGroup: nil, sealed: true).load(.accessCode)
+        }
+    },
+
+    TestCase("the footer explains the login keychain and says nothing about the other one") {
+        try expectNil(SecretStorageMode.dataProtection.footerNote)
+        try expectEqual(SecretStorageMode.login.footerNote,
                         "Kept in this Mac's login keychain. Another app running as you could read it. "
                             + "A signed SkipperDesk build keeps it out of reach.")
     },

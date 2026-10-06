@@ -79,9 +79,14 @@ cargo test --workspace                    # from the repo root
 ./scripts/build-core.sh                   # builds librc_ffi.a — required before swift build/run
 cd apps/macos && swift run rc-tests              # 271 unit/scenario tests (swift test needs Xcode)
 ./scripts/make-signing-cert.sh            # once: stable identity so TCC grants survive rebuilds
+./scripts/make-signing-cert.sh --undo     # removes it again
 ./scripts/build.sh                        # -> dist/SkipperDesk.app
 ./scripts/package-dmg.sh                  # -> dist/SkipperDesk-<version>.dmg (Developer ID only; --dev for a local image)
 ```
+
+`make-signing-cert.sh` installs one self-signed code-signing certificate and its key in **your**
+login keychain, trusted for code signing by you alone (never the system store) and usable only by
+`/usr/bin/codesign`; `--undo` removes the certificate, its key and that trust setting.
 
 Local backend: `./scripts/dev-backend.sh` builds and runs `rc-api` (REST, the `/link` sign-in
 page in dev mode, and a `/ws` pass-through) on `127.0.0.1:18080` in front of `rc-signal`; point the
