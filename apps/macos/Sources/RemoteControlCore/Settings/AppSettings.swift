@@ -17,9 +17,9 @@ public enum QualityMode: String, CaseIterable, Identifiable, Codable {
 
     public var detail: String {
         switch self {
-        case .best: return "Sharpest image, highest bitrate."
-        case .balanced: return "Biased toward bandwidth efficiency. Recommended."
-        case .lowBandwidth: return "Lowest bitrate; text stays readable, motion softens."
+        case .best: return "The sharpest picture. Best on a fast connection."
+        case .balanced: return "A clear picture that works on most connections. Recommended."
+        case .lowBandwidth: return "For a slow connection. Text stays readable, movement looks softer."
         }
     }
 }

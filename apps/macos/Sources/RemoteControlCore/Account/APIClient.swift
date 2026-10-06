@@ -93,7 +93,9 @@ public struct APIError: Error, LocalizedError, Equatable {
         guard let envelope = try? JSONDecoder().decode(Envelope.self, from: body) else {
             return APIError(
                 code: .transport,
-                message: "The server returned HTTP \(status) with a body this app does not understand.",
+                message: RCLog.enabled
+                    ? "The server returned HTTP \(status) with a body this app does not understand."
+                    : "SkipperDesk could not be reached properly. Try again in a moment.",
                 retryAfterSec: retryAfterHeader,
                 httpStatus: status
             )
@@ -277,7 +279,9 @@ public final class APIClient: @unchecked Sendable {
         do {
             return try decoder.decode(Response.self, from: data)
         } catch {
-            throw APIError.transport("The server's answer to \(path) was not in the expected shape.")
+            throw APIError.transport(RCLog.enabled
+                ? "The server's answer to \(path) was not in the expected shape."
+                : "SkipperDesk sent back something unexpected. Try again in a moment.")
         }
     }
 
@@ -345,11 +349,15 @@ public final class APIClient: @unchecked Sendable {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
-            throw APIError.transport("Could not reach \(baseURL.host ?? "the server"): \(error.localizedDescription)")
+            throw APIError.transport(RCLog.enabled
+                ? "Could not reach \(baseURL.host ?? "the server"): \(error.localizedDescription)"
+                : "Could not reach SkipperDesk. Check this Mac\u{2019}s internet connection.")
         }
 
         guard let http = response as? HTTPURLResponse else {
-            throw APIError.transport("The server's answer was not an HTTP response.")
+            throw APIError.transport(RCLog.enabled
+                ? "The server's answer was not an HTTP response."
+                : "SkipperDesk sent back something unexpected. Try again in a moment.")
         }
         guard (200..<300).contains(http.statusCode) else {
             let header = (http.value(forHTTPHeaderField: "Retry-After")).flatMap(Int.init)

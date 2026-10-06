@@ -38,9 +38,12 @@ public enum PeerSessionError: Swift.Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .factoryUnavailable: return "The WebRTC peer connection factory could not be created."
-        case .noPeerConnection: return "There is no peer connection."
-        case .channelNotOpen(let label): return "The '\(label)' data channel is not open."
+        case .factoryUnavailable: return "This Mac could not start a remote session. Try again."
+        case .noPeerConnection: return "The session is not open."
+        case .channelNotOpen(let label):
+            return RCLog.enabled
+                ? "The '\(label)' data channel is not open."
+                : "The connection to the other Mac is not ready yet."
         case .installedFingerprintsRejected(let why): return why
         case .invalidRemoteSignal(let why): return why
         }

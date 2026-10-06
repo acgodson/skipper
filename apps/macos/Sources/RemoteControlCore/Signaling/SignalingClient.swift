@@ -22,10 +22,13 @@ public enum SignalingError: Swift.Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .notConnected: return "Not connected to the signaling server."
-        case .timedOut(let what): return "Timed out waiting for \(what)."
-        case .handshakeFailed(let why): return "Signaling handshake failed: \(why)"
-        case .socketClosed(let why): return "The signaling connection closed: \(why)"
+        case .notConnected: return "Not connected to SkipperDesk."
+        case .timedOut(let what):
+            return RCLog.enabled ? "Timed out waiting for \(what)." : "SkipperDesk did not answer in time. Try again."
+        case .handshakeFailed(let why):
+            return RCLog.enabled ? "Signaling handshake failed: \(why)" : "SkipperDesk could not sign this Mac in. Try again."
+        case .socketClosed(let why):
+            return RCLog.enabled ? "The signaling connection closed: \(why)" : "The connection to SkipperDesk closed. Reconnecting."
         }
     }
 }

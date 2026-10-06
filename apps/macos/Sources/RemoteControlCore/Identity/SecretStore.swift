@@ -21,7 +21,9 @@ public enum SecretStoreError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .unreadable(let account):
-            return "This Mac's stored \(account.rawValue) could not be read."
+            return RCLog.enabled
+                ? "This Mac's stored \(account.rawValue) could not be read."
+                : "SkipperDesk could not read what it saved on this Mac."
         }
     }
 }
