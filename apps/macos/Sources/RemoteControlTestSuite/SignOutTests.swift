@@ -137,6 +137,23 @@ private func withSignedInLinker(
     try await body(linker, tokens, pending)
 }
 
+/// `Task.yield()` hands the main actor back; it does not wait for anything. A
+/// URLSession answer is delivered off the main actor, so a hundred yields can
+/// elapse in well under a millisecond and a test that spins on them is asserting
+/// against whichever side won a footrace. These wait on the clock.
+@MainActor
+private func wait(upTo seconds: Double = 5, until ready: () -> Bool) async {
+    let deadline = Date().addingTimeInterval(seconds)
+    while !ready() && Date() < deadline {
+        try? await Task.sleep(nanoseconds: 2_000_000)
+    }
+}
+
+@MainActor
+private func settle() async {
+    try? await Task.sleep(nanoseconds: 300_000_000)
+}
+
 public let signOutSuite = TestSuite("Account/sign out", [
 
     TestCase("signing out unlinks this device instead of only revoking its token") {
@@ -215,16 +232,73 @@ public let signOutSuite = TestSuite("Account/sign out", [
             await linker.unlink()
 
             linker.beginLink()
-            await Task.yield()
+            await settle()
             try expectEqual(opened.count, 0, "a browser sign-in started while this Mac was still linked elsewhere")
             try expectEqual(linker.state, .error(message: AccountLinker.signOutUnfinished))
             try expectNotNil(try pending.load())
 
             StubbedAPI.answerUnlink(with: 204)
             linker.beginLink()
-            for _ in 0..<100 where opened.isEmpty { await Task.yield() }
+            await wait { !opened.isEmpty }
             try expectEqual(opened.count, 1, "sign-in never started once the sign-out finished")
             try expectNil(try pending.load())
+
+            await settle()
+            try expectEqual(opened.count, 1, "the finished sign-out opened a second browser sign-in")
+        }
+    },
+
+    // Choosing Sign in twice while the sign-out retry is still on the wire is one
+    // request, not two. Both retries can succeed — the second is a no-op server
+    // side — and each used to go on to open its own browser window.
+    TestCase("choosing sign-in twice during a pending sign-out opens one browser window") {
+        var opened: [URL] = []
+        try await withSignedInLinker(
+            accountEmail: "verify-onemac@example.com",
+            openInBrowser: { opened.append($0) }
+        ) { linker, _, pending in
+            StubbedAPI.answerUnlink(with: 503)
+            await linker.unlink()
+            try expect(linker.hasPendingUnlink)
+
+            // APIClient retries a 503 of its own accord, so only the growth from
+            // here is the sign-out being retried.
+            let unlinksBefore = StubbedAPI.calls.filter { $0.method == "DELETE" }.count
+
+            StubbedAPI.answerUnlink(with: 204)
+            linker.beginLink()
+            linker.beginLink()
+            linker.beginLink()
+
+            await wait { !opened.isEmpty }
+            await settle()
+            try expectEqual(opened.count, 1, "each choice of Sign in opened its own browser window")
+            try expectNil(try pending.load())
+            try expectEqual(StubbedAPI.calls.filter { $0.method == "DELETE" }.count - unlinksBefore, 1,
+                            "the queued sign-out was retried once per choice of Sign in")
+        }
+    },
+
+    // Two sign-ins can be waiting on a pending sign-out at once, and the one
+    // whose retry failed used to read the other one's success out of the store
+    // and open a second browser window. Each retry now reports its own outcome.
+    TestCase("a sign-out retry reports its own outcome, not whatever the store says now") {
+        try await withSignedInLinker(accountEmail: "verify-onemac@example.com") { linker, _, pending in
+            StubbedAPI.answerUnlink(with: 503)
+            await linker.unlink()
+            try expect(linker.hasPendingUnlink)
+
+            try expectFalse(await linker.retryPendingUnlink(),
+                            "a retry the server refused reported success")
+            try expectNotNil(try pending.load())
+
+            StubbedAPI.answerUnlink(with: 204)
+            try expect(await linker.retryPendingUnlink(),
+                       "a retry the server accepted reported failure")
+            try expectFalse(linker.hasPendingUnlink)
+
+            try expect(await linker.retryPendingUnlink(),
+                       "with nothing queued there is nothing to report as unfinished")
         }
     },
 
