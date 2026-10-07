@@ -57,7 +57,7 @@ locals {
 resource "aws_s3_object" "config" {
   for_each = local.config_objects
 
-  bucket       = aws_s3_bucket.backups.id
+  bucket       = module.backups.id
   key          = "config/${each.key}"
   content      = each.value
   content_type = "text/plain"
@@ -100,7 +100,7 @@ resource "aws_instance" "app" {
   user_data = templatefile("${path.module}/../cloud-init/bootstrap.sh", {
     project            = var.project
     aws_region         = var.aws_region
-    backup_bucket      = aws_s3_bucket.backups.id
+    backup_bucket      = module.backups.id
     ssm_prefix         = local.prefix
     service_user       = local.service_user
     app_dir            = local.app_dir

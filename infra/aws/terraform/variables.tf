@@ -171,6 +171,54 @@ variable "backup_expiration_days" {
   default     = 365
 }
 
+variable "audit_bucket_name" {
+  description = "CloudTrail bucket name. Empty means <project>-<environment>-audit-<account id>. Its own bucket, not a prefix of the backup bucket: the instance role can write to that one, and this trail exists to catch someone holding the instance role."
+  type        = string
+  default     = ""
+}
+
+variable "cloudtrail_multi_region" {
+  description = "Record every region, not only the one this stack is in. The first copy of management events is free either way, and activity in a region we never use is itself the signal."
+  type        = bool
+  default     = true
+}
+
+variable "audit_log_retention_days" {
+  description = "CloudWatch Logs retention for the CloudTrail copy. The S3 copy is the archive and keeps audit_log_expiration_days; this copy only has to outlive an investigation."
+  type        = number
+  default     = 90
+}
+
+variable "audit_log_expiration_days" {
+  description = "Days before a CloudTrail object in S3 is deleted."
+  type        = number
+  default     = 365
+}
+
+variable "id_cert_sign_threshold" {
+  description = "Device-id certificate signatures, in five minutes, that raise the minting alarm. Signs track reconnections rather than new devices, so this is sized on fleet size: roughly 6 x expected hosts, floor 60. See infra/aws/README.md \"Alarms\"."
+  type        = number
+  default     = 60
+}
+
+variable "session_log_retention_days" {
+  description = "CloudWatch Logs retention for Session Manager transcripts."
+  type        = number
+  default     = 90
+}
+
+variable "enable_session_log_cmk" {
+  description = "Encrypt the session-transcript log group with a customer-managed key and require it in the session preferences. Adds $1/month. Off means the group keeps CloudWatch's own default encryption and CloudWatchEncryptionEnabled goes false with it — the two are driven from this one variable because a mismatch stops session logging rather than downgrading it."
+  type        = bool
+  default     = true
+}
+
+variable "session_idle_timeout_minutes" {
+  description = "Minutes an idle Session Manager session is held open before it is closed. AWS accepts 1 to 60."
+  type        = number
+  default     = 20
+}
+
 variable "kms_deletion_window_days" {
   description = "Waiting period on a scheduled deletion of the id-cert signing key."
   type        = number

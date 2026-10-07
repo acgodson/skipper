@@ -18,8 +18,28 @@ Nothing here provisions on its own and nothing here is applied yet.
 | `terraform/kms.tf` | The `ECC_NIST_P256` / `SIGN_VERIFY` key for the device-ID certificate signer, with a key policy that lets only the instance role sign |
 | `terraform/ssm.tf` | Eleven `SecureString` parameters, created holding a placeholder |
 | `terraform/cognito.tf` | The user pool (email sign-in), the public app client with no secret and no hosted-UI domain, and the Apple and Google providers |
-| `terraform/backups.tf` | The backup bucket: versioned, SSE-S3, public access blocked, TLS-only, four lifecycle rules |
-| `terraform/observability.tf` | The 30-day log group, the SNS topic, and the six alarms |
+| `terraform/backups.tf` | The backup bucket and its four lifecycle rules |
+| `terraform/audit.tf` | The audit bucket, the CloudTrail management-events trail, its CloudWatch Logs copy and delivery role, and the metric filter and alarm on `kms:Sign` against the id-cert key |
+| `terraform/session_logging.tf` | The `SSM-SessionManagerRunShell` session preferences, the log group transcripts stream to, and that group's KMS key |
+| `terraform/modules/hardened-bucket/` | The settings both buckets share — ACLs disabled, public access blocked, versioned, encrypted, TLS-only. Lifecycle rules and extra policy statements stay with the caller, because that is where the two differ |
+
+The backup bucket moved into that module after this stack was written but **before** it was
+ever applied, so there is nothing to migrate. If you are replaying these commits onto a state
+file that already holds `aws_s3_bucket.backups`, do **not** apply: Terraform reads a moved
+address as a destroy-and-create, and that bucket holds the `claims/` snapshots that must never
+be lost. Move the six addresses first and then apply —
+
+```
+cd infra/aws/terraform
+for r in aws_s3_bucket aws_s3_bucket_ownership_controls aws_s3_bucket_public_access_block \
+         aws_s3_bucket_versioning aws_s3_bucket_server_side_encryption_configuration \
+         aws_s3_bucket_policy; do
+  terraform state mv "$r.backups" "module.backups.$r.this"
+done
+```
+
+`aws_s3_bucket_lifecycle_configuration.backups` keeps its address and must not be moved.
+| `terraform/observability.tf` | The 30-day log group, the SNS topic, and the seven alarms |
 | `cloud-init/` | The bootstrap the instance runs, the backup script, the CloudWatch agent configuration |
 | `systemd/` | `rc-api.service`, `rc-signal.service`, the two backup timers, a drop-in over `rc-api` that makes the data mount a hard requirement, and drop-ins over the `caddy` and `coturn` units Ubuntu ships |
 | `Caddyfile` | TLS over HTTP-01, the reverse proxies, and the `X-Forwarded-For` rule |
@@ -28,7 +48,9 @@ Nothing here provisions on its own and nothing here is applied yet.
 
 The security group's whole inbound surface is `80/tcp`, `443/tcp`, `3478/tcp`, `3478/udp` and
 `49160-49200/udp`. There is no SSH rule: a shell comes from `aws ssm start-session`, which
-the instance reaches over its own outbound connection.
+the instance reaches over its own outbound connection. That makes Session Manager the entire
+administrative path to the box, which is why every session is recorded — see "The audit
+trail" below.
 
 ### DNS is not ours
 
@@ -80,6 +102,10 @@ list, with a description on each. The ones worth setting deliberately:
 | `enable_social_idp` | `false` | See "Secrets" |
 | `enable_endpoint_health_check` | `false` | Needs the `A` records first |
 | `monthly_budget_usd` | `50` | The alarm that protects the owner |
+| `id_cert_sign_threshold` | `60` | Sized on fleet size, not taste: roughly 6 × expected hosts. "The audit trail" has the arithmetic |
+| `enable_session_log_cmk` | `true` | Off saves $1/month and drops the session log group to CloudWatch's own default encryption. It also flips `CloudWatchEncryptionEnabled`, which is the point of it being one variable |
+| `session_idle_timeout_minutes` | `20` | How long an abandoned root shell stays open |
+| `cloudtrail_multi_region` | `true` | Off records only `aws_region`. The free copy covers either |
 
 The AMI is not a variable but a lookup: `ami_ssm_parameter` names a public SSM parameter that
 resolves to the current Ubuntu 24.04 arm64 image. `aws_instance.app` ignores later changes to
@@ -108,6 +134,62 @@ aws ssm put-parameter --profile <p> --region eu-west-2 --overwrite \
 | `token-secret` | `EnvironmentFile`, `0600`, root-owned | `RC_TOKEN_SECRET` |
 | `apple-services-id`, `apple-team-id`, `apple-key-id`, `apple-private-key` | Terraform, into the Cognito provider | — |
 | `google-client-id`, `google-client-secret` | Terraform, into the Cognito provider | — |
+
+### Reading a parameter takes two permissions, and each one is scoped on its own
+
+`iam.tf` grants the instance role `ssm:GetParameter*` on `…:parameter/skipperdesk/prod/*`
+and `kms:Decrypt` separately, because SSM does not decrypt a `SecureString` itself — it
+calls KMS on the caller's behalf. Both halves are scoped to our prefix, and neither relies
+on the other:
+
+| Half | How it is bounded |
+|---|---|
+| `ssm:GetParameter`, `GetParameters`, `GetParametersByPath` | `Resource` is the parameter-ARN prefix |
+| `kms:Decrypt` | `kms:ViaService = ssm.<region>.amazonaws.com`, **and** `StringLike` on `kms:EncryptionContext:PARAMETER_ARN` matching the same prefix |
+
+The `Resource` on the `kms:Decrypt` statement has to stay `*`. These are standard-tier
+`SecureString`s under the account's AWS-managed `alias/aws/ssm` key, whose ARN carries a key
+id this configuration never sees and cannot name without an API call. `kms:ViaService` alone
+is the pattern usually shown for that key, and it is not enough: it says "only SSM may use
+this role's credentials against KMS", which still covers **every** `SecureString` in the
+region encrypted under that same account-wide key — that is, every parameter anyone in the
+account creates. The encryption-context condition is what reduces it to ours.
+
+**The verification.** This was checked against AWS's published behaviour before being relied
+on, because a wrong guess here fails closed: the bootstrap could not read its secrets and the
+first deploy would be an outage.
+
+- Parameter Store supplies exactly one encryption-context pair, key `PARAMETER_ARN`, value
+  the full parameter ARN, and the AWS KMS developer guide gives the format as
+  `"PARAMETER_ARN":"arn:aws:ssm:<region-id>:<account-id>:parameter/<parameter-name>"`. A
+  parameter in a hierarchy carries its path, documented with the worked example
+  `arn:aws:ssm:us-east-2:111122223333:parameter/ReadableParameters/MyParameter` — so our
+  `/skipperdesk/prod/turn-secret` resolves under the `…:parameter/skipperdesk/prod/*` pattern
+  the policy matches, with the same single slash the `ssm:GetParameter` resource already uses.
+- It is supplied on both operations, not just one: the guide's standard-tier workflow says
+  `PutParameter` sends `Encrypt` "with the KMS key that you chose, and the Parameter Store
+  encryption context", and a `GetParameter` with `WithDecryption` sends `Decrypt` "with the
+  encrypted SecureString parameter value and the Parameter Store encryption context".
+- `kms:EncryptionContext:context-key` is documented with condition type **String** and lists
+  `Decrypt` among its API operations, and the guide states the operator is the author's
+  choice — "the case sensitivity of the condition value is determined by the policy condition
+  operator that you use" — linking to the IAM condition-operators reference, where
+  `StringLike` is a string operator whose values "can include multi-character match wildcards
+  (\*)". A prefix match is therefore expressible. The same page carries AWS's own example of
+  this exact pairing, a scoped `ssm:GetParameter*` statement beside a `kms:Decrypt` statement
+  conditioned on `kms:EncryptionContext:PARAMETER_ARN`.
+- Two fail-open shapes are avoided deliberately. `StringLikeIfExists` would permit a `Decrypt`
+  carrying **no** encryption context, which is the hole being closed. A set operator is worse
+  and AWS rejects it outright: "Do not use a set operator with the
+  `kms:EncryptionContext:context-key` condition key. If you create a policy statement with an
+  `Allow` action, the `kms:EncryptionContext:context-key` condition key, and the
+  `ForAllValues` set operator, the condition allows requests with no encryption context."
+
+Because this worked, no customer-managed key was introduced. The alternative — our own CMK
+for the `SecureString`s, `key_id` on each parameter and `kms:Decrypt` scoped to that key ARN —
+would have reached the same place and cost **$1/month** more. It stays the fallback if a
+future tier change makes the context unreliable; note that the advanced tier would also
+require `kms:GenerateDataKey` on write, which nothing here has.
 
 The device-id certificate signing key is **not** in this table, and that is the point. It is
 the `ECC_NIST_P256` KMS key in `terraform/kms.tf`; `rc-api` is given its ARN with
@@ -341,6 +423,7 @@ volume cannot be shrunk.
 | Alarm | Metric | Where it comes from |
 |---|---|---|
 | `-api-5xx` | log metric filter `{ $.msg = "request" && $.status >= 500 }` | rc-api logs one JSON object per request with its status |
+| `-id-cert-signs` | log metric filter over the CloudTrail log group on `kms:Sign` against the id-cert key | Bulk Device-ID minting. "The audit trail" below has the arithmetic behind the threshold |
 | `-signal-healthz` | `AWS/Route53 HealthCheckStatus` | A health check probes `https://<api domain>/signal/healthz`, which Caddy rewrites to rc-signal's `/healthz`. The alarm lives in `us-east-1` because that is the only region those metrics exist in |
 | `-host-unreachable` | `AWS/EC2 StatusCheckFailed` | coturn has no probeable endpoint; the relay is down whenever the host is |
 | `-disk-used-root` | `disk_used_percent` from the CloudWatch agent, `path=/` | The root volume still carries the logs and the release directories |
@@ -352,6 +435,151 @@ The CloudWatch agent is configured to read exactly three files —
 mount points. It is not a
 general log scraper, and nothing is added that could capture a request or WebSocket body
 (`API.md` §9, `PROTOCOL.md` §8). Caddy's access log is switched off for the same reason.
+
+## The audit trail
+
+Two things were unrecorded until now: what the signing key was used for, and what anyone did
+in a shell on the box. Both are in code.
+
+### The trail
+
+`aws_cloudtrail.management` records **management events only** and delivers them to the audit
+bucket and to a CloudWatch Logs group. The account's first copy of management events is free;
+everything below is about keeping it that way.
+
+- **No `data_resource` block anywhere.** S3 object-level and KMS data events are billed per
+  event, and the 15-minute backup `PutObject` alone would turn that into a standing bill for
+  something this trail is not for. It would also record more than `API.md` §9 allows.
+- **`read_write_type` is `All`, and must stay so.** `kms:Sign` is logged with
+  `"readOnly": true`. A write-only trail would record no signature at all, and the alarm
+  would read zero forever while certificates were being minted — coverage that looks like
+  coverage and is not.
+- **Log file validation is on**, so the digest files make after-the-fact tampering detectable.
+- **Multi-region by default** (`cloudtrail_multi_region`). The free copy covers it, and
+  activity in a region this product never uses is itself a signal.
+
+### Its own bucket, not a prefix of the backup bucket
+
+The instance role holds `s3:PutObject` on the backup bucket's `db/` and `claims/` prefixes.
+The scenario the sign alarm exists to catch is somebody holding that role. An audit log is
+worth what it is worth precisely because it sits outside the reach of the identity it audits,
+and a bucket boundary keeps that true through a later widening of the `WriteBackups`
+statement rather than only today. S3 charges per byte, not per bucket, so the separation
+costs nothing. The trail's bucket policy grants `cloudtrail.amazonaws.com` `s3:GetBucketAcl`
+and `s3:PutObject` under `AWSLogs/<account id>/` only, both conditioned on
+`aws:SourceArn` being this one trail — without that condition any trail in any account could
+be pointed at the bucket. The trail ARN is built in `locals` rather than read off the trail
+resource, because the bucket policy and the delivery role both have to exist before it.
+
+Encryption is SSE-S3, like the backup bucket. A CMK here would add **$1/month** and buy
+little: tamper *evidence* comes from log file validation, and tamper *prevention* from the
+bucket policy and versioning, neither of which a key changes. The one thing a CMK would add
+is making a reader need a second permission, which matters when the bucket is shared — and
+it is not.
+
+### The threshold on `-id-cert-signs`
+
+The number has to come from expected volume, because signatures here are not rare.
+`server/internal/hub/handle.go` calls `Registry.Certify` on every authenticated `hello`, and
+`registry.Local.Certify` re-signs through `Authority.Issue` rather than returning a stored
+certificate. **So signs track reconnections, not new devices.** A device that connects ten
+times signs ten certificates; a fleet that never grows still signs all day.
+
+The default is `id_cert_sign_threshold = 60`, over a five-minute period, derived at the
+10-host launch line `docs/PHASE5.md` §3.2 prices:
+
+- Steady state: 10 hosts × 24 reconnections/day ÷ 288 five-minute periods = **0.83 signs per
+  period**. The 24 is the assumption worth naming — a personal Mac that sleeps, wakes, roams
+  between networks and gets relaunched, which is about hourly.
+- The real floor is not steady state but the **fleet-wide reconnect**: a `deploy.sh` run drops
+  every live WebSocket (see "Redeploying"), so all 10 devices re-`hello` inside one period.
+  That is 10 signs from an ordinary deploy, and it must not page.
+- Allow each device up to six reconnect rounds inside those five minutes — a flapping uplink
+  backing off, or a deploy followed by a restart — and the legitimate worst case is
+  10 × 6 = **60**.
+
+So 60 is about 70× steady state and 6× an ordinary deploy burst: ordinary noise cannot reach
+it. Above it, at a 10-host fleet, either the fleet grew or something is minting in bulk.
+**The rule for raising it: roughly 6 × expected hosts, floor 60.** At the 500-host line that
+is 3000. Raising it is a one-line variable change, and leaving it at 60 past about 10 hosts
+turns the alarm into noise, which is the same as not having it.
+
+### What CloudWatch Logs ingest costs
+
+Priced because it is the one term here that scales with traffic. At the 10-host line:
+
+| Source | Events/day | Bytes |
+|---|---:|---:|
+| `kms:Sign` — 10 hosts × 24 reconnections | 240 | ~0.29 MB |
+| SSM Agent `UpdateInstanceInformation`, roughly every 5 minutes | 288 | ~0.35 MB |
+| Everything else: parameter reads at boot, applies, describes | ~200 | ~0.24 MB |
+| **Total** | | **~0.9 MB/day ≈ 27 MB/month** |
+
+A CloudTrail management event is roughly 1.2 KB. At the $0.57/GB ingest figure
+`docs/PHASE5.md` §3.2 carries (still **unverified**), 0.027 GB is **$0.015/month**, and
+storage at $0.0315/GB-month is another tenth of a cent. **It is not material** — about two
+cents a month, and still under a quarter at ten times the volume — so there is no cheaper
+shape to propose. The term that would change that is data events, which is exactly why there
+are none. Note the backup `PutObject` and the relay traffic do **not** appear above: both are
+data-plane, and a management-events trail does not see them.
+
+## Session Manager sessions are recorded
+
+`session_logging.tf` creates the account-level preferences document Session Manager reads.
+The name `SSM-SessionManagerRunShell` is fixed by AWS — a document called anything else is
+never consulted, which is the quiet way this feature fails. Sessions stream to their own log
+group with their own retention, separate from the application group so a transcript is never
+mixed in with service logs.
+
+`cloudWatchStreamingEnabled` is `true`: output is written as it happens rather than uploaded
+when the session ends, so a session that is killed — or that kills the agent — still leaves
+behind everything it did.
+
+Terraform **creates** this document, so a first apply fails with `DocumentAlreadyExists` in an
+account where anyone has ever saved Session Manager preferences in the console — the console
+creates the same document under the same fixed name. This account is empty, so it does not
+arise here; if it ever does, the fix is `terraform import`, not a second document.
+
+**`cloudWatchEncryptionEnabled` and the log group's key are driven from one variable**,
+`enable_session_log_cmk`, and that is deliberate. The preference does not mean "encrypt if
+you can"; it means "refuse to log unless the group is KMS-encrypted". Set it against a group
+with no CMK and logging stops rather than degrades. One variable makes them unable to
+disagree. On by default, **$1/month** for the key: a root-shell transcript is the most
+sensitive log in the account, and it can contain whatever the operator typed or printed.
+The key policy grants only `logs.<region>.amazonaws.com`, conditioned on
+`kms:EncryptionContext:aws:logs:arn` being this one log group.
+
+Two inputs are deliberately absent:
+
+- **No `s3BucketName`.** A second copy of the same transcript for a second bill. CloudTrail
+  already holds the tamper-evident record of which sessions existed and who opened them; the
+  transcript is the detail, and one searchable copy with a retention is enough.
+- **No `kmsKeyId`.** That input is end-to-end encryption of the live stream, not of the logs,
+  and it additionally requires every operator who starts a session to hold permissions on
+  that key. Getting it wrong locks the owner out of the only shell this box has. The stream
+  is already inside TLS.
+
+### What the instance role needed for it to actually work
+
+Session logging is written by SSM Agent on the instance, under the instance role — so
+`AmazonSSMManagedInstanceCore` is not sufficient, and a missing permission here shows up as
+logging that silently never writes. AWS documents four actions; `iam.tf` grants exactly
+those, and no more:
+
+| Action | Scope here |
+|---|---|
+| `logs:CreateLogStream`, `logs:PutLogEvents`, `logs:DescribeLogStreams` | Added to the existing `ShipOwnLogs` statement, resource-scoped to the session log group alongside the app group |
+| `logs:DescribeLogGroups` | `*`, in its own statement |
+
+`logs:DescribeLogGroups` is the one that cannot be scoped. The agent calls it to confirm the
+configured group exists before streaming, and a resource-scoped grant makes an unfiltered
+call fail outright instead of returning a filtered list — which lands exactly in the
+silently-not-writing state. It reads group names and no log content. It is called out for the
+fifth security review as the only `*` resource left in the instance policy that is not
+bounded by a condition.
+
+No KMS action was added, and none is needed: CloudWatch Logs encrypts on the writer's behalf
+using the grant in the key policy, so the instance role never touches the key itself.
 
 ## Caddy
 
@@ -385,10 +613,22 @@ the PR that does it.
 ## Costs
 
 `docs/PHASE5.md` §3.2 computes the whole bill. The fixed part of this stack is the
-`t4g.small`, the public IPv4 address, the two 20 GB gp3 volumes, the two KMS keys, the six
-alarms, the log group, the backup bucket and the state bucket's lock table — about
-**$25/month** before any relay egress, which is the term that actually grows.
+`t4g.small`, the public IPv4 address, the two 20 GB gp3 volumes, the three KMS keys, the
+seven alarms, the log groups, the two buckets and the state bucket's lock table — about
+**$26/month** before any relay egress, which is the term that actually grows.
 
 The separate data volume is $1.86/month more than keeping the databases on the root volume,
 and the state backend is about $1.10 (the customer-managed key is $1 of it). Both are priced
 into `docs/PHASE5.md` §3.2.
+
+Audit and session logging add about **$1.15/month**, and only $0.15 of it is unavoidable:
+
+| Item | Monthly |
+|---|---:|
+| CloudTrail, first copy of management events | $0 |
+| Audit bucket: ~27 MB/month of trail objects, SSE-S3 | ~$0.01 |
+| CloudWatch Logs ingest and storage for the trail | ~$0.02 |
+| The `-id-cert-signs` alarm | $0.10 |
+| Session transcripts: sporadic, a few MB | ~$0.01 |
+| Session log group CMK (`enable_session_log_cmk`) | $1.00 |
+| **Total** | **~$1.15** |

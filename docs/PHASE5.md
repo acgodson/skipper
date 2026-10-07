@@ -46,7 +46,9 @@ All prices below were read from the AWS Pricing API on 2026-10-07 for EU (London
 | Backups | `sqlite3 .backup` to S3 (SSE-S3, versioning, lifecycle to IA at 30 d) every 15 min for the main DB; **separate prefix, separate schedule, separate retention** for the claims DB; EBS snapshot daily | S3 one-zone is enough for snapshots; the claims prefix gets object-lock-style retention (never expire) | Pennies/month at this size |
 | Logs | Both binaries already emit JSON to stdout (`slog`). CloudWatch Logs, 30-day retention. `API.md` §9 and `PROTOCOL.md` §8 bound what may be logged — do not add a log agent that scrapes anything else | CloudWatch Logs | Ingest ≈$0.57/GB (**unverified**), storage $0.0315/GB-month (verified) |
 | Metrics | `/healthz` + `/v1/health` probes; relay bytes from the `bytesRelayed` column (`API.md` §5.1); NAT-vs-relay ratio from `relayUsed` | CloudWatch | `relayUsed` is the number §3's whole cost model turns on. Report it from day one |
-| Alarms | 6 alarms: rc-api 5xx rate, rc-signal `/healthz` fail, coturn host unreachable, **root volume >80%**, **data volume >80%**, **AWS Budgets actual + forecast** | CloudWatch, $0.10/alarm/month (verified) | The budget alarm is the one that protects the user, not the service. The two disk alarms are separate because the volumes fail differently: a full data volume stops SQLite writing while the box keeps answering |
+| Alarms | 7 alarms: rc-api 5xx rate, rc-signal `/healthz` fail, coturn host unreachable, **root volume >80%**, **data volume >80%**, **`kms:Sign` volume on the id-cert key**, **AWS Budgets actual + forecast** | CloudWatch, $0.10/alarm/month (verified) | The budget alarm is the one that protects the user, not the service. The two disk alarms are separate because the volumes fail differently: a full data volume stops SQLite writing while the box keeps answering. The sign alarm is sized on fleet size, because signs track reconnections rather than new devices |
+| Audit trail | CloudTrail, **management events only**, log file validation on, delivered to its own bucket and to CloudWatch Logs | Its own S3 bucket — not a prefix of the backup bucket, which the instance role can write to | The account's first copy of management events is free. `kms:Sign` is logged `readOnly: true`, so the trail must capture read-only events or the sign alarm reads zero forever. No data events, ever: they are billed per event and `API.md` §9 bounds what may be recorded |
+| Session logging | `SSM-SessionManagerRunShell` streaming every session to its own encrypted log group | CloudWatch Logs | With no inbound SSH rule, Session Manager is the *entire* administrative path to the box. The instance role needs four `logs:` actions for this to write at all — a logging config that silently fails looks like coverage and is not |
 | Terraform state | The record of everything above | **S3, versioned, SSE-KMS with a customer-managed key, public access blocked, DynamoDB lock table** | Must exist *before* the first apply, not after: `aws_cognito_identity_provider` takes the Apple `.p8` and the Google client secret as literal arguments, so state holds both in the clear the moment social sign-in is on. Created by its own root module, `infra/aws/terraform/bootstrap-state` — a configuration cannot create the bucket it uses as its own backend |
 
 ### 1.1 Does SQLite survive this phase?
@@ -190,12 +192,21 @@ Relayed GB per month = hosts × 10 h × 0.15 × 0.70 GB = **hosts × 1.05 GB**.
 | ACM | free | $0 | $0 | $0 |
 | Cognito | free ≤10 k MAU (**unverified**) | $0 | $0 | $0 |
 | KMS id-cert key + signs | $1/key-month + $0.15/10 k | $1.00 | $1.23 | $3.25 |
-| CloudWatch logs + 6 alarms | $0.10/alarm; ingest ~$0.57/GB (**unverified**) | $1.60 | $2.60 | $8.00 |
+| CloudWatch logs + 7 alarms | $0.10/alarm; ingest ~$0.57/GB (**unverified**) | $1.70 | $2.70 | $8.10 |
+| CloudTrail management events, audit bucket, its Logs copy | first copy of management events free; ingest ~$0.57/GB (**unverified**) | $0.03 | $0.30 | $2.60 |
+| Session Manager transcripts + their KMS key | $1/key-month; transcripts are a few MB | $1.01 | $1.01 | $1.01 |
 | S3 backups | pennies | $0.20 | $0.30 | $0.50 |
 | Terraform state: bucket, KMS key, lock table | $1/key-month; bucket and on-demand table are pennies | $1.10 | $1.10 | $1.10 |
 | **TURN egress** | GB above 100 free × $0.09 | 10.5 GB → **$0** | 525 GB → 425 × $0.09 = **$38.25** | 5 250 GB → 5 150 × $0.09 = **$463.50** |
-| **Monthly total** | | **$24.99** | **$64.57** | **$695.42** |
-| **Per paying host** | | **$2.50** | **$0.129** | **$0.139** |
+| **Monthly total** | | **$26.13** | **$65.98** | **$699.13** |
+| **Per paying host** | | **$2.61** | **$0.132** | **$0.140** |
+
+The audit row scales with reconnections, not with hosts directly, because `kms:Sign` is
+logged once per authenticated `hello` and `registry.Local.Certify` re-signs every time
+(`infra/aws/README.md` "The audit trail"). At 10 hosts × 24 reconnections/day × ~1.2 KB per
+CloudTrail event that is ~27 MB/month and under two cents; at 500 hosts ~450 MB/month and
+about $0.26 of ingest. It stays immaterial only because the trail carries **no data events** —
+adding S3 object-level events would bill the 15-minute backup `PutObject` forever.
 
 Sanity checks on the arithmetic: 500 hosts × 10 h × 0.15 = 750 relayed hours → 750 × 0.70 GB =
 525 GB. 5 000 hosts → 7 500 relayed hours → 5 250 GB, which is 10.3 concurrent relayed sessions
@@ -203,8 +214,8 @@ on average and realistically 40–60 at peak — about 90 Mbps of sustained egre
 coturn is two t4g.medium at that line and not one small box.
 
 At the conservative **1 GB per relayed hour** the relayed volume becomes hosts × 1.5 GB:
-500 hosts → 750 GB, less 100 free, = $58.50 egress (total **$84.82**); 5 000 hosts → 7 500 GB,
-less 100 free, = $666.00 egress (total **$897.92**). At **30 h/host/month** instead of 10, treble
+500 hosts → 750 GB, less 100 free, = $58.50 egress (total **$86.23**); 5 000 hosts → 7 500 GB,
+less 100 free, = $666.00 egress (total **$901.63**). At **30 h/host/month** instead of 10, treble
 the relayed volume before subtracting the free 100 GB.
 
 For comparison, Shape A scaled to 5 000 hosts (one app box + two coturn boxes, SQLite kept) is
@@ -385,6 +396,27 @@ Nobody is on the new backend, so there is almost nothing to migrate.
    what.
 5. The backup and restore path, including the deliberately asymmetric claims-DB restore.
 6. Any shared rate-limit store, when Shape B arrives.
+7. **The `kms:Decrypt` grant on the instance role.** `Resource` is still `*` — it has to be,
+   for the AWS-managed `alias/aws/ssm` key — and the whole bound is now two conditions:
+   `kms:ViaService` and a `StringLike` on `kms:EncryptionContext:PARAMETER_ARN`. Confirm the
+   pattern really matches only our prefix and cannot be widened by a parameter named to look
+   like it; confirm no `IfExists` or set operator has crept in, either of which would allow a
+   `Decrypt` carrying no encryption context at all. `infra/aws/README.md` "Secrets" records
+   the verification this rests on.
+8. **The audit trail as evidence.** Whether the trail can be turned off, starved or rewritten
+   by anything short of account-admin: the `aws:SourceArn` conditions on the bucket policy and
+   the delivery role, log file validation, the bucket being separate from the one the instance
+   role writes to, and whether any later change gives that role reach into it.
+9. **The sign alarm's threshold, against a measured reconnection rate.** The default is
+   derived from an *assumed* 24 reconnections per host per day and a fleet-wide reconnect on
+   deploy. Milestone 5.3 produces real numbers; re-derive then. Too high is silent coverage,
+   too low is an alarm nobody reads — and check it is still 5-minute `Sum` with
+   `treat_missing_data` that cannot mask a dead metric filter.
+10. **Session logging actually writing, and the one remaining `*`.** Open a session and read
+    the transcript back out of the log group — the failure mode is silence, so this must be
+    observed, not assumed. Then review `logs:DescribeLogGroups` on `*`, the only unscoped,
+    unconditioned action left in the instance policy, and whether
+    `cloudWatchEncryptionEnabled` still agrees with the log group's key.
 
 That is a **fifth security review**, scoped to infrastructure. It runs before the backend serves
 anyone but the owner, and it is a gate on milestone 4.
@@ -398,10 +430,10 @@ Each milestone is closed by an observation, not by a passing test (`CLAUDE.md`).
 | # | Milestone | What is built | Acceptance check (falsifiable) |
 |---|---|---|---|
 | **5.0** | Owner prerequisites | §4 steps 1–8 | `aws sts get-caller-identity` on the new profile returns the new account; `whois skipperdesk.app` shows the owner's registration; a Budgets alert e-mail has been received at least once (fire it with a $0.01 threshold, then set $50) |
-| **5.1** | **Reachable and signed in** — no TURN | `bootstrap-state` first, then Terraform against it: VPC, one t4g.small, EIP, the root volume and the separate data volume, Caddy, rc-api + rc-signal, Cognito, KMS id-cert key, backups, logs, 6 alarms | From a Mac with no local backend: `curl https://api.skipperdesk.app/v1/health` returns `200` with a publicly trusted chain and no cert exception; one real Mac completes the §1.1 link flow in a browser, `register` mints a Device ID, `GET /v1/entitlement` returns `trial`. `curl https://api.skipperdesk.app/internal/entitlement/<id>` returns **404**. On the box, `findmnt /var/lib/skipperdesk` shows the data volume and `systemctl show -p RequiresMountsFor rc-api` names it; `terraform state pull` reads from S3, not from a local file |
+| **5.1** | **Reachable and signed in** — no TURN | `bootstrap-state` first, then Terraform against it: VPC, one t4g.small, EIP, the root volume and the separate data volume, Caddy, rc-api + rc-signal, Cognito, KMS id-cert key, backups, logs, the audit trail and session logging, 7 alarms | From a Mac with no local backend: `curl https://api.skipperdesk.app/v1/health` returns `200` with a publicly trusted chain and no cert exception; one real Mac completes the §1.1 link flow in a browser, `register` mints a Device ID, `GET /v1/entitlement` returns `trial`. `curl https://api.skipperdesk.app/internal/entitlement/<id>` returns **404**. On the box, `findmnt /var/lib/skipperdesk` shows the data volume and `systemctl show -p RequiresMountsFor rc-api` names it; `terraform state pull` reads from S3, not from a local file |
 | **5.2** | **TURN exists** | coturn on the same box, EIP, `turn.skipperdesk.app`, secret in SSM, anti-proxy config carried over, quotas raised | A metered session pushes `ice_servers` with a TURN entry whose `username` is `<expiry>:<sessionId>` and `expiresAt` ≈ now + 10 min (`PROTOCOL.md` §2.18); the same credential is **refused** by coturn after `bye`; a TURN allocation to an RFC1918 peer is refused |
 | **5.3** | **Cross-network and relay proof** | Nothing new — the ROADMAP's queued item #1, which needed TURN. A cloud peer stands in for the second Mac | Two endpoints on two different networks hold a session through `skipperdesk.app`; then one is forced onto the relay (block UDP to the peer / `iceTransportPolicy: relay`) and the session still works, with the `/v1/sessions` row showing `relayUsed: true` and a non-zero `bytesRelayed`. **Record the relay fraction and the measured GB/hour — §3's assumptions are replaced by these numbers** |
-| **5.4** | **Fifth security review** (infrastructure) | The six items in §7 | No HIGH or CRITICAL finding outstanding |
+| **5.4** | **Fifth security review** (infrastructure) | The ten items in §7 | No HIGH or CRITICAL finding outstanding |
 | **5.5** | **Cutover** | Owner's Macs on the v5 build against the new backend; `relayUsed` and cost dashboards live | 7 consecutive days with no fallback to the legacy box, and the §6 switch-off criteria all true. Then our half of the legacy box is stopped and its three security-group rules removed — the instance itself is left alone |
 
 `TODO:` revisit §3 the day milestone 5.3 produces a real relay fraction. Everything in §3.3

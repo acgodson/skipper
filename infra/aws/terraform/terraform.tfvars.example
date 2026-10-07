@@ -8,6 +8,16 @@ alarm_email = "ops@example.com"
 # web_base_url       = "https://skipperdesk.app"
 # monthly_budget_usd = 50
 
+# Device-id certificate signatures in five minutes that raise the minting alarm. Signs
+# track reconnections rather than new devices, so raise this with the fleet: roughly
+# 6 x expected hosts. See infra/aws/README.md "The audit trail".
+# id_cert_sign_threshold = 60
+
+# Session Manager transcripts are the record of every administrative shell on the box.
+# Setting this false saves $1/month and also turns CloudWatchEncryptionEnabled off, which
+# is why it is one variable and not two.
+# enable_session_log_cmk = true
+
 # Turn on only after the Apple and Google parameters hold real values: creating the
 # providers makes Terraform read them, which puts them in state. See README "Secrets".
 # enable_social_idp = true

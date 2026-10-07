@@ -1,48 +1,14 @@
-resource "aws_s3_bucket" "backups" {
-  bucket = local.backup_bucket
+module "backups" {
+  source = "./modules/hardened-bucket"
 
-  tags = { Name = "${local.name}-backups" }
-}
-
-resource "aws_s3_bucket_ownership_controls" "backups" {
-  bucket = aws_s3_bucket.backups.id
-
-  rule {
-    object_ownership = "BucketOwnerEnforced"
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "backups" {
-  bucket                  = aws_s3_bucket.backups.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_versioning" "backups" {
-  bucket = aws_s3_bucket.backups.id
-
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "backups" {
-  bucket = aws_s3_bucket.backups.id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-    bucket_key_enabled = true
-  }
+  bucket   = local.backup_bucket
+  name_tag = "${local.name}-backups"
 }
 
 # Two prefixes, two retentions. db/ ages out; claims/ never expires, because losing a
 # claim lets a Device ID be reissued to a second key (API.md §6.1).
 resource "aws_s3_bucket_lifecycle_configuration" "backups" {
-  bucket = aws_s3_bucket.backups.id
+  bucket = module.backups.id
 
   rule {
     id     = "main-database"
@@ -108,32 +74,5 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
     }
   }
 
-  depends_on = [aws_s3_bucket_versioning.backups]
-}
-
-data "aws_iam_policy_document" "backups" {
-  statement {
-    sid       = "DenyUnencryptedTransport"
-    effect    = "Deny"
-    actions   = ["s3:*"]
-    resources = [aws_s3_bucket.backups.arn, "${aws_s3_bucket.backups.arn}/*"]
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    condition {
-      test     = "Bool"
-      variable = "aws:SecureTransport"
-      values   = ["false"]
-    }
-  }
-}
-
-resource "aws_s3_bucket_policy" "backups" {
-  bucket = aws_s3_bucket.backups.id
-  policy = data.aws_iam_policy_document.backups.json
-
-  depends_on = [aws_s3_bucket_public_access_block.backups]
+  depends_on = [module.backups]
 }

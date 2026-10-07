@@ -26,9 +26,14 @@ data "aws_iam_policy_document" "app" {
     sid       = "ReadOwnParameters"
     effect    = "Allow"
     actions   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
-    resources = ["arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.prefix}/*"]
+    resources = ["${local.parameter_arn_prefix}/*"]
   }
 
+  # Resource stays "*" because the AWS-managed alias/aws/ssm key's ARN carries a key id
+  # this configuration cannot name. Both conditions are load-bearing, and the second one
+  # is what keeps the grant off every other SecureString in the region. Plain StringLike:
+  # an IfExists or a set operator would allow a Decrypt carrying no encryption context,
+  # which is the hole being closed. infra/aws/README.md "Secrets" holds the verification.
   statement {
     sid       = "DecryptOwnParameters"
     effect    = "Allow"
@@ -39,6 +44,12 @@ data "aws_iam_policy_document" "app" {
       test     = "StringEquals"
       variable = "kms:ViaService"
       values   = ["ssm.${var.aws_region}.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "kms:EncryptionContext:PARAMETER_ARN"
+      values   = ["${local.parameter_arn_prefix}/*"]
     }
   }
 
@@ -53,21 +64,21 @@ data "aws_iam_policy_document" "app" {
     sid       = "WriteBackups"
     effect    = "Allow"
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.backups.arn}/db/*", "${aws_s3_bucket.backups.arn}/claims/*"]
+    resources = ["${module.backups.arn}/db/*", "${module.backups.arn}/claims/*"]
   }
 
   statement {
     sid       = "ReadReleasesAndConfig"
     effect    = "Allow"
     actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.backups.arn}/releases/*", "${aws_s3_bucket.backups.arn}/config/*"]
+    resources = ["${module.backups.arn}/releases/*", "${module.backups.arn}/config/*"]
   }
 
   statement {
     sid       = "ListOwnPrefixes"
     effect    = "Allow"
     actions   = ["s3:ListBucket"]
-    resources = [aws_s3_bucket.backups.arn]
+    resources = [module.backups.arn]
 
     condition {
       test     = "StringLike"
@@ -76,11 +87,28 @@ data "aws_iam_policy_document" "app" {
     }
   }
 
+  # Two writers, the same three actions: the CloudWatch agent into the app group and SSM
+  # Agent streaming a session transcript into the session group. No kms action belongs
+  # here — CloudWatch Logs encrypts on the writer's behalf under the key policy in
+  # session_logging.tf, so the role never touches the key.
   statement {
-    sid       = "ShipOwnLogs"
+    sid     = "ShipOwnLogs"
+    effect  = "Allow"
+    actions = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"]
+    resources = [
+      "${aws_cloudwatch_log_group.app.arn}:*",
+      "${aws_cloudwatch_log_group.sessions.arn}:*",
+    ]
+  }
+
+  # The one action session logging needs that cannot be scoped: a resource-scoped grant
+  # makes SSM Agent's unfiltered DescribeLogGroups fail rather than return a filtered
+  # list, which leaves session logging silently not writing. Group names, no content.
+  statement {
+    sid       = "DiscoverLogGroupsForSessionLogging"
     effect    = "Allow"
-    actions   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"]
-    resources = ["${aws_cloudwatch_log_group.app.arn}:*"]
+    actions   = ["logs:DescribeLogGroups"]
+    resources = ["*"]
   }
 
   statement {

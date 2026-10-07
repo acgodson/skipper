@@ -32,7 +32,7 @@ output "data_volume_id" {
 
 output "backup_bucket" {
   description = "Snapshots under db/ and claims/, binaries under releases/, instance configuration under config/."
-  value       = aws_s3_bucket.backups.id
+  value       = module.backups.id
 }
 
 output "cognito_user_pool_id" {
@@ -61,6 +61,21 @@ output "ssm_parameter_prefix" {
 
 output "log_group" {
   value = aws_cloudwatch_log_group.app.name
+}
+
+output "audit_bucket" {
+  description = "Where CloudTrail delivers management events. Separate from the backup bucket on purpose: the instance role can write to that one."
+  value       = module.audit.id
+}
+
+output "audit_log_group" {
+  description = "The CloudWatch Logs copy of the trail. The kms:Sign metric filter reads this group."
+  value       = aws_cloudwatch_log_group.audit.name
+}
+
+output "session_log_group" {
+  description = "Session Manager transcripts. With no inbound SSH rule this is the record of every administrative shell on the box."
+  value       = aws_cloudwatch_log_group.sessions.name
 }
 
 output "alarm_topic_arn" {
