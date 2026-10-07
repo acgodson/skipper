@@ -506,6 +506,7 @@ rc-api's internal listener:
 | `POST /internal/sessions/stop` | `sessionId` (32 hex), `endedAt`, `relayUsed`, `bytesRelayed`, `reason` (a PROTOCOL.md §2.14 reason, else `400`) | Closes the record, settles the charge against the balance (§5.2), frees the slot. A stop for a record that is already closed is `204` and charges nothing. |
 | `GET /internal/entitlement/{deviceId}` | — | Gates `connect_req`. `200` with the §4.1 body when the host may open a session; otherwise `402 entitlement` with the §4.3 `reason`. An id the registry does not hold, or a registered device that is not linked, is `unlinked`. This call never creates a record. |
 | `GET /internal/pairs/{hostDeviceId}/{controllerDeviceId}` | — | *v5.* `{known: bool}`: whether this controller has had a metered session with this host — a session row exists (`POST /internal/sessions/start`). Signaling asks it for a `connect_req` that is about to be delivered, so a known pair spends its own rate-limit bucket instead of the host's (PROTOCOL.md §3.3). Durable: it is the session table, so it survives restarts of either service. Malformed ids are `400`. |
+| `POST /internal/releases` | The §6.3 release body: `platform`, `arch`, `channel` (default `stable`), `version`, `build`, `minimumOS`, `url`, `sha256`, `size`, optional `notes`, `critical` | Publishes a §10 release. Republishing a build on the same track replaces it. `201` with the §10.1 body. **This is how a release reaches production**; `POST /v1/dev/releases` (§6.3) is `404` under any identity provider but `dev`. It lives here rather than on the public listener because this surface is already loopback-only and token-authenticated: a public authenticated publish endpoint would be new attack surface for one call the owner makes by hand. The caller is `scripts/publish-release.sh`, over SSM. |
 | `GET /healthz` | — | `200 ok`, no bearer needed. |
 
 rc-signal's internal listener:
@@ -603,7 +604,7 @@ identity provider (`Bearer dev:<email>`), and are `404` otherwise.
 |---|---|---|
 | `POST /v1/credits/dev-topup` | user session, idem | Credits the account with `amountCents`. |
 | `POST /v1/dev/expire-trial` | user session | Body `{}`. Ends every running trial on the account's devices. `204`. |
-| `POST /v1/dev/releases` | user session | Publishes a §10 release. Body: `platform`, `arch`, `channel` (default `stable`), `version`, `build`, `minimumOS`, `url`, `sha256`, `size`, optional `notes`, `critical`. Republishing a build on the same track replaces it. `201` with the §10.1 body. TODO: replace with a signed publish step in Phase 5. |
+| `POST /v1/dev/releases` | user session | Publishes a §10 release. Body: `platform`, `arch`, `channel` (default `stable`), `version`, `build`, `minimumOS`, `url`, `sha256`, `size`, optional `notes`, `critical`. Republishing a build on the same track replaces it. `201` with the §10.1 body. Production uses `POST /internal/releases` (§6) instead; this one stays for `scripts/dev-backend.sh`. |
 
 Clients never call these. They are listed in `protocol/api.go` because both Go services compile
 against the same types.
@@ -756,6 +757,10 @@ The desktop app updates itself without a third-party updater. This endpoint says
 install; it is never trusted to say the download is **safe**. The app's own checks (hash, size,
 code signature pinned to the running app's Team ID, notarization, no downgrade) decide that —
 `docs/SECURITY.md` "Updates".
+
+Because of that, the feed carries **no signature of its own** and needs no publishing key: a
+forged feed can delay an update or point at bytes the app will refuse, but it cannot get foreign
+code installed. What fills it is `POST /internal/releases` (§6).
 
 ### 10.1 `GET /v1/app/releases/latest` — unauthenticated
 

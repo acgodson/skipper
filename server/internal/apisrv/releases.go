@@ -71,7 +71,7 @@ func validTrack(t apidb.ReleaseTrack) string {
 	return ""
 }
 
-// TODO: replace with a signed publish step in Phase 5. Development identity provider only.
+// TODO: remove at launch with the rest of API.md §6.3. Development identity provider only.
 func (s *Server) devPublishRelease(w http.ResponseWriter, r *http.Request) {
 	if s.opt.IdP.Name() != "dev" {
 		s.notFound(w, r)
@@ -80,6 +80,14 @@ func (s *Server) devPublishRelease(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.userSession(w, r); !ok {
 		return
 	}
+	s.publishRelease(w, r)
+}
+
+// publishRelease records WHAT to install. It is never the client's reason to trust a
+// download: the app's own checks decide that (docs/SECURITY.md "Updates"). In production
+// it is reached only through the loopback internal listener (API.md §6), so publishing
+// adds no public surface.
+func (s *Server) publishRelease(w http.ResponseWriter, r *http.Request) {
 	body, ok := s.readBody(w, r)
 	if !ok {
 		return

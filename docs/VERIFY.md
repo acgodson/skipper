@@ -699,3 +699,130 @@ hostile NAT depends on. Remove the `pfctl` rule afterwards.
 "<carrier> hotspot"), the candidate types from each run, the round-trip times,
 the measured bitrate, and the session durations. Those numbers replace §3's
 assumptions in `docs/PHASE5.md`, which is the whole point of milestone 5.3.
+
+## First run on a second Mac, from the download page (added 2026-10-07)
+
+Thirty minutes, and the acceptance for `docs/BETA.md` §5.2. It needs a Mac with
+**no SkipperDesk history**: never built on, never run on, no entry under
+System Settings > Privacy & Security for SkipperDesk, and no
+`~/Library/Application Support/app.skipperdesk.desktop`. A Mac that has had a
+development build is not a valid subject — it already trusts the signing
+identity locally and has TCC grants keyed to it, which is exactly what this
+procedure is trying to observe the absence of.
+
+Apple silicon only: `scripts/build.sh` sets `ARCH="arm64"` and builds nothing
+else, so an Intel Mac cannot be the subject.
+
+**Before starting**, the image must be published — `docs/BETA.md` §7 steps 3 and
+4, i.e. `package-dmg.sh` on the owner's Mac, then `infra/web/deploy.sh --dmg`,
+then `scripts/publish-release.sh`. Check from any machine that
+`curl -fsS 'https://api.skipperdesk.app/v1/app/releases/latest?platform=macos&arch=arm64'`
+answers **200**, not 404. If it 404s, nothing below is worth starting.
+
+**Run it without help and without a terminal.** The whole point is to find where
+a stranger gets stuck, so do not fix anything as you go: write down the step
+number, what the screen said, and what you expected. A step that needs a command,
+an `xattr`, or someone who already knows the product is a **fail**, however small.
+
+1. On the second Mac, open `https://skipperdesk.app/` and click **Download for
+   Mac**, then **Download for Mac** again on the download page.
+
+   *Pass:* the file arrives over a trusted connection with no browser warning
+   about the site or the file, and the page's stated version matches the file's
+   name.
+
+2. Open the downloaded `.dmg` and drag **SkipperDesk** onto the Applications
+   folder shown beside it.
+
+   *Pass:* the image mounts on a plain double-click with **no** "Apple could not
+   verify" and no "can't be opened" dialog. That is the notarised, stapled image
+   doing its job; an unstapled one fails here, and it fails on this Mac only,
+   which is why it cannot be checked on the Mac that built it.
+
+3. Open SkipperDesk from Applications — **not** from the mounted image.
+
+   *Pass:* macOS shows its first-open prompt once, worded roughly *"SkipperDesk
+   is an app downloaded from the Internet. Are you sure you want to open it?"*,
+   with an **Open** button. Click Open. It must not appear again on later
+   launches.
+
+   *Fail, and it is the one failure most likely to be missed:* a dialog saying
+   SkipperDesk **"can't be opened because Apple cannot check it for malicious
+   software"**, with no Open button and only Move to Trash / Cancel. That is an
+   image that was signed but never notarised. It is invisible to the developer:
+   a locally built app carries no quarantine flag, so **this prompt never appears
+   on the Mac that built it**, and neither does its absence prove anything there.
+   If it happens, stop — `RC_NOTARY_PROFILE` was unset when `package-dmg.sh` ran.
+
+   Do not reach for System Settings > Privacy & Security > "Open Anyway", and do
+   not run `xattr`. Both make the Mac an invalid subject for the rest of this run.
+
+4. The window opens on **Share this Mac**, with a Device ID and an access code
+   already filled in and a status pill reading offline with a sentence saying
+   why.
+
+   *Pass:* no sign-in was required to get here, and nothing on screen is empty or
+   says "unknown".
+
+5. Grant **Screen Recording first**. The host screen shows an attention banner,
+   "Screen Recording is off". Click **Open Settings** (or **Ask macOS** to get
+   macOS's own dialog) and turn SkipperDesk on under
+   System Settings > Privacy & Security > **Screen Recording** — on macOS 15 and
+   later that pane is named **Screen & System Audio Recording**.
+
+   Screen Recording goes first because without it a controller connects and sees
+   a blank window, which is the most confusing way for this product to fail.
+
+   *Pass:* macOS asks, the toggle sticks, and the banner clears **after a
+   relaunch** (step 7).
+
+6. Then grant **Accessibility**, the same way, under
+   System Settings > Privacy & Security > **Accessibility**.
+
+   Without it the picture arrives and nothing clicks: the app shows "Remote input
+   is being ignored" during a session rather than failing quietly.
+
+   *Pass:* macOS asks, and the toggle sticks.
+
+7. Quit SkipperDesk and open it again.
+
+   *Pass:* both banners are gone. **Known sticking point** — a grant does not
+   refresh live today (ROADMAP, "Permissions refresh live in the UI"), and the
+   banner does not currently say a relaunch is needed. If you sat waiting for the
+   banner to clear, record that: it is the gap `docs/BETA.md` §5.2 step 5 asks to
+   be closed, and how long you waited is the measurement.
+
+8. Click **Sign in to SkipperDesk**. The browser opens, you sign in, and the app
+   comes back to a signed-in row.
+
+   *Pass:* the account row appears and the plan line reads **"Trial · about 5
+   hours left"**. The five hours start **here**, not at install — so if steps 1-7
+   took you a day, you have lost none of the 14 days.
+
+9. Turn **Launch at Login** on. If nobody will be sitting at this Mac, turn
+   **Unattended access** on as well, and read its sentence before you do. Close
+   the window; the app stays in the menu bar, which is what makes unattended
+   access work.
+
+10. Check the status pill reads **online**.
+
+**What counts as a pass — all four:**
+
+* Every step above was done with a mouse, in the app and in System Settings.
+  **No terminal, no `xattr`, no "Open Anyway", no help from anyone who has seen
+  this product before.**
+* The Mac was asked for exactly **two** permissions: Screen Recording and
+  Accessibility. Being asked for Full Disk Access, Input Monitoring, Files and
+  Folders, Local Network, or notifications before a consent prompt needs one is a
+  **fail** — record which, and when.
+* No screen displayed a URL, a key, a fingerprint outside a Details disclosure,
+  or the word "entitlement" (`DESIGN.md` §4 rules 6 and 8).
+* A controller on the first Mac then held a real session with this one: Device ID
+  and access code typed in by hand, the consent prompt answered (or unattended
+  access on), the desktop appeared, and the mouse and keyboard worked.
+
+**Record, in this file:** the macOS version of the second Mac, which step each
+hesitation happened on, the exact wording of anything macOS said that is not
+quoted above, and the elapsed time from clicking Download to the status pill
+reading online. That last number is the one that says whether a stranger can do
+this.
