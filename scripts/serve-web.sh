@@ -39,6 +39,7 @@ CONFIG
 
 echo "== serving web/ on http://localhost:${PORT}"
 echo "  landing   http://localhost:${PORT}/"
+echo "  download  http://localhost:${PORT}/download/"
 echo "  sign-in   http://localhost:${PORT}/link?nonce=<43 chars>&device=<base64 pubkey>"
 echo
 exec python3 -m http.server "$PORT" --bind 127.0.0.1 --directory web

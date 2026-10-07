@@ -273,6 +273,18 @@ if [[ -n "$API_DOMAIN" ]]; then
   esac
 
   echo
+  echo "== verifying the download page offers this image"
+  PAGE="$(curl -fsS --max-time 10 "${SITE_URL%/}/download" || true)"
+  case "$PAGE" in
+    *"/assets/$(basename "$DMG")"*)
+      echo "  ok    the page links to $(basename "$DMG")" ;;
+    *)
+      echo "WARN  ${SITE_URL%/}/download does not link to $(basename "$DMG")"
+      echo "      edit web/download/index.html and run infra/web/deploy.sh --profile $PROFILE"
+      echo "      the release is published; only the page people arrive on is stale" ;;
+  esac
+
+  echo
   echo "== verifying the internal surface is not public"
   CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
     -X POST "https://$API_DOMAIN/internal/releases" || true)"
