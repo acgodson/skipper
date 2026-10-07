@@ -197,4 +197,9 @@ resource "aws_cloudfront_distribution" "site" {
   http_version = "http2and3"
 
   tags = { Name = local.name }
+
+  # The origin reference only orders this after the bucket itself. Waiting for the whole
+  # module waits for its policy too, so the distribution is never briefly live against a
+  # bucket that has not yet been told to let CloudFront read it.
+  depends_on = [module.site]
 }
