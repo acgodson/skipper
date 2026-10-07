@@ -134,12 +134,27 @@ SCRIPT
 
 echo
 echo "== swapping and restarting over SSM"
+
+# The script travels base64-encoded on one line and is run explicitly under bash. Passing it
+# as multiple lines loses the newlines in the CLI's shorthand parser, and AWS-RunShellScript
+# runs what it is given with /bin/sh, which on this image is dash and has no pipefail.
+REMOTE_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 | tr -d '\n')"
+PARAMS="$WORK/ssm-params.json"
+REMOTE_B64="$REMOTE_B64" python3 - "$PARAMS" <<'PY'
+import json, os, sys
+one = ("set -e; printf '%s' '" + os.environ["REMOTE_B64"] + "'"
+       " | base64 -d > /tmp/skipperdesk-swap.sh;"
+       " bash /tmp/skipperdesk-swap.sh; rc=$?;"
+       " rm -f /tmp/skipperdesk-swap.sh; exit $rc")
+json.dump({"Parameters": {"commands": [one]}}, open(sys.argv[1], "w"))
+PY
+
 COMMAND_ID="$(aws ssm send-command \
   --profile "$PROFILE" --region "$REGION" \
   --instance-ids "$INSTANCE" \
   --document-name AWS-RunShellScript \
   --comment "skipperdesk deploy $STAMP" \
-  --parameters "commands=$(printf '%s' "$REMOTE_SCRIPT" | python3 -c 'import json,sys; print(json.dumps([sys.stdin.read()]))')" \
+  --cli-input-json "file://$PARAMS" \
   --query Command.CommandId --output text)"
 
 STATUS=""
