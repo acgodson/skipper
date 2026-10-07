@@ -1340,11 +1340,30 @@ func scanGift(row interface{ Scan(...any) error }) (*Gift, error) {
 	return &g, nil
 }
 
-func (d *DB) PutGift(g Gift) error {
-	_, err := d.db.Exec(`INSERT INTO gifts (`+giftCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+// CreateGift holds a gift: it writes the pending row and the debit that pays for it
+// in one transaction, so a refused debit leaves nothing behind.
+//
+// Written separately, a debit the ledger refused left an unpaid pending gift that
+// became real credit two ways — the recipient accepting it, or nobody doing anything
+// and the expiry refunding it to a sender who never paid (review5 H3). There is no
+// balance check here either: the ledger's own invariant is the check, and a read
+// before the transaction can only be stale.
+func (d *DB) CreateGift(g Gift, memo string) (Gift, error) {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return Gift{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO gifts (`+giftCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		g.GiftID, g.FromAccountID, g.FromEmail, g.ToEmail, g.AmountCents, g.Message,
-		g.Status, g.CreatedAt, g.ExpiresAt, g.AcceptedAt)
-	return err
+		g.Status, g.CreatedAt, g.ExpiresAt, g.AcceptedAt); err != nil {
+		return Gift{}, err
+	}
+	if _, err := appendTx(tx, g.FromAccountID, protocol.LedgerGiftSent, -g.AmountCents,
+		g.CreatedAt, "", g.GiftID, memo); err != nil {
+		return Gift{}, err
+	}
+	return g, tx.Commit()
 }
 
 func (d *DB) Gift(id string) (*Gift, error) {
@@ -1434,8 +1453,19 @@ func (d *DB) ExpirePendingGifts(now int64) error {
 		return err
 	}
 	for _, g := range due {
+		// A gift is only refundable if it was paid for. CreateGift makes an unpaid
+		// pending row impossible, so this can no longer fire; it stays because the
+		// consequence of being wrong is minting credit from nothing (review5 H3),
+		// and a refund that is not the reverse of a debit is not a refund.
+		paid, err := d.giftWasPaidFor(g.GiftID)
+		if err != nil {
+			return err
+		}
 		if err := d.SetGiftStatus(g.GiftID, protocol.GiftExpired, nil); err != nil {
 			return err
+		}
+		if !paid {
+			continue
 		}
 		if _, err := d.Append(g.FromAccountID, protocol.LedgerGiftRefund, g.AmountCents, now,
 			"", g.GiftID, "gift expired"); err != nil {
@@ -1443,6 +1473,11 @@ func (d *DB) ExpirePendingGifts(now int64) error {
 		}
 	}
 	return nil
+}
+
+func (d *DB) giftWasPaidFor(giftID string) (bool, error) {
+	return d.exists(`SELECT COUNT(1) FROM ledger WHERE gift_id=? AND type=?`,
+		giftID, protocol.LedgerGiftSent)
 }
 
 // --- idempotency ------------------------------------------------------------

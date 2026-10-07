@@ -163,29 +163,23 @@ func (s *Server) createGift(w http.ResponseWriter, r *http.Request) {
 			s.badRequest(w, r, "'message' is longer than 280 characters")
 			return
 		}
-		balance, err := s.opt.DB.Balance(account.AccountID)
-		if err != nil {
-			s.internalError(w, r, err)
-			return
-		}
-		if balance < req.AmountCents {
-			s.fail(w, r, http.StatusPaymentRequired, protocol.APIErrEntitlement,
-				"the balance does not cover that gift", withReason(protocol.EntitlementNoBalance))
-			return
-		}
 		now := s.nowMS()
-		gift := apidb.Gift{
+		// No balance read first: the ledger's own invariant is the check, and a read
+		// before the transaction can only be stale. Reading it here is what let two
+		// concurrent gifts both pass and the refused one leave an unpaid row
+		// (review5 H3).
+		gift, err := s.opt.DB.CreateGift(apidb.Gift{
 			GiftID: apidb.NewID("gift_"), FromAccountID: account.AccountID, FromEmail: account.Email,
 			ToEmail: toEmail, AmountCents: req.AmountCents, Message: req.Message,
 			Status: protocol.GiftPending, CreatedAt: now,
 			ExpiresAt: now + int64(protocol.GiftTTLSec)*1000,
-		}
-		if err := s.opt.DB.PutGift(gift); err != nil {
-			s.internalError(w, r, err)
+		}, "gift held")
+		if errors.Is(err, apidb.ErrInsufficientBalance) {
+			s.fail(w, r, http.StatusPaymentRequired, protocol.APIErrEntitlement,
+				"the balance does not cover that gift", withReason(protocol.EntitlementNoBalance))
 			return
 		}
-		if _, err := s.opt.DB.Append(account.AccountID, protocol.LedgerGiftSent, -gift.AmountCents,
-			now, "", gift.GiftID, "gift held"); err != nil {
+		if err != nil {
 			s.internalError(w, r, err)
 			return
 		}
