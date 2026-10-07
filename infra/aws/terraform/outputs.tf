@@ -61,3 +61,8 @@ output "log_group" {
 output "alarm_topic_arn" {
   value = aws_sns_topic.alarms.arn
 }
+
+output "aws_account_id" {
+  description = "The account this stack is in. deploy.sh asserts the profile it was given resolves to it."
+  value       = data.aws_caller_identity.current.account_id
+}

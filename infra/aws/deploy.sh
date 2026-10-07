@@ -5,7 +5,8 @@
 #
 #   infra/aws/deploy.sh --profile <aws profile>
 #
-# Optional: --region, --instance <id>, --bucket <name>, --api <domain>. Anything not given
+# Optional: --region, --instance <id>, --bucket <name>, --api <domain>, --account <id>. Anything
+# not given
 # is read from `terraform output` in infra/aws/terraform, so the stack must exist first.
 #
 # There is no SSH anywhere in here. The swap runs as an SSM command over the instance's
@@ -20,6 +21,7 @@ REGION=""
 INSTANCE=""
 BUCKET=""
 API_DOMAIN=""
+ACCOUNT=""
 TF_DIR="infra/aws/terraform"
 
 while [[ $# -gt 0 ]]; do
@@ -29,6 +31,7 @@ while [[ $# -gt 0 ]]; do
     --instance) INSTANCE="${2:-}"; shift 2 ;;
     --bucket) BUCKET="${2:-}"; shift 2 ;;
     --api) API_DOMAIN="${2:-}"; shift 2 ;;
+    --account) ACCOUNT="${2:-}"; shift 2 ;;
     -h | --help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "FAIL  unknown argument '$1'"; exit 2 ;;
   esac
@@ -44,6 +47,9 @@ tf_output() {
 [[ -n "$INSTANCE" ]] || INSTANCE="$(tf_output instance_id)"
 [[ -n "$BUCKET" ]] || BUCKET="$(tf_output backup_bucket)"
 [[ -n "$API_DOMAIN" ]] || API_DOMAIN="$(tf_output api_domain)"
+[[ -n "$ACCOUNT" ]] || ACCOUNT="$(tf_output aws_account_id)"
+
+require_aws_profile "$PROFILE" "$ACCOUNT" || exit 2
 
 for pair in "instance:$INSTANCE" "bucket:$BUCKET" "api:$API_DOMAIN"; do
   if [[ -z "${pair#*:}" ]]; then
