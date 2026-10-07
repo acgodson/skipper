@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -135,6 +136,38 @@ func TestADeniedStartReportEndsTheSession(t *testing.T) {
 	}
 	if _, stops := hn.ent.reportCounts(); stops != 0 {
 		t.Fatal("a stop was reported for a start rc-api never recorded")
+	}
+}
+
+// review5 H7: a start report that exhausted its retry budget against an unreachable
+// rc-api was dropped while the session stayed metered, so the session relayed for its
+// whole life with no billing row and kept being issued session TURN. Revenue was
+// coupled to rc-api's availability, and MaxPending gave a farm a way to force it at
+// volume. A session accounting never recorded has to end, whatever stopped the
+// report landing.
+func TestAStartReportThatNeverLandsEndsTheSession(t *testing.T) {
+	hn := newHarness(t)
+	hn.ent.startErr = errors.New("rc-api is unreachable")
+	host, ctrl := hn.pair(t)
+	ok, _ := ctrl.connect(host.deviceID)
+	host.send(protocol.TypeSDP, protocol.SDP{SessionID: ok.SessionID, SDPType: "offer", SDP: "v=0\r\n"})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for hn.hub.SessionState(ok.SessionID) != "" {
+		if time.Now().After(deadline) {
+			t.Fatal("a session whose start report never landed kept running: it would " +
+				"relay for its whole life with no billing row")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if b := unmarshal[protocol.Bye](t, ctrl.last(protocol.TypeBye)); b.Reason != protocol.ByeError {
+		t.Fatalf("bye = %+v", b)
+	}
+	if live := hn.hub.LiveMeteredSessions(); len(live.SessionIDs) != 0 {
+		t.Fatalf("an unregistered session is still listed as live and metered: %v", live.SessionIDs)
+	}
+	if starts, stops := hn.ent.reportCounts(); starts != 0 || stops != 0 {
+		t.Fatalf("a session with no billing row was reported: %d starts, %d stops", starts, stops)
 	}
 }
 

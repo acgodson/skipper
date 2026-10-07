@@ -34,6 +34,7 @@ type fakeEntitlement struct {
 	err       error
 	pairErr   error
 	denyStart bool
+	startErr  error
 	pairs     map[string]bool
 	pairAsks  int
 	starts    []protocol.SessionStartReport
@@ -73,6 +74,9 @@ func (f *fakeEntitlement) Check(_ context.Context, hostDeviceID string) (entitle
 func (f *fakeEntitlement) SessionStarted(_ context.Context, r protocol.SessionStartReport) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.startErr != nil {
+		return f.startErr
+	}
 	if f.denyStart {
 		return reports.ErrDenied
 	}

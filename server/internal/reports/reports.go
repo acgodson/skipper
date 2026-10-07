@@ -25,6 +25,16 @@ var ErrPermanent = errors.New("report permanently rejected")
 // ErrDenied marks a start report rc-api refused on entitlement grounds.
 var ErrDenied = errors.New("session start denied")
 
+// OnDenied is called with the id of a session whose start report did not land, for
+// any reason: refused on entitlement grounds, permanently rejected, or undeliverable
+// because rc-api could not be reached within the retry budget.
+//
+// A session with no start report has no billing row, and the stop report that would
+// settle it 404s and is discarded as permanent. Treating only an entitlement refusal
+// this way left a session relaying for its whole life for nothing, and reissuing
+// session TURN throughout, whenever rc-api was unreachable for about eight seconds
+// (review5 H7).
+
 type Options struct {
 	Workers     int
 	MaxPending  int
@@ -184,7 +194,7 @@ func (q *Queue) deliver(sessionID string, ev event) {
 		kind = "start"
 	}
 	q.opt.Logger.Error("session report not delivered", "sessionId", sessionID, "report", kind, "err", err)
-	if ev.start != nil && errors.Is(err, ErrDenied) && q.opt.OnDenied != nil {
+	if ev.start != nil && q.opt.OnDenied != nil {
 		q.opt.OnDenied(sessionID)
 	}
 }

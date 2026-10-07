@@ -336,16 +336,26 @@ func (h *Hub) endDeniedSession(sessionID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if s := h.sessions[sessionID]; s != nil {
-		s.metered = false
-		h.closeSessionLocked(s, protocol.ByeError)
+		h.endUnregisteredSessionLocked(s)
 	}
 }
 
-func (h *Hub) reportStartLocked(s *Session) {
+// endUnregisteredSessionLocked drops a session accounting never took a start report
+// for. It un-meters first: without a billing row the session is not a metered
+// session, so it must not be reported as one, and the stop report that would settle
+// it has nothing to settle (review5 H7).
+func (h *Hub) endUnregisteredSessionLocked(s *Session) {
+	s.metered = false
+	h.closeSessionLocked(s, protocol.ByeError)
+}
+
+// reportStartLocked reports the session; false means accounting will never hear
+// about it, so the caller must not let it run.
+func (h *Hub) reportStartLocked(s *Session) bool {
 	if h.reports == nil {
-		return
+		return true
 	}
-	h.reports.Started(protocol.SessionStartReport{
+	return h.reports.Started(protocol.SessionStartReport{
 		SessionID: s.ID, HostDeviceID: s.Host.deviceID, ControllerDeviceID: s.Ctrl.deviceID,
 		StartedAt: s.meteredAt.UnixMilli(),
 	})
