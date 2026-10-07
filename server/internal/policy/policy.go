@@ -55,8 +55,8 @@ func TrialEndsAt(now time.Time) int64 { return now.Add(TrialLifetime).UnixMilli(
 // Both device inputs are client-chosen: a stranger generates a fresh keypair and
 // sends any hardwareId they like, so neither can be made trustworthy and this
 // deliberately does not pretend otherwise (review5 H4). What bounds the damage is
-// the count of grants the account already holds, which is server-side fact. The
-// device rules are kept because they only ever withhold a grant further.
+// grantsHeld, the grants already written against this verified mailbox, which is
+// server-side fact. The device rules are kept: they only ever withhold further.
 func GrantsTrial(pubkeySeen, hardwareSeen bool, grantsHeld int) bool {
 	return !pubkeySeen && !hardwareSeen && grantsHeld < MaxTrialGrantsPerMailbox
 }

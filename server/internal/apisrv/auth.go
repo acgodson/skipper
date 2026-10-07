@@ -291,14 +291,14 @@ func (s *Server) linkDevice(device *apidb.Device, pending *apidb.LinkCode,
 //
 // The device inputs are a fresh keypair and a string the client chose, so they bound
 // nothing on their own (review5 H4). The durable bounds are asked first and in order
-// of how hard they are to forge: how many grants the mailbox behind this address
-// already holds, then how many grants this address has taken recently.
+// of how hard they are to forge: how many grants the mailbox behind this account
+// already holds, then how many grants this client address has taken recently.
 //
 // A refusal withholds the grant and nothing else. Linking still succeeds, because
 // the device is legitimate either way and failing the link would punish an honest
 // user who happens to share an office address with a farm.
 func (s *Server) grantsTrial(device *apidb.Device, accountID, hardwareHash, ip string) (bool, error) {
-	held, err := s.opt.DB.TrialGrantsForMailbox(s.accountEmail(accountID))
+	held, err := s.opt.DB.TrialGrantsForMailbox(accountID)
 	if err != nil {
 		return false, err
 	}

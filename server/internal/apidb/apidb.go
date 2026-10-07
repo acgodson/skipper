@@ -1252,14 +1252,25 @@ func (d *DB) UnconsumedGrant(accountID string) (cents int64, open bool, err erro
 }
 
 // TrialGrantsForMailbox counts the grants already written to every account whose
-// address folds to the same mailbox. The count is server-side fact, which is what
-// makes it a bound where the device inputs are not (review5 H4).
-func (d *DB) TrialGrantsForMailbox(email string) (int, error) {
+// address folds to the same mailbox as this account's. The count is server-side
+// fact, which is what makes it a bound where the device inputs are not (review5 H4).
+//
+// An account that does not exist is ErrNotFound rather than a count of zero: the
+// caller is deciding whether to give away credit, and "I could not tell" must not
+// read as "none yet".
+func (d *DB) TrialGrantsForMailbox(accountID string) (int, error) {
+	var key string
+	if err := d.db.QueryRow(`SELECT mailbox_key FROM accounts WHERE account_id=?`,
+		accountID).Scan(&key); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
 	var n int
 	err := d.db.QueryRow(`SELECT COUNT(1) FROM ledger l JOIN accounts a
  ON a.account_id = l.account_id
- WHERE l.type=? AND a.mailbox_key=?`,
-		protocol.LedgerTrialGrant, MailboxKey(email)).Scan(&n)
+ WHERE l.type=? AND a.mailbox_key=?`, protocol.LedgerTrialGrant, key).Scan(&n)
 	return n, err
 }
 
@@ -1453,10 +1464,9 @@ func (d *DB) ExpirePendingGifts(now int64) error {
 		return err
 	}
 	for _, g := range due {
-		// A gift is only refundable if it was paid for. CreateGift makes an unpaid
-		// pending row impossible, so this can no longer fire; it stays because the
-		// consequence of being wrong is minting credit from nothing (review5 H3),
-		// and a refund that is not the reverse of a debit is not a refund.
+		// A refund that is not the reverse of a debit is not a refund. CreateGift
+		// makes an unpaid pending row impossible, so this cannot fire; it stays
+		// because being wrong here mints credit from nothing (review5 H3).
 		paid, err := d.giftWasPaidFor(g.GiftID)
 		if err != nil {
 			return err
