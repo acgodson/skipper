@@ -40,7 +40,7 @@ All prices below were read from the AWS Pricing API on 2026-10-07 for EU (London
 | coturn | UDP relay, `3478` udp+tcp, relay range `49160-49200/udp`, `use-auth-secret`, anti-proxy denies from `infra/legacy/coturn/turnserver.conf` | EC2 with an Elastic IP — **always**, both shapes | Needs UDP and a stable public IP, so it cannot sit behind an ALB on Fargate. Raise `user-quota`/`total-quota` above the 1:1 values (6/12) before more than three hosts use it |
 | `rc-api.db` | Main SQLite: accounts, devices, tokens, sessions, ledger, idempotency | EBS gp3 volume (Shape A) | Single-writer. See §1.1 |
 | `rc-api-claims.db` | `device_id_claims` — every Device ID ever assigned and the key it went to (`RC_API_CLAIMS_DB`) | **its own file, its own backup schedule** | Losing it lets an ID be reissued to a second key. Never reset or restore it with the main DB (`API.md` §6.1). `TODO` in the contract already says Phase 5 moves it to DynamoDB with PITR + deletion protection — do that |
-| id-cert signing key | P-256 PEM PKCS#8, `RC_API_ID_CERT_KEY_FILE`. Signs the Device-ID ↔ pubkey binding on register and on `POST /internal/devices/{id}/cert` | **Propose: KMS asymmetric ECC_NIST_P256, `SIGN_VERIFY`, key policy allowing only the rc-api role, deletion protection on, no key material export** | See §1.2 |
+| id-cert signing key | P-256 PEM PKCS#8, `RC_API_ID_CERT_KEY_FILE`. Signs the Device-ID ↔ pubkey binding on register and on `POST /internal/devices/{id}/cert` | **Done: KMS asymmetric ECC_NIST_P256, `SIGN_VERIFY`, key policy allowing only the rc-api role, no key material export — `-id-cert-kms-key-id`** | See §1.2 |
 | TURN secret | coturn `static-auth-secret`; rc-signal mints `HMAC-SHA1` credentials from it (`RC_TURN_SECRET_FILE` — a **file**, never a flag) | Secrets Manager or SSM Parameter Store (SecureString), written to a file at boot with mode 0600 | Leak = free relay for anyone. Rotatable: write a new secret, restart coturn and rc-signal; in-flight 10-minute credentials die |
 | internal bearer | Shared secret for both internal listeners (`RC_API_INTERNAL_TOKEN_FILE` / `RC_INTERNAL_TOKEN_FILE`), constant-time compared | same store, same file treatment | Holder can register devices, bump epochs, close sessions, read entitlement. The `-internal-token` flag exists and is deprecated — **never use it**, it is visible in `ps` |
 | Backups | `sqlite3 .backup` to S3 (SSE-S3, versioning, lifecycle to IA at 30 d) every 15 min for the main DB; **separate prefix, separate schedule, separate retention** for the claims DB; EBS snapshot daily | S3 one-zone is enough for snapshots; the claims prefix gets object-lock-style retention (never expire) | Pennies/month at this size |
@@ -80,9 +80,16 @@ This key is the root of Device-ID ownership. A device proves "this ID is mine" b
 **Proposal: KMS asymmetric `ECC_NIST_P256` / `SIGN_VERIFY`.** The private key never exists outside
 KMS, so it cannot be copied off a box, and every signature is a CloudTrail event. $1/key-version/month
 plus $0.15/10 000 asymmetric sign requests (verified). Cost of the alternative — a PEM file on an
-EBS volume — is zero dollars and a catastrophic single point of failure. Required change: rc-api's
-`idcert` package gains a KMS signer behind the existing interface; `-insecure-http` keeps the
-throwaway local key so `dev-backend.sh` still runs offline with no AWS at all.
+EBS volume — is zero dollars and a catastrophic single point of failure.
+
+**Done.** `server/internal/idcert` now holds the private half behind a `signer` seam inside
+`Authority`: `-id-cert-kms-key-id` takes a key id, alias or ARN and signs every certificate with
+`kms:Sign`, so no id-cert private key exists in the process or on the volume. It is mutually
+exclusive with `-id-cert-key-file`, which is unchanged, and `-insecure-http` with neither flag
+keeps the throwaway local key so `dev-backend.sh` still runs offline with no AWS at all. The
+public key is fetched once at startup with `kms:GetPublicKey` and a failure there refuses the
+start. The wire format did not change: `ECDSA_SHA_256` returns the same ASN.1 DER encoding
+`ecdsa.SignASN1` produced, so there is no conversion and no vector moved.
 
 ---
 

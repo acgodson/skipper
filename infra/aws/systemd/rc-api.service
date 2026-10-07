@@ -1,6 +1,8 @@
 # Rendered by Terraform into /etc/systemd/system/rc-api.service.
 # Every secret arrives as a file or through the 0600 EnvironmentFile, never on the
 # command line, because the command line is readable by every local user in ps.
+# The id-cert KMS key id is not a secret: it names a key whose private half never
+# leaves KMS, and only this instance role may sign with it.
 # -insecure-http is what makes rc-api serve plaintext on loopback for Caddy to terminate;
 # it does not enable the API.md §6.3 development calls, which are gated on -idp dev.
 
@@ -21,7 +23,7 @@ ExecStart=${app_dir}/bin/rc-api \
   -db ${data_dir}/rc-api.db \
   -claims-db ${data_dir}/rc-api-claims.db \
   -internal-token-file ${data_dir}/internal-token \
-  -id-cert-key-file ${data_dir}/id-cert-key.pem \
+  -id-cert-kms-key-id ${id_cert_kms_key_id} \
   -idp cognito \
   -cognito-issuer ${cognito_issuer} \
   -cognito-audience ${cognito_audience} \

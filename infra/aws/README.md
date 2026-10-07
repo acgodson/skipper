@@ -247,13 +247,7 @@ the PR that does it.
 
 ## What is deliberately not here yet
 
-- **The id-cert key is created but not used.** `terraform/kms.tf` creates the
-  `ECC_NIST_P256` key and the instance role may `kms:Sign` with it, but `rc-api` accepts only
-  `-id-cert-key-file`, a PEM file: there is no KMS signer in `server/internal/idcert` today.
-  So the running registry signs with the PEM in `/skipperdesk/prod/id-cert-key`, and the KMS
-  key is in place for the change `docs/PHASE5.md` §1.2 describes. Until then the private key
-  does exist outside KMS, on the root volume, and that is the single point of failure §1.2
-  names.
+- **Done:** the id-cert key is now used — `rc-api` signs through `-id-cert-kms-key-id` and no PEM reaches the volume.
 - **No key rotation.** KMS cannot rotate an asymmetric key, and the contract has no verifier
   that accepts two signing keys at once. The `TODO:` is in `terraform/kms.tf`.
 - **No DynamoDB claims table.** `API.md` §6.1 and `docs/PHASE5.md` §2 both say the claims

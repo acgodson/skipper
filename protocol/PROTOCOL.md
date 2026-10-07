@@ -934,8 +934,9 @@ signature for one purpose never verifies for another.
 
 #### 3.1.1 Device-ID certificates — *v4*
 
-The registry holds its own P-256 key (never a device key; a file today, `TODO` AWS KMS in
-Phase 5). A certificate is that key's ASN.1 DER ECDSA-SHA256 signature, base64, over
+The registry holds its own P-256 key (never a device key; a KMS asymmetric key whose private
+half never leaves KMS in a deployment, a PEM file locally — the choice changes no byte here).
+A certificate is that key's ASN.1 DER ECDSA-SHA256 signature, base64, over
 
 ```
 "skipperdesk/device-id-cert/v1|" ‖ deviceId (9 ASCII digits) ‖ SHA-256(DER SPKI of the device key) (32 bytes)
@@ -946,7 +947,7 @@ its prefix overlaps none of the purposes above. The registry issues a certificat
 `register_ok` and `hello_ok` and honours `register.preferredDeviceId` only with one (§2.2).
 *v5:* those are the only two signing moments — for `hello`, only after the device's own
 signature verified and its key matched — so looking a device up never costs a signature.
-A server started without the key file refuses to run outside local `-insecure-http` mode; in
+A server started without a key refuses to run outside local `-insecure-http` mode; in
 local mode it makes a throwaway key whose certificates die with the process.
 
 ### 3.2 Session tokens

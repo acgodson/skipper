@@ -69,7 +69,6 @@ secret_file() {
 
 secret_file turn-secret turn-secret
 secret_file internal-token internal-token
-secret_file id-cert-key id-cert-key.pem
 
 # systemd reads an EnvironmentFile as root before it drops privileges, so these are 0600
 # root-owned rather than service-user-owned: one less process that can read them.
