@@ -149,11 +149,11 @@ type DB struct {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS accounts (
-  account_id    TEXT PRIMARY KEY,
-  email         TEXT NOT NULL UNIQUE,
-  created_at    INTEGER NOT NULL,
-  suspended     INTEGER NOT NULL DEFAULT 0,
-  billing_carry INTEGER NOT NULL DEFAULT 0
+  account_id     TEXT PRIMARY KEY,
+  email          TEXT NOT NULL UNIQUE,
+  created_at     INTEGER NOT NULL,
+  suspended      INTEGER NOT NULL DEFAULT 0,
+  unbilled_units INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS devices (
   device_id     TEXT PRIMARY KEY,
@@ -308,7 +308,7 @@ func migrate(db *sql.DB) error {
 	if _, err := addColumnIfMissing(db, "idempotency", "response_hash", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if _, err := addColumnIfMissing(db, "accounts", "billing_carry", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+	if err := migrateCarryToUnbilledUnits(db); err != nil {
 		return err
 	}
 	added, err := addColumnIfMissing(db, "idempotency", "replayable", "INTEGER NOT NULL DEFAULT 1")
@@ -401,10 +401,38 @@ func scanAccountAmounts(tx *sql.Tx, query string, args ...any) ([]accountAmount,
 	return out, rows.Err()
 }
 
-func addColumnIfMissing(db *sql.DB, table, column, decl string) (bool, error) {
+// migrateCarryToUnbilledUnits moves the billing carry off sixtieths of a cent and
+// onto units of one second at the hourly rate, which is what lets the sub-cent part
+// of a session be an account allowance rather than a free window per session
+// (review5 C1). Both units divide a cent — 60 of the old, 3600 of the new — so
+// multiplying by 60 is exact and nobody gains or loses a fraction by it.
+//
+// It is keyed on the new column's absence, so a restart runs it again and changes
+// nothing. The legacy column is left behind holding what it held: SQLite would have
+// to rewrite the table to drop it, and nothing reads it any more.
+// TODO: drop accounts.billing_carry once a table rewrite is worth scheduling.
+func migrateCarryToUnbilledUnits(db *sql.DB) error {
+	added, err := addColumnIfMissing(db, "accounts", "unbilled_units", "INTEGER NOT NULL DEFAULT 0")
+	if err != nil || !added {
+		return err
+	}
+	legacy, err := hasColumn(db, "accounts", "billing_carry")
+	if err != nil || !legacy {
+		return err
+	}
+	_, err = db.Exec(`UPDATE accounts SET unbilled_units = billing_carry * 60`)
+	return err
+}
+
+func hasColumn(db *sql.DB, table, column string) (bool, error) {
 	var n int
 	err := db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info(?) WHERE name=?`, table, column).Scan(&n)
-	if err != nil || n > 0 {
+	return n > 0, err
+}
+
+func addColumnIfMissing(db *sql.DB, table, column, decl string) (bool, error) {
+	present, err := hasColumn(db, table, column)
+	if err != nil || present {
 		return false, err
 	}
 	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl)
@@ -1005,7 +1033,7 @@ func (d *DB) SettleCharge(accountID, sessionID string, now int64, price Charge) 
 	}
 	defer tx.Rollback()
 	var carry int64
-	if err := tx.QueryRow(`SELECT billing_carry FROM accounts WHERE account_id=?`,
+	if err := tx.QueryRow(`SELECT unbilled_units FROM accounts WHERE account_id=?`,
 		accountID).Scan(&carry); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Settlement{}, ErrNotFound
@@ -1030,7 +1058,7 @@ func (d *DB) SettleCharge(accountID, sessionID string, now int64, price Charge) 
 		}
 		out.Entry, out.Billed = entry, true
 	}
-	if _, err := tx.Exec(`UPDATE accounts SET billing_carry=? WHERE account_id=?`,
+	if _, err := tx.Exec(`UPDATE accounts SET unbilled_units=? WHERE account_id=?`,
 		newCarry, accountID); err != nil {
 		return Settlement{}, err
 	}

@@ -578,8 +578,10 @@ Twenty minutes. This is the strongest proof available without a second machine.
 It needs a TURN credential, which only a **metered production session** mints,
 which needs an **entitled host** — so it must run against
 `https://api.skipperdesk.app` with the Mac that is already linked, and it
-consumes real entitlement (1 cent per started minute above the first 60 s;
-under 60 s is free — `server/internal/policy/policy.go`).
+consumes real entitlement (10 cents an hour, billed by the session's whole
+seconds, with the sub-cent remainder carried on the account — so a very short
+run charges nothing yet and is charged for later —
+`server/internal/policy/policy.go`).
 
 Two instances on one Mac is fine: there is no single-instance guard, no
 `LSMultipleInstancesProhibited`, no lock file and no fixed port. Setting

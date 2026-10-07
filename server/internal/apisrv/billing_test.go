@@ -8,10 +8,12 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"rc-signal/internal/apidb"
 	"rc-signal/internal/policy"
 	protocol "rcprotocol"
 )
@@ -123,6 +125,110 @@ func TestManyShortSessionsCostWhatOneLongSessionCosts(t *testing.T) {
 	if longCost != 5 {
 		t.Fatalf("a 30-minute session cost %d cents, want 5 at %d an hour",
 			longCost, policy.RateCentsPerHour)
+	}
+}
+
+// review5 C1: the free window used to be a property of each session, so a host that
+// tore every session down at 59 seconds hosted for nothing at any balance, for ever.
+// The connect budget allows 60 sessions an hour, which covered 98% of the clock. The
+// un-charged time is an account allowance now, so sixty reconnects cost what the hour
+// they cover costs — and the account runs out like any other.
+func TestReconnectingBelowTheFreeWindowCannotHostForNothing(t *testing.T) {
+	h := newHarness(t)
+	const farm, honest = "farm@example.com", "honest@example.com"
+	farmHost := h.link(farm, newDevice(t), "SERIAL-FARM")
+	honestHost := h.link(honest, newDevice(t), "SERIAL-HONEST")
+	h.topUp(farm, 500)
+	h.topUp(honest, 500)
+	funded := int64(500 + policy.TrialGrantCents)
+
+	// Sixty 59-second sessions: 59 minutes of hosting in 60 reconnects.
+	for i := range 60 {
+		h.runSession(fmt.Sprintf("%032x", 0xf00+i), farmHost.DeviceID, 59*time.Second)
+	}
+	h.runSession(strings.Repeat("a", 32), honestHost.DeviceID, 59*time.Minute)
+
+	farmed, straight := funded-h.balance(farm), funded-h.balance(honest)
+	if farmed == 0 {
+		t.Fatalf("sixty 59-second sessions cost nothing: %d minutes of relay were free", 59)
+	}
+	if diff := farmed - straight; diff < -1 || diff > 1 {
+		t.Fatalf("sixty 59-second sessions cost %d cents and one 59-minute session %d; "+
+			"they are 59 minutes either way and must agree to within the cent in the carry",
+			farmed, straight)
+	}
+
+	// One short session on its own still bills an honest user nothing.
+	solo := h.link("solo@example.com", newDevice(t), "SERIAL-SOLO")
+	h.topUp("solo@example.com", 500)
+	h.runSession(strings.Repeat("b", 32), solo.DeviceID, 30*time.Second)
+	if got := h.balance("solo@example.com"); got != 500+policy.TrialGrantCents {
+		t.Fatalf("one 30-second session billed %d cents", 500+policy.TrialGrantCents-got)
+	}
+	if got := h.entriesOfType("solo@example.com", protocol.LedgerSessionCharge); len(got) != 0 {
+		t.Fatalf("one 30-second session wrote %d charge entries, want none", len(got))
+	}
+}
+
+// API.md §5.2 promises one session_charge per session, and the carry must not turn
+// that into several or none where a cent was owed.
+func TestASettledSessionWritesAtMostOneChargeEntry(t *testing.T) {
+	h := newHarness(t)
+	const email = "oneentry@example.com"
+	host := h.link(email, newDevice(t), "SERIAL-ONE-ENTRY")
+	h.topUp(email, 500)
+
+	for i := range 12 {
+		h.runSession(fmt.Sprintf("%032x", 0xe00+i), host.DeviceID, 10*time.Minute)
+	}
+
+	charges := h.entriesOfType(email, protocol.LedgerSessionCharge)
+	if len(charges) != 12 {
+		t.Fatalf("twelve 10-minute sessions wrote %d charge entries, want one each", len(charges))
+	}
+	bySession := map[string]int{}
+	for _, c := range charges {
+		bySession[c.SessionID]++
+	}
+	for id, n := range bySession {
+		if n != 1 {
+			t.Fatalf("session %s has %d charge entries, want exactly one", id, n)
+		}
+	}
+	if got := h.balance(email); got != 500+policy.TrialGrantCents-20 {
+		t.Fatalf("two hours of hosting cost %d cents, want 20", 500+policy.TrialGrantCents-got)
+	}
+}
+
+// The carry changed unit when the free window became an allowance, so the value the
+// live account is holding has to cross exactly: both units divide a cent, and a
+// migration that lost or invented a fraction of one would be a silent adjustment.
+func TestTheCarryCrossesToTheNewUnitExactly(t *testing.T) {
+	h := newHarness(t)
+	const email = "carry@example.com"
+	host := h.link(email, newDevice(t), "SERIAL-CARRY")
+	h.topUp(email, 500)
+	account, err := h.db.AccountByEmail(email)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 59 sixtieths of a cent is the most the old scheme could hold: a cent all but
+	// owed. In the new unit that is 59 * 60 = 3540, so one more minute of hosting
+	// crosses the cent and bills it.
+	h.rawExec(`ALTER TABLE accounts DROP COLUMN unbilled_units`)
+	h.rawExec(`ALTER TABLE accounts ADD COLUMN billing_carry INTEGER NOT NULL DEFAULT 0`)
+	h.rawExec(`UPDATE accounts SET billing_carry=59 WHERE account_id=?`, account.AccountID)
+	h.reopen()
+
+	if got := h.rawInt(`SELECT unbilled_units FROM accounts WHERE account_id=?`, account.AccountID); got != 59*60 {
+		t.Fatalf("a carry of 59 sixtieths crossed as %d units, want %d", got, 59*60)
+	}
+
+	h.runSession(strings.Repeat("c", 32), host.DeviceID, time.Minute)
+	if got := h.balance(email); got != 500+policy.TrialGrantCents-1 {
+		t.Fatalf("the minute that crossed the carried cent billed %d, want 1",
+			500+policy.TrialGrantCents-got)
 	}
 }
 
@@ -285,8 +391,8 @@ func spendDown(h *harness, email string) {
 	}
 }
 
-// rawExec writes state the current code refuses to produce. The only caller is the
-// migration test, which has to recreate a balance the floor now makes impossible.
+// rawExec writes state the current code refuses to produce. Its callers are the
+// migration tests, which have to recreate the shape a migration exists to meet.
 func (h *harness) rawExec(query string, args ...any) {
 	h.t.Helper()
 	db, err := sql.Open("sqlite", h.dbPath)
@@ -297,6 +403,30 @@ func (h *harness) rawExec(query string, args ...any) {
 	if _, err := db.Exec(query, args...); err != nil {
 		h.t.Fatal(err)
 	}
+}
+
+func (h *harness) rawInt(query string, args ...any) int64 {
+	h.t.Helper()
+	db, err := sql.Open("sqlite", h.dbPath)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer db.Close()
+	var out int64
+	if err := db.QueryRow(query, args...).Scan(&out); err != nil {
+		h.t.Fatal(err)
+	}
+	return out
+}
+
+// reopen runs what a restart runs: the schema and every migration in it.
+func (h *harness) reopen() {
+	h.t.Helper()
+	db, err := apidb.Open(h.dbPath, filepath.Join(filepath.Dir(h.dbPath), "api-claims.db"))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	db.Close()
 }
 
 // The one account that exists signed up under the calendar trial and, with no floor,

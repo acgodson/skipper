@@ -1032,7 +1032,8 @@ Billing (API.md §5, §6.3) follows **proof**, not grant:
    (on its internal listener, API.md §6) which metered sessions it still holds, and closes every
    open row signaling no longer knows, billed up to the last time the sweep saw it alive.
 
-A session shorter than one minute is free; longer sessions bill every started minute (API.md §7.2).
+Sessions bill by their whole seconds at an hourly rate, with the sub-cent remainder carried on the
+account; a session too short to be worth a cent charges nothing but still owes its time (API.md §5.2).
 
 ---
 

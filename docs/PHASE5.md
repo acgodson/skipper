@@ -226,8 +226,8 @@ headcount alone.
 
 ### 3.3 Does the business model hold?
 
-Intended pricing (SCOPE §7): **$5 minimum top-up**, consumed at **cents per hour**, billed per
-started minute above 60 s (`API.md` §5.2).
+Intended pricing (SCOPE §7): **$5 minimum top-up**, consumed at **cents per hour**, billed by the
+session's whole seconds with the sub-cent remainder carried on the account (`API.md` §5.2).
 
 Variable cost of one **relayed** hour: $0.063 at 0.70 GB/h, **$0.090** at the conservative 1 GB/h.
 Variable cost of one **P2P** hour: effectively zero.

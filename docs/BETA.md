@@ -85,13 +85,15 @@ relay fraction we do not have yet.
 
 10¢/hour is not expressible as integer cents per minute, and rounding each session up is a trap:
 twenty 90-second sessions would cost 20 cents where one 30-minute session costs 5. Carry the
-remainder on the account instead.
+remainder on the account instead. The carry has to hold *time*, not rounded-up minutes: rounding
+each session up overcharges short sessions, and discarding the remainder is review5 C1.
 
 | | |
 |---|---|
-| New | `RateCentsPerHour = 10`; `accounts.unbilled_deciseconds` (or minutes×10), integer |
-| Charge | `cents = (carry + startedMinutes × RateCentsPerHour) / 60`; `carry = remainder`. Free below 60 s is unchanged |
-| Acceptance | **twenty 90-second sessions cost the same as one 30-minute session ±1 cent**, read from `/v1/credits/ledger`; and one 60-minute session costs exactly 10 cents |
+| New | `RateCentsPerHour = 10`; `accounts.unbilled_units`, integer — units of one second at the hourly rate, so a second is worth `RateCentsPerHour` and a cent is `SecondsPerHour` of them |
+| Charge | `units = carry + sessionSeconds × RateCentsPerHour`; `cents = units / 3600`; `carry = units % 3600` |
+| Free below 60 s | **Corrected by review5 C1.** A free window that is a property of each session is a bypass of the whole meter: 60 reconnects an hour cover 98% of the clock, and the un-charged time left no trace. The window is an allowance on the account instead — a session too short to be worth a cent charges nothing but still owes its seconds, so no session length can be repeated for free. One short session on its own still costs an honest user nothing |
+| Acceptance | **twenty 90-second sessions cost the same as one 30-minute session ±1 cent**, read from `/v1/credits/ledger`; one 60-minute session costs exactly 10 cents; and **sixty 59-second sessions cost what one 59-minute session costs ±1 cent** |
 
 ### 1.3 How the grant and its expiry live in the ledger
 

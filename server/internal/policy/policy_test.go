@@ -1,7 +1,6 @@
 package policy
 
 import (
-	"math"
 	"testing"
 	"time"
 
@@ -126,14 +125,41 @@ func TestConcurrencyRefusesASecondPair(t *testing.T) {
 	}
 }
 
-func TestASubMinuteSessionIsFreeAndNeverTouchesTheCarry(t *testing.T) {
+// A session too short to be worth a cent still bills nothing, so one short session
+// costs an honest user exactly what it costs today.
+func TestASessionTooShortToBeWorthACentBillsNothing(t *testing.T) {
 	for _, d := range []time.Duration{0, -time.Second, time.Millisecond, 59 * time.Second,
-		time.Minute - time.Millisecond} {
-		cents, carry := Charge(d, 41)
-		if cents != 0 || carry != 41 {
-			t.Errorf("Charge(%v, 41) = %d cents, carry %d; want free and the carry untouched",
-				d, cents, carry)
+		time.Minute - time.Millisecond, 5 * time.Minute} {
+		if cents, _ := Charge(d, 0); cents != 0 {
+			t.Errorf("Charge(%v, 0) = %d cents, want nothing billed", d, cents)
 		}
+	}
+	if cents, carry := Charge(0, 41); cents != 0 || carry != 41 {
+		t.Errorf("Charge(0, 41) = %d cents, carry %d; a session of no length owes nothing", cents, carry)
+	}
+}
+
+// The hole C1 found: the free window was a property of each session, so repeating a
+// 59-second session bought relay for nothing however often it was repeated. The
+// un-charged time now lands on the carry, so the hundredth repeat costs what the
+// hundredth minute of one long session costs.
+func TestRepeatedShortSessionsCostWhatTheirTotalLengthCosts(t *testing.T) {
+	const n, each = 100, 59 * time.Second
+
+	var repeated, carry int64
+	for range n {
+		var cents int64
+		cents, carry = Charge(each, carry)
+		repeated += cents
+	}
+	oneLong, _ := Charge(n*each, 0)
+
+	if repeated != oneLong {
+		t.Fatalf("%d sessions of %v cost %d cents, one session of %v costs %d; "+
+			"the short ones must not be cheaper", n, each, repeated, n*each, oneLong)
+	}
+	if repeated == 0 {
+		t.Fatalf("%d sessions of %v were free, which is the whole of C1", n, each)
 	}
 }
 
@@ -169,40 +195,27 @@ func TestManyShortSessionsCostTheSameAsOneLongOne(t *testing.T) {
 	if long != 5 {
 		t.Fatalf("one 30-minute session = %d cents, want 5 at %d cents an hour", long, RateCentsPerHour)
 	}
-
-	// Without the carry each 90-second session would round to a whole cent of its own.
-	perSessionRounding := int64(0)
-	for range 20 {
-		cents, _ := Charge(90*time.Second, 0)
-		perSessionRounding += cents
-	}
-	if perSessionRounding != 0 || short <= perSessionRounding {
-		t.Fatalf("the carry is what makes the short sessions cost %d rather than %d",
-			short, perSessionRounding)
-	}
 }
 
 // Nothing is lost or invented between sessions: over any run of sessions the cents
-// billed plus the carry still held equals the cents the minutes were worth.
+// billed plus the carry still held equals what the seconds were worth.
 func TestTheCarryNeitherLosesNorInventsMoney(t *testing.T) {
 	durations := []time.Duration{
 		90 * time.Second, time.Minute, 7 * time.Minute, 61 * time.Second,
-		time.Hour, 23 * time.Minute, 30 * time.Second, 119 * time.Second,
+		time.Hour, 23 * time.Minute, 30 * time.Second, 119 * time.Second, time.Millisecond,
 	}
-	var billed, carry, minutes int64
+	var billed, carry, seconds int64
 	for _, d := range durations {
 		var cents int64
 		cents, carry = Charge(d, carry)
 		billed += cents
-		if d >= FreeSessionLength {
-			minutes += int64(math.Ceil(d.Minutes()))
-		}
+		seconds += int64(d / time.Second)
 	}
-	if got, want := billed*MinutesPerHour+carry, minutes*RateCentsPerHour; got != want {
-		t.Fatalf("billed %d cents and hold a carry of %d (%d sixtieths) against %d minutes "+
-			"worth %d sixtieths", billed, carry, got, minutes, want)
+	if got, want := billed*SecondsPerHour+carry, seconds*RateCentsPerHour; got != want {
+		t.Fatalf("billed %d cents and hold a carry of %d (%d units) against %d seconds "+
+			"worth %d units", billed, carry, got, seconds, want)
 	}
-	if carry < 0 || carry >= MinutesPerHour {
+	if carry < 0 || carry >= SecondsPerHour {
 		t.Fatalf("the carry is %d; it must stay inside one cent", carry)
 	}
 }

@@ -469,15 +469,20 @@ may appear again, completed, in a later query.
 
 ### 5.2 What a session costs
 
-A session is billed on its end, from `startedAt` to `endedAt`: **free below 60 seconds**; from
-60 seconds on, every started minute counts (so 60 s is one minute, 61 s is two). The rate is per
-**hour**, so a session's minutes are worth a fraction of a cent: whole cents are charged and the
-remainder stays on the account as a carry that the next session's charge starts from. Nothing is
-rounded away in either direction, so many short sessions cost what one long session of the same
-billed minutes costs, to within the single cent still sitting in the carry.
+A session is billed on its end, from `startedAt` to `endedAt`, by its **whole seconds**. The rate
+is per **hour**, so a session's seconds are worth a fraction of a cent: whole cents are charged and
+the remainder stays on the account as a carry that the next session's charge starts from. Nothing
+is rounded away in either direction, so many short sessions cost what one long session of the same
+total length costs, to within the single cent still sitting in the carry.
 
-The charge is one `session_charge` ledger entry (§7.2) per session, and it may be **less than the
-minutes were worth**: a charge is clamped to the balance available, never taken past zero (§7.2),
+A session too short to be worth a cent therefore charges **nothing** — at 10¢/hour that is anything
+under six minutes on an empty carry — but the time is still owed and the next session's charge
+starts from it. The free window is an allowance on the account, not a property of each session:
+there is no session length that can be repeated for free.
+
+The charge is one `session_charge` ledger entry (§7.2) per session — and no entry at all when the
+session and the carry together do not reach a cent — and it may be **less than the seconds were
+worth**: a charge is clamped to the balance available, never taken past zero (§7.2),
 and a clamped charge drops the carry rather than holding a shortfall against a later top-up. A
 session whose charge clamps is closed, and the account's next session is refused `no_balance`
 (§4.3). A session is settled when it ends, so between settlements it can outrun its balance; the
