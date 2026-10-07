@@ -4,3 +4,7 @@ terraform.tfstate.*
 terraform.tfvars
 *.auto.tfvars
 crash.log
+
+# The backend configuration bootstrap-state prints. It names the state bucket and the
+# state key ARN, both of which carry the account id.
+backend.hcl
