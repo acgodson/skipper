@@ -43,7 +43,7 @@ A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone 
 | 5.2 TURN credentials end to end: the secret matches, a minted credential allocates on the live coturn over udp and tcp, a tampered or foreign-session one is refused, and the credential dies at 600 s to the second. `scripts/verify-turn.sh` re-proves it on demand | done |
 | 5.2 found the relay broken: `denied-peer-ip=::` denies every IPv4 peer on coturn 4.6.1, so the relay allocated and then refused every peer. One line removed in `infra/aws/coturn/turnserver.conf`; **awaiting deploy**, and the gate stays red until then (`docs/PHASE5.md` §8.1) | blocked |
 | Launch is **email sign-in only** (decided 2026-10-07). Apple and Google come after launch: both need a Services ID, a `.p8`, a Google OAuth client and a custom Cognito domain, and none of it is needed to sell the product. The Terraform and the SSM parameters already exist, inert, behind `enable_social_idp = false` | decided |
-| 5.2 TURN credentials end to end; 5.3 cross-network + forced relay; 5.4 fifth review; 5.5 cutover | queued |
+| 5.3 cross-network + forced relay; 5.4 fifth review; 5.5 cutover | queued |
 
 ## Queued, in order
 
