@@ -97,6 +97,22 @@ func TestLinkErrorsCarryTheCORSHeader(t *testing.T) {
 	if got := unauthenticated.header.Get(headerAllowOrigin); got != testWebOrigin {
 		t.Fatalf("401 answer carries %s = %q", headerAllowOrigin, got)
 	}
+
+	// The rate limiter answers before the handler body, as does the credential
+	// check above; the header comes from a wrapper outside both.
+	var limited reply
+	for attempt := 0; attempt < int(limitAuthLink.Limit)+2; attempt++ {
+		limited = h.fromBrowser("POST", testWebOrigin, idem(), linkBody(newDevice(t)))
+		if limited.status == http.StatusTooManyRequests {
+			break
+		}
+	}
+	if limited.status != http.StatusTooManyRequests {
+		t.Fatalf("the link limit never tripped: %d %s", limited.status, limited.body)
+	}
+	if got := limited.header.Get(headerAllowOrigin); got != testWebOrigin {
+		t.Fatalf("429 answer carries %s = %q", headerAllowOrigin, got)
+	}
 }
 
 func TestLinkSuccessCarriesTheCORSHeaderAndNoCredentialWidening(t *testing.T) {
