@@ -53,21 +53,21 @@ data "aws_iam_policy_document" "app" {
     sid       = "WriteBackups"
     effect    = "Allow"
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.backups.arn}/db/*", "${aws_s3_bucket.backups.arn}/claims/*"]
+    resources = ["${module.backups.arn}/db/*", "${module.backups.arn}/claims/*"]
   }
 
   statement {
     sid       = "ReadReleasesAndConfig"
     effect    = "Allow"
     actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.backups.arn}/releases/*", "${aws_s3_bucket.backups.arn}/config/*"]
+    resources = ["${module.backups.arn}/releases/*", "${module.backups.arn}/config/*"]
   }
 
   statement {
     sid       = "ListOwnPrefixes"
     effect    = "Allow"
     actions   = ["s3:ListBucket"]
-    resources = [aws_s3_bucket.backups.arn]
+    resources = [module.backups.arn]
 
     condition {
       test     = "StringLike"

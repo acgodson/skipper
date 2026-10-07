@@ -32,7 +32,7 @@ output "data_volume_id" {
 
 output "backup_bucket" {
   description = "Snapshots under db/ and claims/, binaries under releases/, instance configuration under config/."
-  value       = aws_s3_bucket.backups.id
+  value       = module.backups.id
 }
 
 output "cognito_user_pool_id" {
