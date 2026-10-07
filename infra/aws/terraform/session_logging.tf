@@ -61,6 +61,29 @@ resource "aws_cloudwatch_log_group" "sessions" {
   kms_key_id        = var.enable_session_log_cmk ? aws_kms_key.session_logs[0].arn : null
 }
 
+# Run Command, not Session Manager, is the path that is actually used: infra/aws/deploy.sh
+# and scripts/publish-release.sh both call send-command, and CloudTrail records the call
+# with "parameters":"HIDDEN_DUE_TO_SECURITY_REASONS", so the account's only record of what
+# a command did was nothing at all.
+#
+# The session preferences document cannot cover it — its sessionType is Standard_Stream and
+# Run Command is not a session — and there is no account setting that forces a caller to
+# ask for output. What *was* missing is the half that makes asking work: SSM Agent writes
+# Run Command output with the instance role, and that role's logs grant named only the app
+# and sessions groups, so a caller who passed --cloud-watch-output-enabled would have been
+# denied and the output would have gone nowhere. This group plus the grant in iam.tf closes
+# that, and both callers now pass the flag.
+#
+# No CMK here, unlike the session group. Run Command output is the same class of material as
+# the session transcript, but a key on this group would have to be readable by whoever reads
+# a deploy's output, and the session-group key policy already explains why that is a way to
+# lock the owner out of their own diagnostics. The group is encrypted at rest by CloudWatch
+# Logs' own service key either way.
+resource "aws_cloudwatch_log_group" "runcommand" {
+  name              = local.runcommand_log_group
+  retention_in_days = var.session_log_retention_days
+}
+
 # The name is fixed by AWS: a document called anything else is never consulted, which is
 # the quiet way this feature fails. No s3BucketName (a second copy for a second bill) and
 # no kmsKeyId (that one encrypts the live stream and would require every operator to hold

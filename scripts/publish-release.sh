@@ -224,12 +224,26 @@ one = ("set -e; printf '%s' '" + os.environ["REMOTE_B64"] + "'"
 json.dump({"Parameters": {"commands": [one]}}, open(sys.argv[1], "w"))
 PY
 
+# Publishing a release is an administrative action taken over Run Command, and CloudTrail
+# records the call with the payload redacted. Sending the output to the runcommand log
+# group is the only account-side record of what was published and by whom.
+RUNCOMMAND_LOG_GROUP="$(tf_output "$AWS_TF" runcommand_log_group)"
+OUTPUT_CONFIG=()
+if [[ -n "$RUNCOMMAND_LOG_GROUP" ]]; then
+  OUTPUT_CONFIG=(--cloud-watch-output-config
+    "CloudWatchLogGroupName=$RUNCOMMAND_LOG_GROUP,CloudWatchOutputEnabled=true")
+else
+  echo "note  no runcommand_log_group output; this publish will not be logged. Apply"
+  echo "note  infra/aws/terraform to create the group."
+fi
+
 COMMAND_ID="$(aws ssm send-command \
   --profile "$PROFILE" --region "$REGION" \
   --instance-ids "$INSTANCE" \
   --document-name AWS-RunShellScript \
   --comment "skipperdesk publish $VERSION" \
   --cli-input-json "file://$PARAMS" \
+  ${OUTPUT_CONFIG[@]+"${OUTPUT_CONFIG[@]}"} \
   --query Command.CommandId --output text)"
 
 STATUS=""

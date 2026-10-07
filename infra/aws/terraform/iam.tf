@@ -87,10 +87,15 @@ data "aws_iam_policy_document" "app" {
     }
   }
 
-  # Two writers, the same three actions: the CloudWatch agent into the app group and SSM
-  # Agent streaming a session transcript into the session group. No kms action belongs
-  # here — CloudWatch Logs encrypts on the writer's behalf under the key policy in
-  # session_logging.tf, so the role never touches the key.
+  # Three writers, the same three actions: the CloudWatch agent into the app group, SSM
+  # Agent streaming a session transcript into the session group, and SSM Agent writing Run
+  # Command output into the runcommand group. No kms action belongs here — CloudWatch Logs
+  # encrypts on the writer's behalf under the key policy in session_logging.tf, so the role
+  # never touches the key.
+  #
+  # The runcommand group is why this list grew. Run Command output is written by the agent
+  # under this role, so without it a caller passing --cloud-watch-output-enabled is denied
+  # and the output silently goes nowhere — session_logging.tf has the rest of that.
   statement {
     sid     = "ShipOwnLogs"
     effect  = "Allow"
@@ -98,6 +103,7 @@ data "aws_iam_policy_document" "app" {
     resources = [
       "${aws_cloudwatch_log_group.app.arn}:*",
       "${aws_cloudwatch_log_group.sessions.arn}:*",
+      "${aws_cloudwatch_log_group.runcommand.arn}:*",
     ]
   }
 

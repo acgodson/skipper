@@ -32,10 +32,11 @@ locals {
 
   cognito_domain_prefix = var.cognito_domain_prefix != "" ? var.cognito_domain_prefix : var.project
 
-  log_group         = "/${var.project}/${var.environment}/app"
-  audit_log_group   = "/${var.project}/${var.environment}/cloudtrail"
-  session_log_group = "/${var.project}/${var.environment}/sessions"
-  metric_namespace  = "${var.project}/${var.environment}"
+  log_group            = "/${var.project}/${var.environment}/app"
+  audit_log_group      = "/${var.project}/${var.environment}/cloudtrail"
+  session_log_group    = "/${var.project}/${var.environment}/sessions"
+  runcommand_log_group = "/${var.project}/${var.environment}/runcommand"
+  metric_namespace     = "${var.project}/${var.environment}"
 
   # The ARN SSM supplies as the PARAMETER_ARN encryption context on every SecureString
   # operation, minus the parameter's own name. It is what scopes both halves of the
