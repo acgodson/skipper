@@ -29,11 +29,19 @@ func (s *Server) decide(device *apidb.Device) (policy.Decision, error) {
 			facts.HasAccount = true
 			facts.Suspended = account.Suspended
 		}
+		if err := s.settleExpiredGrant(device); err != nil {
+			return policy.Decision{}, err
+		}
 		balance, err := s.opt.DB.Balance(device.AccountID)
 		if err != nil {
 			return policy.Decision{}, err
 		}
 		facts.BalanceCents = balance
+		grant, _, err := s.opt.DB.UnconsumedGrant(device.AccountID)
+		if err != nil {
+			return policy.Decision{}, err
+		}
+		facts.UnconsumedGrant = grant
 		open, err := s.opt.DB.OpenSessionsForAccount(device.AccountID, device.DeviceID)
 		if err != nil {
 			return policy.Decision{}, err
@@ -41,6 +49,36 @@ func (s *Server) decide(device *apidb.Device) (policy.Decision, error) {
 		facts.ActivePairs = open
 	}
 	return policy.Decide(facts, s.now()), nil
+}
+
+// settleExpiredGrant writes the one adjustment that closes a grant window, the first
+// time anybody asks after it has passed. The window is a property of the ledger and
+// the device row, so there is nothing to schedule: the answer is settled before it is
+// given, and an unasked account costs nothing.
+//
+// It claws back only grant no session consumed, so a top-up is never taken back, and
+// it waits until no device on the account is still inside its own window.
+func (s *Server) settleExpiredGrant(device *apidb.Device) error {
+	now := s.nowMS()
+	if device.TrialEndsAt == 0 || device.TrialEndsAt > now {
+		return nil
+	}
+	live, err := s.opt.DB.HasLiveTrial(device.AccountID, now)
+	if err != nil || live {
+		return err
+	}
+	grant, open, err := s.opt.DB.UnconsumedGrant(device.AccountID)
+	if err != nil || !open {
+		return err
+	}
+	balance, err := s.opt.DB.Balance(device.AccountID)
+	if err != nil {
+		return err
+	}
+	clawback := policy.ExpiredGrantClawback(grant, balance)
+	_, err = s.opt.DB.Append(device.AccountID, protocol.LedgerTrialExpiry, -clawback, now,
+		"", "", "starting credits expired")
+	return err
 }
 
 func (s *Server) entitlement(w http.ResponseWriter, r *http.Request) {
@@ -178,7 +216,7 @@ func (s *Server) internalSessionStop(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	if err := s.meter(session, endedAt); err != nil {
+	if err := s.meter(r.Context(), session, endedAt); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
@@ -246,6 +284,9 @@ func (s *Server) reconcileOpenSessions(ctx context.Context, live LiveSessions) (
 			if err := s.opt.DB.MarkAlive(row.SessionID, seenAt); err != nil {
 				return closed, err
 			}
+			if err := s.cutOffSpentSession(ctx, row); err != nil {
+				return closed, err
+			}
 			continue
 		}
 		endedAt := max(row.LastAliveAt, row.StartedAt)
@@ -256,7 +297,7 @@ func (s *Server) reconcileOpenSessions(ctx context.Context, live LiveSessions) (
 		if err != nil {
 			return closed, err
 		}
-		if err := s.meter(row, endedAt); err != nil {
+		if err := s.meter(ctx, row, endedAt); err != nil {
 			return closed, err
 		}
 		closed++
@@ -265,15 +306,46 @@ func (s *Server) reconcileOpenSessions(ctx context.Context, live LiveSessions) (
 	return closed, nil
 }
 
-func (s *Server) meter(session *apidb.Session, endedAt int64) error {
+// meter settles one ended session. Metering is deliberately blind to status: a trial
+// is credit now, so a trial session debits the grant like any other.
+//
+// A charge the balance cannot cover is clamped by the ledger, never refused — the
+// session has already happened — and a clamped charge means the account has run out,
+// so the host stops hosting rather than running free on a balance of zero.
+// cutOffSpentSession ends a live metered session whose account has no balance left.
+// A session is settled when it stops, so between settlements it can outrun the
+// balance; this is the tick that bounds the overrun to one sweep. It charges nothing
+// — the stop report still settles the whole session — it only stops the running.
+func (s *Server) cutOffSpentSession(ctx context.Context, session *apidb.Session) error {
 	if session.HostAccountID == "" {
 		return nil
 	}
-	charge := policy.ChargeCents(millis(endedAt - session.StartedAt))
-	if charge <= 0 {
+	balance, err := s.opt.DB.Balance(session.HostAccountID)
+	if err != nil || balance >= policy.MinBalanceCents {
+		return err
+	}
+	s.opt.Logger.Info("a live session has no balance behind it; closing it",
+		"sessionId", session.SessionID, "deviceId", session.HostDeviceID)
+	return s.closeDeviceSessions(ctx, session.HostDeviceID)
+}
+
+func (s *Server) meter(ctx context.Context, session *apidb.Session, endedAt int64) error {
+	if session.HostAccountID == "" {
 		return nil
 	}
-	_, err := s.opt.DB.Append(session.HostAccountID, protocol.LedgerSessionCharge, -charge,
-		endedAt, session.SessionID, "", "session time")
-	return err
+	duration := millis(endedAt - session.StartedAt)
+	settled, err := s.opt.DB.SettleCharge(session.HostAccountID, session.SessionID, endedAt,
+		func(carry int64) (int64, int64) { return policy.Charge(duration, carry) })
+	if errors.Is(err, apidb.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !settled.Clamped {
+		return nil
+	}
+	s.opt.Logger.Info("the balance ran out mid-session; closing the host's sessions",
+		"sessionId", session.SessionID, "deviceId", session.HostDeviceID)
+	return s.closeDeviceSessions(ctx, session.HostDeviceID)
 }

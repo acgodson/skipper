@@ -26,6 +26,7 @@ import (
 	"rc-signal/internal/clientip"
 	"rc-signal/internal/idcert"
 	"rc-signal/internal/idp"
+	"rc-signal/internal/policy"
 	protocol "rcprotocol"
 )
 
@@ -450,7 +451,7 @@ func TestSessionsEnforceConcurrencyAndMeter(t *testing.T) {
 		t.Fatalf("the host holding the pair is still entitled: %d %s", r.status, r.body)
 	}
 
-	h.clock.advance(61 * time.Second)
+	h.clock.advance(30 * time.Minute)
 	stop := protocol.SessionStopReport{SessionID: start.SessionID, EndedAt: h.clock.Now().UnixMilli(), Reason: "user_ended"}
 	if r := h.call("POST", protocol.PathInternalSessionStop, internalToken, "", stop); r.status != http.StatusNoContent {
 		t.Fatalf("stop: %d %s", r.status, r.body)
@@ -462,8 +463,10 @@ func TestSessionsEnforceConcurrencyAndMeter(t *testing.T) {
 	r = h.call("GET", protocol.PathCredits, "dev:carol@example.com", "", nil)
 	var balance protocol.Balance
 	r.decode(t, &balance)
-	if balance.BalanceCents != 498 {
-		t.Fatalf("balance after a 61 s session = %d, want 498", balance.BalanceCents)
+	want := int64(500 + 2*policy.TrialGrantCents - 5)
+	if balance.BalanceCents != want {
+		t.Fatalf("balance after a 30-minute session = %d, want %d ($5 plus two starting grants, less 5 cents)",
+			balance.BalanceCents, want)
 	}
 	if r := h.call("GET", protocol.PathInternalEntitlement+"/"+second.DeviceID, internalToken, "", nil); r.status != http.StatusOK {
 		t.Fatalf("the slot is free again after stop: %d %s", r.status, r.body)

@@ -22,6 +22,11 @@ import (
 var (
 	ErrNotFound = errors.New("not found")
 	ErrConflict = errors.New("conflict")
+	// ErrInsufficientBalance refuses a debit that would take a balance below zero.
+	// Non-negativity is an invariant of the ledger, not a courtesy of its callers:
+	// metering is the only debit allowed to settle for less than it asked, and it
+	// says so by going through SettleCharge.
+	ErrInsufficientBalance = errors.New("insufficient balance")
 )
 
 type Account struct {
@@ -144,10 +149,11 @@ type DB struct {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS accounts (
-  account_id TEXT PRIMARY KEY,
-  email      TEXT NOT NULL UNIQUE,
-  created_at INTEGER NOT NULL,
-  suspended  INTEGER NOT NULL DEFAULT 0
+  account_id    TEXT PRIMARY KEY,
+  email         TEXT NOT NULL UNIQUE,
+  created_at    INTEGER NOT NULL,
+  suspended     INTEGER NOT NULL DEFAULT 0,
+  billing_carry INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS devices (
   device_id     TEXT PRIMARY KEY,
@@ -300,6 +306,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if _, err := addColumnIfMissing(db, "idempotency", "response_hash", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if _, err := addColumnIfMissing(db, "accounts", "billing_carry", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	added, err := addColumnIfMissing(db, "idempotency", "replayable", "INTEGER NOT NULL DEFAULT 1")
@@ -841,10 +850,35 @@ func (d *DB) BalanceUpdatedAt(accountID string) (int64, error) {
 }
 
 // Append writes one ledger entry and returns it with the balance it produced.
+// A debit larger than the balance is ErrInsufficientBalance: no entry may take an
+// account below zero.
 func (d *DB) Append(accountID, entryType string, amountCents int64, now int64, sessionID, giftID, memo string) (protocol.LedgerEntry, error) {
-	balance, err := d.Balance(accountID)
+	tx, err := d.db.Begin()
 	if err != nil {
 		return protocol.LedgerEntry{}, err
+	}
+	defer tx.Rollback()
+	entry, err := appendTx(tx, accountID, entryType, amountCents, now, sessionID, giftID, memo)
+	if err != nil {
+		return protocol.LedgerEntry{}, err
+	}
+	return entry, tx.Commit()
+}
+
+func balanceTx(tx *sql.Tx, accountID string) (int64, error) {
+	var sum sql.NullInt64
+	err := tx.QueryRow(`SELECT SUM(amount_cents) FROM ledger WHERE account_id=?`, accountID).Scan(&sum)
+	return sum.Int64, err
+}
+
+func appendTx(tx *sql.Tx, accountID, entryType string, amountCents, now int64,
+	sessionID, giftID, memo string) (protocol.LedgerEntry, error) {
+	balance, err := balanceTx(tx, accountID)
+	if err != nil {
+		return protocol.LedgerEntry{}, err
+	}
+	if balance+amountCents < 0 {
+		return protocol.LedgerEntry{}, ErrInsufficientBalance
 	}
 	entry := protocol.LedgerEntry{
 		EntryID:           NewID("led_"),
@@ -856,11 +890,114 @@ func (d *DB) Append(accountID, entryType string, amountCents int64, now int64, s
 		GiftID:            giftID,
 		Memo:              memo,
 	}
-	_, err = d.db.Exec(`INSERT INTO ledger
+	_, err = tx.Exec(`INSERT INTO ledger
  (entry_id, account_id, type, amount_cents, balance_after_cents, created_at, session_id, gift_id, memo)
  VALUES (?,?,?,?,?,?,?,?,?)`, entry.EntryID, accountID, entry.Type, entry.AmountCents,
 		entry.BalanceAfterCents, entry.CreatedAt, entry.SessionID, entry.GiftID, entry.Memo)
 	return entry, err
+}
+
+// Charge is what SettleCharge asks the policy for: the cost of the session in whole
+// cents given the carry the account is holding, and the carry it leaves behind.
+type Charge func(carry int64) (cents, newCarry int64)
+
+// Settlement is what one session cost once the balance had its say.
+type Settlement struct {
+	Entry   protocol.LedgerEntry
+	Billed  bool
+	Clamped bool
+}
+
+// SettleCharge prices one session against the account's carry and its balance, in a
+// single transaction so a concurrent top-up or charge can neither be lost nor
+// double-spent.
+//
+// A charge larger than the balance is clamped to the balance rather than refused:
+// the session already happened, the floor still holds, and Clamped tells the caller
+// the account has run out so the session can be closed. A clamped charge drops the
+// carry as well, so the shortfall is never carried forward onto a later top-up.
+func (d *DB) SettleCharge(accountID, sessionID string, now int64, price Charge) (Settlement, error) {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return Settlement{}, err
+	}
+	defer tx.Rollback()
+	var carry int64
+	if err := tx.QueryRow(`SELECT billing_carry FROM accounts WHERE account_id=?`,
+		accountID).Scan(&carry); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Settlement{}, ErrNotFound
+		}
+		return Settlement{}, err
+	}
+	balance, err := balanceTx(tx, accountID)
+	if err != nil {
+		return Settlement{}, err
+	}
+	cents, newCarry := price(carry)
+	out := Settlement{}
+	if cents > balance {
+		cents, newCarry = max(balance, 0), 0
+		out.Clamped = true
+	}
+	if cents > 0 {
+		entry, err := appendTx(tx, accountID, protocol.LedgerSessionCharge, -cents, now,
+			sessionID, "", "session time")
+		if err != nil {
+			return Settlement{}, err
+		}
+		out.Entry, out.Billed = entry, true
+	}
+	if _, err := tx.Exec(`UPDATE accounts SET billing_carry=? WHERE account_id=?`,
+		newCarry, accountID); err != nil {
+		return Settlement{}, err
+	}
+	return out, tx.Commit()
+}
+
+// UnconsumedGrant reports the part of the account's starting credits that no session
+// has spent, and whether a grant window is still open at all.
+//
+// Charges consume the grant before paid credit, so every session charge since the
+// grant counts against it. What tells grant apart from paid credit is the entry type:
+// the claw-back is a trial_expiry rather than a plain adjustment, so an operator
+// correction can never read as consumed or expired grant. A trial_expiry closes the
+// window whatever it was worth — a window that expired with nothing left to take is
+// still closed — and only a grant written after it opens a new one.
+func (d *DB) UnconsumedGrant(accountID string) (cents int64, open bool, err error) {
+	var lastExpiry, firstGrant sql.NullInt64
+	if err := d.db.QueryRow(`SELECT MAX(created_at) FROM ledger
+ WHERE account_id=? AND type=?`, accountID, protocol.LedgerTrialExpiry).Scan(&lastExpiry); err != nil {
+		return 0, false, err
+	}
+	if err := d.db.QueryRow(`SELECT MIN(created_at) FROM ledger
+ WHERE account_id=? AND type=? AND created_at > ?`,
+		accountID, protocol.LedgerTrialGrant, lastExpiry.Int64).Scan(&firstGrant); err != nil {
+		return 0, false, err
+	}
+	if !firstGrant.Valid {
+		return 0, false, nil
+	}
+	var granted, charged sql.NullInt64
+	err = d.db.QueryRow(`SELECT
+ SUM(CASE WHEN type=? AND created_at >= ? THEN amount_cents END),
+ SUM(CASE WHEN type=? AND created_at >= ? THEN -amount_cents END)
+ FROM ledger WHERE account_id=?`,
+		protocol.LedgerTrialGrant, firstGrant.Int64,
+		protocol.LedgerSessionCharge, firstGrant.Int64, accountID).Scan(&granted, &charged)
+	if err != nil {
+		return 0, false, err
+	}
+	return max(0, granted.Int64-charged.Int64), true, nil
+}
+
+// HasLiveTrial reports whether any device on the account is still inside its grant
+// window, so one device's expiry never claws back another device's live grant.
+func (d *DB) HasLiveTrial(accountID string, now int64) (bool, error) {
+	var n int
+	err := d.db.QueryRow(`SELECT COUNT(1) FROM devices
+ WHERE account_id=? AND unlinked=0 AND trial_ends_at>?`, accountID, now).Scan(&n)
+	return n > 0, err
 }
 
 type LedgerQuery struct {

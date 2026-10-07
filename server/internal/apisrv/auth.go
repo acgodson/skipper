@@ -277,6 +277,12 @@ func (s *Server) linkDevice(device *apidb.Device, pending *apidb.LinkCode, req p
 		req.Platform, hardwareHash, trialEndsAt, s.nowMS()); err != nil {
 		return nil, err
 	}
+	if trialEndsAt != 0 {
+		if _, err := s.opt.DB.Append(pending.AccountID, protocol.LedgerTrialGrant,
+			policy.TrialGrantCents, s.nowMS(), "", "", "starting credits"); err != nil {
+			return nil, err
+		}
+	}
 	return s.opt.DB.DeviceByID(device.DeviceID)
 }
 
