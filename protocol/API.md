@@ -192,12 +192,21 @@ The website then redirects to `skipperdesk://link?code=<code>&nonce=<nonce>`, ec
 it was given at step 1 unchanged.
 
 This is the **only** endpoint a browser calls, and the website is a different origin from the
-API (`skipperdesk.app` against `api.skipperdesk.app`). It therefore needs CORS: a preflight
-answer for `OPTIONS`, and `Access-Control-Allow-Origin` on **every** response including the
-errors below — a 409 whose body the browser may not read becomes an unexplained failure on
-screen. The allowed origin is an exact value from configuration, never `*`, and
-`Access-Control-Allow-Credentials` stays off: the credential is a bearer header, not a cookie.
-rc-api does not do any of this yet.
+API (`skipperdesk.app` against `api.skipperdesk.app`). It therefore has CORS, and no other
+route does:
+
+- `OPTIONS /v1/auth/link` answers `204` with `Access-Control-Allow-Methods: POST`,
+  `Access-Control-Allow-Headers: Authorization, Content-Type, Idempotency-Key` and
+  `Access-Control-Max-Age: 600` — the longest preflight cache Chrome honours.
+- `Access-Control-Allow-Origin` and `Vary: Origin` are on **every** answer from the route,
+  the `201` and each of `400`, `401`, `403`, `409`, `426`, `429` and `5xx`. A 409 whose body
+  the browser may not read becomes an unexplained failure on screen, and the one message that
+  tells an owner their Mac belongs to another account never appears.
+- The allowed origin is the exact origin of `-web-base-url`, never `*` and never reflected
+  from the request. A request from any other origin gets no CORS header at all and the browser
+  does the refusing; there is no status code for it, because there is no page to read one.
+- `Access-Control-Allow-Credentials` stays **off**. The credential is a bearer header the page
+  sets itself, not a cookie the browser attaches.
 
 Linking a key that is already linked to **another** account is `409 conflict` with
 `reason: linked_elsewhere`; the owner must unlink it first (§3.6).

@@ -29,7 +29,11 @@ import (
 	protocol "rcprotocol"
 )
 
-const internalToken = "test-internal-token"
+const (
+	internalToken  = "test-internal-token"
+	testWebBaseURL = "https://skipperdesk.test/"
+	testWebOrigin  = "https://skipperdesk.test"
+)
 
 type clock struct {
 	mu  sync.Mutex
@@ -107,7 +111,7 @@ func newHarnessWith(t *testing.T, proxies clientip.Resolver) *harness {
 	api, err := New(Options{
 		DB: db, IdP: idp.Dev{}, IDCert: authority, InternalToken: internalToken, HardwareSalt: []byte("salt"),
 		ClientIP: proxies, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: c.Now,
-		CloseSessions: closes.close,
+		CloseSessions: closes.close, WebBaseURL: testWebBaseURL,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -118,6 +122,22 @@ func newHarnessWith(t *testing.T, proxies clientip.Resolver) *harness {
 	t.Cleanup(internal.Close)
 	return &harness{t: t, url: srv.URL, internalURL: internal.URL, clock: c, api: api, db: db, dbPath: path,
 		authority: authority, closes: closes}
+}
+
+// withIdP serves the same stores behind a second rc-api whose identity provider
+// is not the dev one, which is what the deployed routing table looks like.
+func (h *harness) withIdP(provider idp.Provider) string {
+	h.t.Helper()
+	api, err := New(Options{
+		DB: h.db, IdP: provider, IDCert: h.authority, InternalToken: internalToken, HardwareSalt: []byte("salt"),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: h.clock.Now, WebBaseURL: testWebBaseURL,
+	})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	srv := httptest.NewServer(api)
+	h.t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 type reply struct {
