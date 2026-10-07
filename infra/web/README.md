@@ -142,6 +142,31 @@ the backend stack's outputs, because it is the one file that carries the sign-in
 app client id and the API domain. `scripts/serve-web.sh` writes a local copy for offline work;
 `web/.gitignore` keeps it out of the repository and `deploy.sh` refuses to upload it.
 
+## Shipping a release image
+
+```
+AWS_PROFILE=<profile> infra/web/deploy.sh --profile <profile> --dmg dist/SkipperDesk-<version>.dmg
+```
+
+One object into `/assets/`, `Cache-Control: public, max-age=31536000, immutable`, and
+nothing else: no site sync, no invalidation. It refuses a name that is already in the
+bucket, because an immutable object is served from edges and browsers for a year and
+must never mean two different images.
+
+The ordinary site sync runs with `--delete` and **excludes `*.dmg`**. Without that the
+next copy change would delete the download: the image lives under `/assets/` but is not
+in `web/assets/`, so `--delete` would see it as a file that should not be there.
+
+Uploading does not publish. The app learns about a release from
+`GET /v1/app/releases/latest`, which is `scripts/publish-release.sh` — that script
+re-downloads this object through CloudFront and checks its hash before it tells the API
+anything.
+
+**The version on the page is hand-edited.** There is no build step, so
+`web/download/index.html` carries the filename, the version and the size as text. Change
+them, deploy the site, and `publish-release.sh` will warn if the live page and the
+release it is publishing disagree.
+
 ## The `.dmg` belongs here, not on the instance
 
 When the app ships, the download goes in this bucket behind this distribution — not on the
@@ -177,4 +202,7 @@ the instance's NIC.
 - **No access logs, no analytics, no tag manager, no third-party font.**
 - **No WAF.** A static site behind a cache has nothing to protect; the rate limits that
   matter are rc-api's, and they are per client address there.
-- **No download page.** Nothing to download yet.
+- **No release automation.** The download page's version, size and link are edited by
+  hand and the release is published by hand. Three commands, a few times a year, each
+  checking the one before it — against a build step that would have to be trusted with
+  the signing identity.
