@@ -231,16 +231,33 @@ variable "ssm_parameter_prefix" {
   default     = ""
 }
 
-variable "cognito_callback_urls" {
-  description = "Redirect targets the public app client may use. Our own sign-in page calls the Cognito API directly, so this matters only to the social providers."
-  type        = list(string)
-  default     = ["https://skipperdesk.app/sign-in"]
+variable "cognito_domain_prefix" {
+  description = "Label of the free Cognito sign-in domain, <prefix>.auth.<region>.amazoncognito.com. Empty means <project>. It must be unique across the region, so an apply that fails on it needs a different value here, not a retry."
+  type        = string
+  default     = ""
 }
 
-variable "cognito_logout_urls" {
-  description = "Sign-out redirect targets for the public app client."
+variable "cognito_managed_login_version" {
+  description = "1 is the classic hosted UI, which needs no branding resource. 2 is managed login, which renders from the branding designer and so needs an aws_cognito_managed_login_branding alongside it."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2], var.cognito_managed_login_version)
+    error_message = "cognito_managed_login_version must be 1 or 2."
+  }
+}
+
+variable "extra_cognito_callback_urls" {
+  description = "Redirect targets beyond https://<web domain>/link. For a local origin while the sign-in page is being worked on; empty in production."
   type        = list(string)
-  default     = ["https://skipperdesk.app/"]
+  default     = []
+}
+
+variable "extra_cognito_logout_urls" {
+  description = "Sign-out redirect targets beyond https://<web domain>/."
+  type        = list(string)
+  default     = []
 }
 
 variable "enable_social_idp" {

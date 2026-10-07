@@ -44,6 +44,16 @@ output "cognito_issuer" {
   value       = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.this.id}"
 }
 
+output "cognito_sign_in_base_url" {
+  description = "Origin the sign-in page sends people to and exchanges the authorization code at. infra/web reads it from this state to build the page's config and its Content-Security-Policy."
+  value       = "https://${aws_cognito_user_pool_domain.this.domain}.auth.${var.aws_region}.amazoncognito.com"
+}
+
+output "web_domain" {
+  description = "Host the site is served on, taken from web_base_url. infra/web certifies and serves exactly this name and its www form."
+  value       = local.web_domain
+}
+
 output "cognito_app_client_id" {
   description = "rc-api -cognito-audience, and the client id the sign-in page uses. Public by design: no secret."
   value       = aws_cognito_user_pool_client.web.id

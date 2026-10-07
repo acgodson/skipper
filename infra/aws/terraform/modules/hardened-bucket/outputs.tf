@@ -3,6 +3,11 @@ output "id" {
   value       = aws_s3_bucket.this.id
 }
 
+output "bucket_regional_domain_name" {
+  description = "Regional endpoint of the bucket, for a CloudFront origin. The regional form, not the global one, so the first request is not a redirect."
+  value       = aws_s3_bucket.this.bucket_regional_domain_name
+}
+
 output "arn" {
   description = "Bucket ARN, for IAM and bucket-policy statements the caller writes."
   value       = aws_s3_bucket.this.arn

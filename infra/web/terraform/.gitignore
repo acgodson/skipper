@@ -1,0 +1,9 @@
+.terraform/
+terraform.tfstate
+terraform.tfstate.*
+terraform.tfvars
+*.auto.tfvars
+crash.log
+
+# Names the state bucket and the state key ARN, both of which carry the account id.
+backend.hcl

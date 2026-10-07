@@ -32,9 +32,9 @@ All prices below were read from the AWS Pricing API on 2026-10-07 for EU (London
 | Thing | What it is | Where it lives | Notes / what breaks without it |
 |---|---|---|---|
 | Domain | `skipperdesk.app` | **Already owned — Namecheap, paid** | $0 to this phase. The client's single config value (`API.md` §0) is `api.skipperdesk.app` |
-| DNS | Stays at Namecheap (`dns1/dns2.registrar-servers.com`). `A` records for `api.` and `turn.` → the Elastic IP, once it exists | Namecheap Advanced DNS | $0. No Route 53 hosted zone — nothing in the design needs one, and Caddy validates over HTTP-01, not DNS-01 |
+| DNS | Stays at Namecheap (`dns1/dns2.registrar-servers.com`). `A` records for `api.` and `turn.` → the Elastic IP; an `ALIAS` on `@` and a `CNAME` on `www` → the CloudFront distribution; two validation `CNAME`s for the website certificate | Namecheap Advanced DNS | $0. No Route 53 hosted zone — nothing in the design needs one, and Caddy validates over HTTP-01, not DNS-01 |
 | TLS | Public CA cert for `api.skipperdesk.app` | ACM (Shape B) or Caddy + Let's Encrypt (Shape A) | ACM is free but only usable by ALB/CloudFront, not by a process on EC2. On Shape A, Caddy holds the cert and rc-api runs behind it on loopback |
-| Cognito user pool | Email + Apple + Google. **Hosted UI is not used** — `skipperdesk.app/sign-in` is our own page calling the Cognito API (SCOPE §3.2), so no hosted-UI domain and no client secret | Cognito, `eu-west-2` | Free to 10 k MAU (**unverified** — Cognito re-tiered in 2024/25; check the console's pricing panel when creating the pool). rc-api needs `RC_API_COGNITO_ISSUER` + `RC_API_COGNITO_AUDIENCE` (app client id) |
+| Cognito user pool | Email + Apple + Google, with **Cognito's hosted sign-in** on the free `<prefix>.auth.<region>.amazoncognito.com` domain. No client secret, and no password form of ours: the authorization code is bound to the browser with PKCE. A custom `auth.skipperdesk.app` comes with the Apple work | Cognito, `eu-west-2` | Free to 10 k MAU (**unverified** — Cognito re-tiered in 2024/25; check the console's pricing panel when creating the pool). rc-api needs `RC_API_COGNITO_ISSUER` + `RC_API_COGNITO_AUDIENCE` (app client id) |
 | rc-api | REST `/v1`, the `/link` page, the `/ws` pass-through. **Two listeners**: public (`RC_API_LISTEN`) and internal (`RC_API_INTERNAL_LISTEN`, default `127.0.0.1:18081`) | ECS task or the one EC2 box | Refuses to start with the internal listener on the public port |
 | rc-signal | `/ws` signaling, `/healthz`. **Two listeners**: public (`RC_LISTEN`) and internal (`RC_INTERNAL_LISTEN`, default `127.0.0.1:18444`) | same | In a deployment it holds no registry: it asks rc-api over the internal surface (`API.md` §6) |
 | coturn | UDP relay, `3478` udp+tcp, relay range `49160-49200/udp`, `use-auth-secret`, anti-proxy denies from `infra/legacy/coturn/turnserver.conf` | EC2 with an Elastic IP — **always**, both shapes | Needs UDP and a stable public IP, so it cannot sit behind an ALB on Fargate. Raise `user-quota`/`total-quota` above the 1:1 values (6/12) before more than three hosts use it |
@@ -197,6 +197,7 @@ Relayed GB per month = hosts × 10 h × 0.15 × 0.70 GB = **hosts × 1.05 GB**.
 | Session Manager transcripts + their KMS key | $1/key-month; transcripts are a few MB | $1.01 | $1.01 | $1.01 |
 | S3 backups | pennies | $0.20 | $0.30 | $0.50 |
 | Terraform state: bucket, KMS key, lock table | $1/key-month; bucket and on-demand table are pennies | $1.10 | $1.10 | $1.10 |
+| Website: S3 + CloudFront (`infra/web`) | CloudFront's 1 TB out and 10 M requests are always free; the site is a few hundred KB | $0.00 | $0.00 | $0.00 |
 | **TURN egress** | GB above 100 free × $0.09 | 10.5 GB → **$0** | 525 GB → 425 × $0.09 = **$38.25** | 5 250 GB → 5 150 × $0.09 = **$463.50** |
 | **Monthly total** | | **$26.13** | **$65.98** | **$699.13** |
 | **Per paying host** | | **$2.61** | **$0.132** | **$0.140** |
@@ -388,8 +389,12 @@ Nobody is on the new backend, so there is almost nothing to migrate.
 ### New in Phase 5 and never reviewed — each gets a review before it serves real users
 
 1. KMS as the id-cert signer, and the key-rotation story that does not exist in the contract yet.
-2. Cognito as a real IdP: issuer/audience validation, token lifetimes, our own sign-in page
-   calling the Cognito API instead of the hosted UI, and the Apple/Google provider wiring.
+2. Cognito as a real IdP: issuer/audience validation, token lifetimes, the hosted sign-in and
+   the PKCE handoff in `web/`, and the Apple/Google provider wiring. The user-session check in
+   `server/internal/idp/cognito.go` requires an `email` claim and does not check `token_use`,
+   which is why the website sends the ID token; both halves of that belong in this review.
+5. CORS on `POST /v1/auth/link`. The website is a different origin from the API now, and rc-api
+   sets no CORS headers at all — see `infra/web/README.md` and the note in `protocol/API.md` §1.2.
 3. TLS termination by something other than the Go process (Caddy or an ALB), and the
    trusted-proxy/client-IP consequences above.
 4. The Terraform surface itself: IAM roles, security groups, the S3 state bucket, who can assume

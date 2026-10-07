@@ -43,7 +43,7 @@ Every endpoint in §7 is exactly one of these three.
 | Class | Credential | Who holds it | Notes |
 |---|---|---|---|
 | **unauthenticated** | none | anyone | Only the link/token bootstrap, `/v1/health` and the release feed (§10). Rate limited by IP. |
-| **user session** | `Authorization: Bearer <Cognito access token>` | the website, in the browser | Short-lived, refreshed by Cognito. The desktop app never holds one. |
+| **user session** | `Authorization: Bearer <Cognito ID token>` | the website, in the browser | Short-lived, refreshed by Cognito. The desktop app never holds one. The **ID** token, not the access token: the check needs an `email` claim, and Cognito puts one only in the ID token. It is audience-bound to our own app client, which is what the server verifies. |
 | **device token** | `Authorization: Bearer <device token>` | the desktop app | Long-lived, revocable, bound to one device public key. See §1. |
 
 A device token presented to a user-session endpoint is `forbidden`, and vice versa. There is no
@@ -190,6 +190,14 @@ Response `201`: `code`, `expiresAt`, `deviceId` if this key is already linked to
 
 The website then redirects to `skipperdesk://link?code=<code>&nonce=<nonce>`, echoing the `nonce`
 it was given at step 1 unchanged.
+
+This is the **only** endpoint a browser calls, and the website is a different origin from the
+API (`skipperdesk.app` against `api.skipperdesk.app`). It therefore needs CORS: a preflight
+answer for `OPTIONS`, and `Access-Control-Allow-Origin` on **every** response including the
+errors below — a 409 whose body the browser may not read becomes an unexplained failure on
+screen. The allowed origin is an exact value from configuration, never `*`, and
+`Access-Control-Allow-Credentials` stays off: the credential is a bearer header, not a cookie.
+rc-api does not do any of this yet.
 
 Linking a key that is already linked to **another** account is `409 conflict` with
 `reason: linked_elsewhere`; the owner must unlink it first (§3.6).

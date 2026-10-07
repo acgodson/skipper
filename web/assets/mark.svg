@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="SkipperDesk">
+	<title>SkipperDesk</title>
+	<defs>
+		<linearGradient id="harbor" x1="0" y1="0" x2="0" y2="1">
+			<stop offset="0" stop-color="#1A8A96"/>
+			<stop offset="1" stop-color="#0A4F58"/>
+		</linearGradient>
+	</defs>
+	<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#harbor)"/>
+	<circle cx="512" cy="512" r="250" fill="none" stroke="#FFFFFF" stroke-width="34"/>
+	<g stroke="#FFFFFF" stroke-width="26" stroke-linecap="round">
+		<path d="M512 297V352"/>
+		<path d="M512 672V727"/>
+		<path d="M297 512H352"/>
+		<path d="M672 512H727"/>
+	</g>
+	<path d="M646 378 473 473 551 551Z" fill="#FFFFFF"/>
+	<path d="M378 646 473 473 551 551Z" fill="#FFFFFF" fill-opacity="0.45"/>
+</svg>

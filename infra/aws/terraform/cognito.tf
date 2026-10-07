@@ -47,16 +47,31 @@ resource "aws_cognito_user_pool" "this" {
   }
 }
 
-# Public client: no secret, because skipperdesk.app/sign-in is our own page calling the
-# Cognito API from the browser (SCOPE §3.2). A secret in a page is not a secret, and no
-# hosted-UI domain is created, so there is nothing to host a login form on.
+# Cognito's own hosted sign-in, on the free prefix domain. No ACM certificate and no DNS
+# from the owner, which is the whole reason it is not auth.<domain> yet.
+#
+# TODO: move to the custom domain auth.${local.web_domain} with the Apple work. That needs
+# an ACM certificate in us-east-1, a CNAME at the registrar, and aws_cognito_user_pool_domain
+# replaced by its certificate_arn form — see infra/aws/README.md "Sign-in".
+resource "aws_cognito_user_pool_domain" "this" {
+  domain                = local.cognito_domain_prefix
+  user_pool_id          = aws_cognito_user_pool.this.id
+  managed_login_version = var.cognito_managed_login_version
+}
+
+# Public client: no secret, because the page that drives the sign-in is static and served
+# from a bucket. A secret in a page is not a secret, so the authorization code is bound to
+# the browser with PKCE instead (protocol/API.md §1.1, infra/web/README.md).
+#
+# ALLOW_USER_SRP_AUTH is deliberately absent. Hosted sign-in does not use the InitiateAuth
+# flows, so leaving it on would publish a password-guessing surface on a client that has no
+# password form of its own.
 resource "aws_cognito_user_pool_client" "web" {
   name            = "${local.name}-web"
   user_pool_id    = aws_cognito_user_pool.this.id
   generate_secret = false
 
   explicit_auth_flows = [
-    "ALLOW_USER_SRP_AUTH",
     "ALLOW_REFRESH_TOKEN_AUTH",
   ]
 
@@ -65,8 +80,8 @@ resource "aws_cognito_user_pool_client" "web" {
     var.enable_social_idp ? ["SignInWithApple", "Google"] : [],
   )
 
-  callback_urls                        = var.cognito_callback_urls
-  logout_urls                          = var.cognito_logout_urls
+  callback_urls                        = local.cognito_callback_urls
+  logout_urls                          = local.cognito_logout_urls
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_flows                  = ["code"]
   allowed_oauth_scopes                 = ["openid", "email", "profile"]

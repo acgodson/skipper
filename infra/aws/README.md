@@ -17,7 +17,7 @@ Nothing here provisions on its own and nothing here is applied yet.
 | `terraform/iam.tf` | The instance role: `AmazonSSMManagedInstanceCore`, its own SSM parameters, `kms:Sign` on one key, its own three S3 prefixes, its own log group, one metric namespace |
 | `terraform/kms.tf` | The `ECC_NIST_P256` / `SIGN_VERIFY` key for the device-ID certificate signer, with a key policy that lets only the instance role sign |
 | `terraform/ssm.tf` | Eleven `SecureString` parameters, created holding a placeholder |
-| `terraform/cognito.tf` | The user pool (email sign-in), the public app client with no secret and no hosted-UI domain, and the Apple and Google providers |
+| `terraform/cognito.tf` | The user pool (email sign-in), its free sign-in domain, the public app client with no secret, and the Apple and Google providers |
 | `terraform/backups.tf` | The backup bucket and its four lifecycle rules |
 | `terraform/audit.tf` | The audit bucket, the CloudTrail management-events trail, its CloudWatch Logs copy and delivery role, and the metric filter and alarm on `kms:Sign` against the id-cert key |
 | `terraform/session_logging.tf` | The `SSM-SessionManagerRunShell` session preferences, the log group transcripts stream to, and that group's KMS key |
@@ -100,6 +100,9 @@ list, with a description on each. The ones worth setting deliberately:
 | `data_volume_gb` | `20` | The volume both SQLite files live on. Growing it is a resize plus `resize2fs`, not a replacement |
 | `turn_user_quota`, `turn_total_quota` | `12`, `200` | `docs/PHASE5.md` §7: the 1:1 values were 6 and 12 |
 | `enable_social_idp` | `false` | See "Secrets" |
+| `cognito_domain_prefix` | `""` (means `skipperdesk`) | The label must be unique across the region, so an apply that fails on it needs a different value, not a retry |
+| `cognito_managed_login_version` | `1` | 2 is managed login, which renders from the branding designer and so needs an `aws_cognito_managed_login_branding` resource alongside it |
+| `extra_cognito_callback_urls` | `[]` | A local origin while the sign-in page is being worked on |
 | `enable_endpoint_health_check` | `false` | Needs the `A` records first |
 | `monthly_budget_usd` | `50` | The alarm that protects the owner |
 | `id_cert_sign_threshold` | `60` | Sized on fleet size, not taste: roughly 6 × expected hosts. "The audit trail" has the arithmetic |
@@ -580,6 +583,26 @@ bounded by a condition.
 
 No KMS action was added, and none is needed: CloudWatch Logs encrypts on the writer's behalf
 using the grant in the key policy, so the instance role never touches the key itself.
+
+## Sign-in, and the website
+
+This stack owns the identity half: the user pool, its free sign-in domain
+(`<prefix>.auth.<region>.amazoncognito.com`) and the public app client. The authentication
+itself is Cognito's hosted sign-in — no password, no verification code and no social token
+passes through a page we wrote. The client has **no secret** and **no `ALLOW_USER_SRP_AUTH`**:
+the hosted flow does not use the `InitiateAuth` flows, so leaving SRP on would publish a
+password-guessing surface on a client that has no password form of its own. The authorization
+code is bound to the browser with PKCE instead.
+
+The page that drives it, and everything else on `skipperdesk.app`, is **not here**. It is a
+separate stack with its own state — `infra/web` — so a landing-page change can never roll this
+box. `cognito_callback_urls` and `cognito_logout_urls` are gone as variables; the callback is
+derived from `web_base_url`, which already names the site, and `extra_cognito_callback_urls`
+is there for a local origin. Only `https://<web domain>/link` is registered: CloudFront sends
+`www` to the apex before any script runs.
+
+**Caddy serves `api.skipperdesk.app` and nothing else.** The apex and `www` never reach this
+instance, and the site files do not travel through the S3 `config/` prefix.
 
 ## Caddy
 
