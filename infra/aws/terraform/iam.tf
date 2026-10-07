@@ -87,11 +87,28 @@ data "aws_iam_policy_document" "app" {
     }
   }
 
+  # Two writers, the same three actions: the CloudWatch agent into the app group and SSM
+  # Agent streaming a session transcript into the session group. No kms action belongs
+  # here — CloudWatch Logs encrypts on the writer's behalf under the key policy in
+  # session_logging.tf, so the role never touches the key.
   statement {
-    sid       = "ShipOwnLogs"
+    sid     = "ShipOwnLogs"
+    effect  = "Allow"
+    actions = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"]
+    resources = [
+      "${aws_cloudwatch_log_group.app.arn}:*",
+      "${aws_cloudwatch_log_group.sessions.arn}:*",
+    ]
+  }
+
+  # The one action session logging needs that cannot be scoped: a resource-scoped grant
+  # makes SSM Agent's unfiltered DescribeLogGroups fail rather than return a filtered
+  # list, which leaves session logging silently not writing. Group names, no content.
+  statement {
+    sid       = "DiscoverLogGroupsForSessionLogging"
     effect    = "Allow"
-    actions   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"]
-    resources = ["${aws_cloudwatch_log_group.app.arn}:*"]
+    actions   = ["logs:DescribeLogGroups"]
+    resources = ["*"]
   }
 
   statement {

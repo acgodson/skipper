@@ -13,9 +13,10 @@ locals {
   backup_bucket = var.backup_bucket_name != "" ? var.backup_bucket_name : "${local.name}-backups-${data.aws_caller_identity.current.account_id}"
   audit_bucket  = var.audit_bucket_name != "" ? var.audit_bucket_name : "${local.name}-audit-${data.aws_caller_identity.current.account_id}"
 
-  log_group        = "/${var.project}/${var.environment}/app"
-  audit_log_group  = "/${var.project}/${var.environment}/cloudtrail"
-  metric_namespace = "${var.project}/${var.environment}"
+  log_group         = "/${var.project}/${var.environment}/app"
+  audit_log_group   = "/${var.project}/${var.environment}/cloudtrail"
+  session_log_group = "/${var.project}/${var.environment}/sessions"
+  metric_namespace  = "${var.project}/${var.environment}"
 
   # The ARN SSM supplies as the PARAMETER_ARN encryption context on every SecureString
   # operation, minus the parameter's own name. It is what scopes both halves of the
@@ -27,6 +28,10 @@ locals {
   # Built rather than read off aws_cloudtrail.management, so the trail's bucket policy and
   # its CloudWatch Logs role can name it without a dependency cycle through the trail.
   trail_arn = "arn:${data.aws_partition.current.partition}:cloudtrail:${var.aws_region}:${data.aws_caller_identity.current.account_id}:trail/${local.trail_name}"
+
+  # Same reason: the CMK's key policy grants CloudWatch Logs against this log group, and
+  # the log group names the CMK.
+  session_log_group_arn = "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:${local.session_log_group}"
 
   service_user = var.project
   app_dir      = "/opt/${var.project}"

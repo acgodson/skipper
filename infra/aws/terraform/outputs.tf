@@ -73,6 +73,11 @@ output "audit_log_group" {
   value       = aws_cloudwatch_log_group.audit.name
 }
 
+output "session_log_group" {
+  description = "Session Manager transcripts. With no inbound SSH rule this is the record of every administrative shell on the box."
+  value       = aws_cloudwatch_log_group.sessions.name
+}
+
 output "alarm_topic_arn" {
   value = aws_sns_topic.alarms.arn
 }

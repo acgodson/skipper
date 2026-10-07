@@ -201,6 +201,24 @@ variable "id_cert_sign_threshold" {
   default     = 60
 }
 
+variable "session_log_retention_days" {
+  description = "CloudWatch Logs retention for Session Manager transcripts."
+  type        = number
+  default     = 90
+}
+
+variable "enable_session_log_cmk" {
+  description = "Encrypt the session-transcript log group with a customer-managed key and require it in the session preferences. Adds $1/month. Off means the group keeps CloudWatch's own default encryption and CloudWatchEncryptionEnabled goes false with it — the two are driven from this one variable because a mismatch stops session logging rather than downgrading it."
+  type        = bool
+  default     = true
+}
+
+variable "session_idle_timeout_minutes" {
+  description = "Minutes an idle Session Manager session is held open before it is closed. AWS accepts 1 to 60."
+  type        = number
+  default     = 20
+}
+
 variable "kms_deletion_window_days" {
   description = "Waiting period on a scheduled deletion of the id-cert signing key."
   type        = number
