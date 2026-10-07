@@ -22,6 +22,7 @@ const (
 	jwksMaxBytes  = 256 * 1024
 	clockSkewSec  = 60
 	jwksFetchTime = 5 * time.Second
+	tokenUseID    = "id"
 )
 
 type Cognito struct {
@@ -68,7 +69,13 @@ func (c *Cognito) UserSession(ctx context.Context, bearer string) (Session, erro
 	if claims.Iss != c.issuer || claims.Exp < now-clockSkewSec || claims.Sub == "" {
 		return Session{}, ErrUnauthenticated
 	}
-	if claims.Aud != c.audience && claims.ClientID != c.audience {
+	// Only the ID token. An access token is audience-bound to the same app client
+	// and verifies under the same keys, so `token_use` is the only thing that
+	// separates them; it also carries `client_id` rather than `aud`, which is why
+	// there is no second audience branch here. Without this check the `email`
+	// test below was doing the work by accident, because Cognito puts `email` in
+	// the ID token only.
+	if claims.TokenUse != tokenUseID || claims.Aud != c.audience {
 		return Session{}, ErrUnauthenticated
 	}
 	if claims.Email == "" {
@@ -86,7 +93,7 @@ type jwtClaims struct {
 	Iss      string `json:"iss"`
 	Sub      string `json:"sub"`
 	Aud      string `json:"aud"`
-	ClientID string `json:"client_id"`
+	TokenUse string `json:"token_use"`
 	Email    string `json:"email"`
 	Exp      int64  `json:"exp"`
 }

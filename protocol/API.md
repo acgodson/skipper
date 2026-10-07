@@ -43,7 +43,7 @@ Every endpoint in §7 is exactly one of these three.
 | Class | Credential | Who holds it | Notes |
 |---|---|---|---|
 | **unauthenticated** | none | anyone | Only the link/token bootstrap, `/v1/health` and the release feed (§10). Rate limited by IP. |
-| **user session** | `Authorization: Bearer <Cognito ID token>` | the website, in the browser | Short-lived, refreshed by Cognito. The desktop app never holds one. The **ID** token, not the access token: the check needs an `email` claim, and Cognito puts one only in the ID token. It is audience-bound to our own app client, which is what the server verifies. |
+| **user session** | `Authorization: Bearer <Cognito ID token>` | the website, in the browser | Short-lived, refreshed by Cognito. The desktop app never holds one. The **ID** token, not the access token: the server requires `token_use: "id"` and refuses anything else as `unauthenticated`, because the check needs an `email` claim and Cognito puts one only in the ID token. Do not relax this — an access token from the same pool verifies under the same keys and names the same app client, so `token_use` is the only claim that tells the two apart. `aud` must be our own app client; an access token's `client_id` is never accepted in its place. |
 | **device token** | `Authorization: Bearer <device token>` | the desktop app | Long-lived, revocable, bound to one device public key. See §1. |
 
 A device token presented to a user-session endpoint is `forbidden`, and vice versa. There is no
