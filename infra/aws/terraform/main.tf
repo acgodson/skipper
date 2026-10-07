@@ -11,14 +11,22 @@ locals {
   prefix = var.ssm_parameter_prefix != "" ? var.ssm_parameter_prefix : "/${var.project}/${var.environment}"
 
   backup_bucket = var.backup_bucket_name != "" ? var.backup_bucket_name : "${local.name}-backups-${data.aws_caller_identity.current.account_id}"
+  audit_bucket  = var.audit_bucket_name != "" ? var.audit_bucket_name : "${local.name}-audit-${data.aws_caller_identity.current.account_id}"
 
   log_group        = "/${var.project}/${var.environment}/app"
+  audit_log_group  = "/${var.project}/${var.environment}/cloudtrail"
   metric_namespace = "${var.project}/${var.environment}"
 
   # The ARN SSM supplies as the PARAMETER_ARN encryption context on every SecureString
   # operation, minus the parameter's own name. It is what scopes both halves of the
   # read-a-secret pair in iam.tf: ssm:GetParameter by resource, kms:Decrypt by context.
   parameter_arn_prefix = "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.prefix}"
+
+  trail_name = "${local.name}-management"
+
+  # Built rather than read off aws_cloudtrail.management, so the trail's bucket policy and
+  # its CloudWatch Logs role can name it without a dependency cycle through the trail.
+  trail_arn = "arn:${data.aws_partition.current.partition}:cloudtrail:${var.aws_region}:${data.aws_caller_identity.current.account_id}:trail/${local.trail_name}"
 
   service_user = var.project
   app_dir      = "/opt/${var.project}"

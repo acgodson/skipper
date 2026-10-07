@@ -63,6 +63,16 @@ output "log_group" {
   value = aws_cloudwatch_log_group.app.name
 }
 
+output "audit_bucket" {
+  description = "Where CloudTrail delivers management events. Separate from the backup bucket on purpose: the instance role can write to that one."
+  value       = module.audit.id
+}
+
+output "audit_log_group" {
+  description = "The CloudWatch Logs copy of the trail. The kms:Sign metric filter reads this group."
+  value       = aws_cloudwatch_log_group.audit.name
+}
+
 output "alarm_topic_arn" {
   value = aws_sns_topic.alarms.arn
 }
