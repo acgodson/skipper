@@ -24,7 +24,18 @@ A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone 
 
 ## In progress
 
-Nothing — the queue below is next.
+**Phase 5 — AWS backend.** Planned in `docs/PHASE5.md`, built but not yet applied.
+
+| Step | State |
+|---|---|
+| Member account under the existing organization, scoped Identity Center access, spend budget | done |
+| `infra/aws`: Terraform, cloud-init, systemd, Caddy, coturn, backups, deploy — carrying nothing from `infra/legacy` | done |
+| `rc-api` signs device-ID certificates inside KMS; no private key on the box | done |
+| Databases on their own encrypted volume; Terraform state in S3 before any secret reaches it | done |
+| IAM scoping, CloudTrail, Session Manager logging | in progress |
+| `terraform apply`, then the two DNS records at the registrar | next |
+
+Nothing is provisioned yet beyond the budget alarm.
 
 ## Queued, in order
 
