@@ -25,32 +25,7 @@ resource "aws_kms_alias" "session_logs" {
 }
 
 data "aws_iam_policy_document" "session_logs_key" {
-  statement {
-    sid    = "AccountAdministration"
-    effect = "Allow"
-    actions = [
-      "kms:Create*",
-      "kms:Describe*",
-      "kms:Enable*",
-      "kms:List*",
-      "kms:Put*",
-      "kms:Update*",
-      "kms:Revoke*",
-      "kms:Disable*",
-      "kms:Get*",
-      "kms:Delete*",
-      "kms:TagResource",
-      "kms:UntagResource",
-      "kms:ScheduleKeyDeletion",
-      "kms:CancelKeyDeletion",
-    ]
-    resources = ["*"]
-
-    principals {
-      type        = "AWS"
-      identifiers = ["arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root"]
-    }
-  }
+  source_policy_documents = [data.aws_iam_policy_document.kms_account_administration.json]
 
   # CloudWatch Logs encrypts and decrypts on the writer's behalf, which is why the
   # instance role needs no kms action for this. Scoped to the one log group by the

@@ -21,7 +21,10 @@ resource "aws_kms_alias" "id_cert" {
   target_key_id = aws_kms_key.id_cert.key_id
 }
 
-data "aws_iam_policy_document" "id_cert_key" {
+# Administration without use. Every customer-managed key in this stack starts from this
+# statement and then grants exactly one principal exactly the operations it needs, so a
+# key administrator cannot sign a certificate or read a session transcript.
+data "aws_iam_policy_document" "kms_account_administration" {
   statement {
     sid    = "AccountAdministration"
     effect = "Allow"
@@ -48,6 +51,10 @@ data "aws_iam_policy_document" "id_cert_key" {
       identifiers = ["arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root"]
     }
   }
+}
+
+data "aws_iam_policy_document" "id_cert_key" {
+  source_policy_documents = [data.aws_iam_policy_document.kms_account_administration.json]
 
   statement {
     sid       = "SignOnlyFromTheApplicationRole"
