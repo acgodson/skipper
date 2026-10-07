@@ -227,7 +227,12 @@ install -m 0644 "$${CONFIG}/cloudwatch-agent.json" \
 rm -rf "$${CONFIG}"
 
 systemctl daemon-reload
-systemctl enable --now caddy coturn
+
+# apt starts caddy and coturn the moment it installs them, before any of the configuration
+# above exists, and `enable --now` does nothing to a unit that is already running. Restart,
+# so what is on disk is what is actually serving.
+systemctl enable caddy coturn
+systemctl restart caddy coturn
 systemctl enable --now skipperdesk-backup-db.timer skipperdesk-backup-claims.timer
 systemctl enable rc-api.service rc-signal.service
 
