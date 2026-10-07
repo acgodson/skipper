@@ -101,7 +101,7 @@ The ledger is append-only (`API.md` §7.2) and the balance is `SUM(amount_cents)
 |---|---|
 | Trial granted | one `trial_grant` entry, `+50`, `memo` "starting credits". `type` is an open enum, so this is additive |
 | Session | `session_charge`, negative, as today |
-| Grant expires | one `adjustment` entry, `−min(unconsumedGrant, balance)`, `memo` "starting credits expired". `unconsumedGrant = max(0, 50 − Σ session_charge since the grant)` |
+| Grant expires | one **`trial_expiry`** entry, `−min(unconsumedGrant, balance)`. `unconsumedGrant = max(0, Σ trial_grant − Σ session_charge since the grant)`. Its own ledger type, **not** an `adjustment` with a memo: money logic cannot key off free text, and an expiry has to be distinguishable from an operator correction. **Written even when it is worth 0** — the entry is what records that the window closed; without it the grant never closes and a later top-up gets clawed back |
 
 Clawing back only the unconsumed part is what keeps a $5 top-up safe: charges consume the grant
 first, so a user who topped up never loses paid credit at expiry.
@@ -127,7 +127,7 @@ first, so a user who topped up never loses paid credit at expiry.
 | `API.md` §7.2 | `type` gains `trial_grant` (open enum) |
 | UI (`EntitlementPresentation.statusLine`) | `trial` → "Trial · about 5 hours left" (from `minutesRemaining`, rounded down to the hour; under an hour, "less than an hour left"). `active` → "$4.30 left · about 43 hours". `exhausted` → **"No balance. Top up to keep hosting."** — the present string names a URL ("top up at skipperdesk.app"), which DESIGN §4 rule 8 forbids; the Top Up… button is the route |
 | Website (`web/index.html`) | "starts with a free trial" → "starts with 5 free hours". It currently states no duration, so nothing else there changes |
-| Acceptance | a fresh device's `/v1/entitlement` returns `trial`, `balanceCents: 50`, `minutesRemaining: 300`, `trialEndsAt` = grant + 14 d; after a 30-minute session, `minutesRemaining: 297` and the ledger shows one `-5` entry; with the clock advanced past `trialEndsAt`, status is `exhausted`/`trial_expired` and the balance is exactly `0`, never negative |
+| Acceptance | a fresh device's `/v1/entitlement` returns `trial`, `balanceCents: 50`, `minutesRemaining: 300`, `trialEndsAt` = grant + 14 d; after a 30-minute session, `minutesRemaining: 270` and the ledger shows one `-5` entry (5¢ of 50¢ spent leaves 45¢, which is 270 minutes — an earlier draft said 297, which contradicted its own `-5`); with the clock advanced past `trialEndsAt`, status is `exhausted`/`trial_expired` and the balance is exactly `0`, never negative |
 
 ### 1.6 What a user signed up under the old scheme sees
 
