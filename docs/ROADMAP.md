@@ -1,7 +1,7 @@
 # SkipperDesk — roadmap and progress
 
 The single place to see what is done, what is running, and what is queued.
-Scope and rationale live in `docs/SCOPE.md`; this file tracks state. Updated 2026-10-06.
+Scope and rationale live in `docs/SCOPE.md`; this file tracks state. Updated 2026-10-07.
 
 A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone never close one.
 
@@ -32,7 +32,7 @@ Nothing — the queue below is next.
 |---|---|---|---|
 | 1 | **Cross-network + relay proof** | The riskiest untested thing: two endpoints on different networks, and the TURN fallback. Needs TURN, so it rides with Phase 5; a cloud peer stands in for a second Mac (the headless host must come from v1 to v5 first) | A session across two real networks, and one forced onto the relay |
 | 2 | **Fourth security review** | Read-only pass done 2026-10-06; its one HIGH and the nine other findings are fixed on `sec/review4-fixes`. What remains is a re-read of the fixes | No HIGH or CRITICAL findings outstanding |
-| 3 | **Phase 5 — AWS backend** | Fresh account: Cognito, API, signaling, relays, the domain, TURN. First real money | Two Macs connect through `skipperdesk.app`, relay fallback proven |
+| 3 | **Phase 5 — AWS backend** | Fresh account: Cognito, API, signaling, relays, the domain, TURN. First real money. Planned in `docs/PHASE5.md`; waits on the owner-only steps there | Two Macs connect through `skipperdesk.app`, relay fallback proven |
 | 4 | **Phase 6 — business logic** | Trial length, rate per hour, lock-outs, credits, gifting, tiers | Priced, metered and enforced end to end |
 | 5 | **Phase 7 — Skipper agent** | Observability and liveness for paid tiers; also explains *why* a Mac is offline | Opt-in, never silent |
 | 6 | **Lock-screen support** | Designed (`docs/LOCKSCREEN.md`). Viewing is feasible on Apple's supported path; typing needs DriverKit HID entitlements Apple grants by request, the same route Karabiner uses. Ships a root component, so it keeps its own review | L1: the lock screen is visible from a controller |
