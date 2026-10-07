@@ -35,6 +35,10 @@ A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone 
 | IAM scoping, CloudTrail, Session Manager logging | done |
 | Applied. `api.skipperdesk.app` and `turn.skipperdesk.app` live on `3.8.76.202`, TLS from Let's Encrypt | done |
 | **5.1 acceptance**: health 200 on a trusted chain, `/internal/*` 404 from the internet, `/signal/healthz` 200, TURN 3478 udp+tcp open | done |
+| Reboot proven: the data volume remounts and all four services start unattended | done |
+| Sign-in website built, on its own stack and its own Terraform state (`web/`, `infra/web/`) | done |
+| CORS on the link call, the Cognito ID token pinned by `token_use`, a sign-in that cannot double-open | done |
+| Website stack: certificate issued; distribution and the apex DNS cutover | in progress |
 | 5.1 remaining: a real Mac signs in against this backend and registers | next |
 | 5.2 TURN credentials end to end; 5.3 cross-network + forced relay; 5.4 fifth review; 5.5 cutover | queued |
 
