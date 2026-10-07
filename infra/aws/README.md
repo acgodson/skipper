@@ -80,7 +80,10 @@ it, so a new Canonical image does not replace the box behind your back.
 Every secret lives in SSM Parameter Store as a `SecureString` under
 `terraform output ssm_parameter_prefix` (`/skipperdesk/prod` by default). Terraform creates
 each parameter holding the literal `placeholder-set-out-of-band` and then
-`ignore_changes = [value]`, so it never generates a secret and never overwrites yours:
+`ignore_changes = [value]`, so it never generates a secret and never overwrites yours. The
+bootstrap refuses to continue while any parameter it reads still holds that placeholder, so a
+box can never come up serving with a TURN secret and a hardware salt that are a public
+string:
 
 ```
 aws ssm put-parameter --profile <p> --region eu-west-2 --overwrite \
@@ -264,6 +267,9 @@ the PR that does it.
 - **No shared rate-limit store.** The buckets are in-process and correct for one instance
   only (`PROTOCOL.md` §3.3). A second instance makes them wrong, which is a blocker for
   Shape B rather than a nice-to-have.
+- **No EBS snapshot schedule.** `docs/PHASE5.md` §1 also asks for a daily EBS snapshot
+  alongside the S3 `sqlite3 .backup` copies. Only the S3 half is here; a Data Lifecycle
+  Manager policy is the missing piece and is free apart from snapshot storage.
 - **No payment path.** `API.md` §7.4.
 - **No `turn.skipperdesk.app` TLS.** `tls-listening-port=0`: TURN here is plain `3478`
   udp and tcp. TURNS would need Caddy's certificate handed to coturn, which is new surface.

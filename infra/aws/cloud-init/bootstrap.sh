@@ -10,7 +10,7 @@
 # script exists, so no shell ever sees it, and a variable belonging to the script itself is
 # written with a doubled dollar. That is the whole reason for the three suppressions.
 # shellcheck shell=bash
-# shellcheck disable=SC2154,SC2086,SC2034
+# shellcheck disable=SC2154,SC2086,SC2034,SC2193
 set -euo pipefail
 exec >>/var/log/${project}-bootstrap.log 2>&1
 echo "== bootstrap $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -43,14 +43,26 @@ install -d -m 0700 "$${CONFIG}"
 aws s3 cp --region ${aws_region} --recursive --only-show-errors \
   s3://${backup_bucket}/config/ "$${CONFIG}/"
 
+PLACEHOLDER=placeholder-set-out-of-band
+
+# Terraform creates every parameter holding the placeholder, so a bootstrap that runs before
+# the owner has written the real values would otherwise come up serving happily with a TURN
+# secret and a hardware salt that are a known public string.
 param() {
-  aws ssm get-parameter --region ${aws_region} --with-decryption \
-    --name "${ssm_prefix}/$${1}" --query Parameter.Value --output text
+  local value
+  value="$(aws ssm get-parameter --region ${aws_region} --with-decryption \
+    --name "${ssm_prefix}/$${1}" --query Parameter.Value --output text)"
+  if [ "$${value}" = "$${PLACEHOLDER}" ]; then
+    echo "FAIL  ${ssm_prefix}/$${1} still holds the placeholder; write the real value first" >&2
+    return 1
+  fi
+  printf '%s' "$${value}"
 }
 
 secret_file() {
-  local target="${data_dir}/$${2}"
-  ( umask 077; param "$${1}" >"$${target}" )
+  local target="${data_dir}/$${2}" value
+  value="$(param "$${1}")"
+  ( umask 077; printf '%s\n' "$${value}" >"$${target}" )
   chown ${service_user}:${service_user} "$${target}"
   chmod 0600 "$${target}"
 }
@@ -61,11 +73,14 @@ secret_file id-cert-key id-cert-key.pem
 
 # systemd reads an EnvironmentFile as root before it drops privileges, so these are 0600
 # root-owned rather than service-user-owned: one less process that can read them.
+HARDWARE_SALT="$(param hardware-salt)"
+TOKEN_SECRET="$(param token-secret)"
 umask 077
-printf 'RC_API_HARDWARE_SALT=%s\n' "$(param hardware-salt)" >${config_dir}/rc-api.env
-printf 'RC_TOKEN_SECRET=%s\n' "$(param token-secret)" >${config_dir}/rc-signal.env
+printf 'RC_API_HARDWARE_SALT=%s\n' "$${HARDWARE_SALT}" >${config_dir}/rc-api.env
+printf 'RC_TOKEN_SECRET=%s\n' "$${TOKEN_SECRET}" >${config_dir}/rc-signal.env
 chmod 0600 ${config_dir}/rc-api.env ${config_dir}/rc-signal.env
 umask 022
+unset HARDWARE_SALT TOKEN_SECRET
 
 cat >${config_dir}/caddy.env <<ENV
 SKIPPER_ACME_EMAIL=${acme_email}
@@ -106,7 +121,9 @@ fi
 # placeholder line is dropped and the real value appended; the file is group-readable by
 # the turnserver user and by nobody else.
 grep -v '^static-auth-secret=' "$${CONFIG}/turnserver.conf" >/etc/turnserver.conf
-printf 'static-auth-secret=%s\n' "$(param turn-secret)" >>/etc/turnserver.conf
+TURN_SECRET="$(param turn-secret)"
+printf 'static-auth-secret=%s\n' "$${TURN_SECRET}" >>/etc/turnserver.conf
+unset TURN_SECRET
 chown root:turnserver /etc/turnserver.conf
 chmod 0640 /etc/turnserver.conf
 printf 'TURNSERVER_ENABLED=1\n' >/etc/default/coturn
