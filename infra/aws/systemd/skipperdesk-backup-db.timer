@@ -1,0 +1,11 @@
+[Unit]
+Description=SkipperDesk main database snapshot every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Unit=skipperdesk-backup@db.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+# Its own schedule, on purpose: the claims database is never snapshotted or restored
+# together with the main one (API.md §6.1).
+
+[Unit]
+Description=SkipperDesk device-id claims snapshot, daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=15min
+Persistent=true
+Unit=skipperdesk-backup@claims.service
+
+[Install]
+WantedBy=timers.target
