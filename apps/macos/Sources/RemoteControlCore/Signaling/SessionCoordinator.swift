@@ -203,6 +203,18 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
     public var onAccessCodeRequired: ((String) -> Void)?
     public var onEvent: ((CoordinatorEvent) -> Void)?
 
+    /// The ceiling the server stated for this Mac's own account, and whether the answer
+    /// it came from is still fresh (`API.md` §4.4). The coordinator does not reach for an
+    /// account itself: whoever owns the entitlement cache supplies this, and a host with
+    /// no provider at all is treated exactly like a host whose cache went stale.
+    public var hostQualityCeiling: (() -> (ceiling: QualityWireMode, fresh: Bool))?
+
+    /// The last route the host's own WebRTC stack reported, sampled while the session
+    /// runs so that a `bye` has something to report when the peer connection is already
+    /// coming down. Measurement only — nothing prices it (`API.md` §5.4).
+    private var lastICEPath: ICEPathStatistics?
+    private var icePathSampler: Task<Void, Never>?
+
     func emit(_ event: CoordinatorEvent) { onEvent?(event) }
 
     public init(identity: IdentityStore, role: Wire.Role, config: RCConfig = .current,
@@ -433,7 +445,9 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             onAccessCodeRequired?(reason)
 
         case .sendBye(let sessionID, let reason):
-            try? await signaling.sendBye(sessionID: sessionID, reason: reason)
+            let relay = hostRelayReport()
+            try? await signaling.sendBye(sessionID: sessionID, reason: reason,
+                                         relayUsed: relay.used, bytesRelayed: relay.bytes)
             if role == .controller, reason == Wire.ByeReason.timeout { reportEnded(.noAnswer) }
 
         case .promptForConsent(let expiresAt, let promptID, let replacesPrevious):
@@ -861,6 +875,16 @@ public extension SessionCoordinator {
         return await peer.icePathStatistics()
     }
 
+    /// What this Mac will say about the route its own media took. Only a host reports:
+    /// the host is the party whose account would pay, and a controller's claim about a
+    /// host's relay use is discarded by the server anyway (`PROTOCOL.md` §2.14.1).
+    /// Measurement only — no charge reads it (`API.md` §5.4).
+    func hostRelayReport() -> (used: Bool?, bytes: Int64?) {
+        guard role == .host, let path = lastICEPath, path.usesRelay else { return (nil, nil) }
+        let carried = Int64(path.bytesSent) + Int64(path.bytesReceived)
+        return (true, carried > 0 ? carried : nil)
+    }
+
     internal var remoteTrack: RTCVideoTrack? { peer?.remoteVideoTrack }
 }
 
@@ -899,15 +923,42 @@ extension SessionCoordinator {
                                              height: self.localDisplay?.h ?? 0,
                                              fps: QualityProfile.activeFramerate)
                 self.applyQuality(self.qualityMode)
+                self.startICEPathSampling()
             } catch {
                 self?.captureDidFail((error as? CaptureFailure) ?? .other(error.localizedDescription))
             }
         }
     }
 
+    /// Byte counters on a candidate pair are cumulative, so the last sample before
+    /// teardown is the figure to report; sampling only bounds how stale it is. The
+    /// interval is loose on purpose — at the `auto` ceiling it risks under-reporting a
+    /// few megabytes, which is immaterial to a relay *fraction* and is the right trade
+    /// against polling `getStats` on a live session.
+    static let icePathSampleInterval: UInt64 = 5_000_000_000
+
+    func startICEPathSampling() {
+        guard role == .host, icePathSampler == nil else { return }
+        icePathSampler = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                if let path = await self.icePathStatistics(), path.selected {
+                    self.lastICEPath = path
+                }
+                try? await Task.sleep(nanoseconds: Self.icePathSampleInterval)
+            }
+        }
+    }
+
+    func stopICEPathSampling() {
+        icePathSampler?.cancel()
+        icePathSampler = nil
+    }
+
     func stopCapture() {
         captureRetry?.cancel()
         captureRetry = nil
+        stopICEPathSampling()
         guard let producer = frameProducer else { return }
         frameProducer = nil
         captureState = .idle
@@ -947,10 +998,25 @@ extension SessionCoordinator {
         }
     }
 
+    /// The gate. The host owns the encoder, so this is where a mode the account may not
+    /// have stops being available: the requested mode is clamped to the server's stated
+    /// ceiling before any profile is built, and a controller that asks for more simply
+    /// never gets it configured (`API.md` §4.4). A ceiling that is missing or stale
+    /// clamps to `auto` — the answer must fail closed, because the alternative is that
+    /// an unreachable account server hands out the top tier.
+    func permittedQuality(_ requested: QualityWireMode) -> QualityWireMode {
+        guard role == .host else { return requested }
+        let stated = hostQualityCeiling?()
+        return QualityWireMode.permitted(requested: requested,
+                                         stated: stated?.ceiling,
+                                         fresh: stated?.fresh ?? false)
+    }
+
     func applyQuality(_ mode: QualityWireMode) {
         qualityMode = mode
         guard role == .host else { return }
-        let profile = QualityProfile.profile(for: mode,
+        let applied = permittedQuality(mode)
+        let profile = QualityProfile.profile(for: applied,
                                              displayWidth: localDisplay?.w ?? 0,
                                              displayHeight: localDisplay?.h ?? 0)
         peer?.apply(quality: profile)

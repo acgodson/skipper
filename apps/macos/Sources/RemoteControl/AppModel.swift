@@ -223,6 +223,10 @@ final class AppModel: ObservableObject {
             ))
             self?.sessionState = .idle
         }
+        coordinator.hostQualityCeiling = { [weak self] in
+            guard let cached = self?.account?.entitlement else { return (.fallbackCeiling, false) }
+            return (cached.value.maxQuality, !cached.isStale)
+        }
         coordinator.setQuality(settings.qualityMode.wireMode)
         applyConsentRequirement()
         coordinator.start()
