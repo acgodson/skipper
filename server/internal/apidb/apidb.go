@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -29,8 +30,12 @@ var (
 	ErrInsufficientBalance = errors.New("insufficient balance")
 )
 
+// Account.Subject is the identity provider's immutable identifier and the only
+// thing an account is resolved by; Email follows it and can change. A row migrated
+// from before the subject existed carries an empty one until a subject adopts it.
 type Account struct {
 	AccountID string
+	Subject   string
 	Email     string
 	CreatedAt int64
 	Suspended bool
@@ -149,11 +154,13 @@ type DB struct {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS accounts (
-  account_id    TEXT PRIMARY KEY,
-  email         TEXT NOT NULL UNIQUE,
-  created_at    INTEGER NOT NULL,
-  suspended     INTEGER NOT NULL DEFAULT 0,
-  billing_carry INTEGER NOT NULL DEFAULT 0
+  account_id     TEXT PRIMARY KEY,
+  subject        TEXT NOT NULL DEFAULT '',
+  email          TEXT NOT NULL,
+  mailbox_key    TEXT NOT NULL DEFAULT '',
+  created_at     INTEGER NOT NULL,
+  suspended      INTEGER NOT NULL DEFAULT 0,
+  unbilled_units INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS devices (
   device_id     TEXT PRIMARY KEY,
@@ -308,7 +315,10 @@ func migrate(db *sql.DB) error {
 	if _, err := addColumnIfMissing(db, "idempotency", "response_hash", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if _, err := addColumnIfMissing(db, "accounts", "billing_carry", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+	if err := migrateCarryToUnbilledUnits(db); err != nil {
+		return err
+	}
+	if err := migrateAccountsToSubjectKey(db); err != nil {
 		return err
 	}
 	added, err := addColumnIfMissing(db, "idempotency", "replayable", "INTEGER NOT NULL DEFAULT 1")
@@ -401,10 +411,126 @@ func scanAccountAmounts(tx *sql.Tx, query string, args ...any) ([]accountAmount,
 	return out, rows.Err()
 }
 
-func addColumnIfMissing(db *sql.DB, table, column, decl string) (bool, error) {
+// migrateCarryToUnbilledUnits moves the billing carry off sixtieths of a cent and
+// onto units of one second at the hourly rate, which is what lets the sub-cent part
+// of a session be an account allowance rather than a free window per session
+// (review5 C1). Both units divide a cent — 60 of the old, 3600 of the new — so
+// multiplying by 60 is exact and nobody gains or loses a fraction by it.
+//
+// It is keyed on the new column's absence, so a restart runs it again and changes
+// nothing. The legacy column is left behind holding what it held: SQLite would have
+// to rewrite the table to drop it, and nothing reads it any more.
+// TODO: drop accounts.billing_carry once a table rewrite is worth scheduling.
+func migrateCarryToUnbilledUnits(db *sql.DB) error {
+	added, err := addColumnIfMissing(db, "accounts", "unbilled_units", "INTEGER NOT NULL DEFAULT 0")
+	if err != nil || !added {
+		return err
+	}
+	legacy, err := hasColumn(db, "accounts", "billing_carry")
+	if err != nil || !legacy {
+		return err
+	}
+	_, err = db.Exec(`UPDATE accounts SET unbilled_units = billing_carry * 60`)
+	return err
+}
+
+// migrateAccountsToSubjectKey re-keys accounts on the identity provider's subject
+// and demotes the email to an attribute that can change (review5 H2).
+//
+// It is a table rewrite because the email's uniqueness is an inline constraint, and
+// that uniqueness is the defect: it is what made the address an identity. Keeping it
+// would turn the day a federated provider lands from an account takeover into a hard
+// refusal for every user who already signed up with the same address — better, but
+// still a landmine, and the table is small enough to settle now.
+//
+// Existing rows keep their account_id and get an empty subject, which the first
+// subject bearing their address adopts (see EnsureAccount). Keyed on the column's
+// absence, so a restart runs it again and changes nothing.
+func migrateAccountsToSubjectKey(db *sql.DB) error {
+	present, err := hasColumn(db, "accounts", "subject")
+	if err != nil {
+		return err
+	}
+	if !present {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		for _, stmt := range []string{
+			`CREATE TABLE accounts_subject_keyed (
+  account_id     TEXT PRIMARY KEY,
+  subject        TEXT NOT NULL DEFAULT '',
+  email          TEXT NOT NULL,
+  mailbox_key    TEXT NOT NULL DEFAULT '',
+  created_at     INTEGER NOT NULL,
+  suspended      INTEGER NOT NULL DEFAULT 0,
+  unbilled_units INTEGER NOT NULL DEFAULT 0
+)`,
+			`INSERT INTO accounts_subject_keyed
+ (account_id, subject, email, mailbox_key, created_at, suspended, unbilled_units)
+ SELECT account_id, '', email, '', created_at, suspended, unbilled_units FROM accounts`,
+			`DROP TABLE accounts`,
+			`ALTER TABLE accounts_subject_keyed RENAME TO accounts`,
+		} {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("accounts subject migration: %w", err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	for _, stmt := range []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS accounts_subject ON accounts(subject) WHERE subject <> ''`,
+		`CREATE INDEX IF NOT EXISTS accounts_email ON accounts(email)`,
+		`CREATE INDEX IF NOT EXISTS accounts_mailbox ON accounts(mailbox_key)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return backfillMailboxKeys(db)
+}
+
+// backfillMailboxKeys fills the mailbox a row's address belongs to, which the trial
+// grant cap counts over (review5 H4). The fold is a Go function, so this cannot be
+// one UPDATE. Keyed on the empty value it writes over, so a restart is a no-op.
+func backfillMailboxKeys(db *sql.DB) error {
+	rows, err := db.Query(`SELECT account_id, email FROM accounts WHERE mailbox_key=''`)
+	if err != nil {
+		return err
+	}
+	keys := map[string]string{}
+	for rows.Next() {
+		var id, email string
+		if err := rows.Scan(&id, &email); err != nil {
+			rows.Close()
+			return err
+		}
+		keys[id] = MailboxKey(email)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for id, key := range keys {
+		if _, err := db.Exec(`UPDATE accounts SET mailbox_key=? WHERE account_id=?`, key, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hasColumn(db *sql.DB, table, column string) (bool, error) {
 	var n int
 	err := db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info(?) WHERE name=?`, table, column).Scan(&n)
-	if err != nil || n > 0 {
+	return n > 0, err
+}
+
+func addColumnIfMissing(db *sql.DB, table, column, decl string) (bool, error) {
+	present, err := hasColumn(db, table, column)
+	if err != nil || present {
 		return false, err
 	}
 	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl)
@@ -423,14 +549,34 @@ func NewID(prefix string) string {
 
 func NormaliseEmail(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
+// MailboxKey folds an address to the mailbox behind it by dropping a plus tag, so
+// one mailbox is worth one trial grant however many addresses it yields
+// (review5 H4). It is used only to decide whether a *free grant* is due: it never
+// merges accounts, never resolves an identity and never denies anyone service, so
+// the cost of folding two genuinely distinct addresses together is 50 cents of
+// credit, not access. Dots are left alone: they are a provider-specific convention
+// and treating them as insignificant would be wrong on most domains.
+func MailboxKey(email string) string {
+	email = NormaliseEmail(email)
+	at := strings.LastIndex(email, "@")
+	if at < 0 {
+		return email
+	}
+	local, domain := email[:at], email[at:]
+	if plus := strings.Index(local, "+"); plus >= 0 {
+		local = local[:plus]
+	}
+	return local + domain
+}
+
 // --- accounts ---------------------------------------------------------------
 
-const accountCols = `account_id, email, created_at, suspended`
+const accountCols = `account_id, subject, email, created_at, suspended`
 
 func scanAccount(row interface{ Scan(...any) error }) (*Account, error) {
 	var a Account
 	var suspended int
-	err := row.Scan(&a.AccountID, &a.Email, &a.CreatedAt, &suspended)
+	err := row.Scan(&a.AccountID, &a.Subject, &a.Email, &a.CreatedAt, &suspended)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -449,21 +595,53 @@ func (d *DB) AccountByEmail(email string) (*Account, error) {
 	return scanAccount(d.db.QueryRow(`SELECT `+accountCols+` FROM accounts WHERE email=?`, NormaliseEmail(email)))
 }
 
-// EnsureAccount upserts the account an identity provider just vouched for.
-func (d *DB) EnsureAccount(accountID, email string, now time.Time) (*Account, error) {
+func (d *DB) AccountBySubject(subject string) (*Account, error) {
+	return scanAccount(d.db.QueryRow(`SELECT `+accountCols+` FROM accounts WHERE subject=? AND subject<>''`, subject))
+}
+
+// EnsureAccount resolves the account an identity provider just vouched for, keyed on
+// the provider's immutable subject. The email is a display attribute: it follows the
+// subject rather than identifying it, so a user who changes address keeps their
+// account and a second identity carrying someone else's address gets its own
+// (review5 H2).
+//
+// An account predating the subject column is adopted by the first subject that
+// arrives bearing its address. That is the migration for the accounts that exist:
+// idempotent, because it only ever fills an empty subject, and sound on the live
+// pool, where email is the username and no federated provider exists, so two
+// subjects cannot carry one address. The window closes the first time the owner
+// signs in. A row whose subject is already set is never re-keyed by an address.
+func (d *DB) EnsureAccount(subject, email string, now time.Time) (*Account, error) {
+	if subject == "" {
+		return nil, fmt.Errorf("apidb: an account needs an identity provider subject")
+	}
 	email = NormaliseEmail(email)
-	if a, err := d.AccountByEmail(email); err == nil {
-		return a, nil
-	} else if !errors.Is(err, ErrNotFound) {
+	tx, err := d.db.Begin()
+	if err != nil {
 		return nil, err
 	}
-	if accountID == "" {
+	defer tx.Rollback()
+
+	var accountID, heldSubject, heldEmail string
+	err = tx.QueryRow(`SELECT account_id, subject, email FROM accounts
+ WHERE subject=? OR (subject='' AND email=?)`, subject, email).Scan(&accountID, &heldSubject, &heldEmail)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
 		accountID = NewID("acct_")
+		if _, err := tx.Exec(`INSERT INTO accounts
+ (account_id, subject, email, mailbox_key, created_at, suspended) VALUES (?,?,?,?,?,0)`,
+			accountID, subject, email, MailboxKey(email), now.UnixMilli()); err != nil {
+			return nil, err
+		}
+	case err != nil:
+		return nil, err
+	case heldSubject == "" || heldEmail != email:
+		if _, err := tx.Exec(`UPDATE accounts SET subject=?, email=?, mailbox_key=? WHERE account_id=?`,
+			subject, email, MailboxKey(email), accountID); err != nil {
+			return nil, err
+		}
 	}
-	_, err := d.db.Exec(`INSERT INTO accounts (account_id, email, created_at, suspended)
- VALUES (?,?,?,0) ON CONFLICT(account_id) DO UPDATE SET email=excluded.email`,
-		accountID, email, now.UnixMilli())
-	if err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return d.AccountByID(accountID)
@@ -1005,7 +1183,7 @@ func (d *DB) SettleCharge(accountID, sessionID string, now int64, price Charge) 
 	}
 	defer tx.Rollback()
 	var carry int64
-	if err := tx.QueryRow(`SELECT billing_carry FROM accounts WHERE account_id=?`,
+	if err := tx.QueryRow(`SELECT unbilled_units FROM accounts WHERE account_id=?`,
 		accountID).Scan(&carry); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Settlement{}, ErrNotFound
@@ -1030,7 +1208,7 @@ func (d *DB) SettleCharge(accountID, sessionID string, now int64, price Charge) 
 		}
 		out.Entry, out.Billed = entry, true
 	}
-	if _, err := tx.Exec(`UPDATE accounts SET billing_carry=? WHERE account_id=?`,
+	if _, err := tx.Exec(`UPDATE accounts SET unbilled_units=? WHERE account_id=?`,
 		newCarry, accountID); err != nil {
 		return Settlement{}, err
 	}
@@ -1073,13 +1251,41 @@ func (d *DB) UnconsumedGrant(accountID string) (cents int64, open bool, err erro
 	return max(0, granted.Int64-charged.Int64), true, nil
 }
 
-// HasLiveTrial reports whether any device on the account is still inside its grant
-// window, so one device's expiry never claws back another device's live grant.
-func (d *DB) HasLiveTrial(accountID string, now int64) (bool, error) {
+// TrialGrantsForMailbox counts the grants already written to every account whose
+// address folds to the same mailbox as this account's. The count is server-side
+// fact, which is what makes it a bound where the device inputs are not (review5 H4).
+//
+// An account that does not exist is ErrNotFound rather than a count of zero: the
+// caller is deciding whether to give away credit, and "I could not tell" must not
+// read as "none yet".
+func (d *DB) TrialGrantsForMailbox(accountID string) (int, error) {
+	var key string
+	if err := d.db.QueryRow(`SELECT mailbox_key FROM accounts WHERE account_id=?`,
+		accountID).Scan(&key); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
 	var n int
-	err := d.db.QueryRow(`SELECT COUNT(1) FROM devices
- WHERE account_id=? AND unlinked=0 AND trial_ends_at>?`, accountID, now).Scan(&n)
-	return n > 0, err
+	err := d.db.QueryRow(`SELECT COUNT(1) FROM ledger l JOIN accounts a
+ ON a.account_id = l.account_id
+ WHERE l.type=? AND a.mailbox_key=?`, protocol.LedgerTrialGrant, key).Scan(&n)
+	return n, err
+}
+
+// TrialWindowForAccount is when the account's starting credits expire: the latest
+// window any of its linked devices holds, 0 if none does.
+//
+// The grant is one per account, so the window has to be read per account too. Read
+// off the calling device alone, a second device on the account reported no window
+// while spending the account's starting credits, which made it read `active` where
+// API.md §4.1 says `trial`.
+func (d *DB) TrialWindowForAccount(accountID string) (int64, error) {
+	var at sql.NullInt64
+	err := d.db.QueryRow(`SELECT MAX(trial_ends_at) FROM devices
+ WHERE account_id=? AND unlinked=0`, accountID).Scan(&at)
+	return at.Int64, err
 }
 
 type LedgerQuery struct {
@@ -1145,11 +1351,30 @@ func scanGift(row interface{ Scan(...any) error }) (*Gift, error) {
 	return &g, nil
 }
 
-func (d *DB) PutGift(g Gift) error {
-	_, err := d.db.Exec(`INSERT INTO gifts (`+giftCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+// CreateGift holds a gift: it writes the pending row and the debit that pays for it
+// in one transaction, so a refused debit leaves nothing behind.
+//
+// Written separately, a debit the ledger refused left an unpaid pending gift that
+// became real credit two ways — the recipient accepting it, or nobody doing anything
+// and the expiry refunding it to a sender who never paid (review5 H3). There is no
+// balance check here either: the ledger's own invariant is the check, and a read
+// before the transaction can only be stale.
+func (d *DB) CreateGift(g Gift, memo string) (Gift, error) {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return Gift{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO gifts (`+giftCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		g.GiftID, g.FromAccountID, g.FromEmail, g.ToEmail, g.AmountCents, g.Message,
-		g.Status, g.CreatedAt, g.ExpiresAt, g.AcceptedAt)
-	return err
+		g.Status, g.CreatedAt, g.ExpiresAt, g.AcceptedAt); err != nil {
+		return Gift{}, err
+	}
+	if _, err := appendTx(tx, g.FromAccountID, protocol.LedgerGiftSent, -g.AmountCents,
+		g.CreatedAt, "", g.GiftID, memo); err != nil {
+		return Gift{}, err
+	}
+	return g, tx.Commit()
 }
 
 func (d *DB) Gift(id string) (*Gift, error) {
@@ -1239,8 +1464,18 @@ func (d *DB) ExpirePendingGifts(now int64) error {
 		return err
 	}
 	for _, g := range due {
+		// A refund that is not the reverse of a debit is not a refund. CreateGift
+		// makes an unpaid pending row impossible, so this cannot fire; it stays
+		// because being wrong here mints credit from nothing (review5 H3).
+		paid, err := d.giftWasPaidFor(g.GiftID)
+		if err != nil {
+			return err
+		}
 		if err := d.SetGiftStatus(g.GiftID, protocol.GiftExpired, nil); err != nil {
 			return err
+		}
+		if !paid {
+			continue
 		}
 		if _, err := d.Append(g.FromAccountID, protocol.LedgerGiftRefund, g.AmountCents, now,
 			"", g.GiftID, "gift expired"); err != nil {
@@ -1248,6 +1483,11 @@ func (d *DB) ExpirePendingGifts(now int64) error {
 		}
 	}
 	return nil
+}
+
+func (d *DB) giftWasPaidFor(giftID string) (bool, error) {
+	return d.exists(`SELECT COUNT(1) FROM ledger WHERE gift_id=? AND type=?`,
+		giftID, protocol.LedgerGiftSent)
 }
 
 // --- idempotency ------------------------------------------------------------

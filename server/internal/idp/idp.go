@@ -10,9 +10,14 @@ import (
 
 var ErrUnauthenticated = errors.New("the user session token is not valid")
 
+// Session is the identity the provider vouched for. Subject is the provider's
+// immutable identifier for the person and is what an account is keyed on; Email is a
+// display attribute that can change, and is only trusted when the provider says it
+// verified it (review5 H2).
 type Session struct {
-	AccountID string
-	Email     string
+	Subject       string
+	Email         string
+	EmailVerified bool
 }
 
 type Provider interface {
@@ -26,6 +31,10 @@ type Dev struct{}
 
 func (Dev) Name() string { return "dev" }
 
+// DevSubjectPrefix makes the dev provider's subject deterministic for an address,
+// so a dev session resolves to the same account every time the way a real one does.
+const DevSubjectPrefix = "dev|"
+
 func (Dev) UserSession(_ context.Context, bearer string) (Session, error) {
 	rest, ok := strings.CutPrefix(bearer, "dev:")
 	if !ok {
@@ -35,5 +44,5 @@ func (Dev) UserSession(_ context.Context, bearer string) (Session, error) {
 	if email == "" || !strings.Contains(email, "@") || strings.ContainsAny(email, " \t\r\n") {
 		return Session{}, ErrUnauthenticated
 	}
-	return Session{Email: email}, nil
+	return Session{Subject: DevSubjectPrefix + email, Email: email, EmailVerified: true}, nil
 }

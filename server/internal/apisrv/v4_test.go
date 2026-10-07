@@ -224,8 +224,14 @@ func (h *harness) startSession(id, hostID string, startedAt int64) {
 
 func (h *harness) balance(email string) int64 {
 	h.t.Helper()
+	r := h.call("GET", protocol.PathCredits, "dev:"+email, "", nil)
+	// An error envelope decodes to a balance of zero, so a failed read would read
+	// as an empty account and every assertion against it would be meaningless.
+	if r.status != http.StatusOK {
+		h.t.Fatalf("GET %s for %s: %d %s", protocol.PathCredits, email, r.status, r.body)
+	}
 	var b protocol.Balance
-	h.call("GET", protocol.PathCredits, "dev:"+email, "", nil).decode(h.t, &b)
+	r.decode(h.t, &b)
 	return b.BalanceCents
 }
 

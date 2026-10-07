@@ -34,6 +34,12 @@ var (
 	limitGiftList        = rule{Name: "gift_list", Limit: 60, Window: hour}
 	limitGiftAct         = rule{Name: "gift_act", Limit: 20, Window: day}
 	limitReleaseLatest   = rule{Name: "release_latest", Limit: 60, Window: hour}
+
+	// limitTrialGrantIP is charged only when a grant is otherwise due, and a refusal
+	// withholds the grant rather than the link (review5 H4). Three a day leaves room
+	// for a household or a small office replacing Macs and still bounds one address
+	// to $1.50 of credit a day.
+	limitTrialGrantIP = rule{Name: "trial_grant_ip", Limit: 3, Window: day}
 )
 
 func (s *Server) allow(w http.ResponseWriter, r *http.Request, spec rule, key string) bool {

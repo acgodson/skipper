@@ -1026,13 +1026,20 @@ Billing (API.md §5, §6.3) follows **proof**, not grant:
    `maxActivePairs`.
 4. Reports for one session travel through **one ordered lane**: the stop is sent only after the
    start was delivered or given up on, never concurrently, with bounded retries and a bounded
-   queue. If accounting refuses a start on entitlement grounds, the server ends the session
-   with `bye{error}`.
-5. A report that is finally lost leaves an open row. Accounting's periodic sweep asks signaling
-   (on its internal listener, API.md §6) which metered sessions it still holds, and closes every
-   open row signaling no longer knows, billed up to the last time the sweep saw it alive.
+   queue. **A start report that does not land ends the session with `bye{error}`, whatever stopped
+   it landing** — an entitlement refusal, a permanent rejection, an exhausted retry budget, or a
+   queue too full to accept it. A session accounting never recorded has no billing row, so the
+   session is un-metered and closed rather than left relaying; its stop report is not sent, because
+   there is nothing to settle. This couples a new session to accounting's availability on purpose:
+   the alternative was a session that ran its whole life for free (review5 H7).
+5. A **stop** report that is finally lost leaves an open row. Accounting's periodic sweep asks
+   signaling (on its internal listener, API.md §6) which metered sessions it still holds, and
+   closes every open row signaling no longer knows, billed up to the last time the sweep saw it
+   alive. A lost *start* leaves no row for that sweep to find, which is why item 4 does not rely
+   on it.
 
-A session shorter than one minute is free; longer sessions bill every started minute (API.md §7.2).
+Sessions bill by their whole seconds at an hourly rate, with the sub-cent remainder carried on the
+account; a session too short to be worth a cent charges nothing but still owes its time (API.md §5.2).
 
 ---
 

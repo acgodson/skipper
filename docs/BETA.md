@@ -85,13 +85,15 @@ relay fraction we do not have yet.
 
 10¢/hour is not expressible as integer cents per minute, and rounding each session up is a trap:
 twenty 90-second sessions would cost 20 cents where one 30-minute session costs 5. Carry the
-remainder on the account instead.
+remainder on the account instead. The carry has to hold *time*, not rounded-up minutes: rounding
+each session up overcharges short sessions, and discarding the remainder is review5 C1.
 
 | | |
 |---|---|
-| New | `RateCentsPerHour = 10`; `accounts.unbilled_deciseconds` (or minutes×10), integer |
-| Charge | `cents = (carry + startedMinutes × RateCentsPerHour) / 60`; `carry = remainder`. Free below 60 s is unchanged |
-| Acceptance | **twenty 90-second sessions cost the same as one 30-minute session ±1 cent**, read from `/v1/credits/ledger`; and one 60-minute session costs exactly 10 cents |
+| New | `RateCentsPerHour = 10`; `accounts.unbilled_units`, integer — units of one second at the hourly rate, so a second is worth `RateCentsPerHour` and a cent is `SecondsPerHour` of them |
+| Charge | `units = carry + sessionSeconds × RateCentsPerHour`; `cents = units / 3600`; `carry = units % 3600` |
+| Free below 60 s | **Corrected by review5 C1.** A free window that is a property of each session is a bypass of the whole meter: 60 reconnects an hour cover 98% of the clock, and the un-charged time left no trace. The window is an allowance on the account instead — a session too short to be worth a cent charges nothing but still owes its seconds, so no session length can be repeated for free. One short session on its own still costs an honest user nothing |
+| Acceptance | **twenty 90-second sessions cost the same as one 30-minute session ±1 cent**, read from `/v1/credits/ledger`; one 60-minute session costs exactly 10 cents; and **sixty 59-second sessions cost what one 59-minute session costs ±1 cent** |
 
 ### 1.3 How the grant and its expiry live in the ledger
 
@@ -106,7 +108,18 @@ The ledger is append-only (`API.md` §7.2) and the balance is `SUM(amount_cents)
 Clawing back only the unconsumed part is what keeps a $5 top-up safe: charges consume the grant
 first, so a user who topped up never loses paid credit at expiry.
 
-`GrantsTrial(pubkeySeen, hardwareSeen)` is unchanged — one grant per (device key, hardware hash).
+**The grant key, corrected by review5 H4.** `GrantsTrial(pubkeySeen, hardwareSeen)` was keyed on two
+values the *client* chooses: a fresh P-256 keypair and any `hardwareId` string. The review minted
+five grants on one account with it, so it bounded nothing. The grant is keyed on the one durable
+fact instead — **one grant per verified mailbox** — with the plus tag folded away so one mailbox is
+not worth unlimited addresses, and a per-IP budget of 3 grants a day charged only when a grant is
+otherwise due. The device rules are kept because they only ever withhold a grant further;
+`hardwareHash` is a review signal, never a gate.
+
+A withheld grant withholds *only the grant*: the link still succeeds, because the device is
+legitimate either way and failing the link would punish an honest user who shares an office address
+with a farm. One grant per account also makes the grant's **window** an account property — a second
+device on the account spends the same starting credits, so it must report the same `trialEndsAt`.
 
 ### 1.4 Abuse ceiling, stated honestly
 
@@ -114,8 +127,10 @@ first, so a user who topped up never loses paid credit at expiry.
 |---|---|
 | Cost of one fresh trial, worst case | **$0.405** |
 | Fresh identities needed to reach the $50 budget alarm | **124 in a month**, each relaying and saturating all 5 hours (620 relayed hours ≈ 0.85 concurrent sessions, within the t4g.small — so capacity is not the limiter). The physical path costs an OS wipe per trial, which is the deterrent `API.md` §3.2 intends |
-| **Virtual path — the real hole** | a macOS VM on Apple Silicon gets a fresh serial, so `hardwareHash` is per-VM, not per-Mac, and minting trials is cheap. **Unverified** — check by running the app in a fresh VM and reading whether `GET /v1/entitlement` returns `trial` |
-| What bounds it instead, and the accepted residual | the grant is server policy (`API.md` §4.2): setting it to 0 needs no client release, and the $50 Budgets alarm already exists. At beta scale the exposure is tens of cents; a signup gate is a post-beta decision on a measured number |
+| **Virtual path** | a macOS VM on Apple Silicon gets a fresh serial, so `hardwareHash` is per-VM, not per-Mac. **It no longer matters**: a fresh serial is no cheaper than the fresh keypair review5 H4 generated, and neither earns a grant any more. Nothing is keyed on the hardware |
+| **What the cost of a farmed trial actually is, after H4** | one *verified mailbox* per 50 cents, at no more than 3 grants per IP per day. The mailbox is the price: plus tags fold to one grant, so it is a distinct mailbox each time, and it must complete Cognito's emailed confirmation |
+| **The binding ceiling, and it is not ours** | Cognito's default sender is ~**50 messages/day** (`EmailConfiguration.EmailSendingAccount: COGNITO_DEFAULT`), so sign-ups cap at ~50/day whatever an attacker does — ≈ **$25/day** of granted credit, ≈ 250 hosted hours, ≈ **$20/day** of egress at the `auto` ceiling if every hour were relayed. That same ceiling caps *legitimate* public sign-ups and has no bounce handling: **move to SES before any public link**, and that move must come with a sign-up rate limit, because today the email sender is doing the rate limiting by accident |
+| What bounds it beyond that, and the accepted residual | the grant is server policy (`API.md` §4.2): setting it to 0 needs no client release, and the $50 Budgets alarm already exists. Dots in a local part are **not** folded — that is a provider-specific convention and folding them would be wrong on most domains — so a Gmail user can still get a second grant with a dotted address. A signup gate (captcha, or payment-method-on-file) is a post-beta decision on a measured number |
 
 ### 1.5 What changes in the contract, the states and the strings
 

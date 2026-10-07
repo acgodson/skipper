@@ -167,6 +167,58 @@ func TestADeniedStartIsReportedBack(t *testing.T) {
 	}
 }
 
+// review5 H7: only an entitlement refusal called OnDenied, so a start report that
+// exhausted its retry budget against an unreachable rc-api was dropped while the
+// session stayed metered. It then relayed for its whole life with no billing row,
+// and its stop report 404'd and was discarded as permanent. A start that does not
+// land has to end the session whatever stopped it landing.
+func TestAStartThatNeverLandsIsReportedBackHoweverItFailed(t *testing.T) {
+	cases := []struct {
+		name  string
+		setUp func(*sink)
+	}{
+		{"rc-api unreachable for the whole budget", func(s *sink) { s.failFirst["start a"] = 100 }},
+		{"rc-api refused it permanently", func(s *sink) { s.permanent = fmt.Errorf("413: %w", ErrPermanent) }},
+		{"rc-api refused it on entitlement", func(s *sink) { s.denied = true }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := newSink()
+			c.setUp(s)
+			dropped := make(chan string, 1)
+			q := New(s, fast(Options{Attempts: 3, OnDenied: func(id string) { dropped <- id }}))
+			defer q.Close(context.Background())
+			q.Started(protocol.SessionStartReport{SessionID: "a"})
+			select {
+			case id := <-dropped:
+				if id != "a" {
+					t.Fatalf("reported back %q, want the session that was not registered", id)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("a start that never landed was dropped silently: the session " +
+					"would relay for its whole life with no billing row")
+			}
+		})
+	}
+}
+
+// A stop report is not a session the hub still holds, so losing one must not end
+// anything: reconciliation closes the row it leaves behind.
+func TestALostStopReportIsNotReportedBack(t *testing.T) {
+	s := newSink()
+	s.failFirst["stop a"] = 100
+	dropped := make(chan string, 1)
+	q := New(s, fast(Options{Attempts: 3, OnDenied: func(id string) { dropped <- id }}))
+	defer q.Close(context.Background())
+	q.Stopped(protocol.SessionStopReport{SessionID: "a"})
+	waitIdle(t, q)
+	select {
+	case id := <-dropped:
+		t.Fatalf("a lost stop report ended session %q", id)
+	default:
+	}
+}
+
 func TestTheQueueIsBounded(t *testing.T) {
 	s := newSink()
 	s.gate = make(chan struct{})

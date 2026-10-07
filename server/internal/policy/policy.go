@@ -4,25 +4,29 @@
 package policy
 
 import (
-	"math"
 	"time"
 
 	protocol "rcprotocol"
 )
 
 const (
-	RateCentsPerHour  = 10
-	MinutesPerHour    = 60
-	TrialGrantCents   = 50
-	TrialDays         = 14
-	MaxActivePairs    = protocol.MaxActivePairs
-	MinBalanceCents   = 1
-	DefaultTier       = protocol.TierBase
-	RefreshAfterSec   = protocol.EntitlementRefreshSec
-	MinGiftCents      = protocol.MinGiftAmountCents
-	GiftLifetime      = protocol.GiftTTLSec * time.Second
-	TrialLifetime     = TrialDays * 24 * time.Hour
-	FreeSessionLength = time.Minute
+	RateCentsPerHour = 10
+	MinutesPerHour   = 60
+	SecondsPerHour   = 3600
+	TrialGrantCents  = 50
+	TrialDays        = 14
+	MaxActivePairs   = protocol.MaxActivePairs
+	MinBalanceCents  = 1
+	DefaultTier      = protocol.TierBase
+	RefreshAfterSec  = protocol.EntitlementRefreshSec
+	MinGiftCents     = protocol.MinGiftAmountCents
+	GiftLifetime     = protocol.GiftTTLSec * time.Second
+	TrialLifetime    = TrialDays * 24 * time.Hour
+
+	// MaxTrialGrantsPerMailbox bounds what one verified mailbox is worth to a trial
+	// farm: the grant cannot be keyed on anything the client asserts, so it is keyed
+	// on the one durable fact there is. The device rules only ever withhold further.
+	MaxTrialGrantsPerMailbox = 1
 )
 
 // Facts is everything the policy is allowed to look at.
@@ -47,7 +51,15 @@ type Decision struct {
 func TrialEndsAt(now time.Time) int64 { return now.Add(TrialLifetime).UnixMilli() }
 
 // GrantsTrial answers the only question hardwareHash exists for (API.md §3.2).
-func GrantsTrial(pubkeySeen, hardwareSeen bool) bool { return !pubkeySeen && !hardwareSeen }
+//
+// Both device inputs are client-chosen: a stranger generates a fresh keypair and
+// sends any hardwareId they like, so neither can be made trustworthy and this
+// deliberately does not pretend otherwise (review5 H4). What bounds the damage is
+// grantsHeld, the grants already written against this verified mailbox, which is
+// server-side fact. The device rules are kept: they only ever withhold further.
+func GrantsTrial(pubkeySeen, hardwareSeen bool, grantsHeld int) bool {
+	return !pubkeySeen && !hardwareSeen && grantsHeld < MaxTrialGrantsPerMailbox
+}
 
 // ExpiredGrantClawback is the one adjustment that closes a grant window. It takes
 // only the part of the grant no session consumed, and never more than the balance,
@@ -67,18 +79,24 @@ func MinutesRemaining(balanceCents int64) int {
 
 // Charge settles one session against the account's carry.
 //
-// The rate is per hour and is not a whole number of cents per minute, so a session's
-// cost is held in sixtieths of a cent: a started minute is worth RateCentsPerHour
-// sixtieths, whole cents are billed, and the remainder stays on the account as carry.
-// Nothing is rounded away, so N short sessions and one long session of the same
-// billed minutes cost the same to within the single cent still sitting in the carry.
-// Below FreeSessionLength a session is free and does not touch the carry.
+// The rate is per hour and a session is not a whole number of hours, so cost is held
+// in units of one second at the hourly rate: a second of session is worth
+// RateCentsPerHour units and one cent is SecondsPerHour of them. Whole cents are
+// billed and the remainder stays on the account as carry. The unit divides the rate
+// exactly whatever the rate is, so nothing is rounded away and N sessions cost what
+// one session of their total length costs, to within the cent sitting in the carry.
+//
+// The sub-cent part of a session is therefore an account-level allowance, not a
+// per-session gift: a session too short to be worth a cent bills nothing, but its
+// time is still owed, so repeating it cannot buy relay for free. A free window that
+// was a property of each session let sixty reconnects an hour cover the clock at no
+// cost at any balance (review5 C1).
+//
+// Part-seconds are dropped, which is the one rounding here and is in the account's
+// favour by under a second a session.
 func Charge(d time.Duration, carry int64) (cents, newCarry int64) {
-	if d < FreeSessionLength {
-		return 0, carry
-	}
-	sixtieths := carry + int64(math.Ceil(d.Minutes()))*RateCentsPerHour
-	return sixtieths / MinutesPerHour, sixtieths % MinutesPerHour
+	units := carry + max(0, int64(d/time.Second))*RateCentsPerHour
+	return units / SecondsPerHour, units % SecondsPerHour
 }
 
 func Decide(f Facts, now time.Time) Decision {

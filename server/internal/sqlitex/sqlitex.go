@@ -11,8 +11,15 @@ import (
 )
 
 // Open opens path with a single connection, WAL and foreign keys, then applies schema.
+//
+// Every transaction is BEGIN IMMEDIATE. The ledger's non-negative invariant reads a
+// balance and then inserts against it, which a deferred BEGIN does not serialise: it
+// takes its write lock lazily, so two such transactions can interleave their reads.
+// Under SetMaxOpenConns(1) they cannot, but then the invariant rests on the size of
+// the connection pool rather than on the isolation level, and the pool size is a
+// reasonable thing for someone to change (review5 M13).
 func Open(path, schema string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}

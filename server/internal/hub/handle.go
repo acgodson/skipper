@@ -682,13 +682,20 @@ func relayErrorMessage(err error) string {
 	return strings.ToValidUTF8(msg, "")
 }
 
-// startMeteringLocked reports the session and hands both attached peers the session's TURN.
+// startMeteringLocked reports the session and hands both attached peers the session's
+// TURN. A session accounting will never hear about cannot be billed, so a start the
+// queue refuses outright ends it here rather than letting it relay for free
+// (review5 H7); a start that is accepted and then exhausts its retries is ended the
+// same way, from OnDenied.
 func (h *Hub) startMeteringLocked(s *Session) {
 	now := h.clock.Now()
 	s.metered = true
 	s.meteredAt = now
+	if !h.reportStartLocked(s) {
+		h.endUnregisteredSessionLocked(s)
+		return
+	}
 	h.rememberPairLocked(s.Host.deviceID, s.Ctrl.deviceID)
-	h.reportStartLocked(s)
 	push := protocol.ICEServers{SessionID: s.ID, ICEServers: h.sessionICE(s.ID, now)}
 	for _, sd := range []*side{&s.Host, &s.Ctrl} {
 		h.sendLocked(sd.conn, protocol.TypeICEServers, "", push)
