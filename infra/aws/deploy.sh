@@ -71,16 +71,18 @@ echo
 echo "== unit assertions"
 UNITS=(infra/aws/systemd/rc-api.service infra/aws/systemd/rc-signal.service)
 for unit in "${UNITS[@]}"; do
-  if grep -qE '^\s*-internal-token\s' "$unit"; then
+  if grep -qE '^[[:space:]]*-internal-token[[:space:]]' "$unit"; then
     echo "FAIL  $unit passes the deprecated -internal-token flag; use -internal-token-file"
     exit 1
   fi
 done
-if ! grep -q -- '-idp cognito' infra/aws/systemd/rc-api.service; then
+# Anchored to a flag line, never a comment: an unanchored grep both fails on a comment that
+# mentions -idp dev and passes on a comment that mentions -idp cognito.
+if ! grep -qE '^[[:space:]]*-idp[[:space:]]+cognito\b' infra/aws/systemd/rc-api.service; then
   echo "FAIL  infra/aws/systemd/rc-api.service does not run -idp cognito; the development calls would be live"
   exit 1
 fi
-if grep -q -- '-idp dev' infra/aws/systemd/rc-api.service; then
+if grep -qE '^[[:space:]]*-idp[[:space:]]+dev\b' infra/aws/systemd/rc-api.service; then
   echo "FAIL  infra/aws/systemd/rc-api.service runs -idp dev; that is local only"
   exit 1
 fi
