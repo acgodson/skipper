@@ -248,6 +248,20 @@ func TestTurnCredsMatchCoturnRESTAuth(t *testing.T) {
 		t.Fatalf("credential = %q, want %q", cred, want)
 	}
 
+	// A client renews off expiresAt, so it must not name an instant past the whole second
+	// coturn actually enforces from the username.
+	odd := time.Unix(1_755_600_000, 777_000_000)
+	oddUser, _, oddExp := TurnCreds("s3cr3t", "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", odd, 10*time.Minute)
+	if oddExp.UnixMilli()%1000 != 0 {
+		t.Errorf("expiresAt = %d ms, which is past the second the username names", oddExp.UnixMilli())
+	}
+	if want := strconv.FormatInt(oddExp.Unix(), 10) + ":8c7f1a2b3c4d5e6f708192a3b4c5d6e7"; oddUser != want {
+		t.Errorf("username = %q, want %q", oddUser, want)
+	}
+	if cred != TurnCredential("s3cr3t", user) {
+		t.Error("TurnCreds and TurnCredential disagree for the same username")
+	}
+
 	if _, c2, _ := TurnCreds("other", "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", now, 2*time.Hour); c2 == cred {
 		t.Fatal("changing the TURN secret did not change the credential")
 	}
