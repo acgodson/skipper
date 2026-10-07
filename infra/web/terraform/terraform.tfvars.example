@@ -1,0 +1,10 @@
+# The 'bucket' line of the backend.hcl that bootstrap-state printed. It carries the account
+# id, which is why there is no default.
+backend_state_bucket = "skipperdesk-prod-tfstate-000000000000"
+
+# backend_state_key = "prod/terraform.tfstate"
+# aws_region        = "eu-west-2"
+# environment       = "prod"
+
+# North America and Europe. Raise it only if the logs ever say the audience is elsewhere.
+# price_class = "PriceClass_100"
