@@ -1,0 +1,159 @@
+// The KMS-backed signer (PHASE5.md §1.2, API.md §6.1). The private half never leaves
+// AWS: this process holds only the public key, fetched once at startup, and turns every
+// certificate into a kms:Sign call that CloudTrail records.
+package idcert
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	"github.com/aws/aws-sdk-go-v2/service/kms/types"
+)
+
+const (
+	kmsCallTimeout = 5 * time.Second
+	kmsAttempts    = 3
+	kmsBackoff     = 100 * time.Millisecond
+)
+
+type kmsAPI interface {
+	Sign(context.Context, *kms.SignInput, ...func(*kms.Options)) (*kms.SignOutput, error)
+	GetPublicKey(context.Context, *kms.GetPublicKeyInput, ...func(*kms.Options)) (*kms.GetPublicKeyOutput, error)
+}
+
+type kmsSigner struct {
+	client kmsAPI
+	keyID  string
+}
+
+func openKMS(ctx context.Context, keyID string) (*Authority, error) {
+	cfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("device-id certificate KMS key %q: %w", keyID, err)
+	}
+	// The retry below is the only one, so the SDK's own attempts are turned off rather
+	// than multiplied by ours.
+	client := kms.NewFromConfig(cfg, func(o *kms.Options) { o.RetryMaxAttempts = 1 })
+	return newKMSAuthority(ctx, client, keyID)
+}
+
+func newKMSAuthority(ctx context.Context, client kmsAPI, keyID string) (*Authority, error) {
+	s := &kmsSigner{client: client, keyID: keyID}
+	pub, err := s.fetchPublicKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &Authority{pub: pub, signer: s}, nil
+}
+
+func (s *kmsSigner) fetchPublicKey(ctx context.Context) (*ecdsa.PublicKey, error) {
+	callCtx, cancel := context.WithTimeout(ctx, kmsCallTimeout)
+	defer cancel()
+	out, err := s.client.GetPublicKey(callCtx, &kms.GetPublicKeyInput{KeyId: aws.String(s.keyID)})
+	if err != nil {
+		return nil, fmt.Errorf("device-id certificate KMS key %q: %w", s.keyID, err)
+	}
+	if out.KeyUsage != types.KeyUsageTypeSignVerify {
+		return nil, fmt.Errorf("device-id certificate KMS key %q: key usage is %q, want SIGN_VERIFY", s.keyID, out.KeyUsage)
+	}
+	pub, err := parseKMSPublicKey(out.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("device-id certificate KMS key %q: %w", s.keyID, err)
+	}
+	return pub, nil
+}
+
+// parseKMSPublicKey converts the DER SubjectPublicKeyInfo kms:GetPublicKey returns into
+// the P-256 public key Verify already uses.
+func parseKMSPublicKey(der []byte) (*ecdsa.PublicKey, error) {
+	if len(der) == 0 {
+		return nil, errors.New("KMS returned no public key")
+	}
+	parsed, err := x509.ParsePKIXPublicKey(der)
+	if err != nil {
+		return nil, err
+	}
+	pub, ok := parsed.(*ecdsa.PublicKey)
+	if !ok || pub.Curve != elliptic.P256() {
+		return nil, errors.New("want a P-256 key")
+	}
+	return pub, nil
+}
+
+// signDigest asks KMS for the ASN.1 DER signature the wire format already carries:
+// ECDSA_SHA_256 returns the same encoding ecdsa.SignASN1 produces locally, so there is
+// nothing to convert. MessageType DIGEST is what makes KMS sign the 32 bytes as given
+// instead of hashing them again.
+func (s *kmsSigner) signDigest(ctx context.Context, digest []byte) ([]byte, error) {
+	var last error
+	for attempt := range kmsAttempts {
+		if attempt > 0 {
+			if err := pause(ctx, kmsBackoff<<(attempt-1)); err != nil {
+				return nil, fmt.Errorf("device-id certificate signature: %w", err)
+			}
+		}
+		sig, err := s.signOnce(ctx, digest)
+		if err == nil {
+			return sig, nil
+		}
+		last = err
+		if !retryableKMSError(err) {
+			break
+		}
+	}
+	return nil, fmt.Errorf("device-id certificate signature: %w", last)
+}
+
+func (s *kmsSigner) signOnce(ctx context.Context, digest []byte) ([]byte, error) {
+	callCtx, cancel := context.WithTimeout(ctx, kmsCallTimeout)
+	defer cancel()
+	out, err := s.client.Sign(callCtx, &kms.SignInput{
+		KeyId:            aws.String(s.keyID),
+		Message:          digest,
+		MessageType:      types.MessageTypeDigest,
+		SigningAlgorithm: types.SigningAlgorithmSpecEcdsaSha256,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(out.Signature) == 0 {
+		return nil, errors.New("KMS returned an empty signature")
+	}
+	return out.Signature, nil
+}
+
+// retryableKMSCodes are the throttling and transient-capacity answers only. An access
+// or key-state failure is not retried: it will not fix itself inside a request.
+var retryableKMSCodes = map[string]bool{
+	"ThrottlingException":        true,
+	"LimitExceededException":     true,
+	"KMSInternalException":       true,
+	"DependencyTimeoutException": true,
+}
+
+func retryableKMSError(err error) bool {
+	var coded interface{ ErrorCode() string }
+	if errors.As(err, &coded) {
+		return retryableKMSCodes[coded.ErrorCode()]
+	}
+	return false
+}
+
+func pause(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}

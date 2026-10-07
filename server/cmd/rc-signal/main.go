@@ -92,7 +92,7 @@ func main() {
 	}
 
 	mode := entitlementMode(*entMode, *insecure)
-	backend, err := makeBackend(mode, *insecure, *entDeny, *apiURL, apiToken, *dbPath, *claimsPath, *idCertKey, log)
+	backend, err := makeBackend(context.Background(), mode, *insecure, *entDeny, *apiURL, apiToken, *dbPath, *claimsPath, *idCertKey, log)
 	if err != nil {
 		exit(err.Error())
 	}
@@ -203,10 +203,10 @@ type backend struct {
 }
 
 // makeBackend pairs the registry with the entitlement source: http mode means rc-api owns both.
-func makeBackend(mode string, insecure bool, deny, apiURL, apiToken, dbPath, claimsPath, idCertKey string, log *slog.Logger) (*backend, error) {
+func makeBackend(ctx context.Context, mode string, insecure bool, deny, apiURL, apiToken, dbPath, claimsPath, idCertKey string, log *slog.Logger) (*backend, error) {
 	switch mode {
 	case modeStatic:
-		authority, ephemeral, err := idcert.Open(idCertKey, insecure)
+		authority, ephemeral, err := idcert.Open(ctx, idcert.Config{KeyFile: idCertKey, Insecure: insecure})
 		if err != nil {
 			return nil, err
 		}

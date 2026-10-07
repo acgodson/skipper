@@ -26,9 +26,9 @@ func device(d *store.Device) Device {
 	return Device{DeviceID: d.DeviceID, Pubkey: d.Pubkey, CodeEpoch: d.CodeEpoch}
 }
 
-func (l *Local) certified(d *store.Device) (Device, error) {
+func (l *Local) certified(ctx context.Context, d *store.Device) (Device, error) {
 	dev := device(d)
-	cert, err := l.authority.Issue(d.DeviceID, d.Pubkey)
+	cert, err := l.authority.Issue(ctx, d.DeviceID, d.Pubkey)
 	dev.IDCert = cert
 	return dev, err
 }
@@ -40,13 +40,13 @@ func mapStoreErr(err error) error {
 	return err
 }
 
-func (l *Local) Register(_ context.Context, r Registration) (Registered, error) {
+func (l *Local) Register(ctx context.Context, r Registration) (Registered, error) {
 	certified := l.authority.CertifiedID(r.Pubkey, r.PreferredDeviceID, r.IDCert)
 	d, result, err := l.store.Register(r.Pubkey, r.Label, certified, l.clock.Now())
 	if err != nil {
 		return Registered{}, err
 	}
-	dev, err := l.certified(d)
+	dev, err := l.certified(ctx, d)
 	return Registered{Device: dev, Existing: result.Existing}, err
 }
 
@@ -58,7 +58,7 @@ func (l *Local) Lookup(_ context.Context, deviceID string) (Device, error) {
 	return device(d), nil
 }
 
-func (l *Local) Certify(_ context.Context, deviceID, pubkey string) (Device, error) {
+func (l *Local) Certify(ctx context.Context, deviceID, pubkey string) (Device, error) {
 	d, err := l.store.GetDevice(deviceID)
 	if err != nil {
 		return Device{}, mapStoreErr(err)
@@ -66,7 +66,7 @@ func (l *Local) Certify(_ context.Context, deviceID, pubkey string) (Device, err
 	if d.Pubkey != pubkey {
 		return Device{}, ErrNotFound
 	}
-	return l.certified(d)
+	return l.certified(ctx, d)
 }
 
 func (l *Local) BumpEpoch(_ context.Context, deviceID string) error {
