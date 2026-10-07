@@ -92,6 +92,13 @@ Found by the fourth security review. Nothing is exposed today (the repo is priva
 
 These are observed on a second machine during beta, not before.
 
+## Decided, waiting on something else
+
+| Item | Note |
+|---|---|
+| Apple Silicon only at launch (decided 2026-10-07) | `scripts/build.sh` is `ARCH="arm64"`; the app will not launch on an Intel Mac at all. Accepted — the first testers are on Apple Silicon. The download page says so plainly |
+| The download page will detect the visitor's machine | Only once there is more than one build to choose between: Intel, Apple Silicon, and later Windows. Pointless with one build, and a wrong guess is worse than a plain statement |
+
 ## Smaller items, not blocking
 
 | Item | Note |
