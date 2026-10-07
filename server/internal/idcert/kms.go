@@ -18,10 +18,25 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
 )
 
+// The signing budget is set by the caller, not by KMS. rc-signal allows 3 s for a whole
+// internal call (API.md §6.1), and a `hello` spends that budget on POST
+// /internal/devices/{id}/cert. So every attempt's timeout plus every backoff has to come
+// in under 3 s with room for the handler's own work: at 700 ms × 3 attempts plus
+// 100 ms + 200 ms of backoff the worst case is 2.4 s, leaving 600 ms. Exceeding it would
+// have rc-signal give up while rc-api is still waiting on KMS, which spends the caller's
+// retry budget on a request that was never answered and makes a slow KMS
+// indistinguishable from a failed one. internalCallBudget keeps that arithmetic honest in
+// a test rather than in a comment alone.
+//
+// GetPublicKey is not in that budget: it runs once at startup, inside rc-api's own
+// startupTimeout, so it can afford to wait.
 const (
-	kmsCallTimeout = 5 * time.Second
-	kmsAttempts    = 3
-	kmsBackoff     = 100 * time.Millisecond
+	kmsSignTimeout     = 700 * time.Millisecond
+	kmsStartupTimeout  = 10 * time.Second
+	kmsAttempts        = 3
+	kmsBackoff         = 100 * time.Millisecond
+	internalCallBudget = 3 * time.Second
+	handlerHeadroomMin = 500 * time.Millisecond
 )
 
 type kmsAPI interface {
@@ -54,8 +69,12 @@ func newKMSAuthority(ctx context.Context, client kmsAPI, keyID string) (*Authori
 	return &Authority{pub: pub, signer: s}, nil
 }
 
+// fetchPublicKey runs once, at startup. Every error it returns is deliberately fatal to
+// the process: a wrong key id, a wrong region and a missing kms:Sign grant all surface
+// here, and they must stop the first deploy loudly instead of yielding a server that
+// reports healthy and then 500s on every registration.
 func (s *kmsSigner) fetchPublicKey(ctx context.Context) (*ecdsa.PublicKey, error) {
-	callCtx, cancel := context.WithTimeout(ctx, kmsCallTimeout)
+	callCtx, cancel := context.WithTimeout(ctx, kmsStartupTimeout)
 	defer cancel()
 	out, err := s.client.GetPublicKey(callCtx, &kms.GetPublicKeyInput{KeyId: aws.String(s.keyID)})
 	if err != nil {
@@ -113,7 +132,7 @@ func (s *kmsSigner) signDigest(ctx context.Context, digest []byte) ([]byte, erro
 }
 
 func (s *kmsSigner) signOnce(ctx context.Context, digest []byte) ([]byte, error) {
-	callCtx, cancel := context.WithTimeout(ctx, kmsCallTimeout)
+	callCtx, cancel := context.WithTimeout(ctx, kmsSignTimeout)
 	defer cancel()
 	out, err := s.client.Sign(callCtx, &kms.SignInput{
 		KeyId:            aws.String(s.keyID),

@@ -87,9 +87,16 @@ EBS volume — is zero dollars and a catastrophic single point of failure.
 `kms:Sign`, so no id-cert private key exists in the process or on the volume. It is mutually
 exclusive with `-id-cert-key-file`, which is unchanged, and `-insecure-http` with neither flag
 keeps the throwaway local key so `dev-backend.sh` still runs offline with no AWS at all. The
-public key is fetched once at startup with `kms:GetPublicKey` and a failure there refuses the
-start. The wire format did not change: `ECDSA_SHA_256` returns the same ASN.1 DER encoding
-`ecdsa.SignASN1` produced, so there is no conversion and no vector moved.
+public key is fetched once at startup with `kms:GetPublicKey`, and a failure there refuses the
+start **deliberately**: that fetch is where misconfiguration shows up, and a loud first-deploy
+failure beats a healthy-looking server that 500s on every registration. A degraded start that
+served everything except the two signing calls was considered and rejected for that reason.
+
+Signing is a network call, so it is bounded by the caller's budget rather than KMS's: `API.md`
+§6.1 gives rc-signal 3 s per internal call, and 700 ms per attempt × 3 attempts plus 100 ms +
+200 ms of backoff is a 2.4 s worst case, leaving 600 ms for the rest of the handler. A test pins
+that arithmetic. The wire format did not change: `ECDSA_SHA_256` returns the same ASN.1 DER
+encoding `ecdsa.SignASN1` produced, so there is no conversion and no vector moved.
 
 ---
 

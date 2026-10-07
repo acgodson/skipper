@@ -511,8 +511,12 @@ device record for the id under another key exist anyway, that record is removed 
 tokens are revoked. Without a valid certificate a new key always gets a fresh id, whether or not
 the preferred one is free, so the call reveals nothing about which ids exist. The process refuses
 to start without one of the two key sources unless it runs in local `-insecure-http` mode, where
-it makes a throwaway key; with a KMS key it also refuses to start if the public key cannot be
-fetched, and a signing failure then fails that one call rather than serving a bad certificate.
+it makes a throwaway key. With a KMS key it fetches the public key once at startup and, **by
+design, refuses to start if that fetch fails** — a wrong key id, a wrong region and a missing
+`kms:Sign` grant all surface there, and they must stop a deploy loudly rather than leave a
+process that reports healthy and then fails every registration. Once running, a signing failure
+fails that one call and never yields a device a bad certificate; the whole signing call,
+including its retries, stays inside the 3 s budget above.
 
 **The claims database — operator rules.** Every id the registry ever assigned is recorded with
 the key it was given to in `device_id_claims`, which lives in its **own SQLite file**:

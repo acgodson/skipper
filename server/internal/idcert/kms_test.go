@@ -12,6 +12,7 @@ import (
 	"errors"
 	"math/big"
 	"testing"
+	"time"
 )
 
 // A certificate captured from the file signer, kept as literal bytes so the encoding on
@@ -158,6 +159,28 @@ func TestThePublicKeyConversionAcceptsOnlyAP256SPKI(t *testing.T) {
 		if _, err := parseKMSPublicKey(der); err == nil {
 			t.Errorf("accepted %s as the authority public key", name)
 		}
+	}
+}
+
+// rc-signal gives a whole internal call 3 s (API.md §6.1), and a hello spends it on
+// POST /internal/devices/{id}/cert. If signing could outlast that, rc-signal would give
+// up while rc-api still waited on KMS and could not tell a slow answer from a failed one.
+func TestTheSigningBudgetFitsInsideTheInternalCallTimeout(t *testing.T) {
+	var backoff time.Duration
+	for attempt := 1; attempt < kmsAttempts; attempt++ {
+		backoff += kmsBackoff << (attempt - 1)
+	}
+	worst := kmsSignTimeout*kmsAttempts + backoff
+	if worst >= internalCallBudget {
+		t.Fatalf("the worst-case signing call is %v, which does not fit in rc-signal's %v budget", worst, internalCallBudget)
+	}
+	if headroom := internalCallBudget - worst; headroom < handlerHeadroomMin {
+		t.Fatalf("the worst-case signing call is %v, leaving only %v for the rest of the handler; want at least %v",
+			worst, headroom, handlerHeadroomMin)
+	}
+	// The startup fetch is deliberately outside that budget: it runs once, before serving.
+	if kmsStartupTimeout <= kmsSignTimeout {
+		t.Fatalf("the startup fetch timeout %v should be more generous than a per-signature %v", kmsStartupTimeout, kmsSignTimeout)
 	}
 }
 
