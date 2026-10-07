@@ -5,6 +5,7 @@
 package apisrv
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
 	"strings"
@@ -281,5 +282,77 @@ func spendDown(h *harness, email string) {
 	if _, err := h.db.Append(account.AccountID, protocol.LedgerAdjustment, -balance,
 		h.clock.Now().UnixMilli(), "", "", "test setup"); err != nil {
 		h.t.Fatal(err)
+	}
+}
+
+// rawExec writes state the current code refuses to produce. The only caller is the
+// migration test, which has to recreate a balance the floor now makes impossible.
+func (h *harness) rawExec(query string, args ...any) {
+	h.t.Helper()
+	db, err := sql.Open("sqlite", h.dbPath)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(query, args...); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// The one account that exists signed up under the calendar trial and, with no floor,
+// could be carrying a negative balance. The migration is what it meets on the first
+// restart after this change.
+func TestTheMigrationGivesAnOldTrialItsCreditAndForgivesTheDebt(t *testing.T) {
+	h := newHarness(t)
+	const email = "owner@example.com"
+	host := h.link(email, newDevice(t), "SERIAL-OWNER")
+	account, err := h.db.AccountByEmail(email)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rewind to what the old scheme left behind: a calendar window, no grant on the
+	// ledger, and the negative balance the missing floor allowed.
+	h.rawExec(`DELETE FROM ledger WHERE account_id=?`, account.AccountID)
+	h.rawExec(`INSERT INTO ledger (entry_id, account_id, type, amount_cents,
+ balance_after_cents, created_at, session_id, gift_id, memo) VALUES (?,?,?,?,?,?,'','','')`,
+		"led_old", account.AccountID, protocol.LedgerSessionCharge, -1900, -1900,
+		h.clock.Now().UnixMilli())
+	h.rawExec(`UPDATE devices SET trial_ends_at=? WHERE device_id=?`,
+		h.clock.Now().Add(3*24*time.Hour).UnixMilli(), host.DeviceID)
+	if got := h.balance(email); got != -1900 {
+		t.Fatalf("the old balance is %d, want the -1900 the test set up", got)
+	}
+
+	now := h.clock.Now().UnixMilli()
+	corrected, granted, err := h.db.MigrateTrialsToCredit(policy.TrialGrantCents,
+		policy.TrialLifetime.Milliseconds(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if corrected != 1 || granted != 1 {
+		t.Fatalf("the migration corrected %d balances and wrote %d grants, want 1 and 1",
+			corrected, granted)
+	}
+
+	ent := h.entitlementFor(host.DeviceToken)
+	if ent.Status != protocol.StatusTrial {
+		t.Fatalf("after the migration the owner reads %s, want trial", ent.Status)
+	}
+	if *ent.BalanceCents != policy.TrialGrantCents || *ent.MinutesRemaining != 300 {
+		t.Fatalf("after the migration: %d cents, %d minutes; want 50 and 300",
+			*ent.BalanceCents, *ent.MinutesRemaining)
+	}
+	if *ent.TrialEndsAt != now+policy.TrialLifetime.Milliseconds() {
+		t.Fatalf("the window ends at %d, want the migration plus %v",
+			*ent.TrialEndsAt, policy.TrialLifetime)
+	}
+
+	// Running it again is a no-op, which is what makes a restart safe.
+	corrected, granted, err = h.db.MigrateTrialsToCredit(policy.TrialGrantCents,
+		policy.TrialLifetime.Milliseconds(), now)
+	if err != nil || corrected != 0 || granted != 0 {
+		t.Fatalf("a second run corrected %d and granted %d (err=%v), want nothing",
+			corrected, granted, err)
 	}
 }

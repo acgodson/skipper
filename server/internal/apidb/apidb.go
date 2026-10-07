@@ -319,6 +319,88 @@ func migrate(db *sql.DB) error {
 	return err
 }
 
+// MigrateTrialsToCredit moves accounts off the calendar trial and onto starting
+// credits (BETA.md §1.6), and forgives the negative balances the missing floor let
+// through. Both halves are keyed on state the migration itself clears, so a restart
+// runs them again and changes nothing. The grant and the window are the caller's:
+// they are policy, and this only writes them.
+//
+// A device that held a calendar trial gets the grant it would have been given at
+// link, with a fresh window: its old window was measured in days of wall clock,
+// which is not convertible into hours of credit, so the hours start now.
+//
+// It reports how many balances it corrected and how many grants it wrote, because a
+// data migration that runs silently cannot be checked afterwards.
+func (d *DB) MigrateTrialsToCredit(grantCents, windowMS, now int64) (corrected, granted int, err error) {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	debts, err := scanAccountAmounts(tx, `SELECT account_id, -SUM(amount_cents) FROM ledger
+ GROUP BY account_id HAVING SUM(amount_cents) < 0`)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, a := range debts {
+		if _, err := appendTx(tx, a.accountID, protocol.LedgerAdjustment, a.amount, now,
+			"", "", "corrected"); err != nil {
+			return 0, 0, err
+		}
+	}
+
+	pending, err := scanAccountAmounts(tx, `SELECT DISTINCT d.account_id, 0 FROM devices d
+ WHERE d.trial_ends_at > 0 AND d.account_id <> ''
+ AND NOT EXISTS (SELECT 1 FROM ledger l WHERE l.account_id = d.account_id AND l.type = '`+
+		protocol.LedgerTrialGrant+`')`)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, a := range pending {
+		// The grant must postdate every entry already on the account, or a charge
+		// written in the same millisecond would read as having consumed it. Timestamps
+		// are the only order the ledger has, so the grant takes the later one.
+		var latest sql.NullInt64
+		if err := tx.QueryRow(`SELECT MAX(created_at) FROM ledger WHERE account_id=?`,
+			a.accountID).Scan(&latest); err != nil {
+			return 0, 0, err
+		}
+		grantedAt := max(now, latest.Int64+1)
+		if _, err := appendTx(tx, a.accountID, protocol.LedgerTrialGrant, grantCents, grantedAt,
+			"", "", "starting credits"); err != nil {
+			return 0, 0, err
+		}
+		if _, err := tx.Exec(`UPDATE devices SET trial_ends_at=?
+ WHERE account_id=? AND trial_ends_at > 0`, now+windowMS, a.accountID); err != nil {
+			return 0, 0, err
+		}
+	}
+	return len(debts), len(pending), tx.Commit()
+}
+
+type accountAmount struct {
+	accountID string
+	amount    int64
+}
+
+func scanAccountAmounts(tx *sql.Tx, query string) ([]accountAmount, error) {
+	rows, err := tx.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []accountAmount
+	for rows.Next() {
+		var a accountAmount
+		if err := rows.Scan(&a.accountID, &a.amount); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 func addColumnIfMissing(db *sql.DB, table, column, decl string) (bool, error) {
 	var n int
 	err := db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info(?) WHERE name=?`, table, column).Scan(&n)

@@ -663,6 +663,13 @@ take still gets its `trial_expiry`, worth zero: the entry is what records that t
 `trial_expiry` is a type of its own rather than an `adjustment` so that an operator correction can
 never be mistaken for expired grant.
 
+Accounts that predate starting credits are migrated once, at startup: a device that held a
+calendar trial gets its `trial_grant` and a fresh window, and a balance the old code had driven
+below zero gets an `adjustment` bringing it to exactly `0`, memo `corrected`. The old balances are
+left in the ledger — it is append-only — so entries written before the correction may still read a
+negative `balanceAfterCents`. Nothing from the correction forward does. There is **no user-facing
+notice**: the app shows the current state, and the current state is a working trial.
+
 ### 7.3 Gifting
 
 A gift moves credit from the sender's balance to a named email address. The amount is held —
