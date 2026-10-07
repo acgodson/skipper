@@ -1,0 +1,23 @@
+# Retention for the relay log, and the bound on the logging exception that `verbose` opens.
+#
+# The Ubuntu coturn package ships no logrotate configuration at all, so before this file
+# /var/log/turnserver/turnserver.log grew without limit on the root volume — harmless while
+# the log held only startup lines, and not harmless once `verbose` adds a usage line and a
+# peer address per session. Seven days is the retention the exception in
+# infra/aws/README.md "The relay log exception" commits to: long enough to investigate an
+# egress alarm that fired overnight, short enough that peer addresses are not kept.
+#
+# copytruncate rather than a postrotate reload: coturn holds the file open and rotating it
+# out from under the process would send the rest of the day's lines to an unlinked inode,
+# and the alternative — restarting coturn nightly — would kill every live relay.
+/var/log/turnserver/turnserver.log {
+    daily
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su turnserver turnserver
+    create 0640 turnserver turnserver
+}

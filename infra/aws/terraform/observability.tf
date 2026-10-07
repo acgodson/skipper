@@ -168,6 +168,39 @@ resource "aws_cloudwatch_metric_alarm" "host_unreachable" {
   }
 }
 
+# Relay egress, which nothing watched. The coturn caps in turnserver.conf bound the rate
+# per instant; this bounds the month, which a rate cap cannot: bps-capacity still permits
+# $56/day if it were saturated continuously. NetworkOut counts every byte the box sends,
+# relay and API alike, which is the right denominator because egress is billed the same way.
+#
+# The instance runs with monitoring = false, so EC2 publishes at five-minute resolution and
+# period must be 300 to match. Sum, not Average: the metric is bytes per period already.
+#
+# treat_missing_data is notBreaching, which is correct polarity for an excess alarm — a
+# NetworkOut metric that stops appearing means the instance is gone, and host-unreachable
+# is the alarm for that.
+resource "aws_cloudwatch_metric_alarm" "network_out" {
+  alarm_name        = "${local.name}-network-out"
+  alarm_description = "The box sent more than ${var.network_out_alarm_bytes} bytes in each of ${var.network_out_alarm_periods} consecutive five-minute periods. Sustained for a day that is the entire monthly egress allowance of the $${var.monthly_budget_usd} budget"
+
+  namespace   = "AWS/EC2"
+  metric_name = "NetworkOut"
+  statistic   = "Sum"
+  period      = 300
+
+  evaluation_periods  = var.network_out_alarm_periods
+  datapoints_to_alarm = var.network_out_alarm_periods
+  threshold           = var.network_out_alarm_bytes
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+
+  dimensions = {
+    InstanceId = aws_instance.app.id
+  }
+}
+
 # One alarm per mounted volume. The data volume is the one that must not fill — SQLite
 # cannot write and the box keeps answering — and the root volume still carries the logs
 # and the release directories, so a full one of those is an outage too.

@@ -210,6 +210,12 @@ printf 'TURNSERVER_ENABLED=1\n' >/etc/default/coturn
 install -d -m 0755 /etc/systemd/system/coturn.service.d
 install -m 0644 "$${CONFIG}/coturn.service.d/override.conf" /etc/systemd/system/coturn.service.d/override.conf
 
+# The coturn package ships no logrotate rule, and turnserver.conf now runs `verbose` for
+# session accounting, so without this the relay log grows without limit on the root volume
+# and carries peer addresses for ever. This file is the retention the logging exception in
+# infra/aws/README.md commits to.
+install -m 0644 "$${CONFIG}/logrotate/coturn" /etc/logrotate.d/coturn
+
 install -m 0755 "$${CONFIG}/backup.sh" ${app_dir}/bin/backup.sh
 install -m 0644 "$${CONFIG}/rc-api.service" /etc/systemd/system/rc-api.service
 install -d -m 0755 /etc/systemd/system/rc-api.service.d

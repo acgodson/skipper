@@ -147,6 +147,18 @@ variable "turn_total_quota" {
   default     = 200
 }
 
+variable "turn_max_bps" {
+  description = "Per-allocation relay ceiling, in BYTES per second, with coturn counting the input and output streams separately — so this is one relayed direction. 1222600 B/s is 9.78 Mbps: the 8 Mbps the shipped client requests in every quality mode including `auto` (QualityProfile.swift burstBitrateBps, and PLAN.md §5's 8 Mbps burst line), plus 0.1 Mbps of ctrl/hi data channel, times 1.05 for RTP/SRTP/UDP/IP/ChannelData framing and RTCP, times 1.15 of queueing margin. Sized so it cannot clip a legitimate session at the quality ceiling; real sessions measure 383-391 kbps (VERIFY.md), 4% of this. See infra/aws/README.md \"Relay bandwidth\"."
+  type        = number
+  default     = 1222600
+}
+
+variable "turn_bps_capacity" {
+  description = "Box-wide relay ceiling, in BYTES per second per direction. 7200000 B/s is 57.6 Mbps, which is 90% of the t4g.small 0.128 Gbps sustained network baseline split across the two directions coturn meters separately, leaving a tenth of the NIC for Caddy, both Go services, the 15-minute backup upload and the agents. That is 5 concurrent sessions at the full 8 Mbps ceiling, against PHASE5 §3's 4-6 concurrent relayed sessions at peak for this shape, or about 147 concurrent at the measured bitrate. It is not a cost control: 57.6 Mbps sustained is still $56/day, which is why the NetworkOut alarm below exists."
+  type        = number
+  default     = 7200000
+}
+
 variable "log_retention_days" {
   description = "CloudWatch Logs retention for both services."
   type        = number
@@ -294,6 +306,18 @@ variable "api_5xx_threshold" {
   description = "rc-api responses of 500 or above, in five minutes, that raise the error alarm."
   type        = number
   default     = 10
+}
+
+variable "network_out_alarm_bytes" {
+  description = "AWS/EC2 NetworkOut bytes in one five-minute period that raise the egress alarm. 1241200000 is the rate which, sustained for 24 hours, would consume the entire monthly egress allowance a $50 budget affords: $50 less $26.83 of fixed cost (PHASE5 §3.2's ten-host column, $26.13, plus $0.70 for the seven alarms this review adds) leaves $23.17, which buys 257 GB at $0.09/GB on top of the 100 GB free tier, so 357 GB; 357.4e9 bytes over 24 hours is 1.2412e9 per five-minute period. That is about 3.5x PHASE5 §3's 4-6 concurrent peak for this shape, so legitimate load cannot reach it, and 57% of what bps-capacity now permits, so it fires before the cap saturates and long before the budget email, which lags up to 24 hours and only sends at 80%."
+  type        = number
+  default     = 1241200000
+}
+
+variable "network_out_alarm_periods" {
+  description = "Consecutive five-minute periods above network_out_alarm_bytes before the egress alarm fires. Two means ten sustained minutes, which a backup upload or one legitimate spike cannot produce."
+  type        = number
+  default     = 2
 }
 
 variable "backup_stale_alarm_hours" {
