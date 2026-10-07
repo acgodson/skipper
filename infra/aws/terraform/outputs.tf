@@ -1,0 +1,68 @@
+output "elastic_ip" {
+  description = "The address the owner points api.<domain> and turn.<domain> at, by hand, at the registrar. This stack creates no DNS."
+  value       = aws_eip.this.public_ip
+}
+
+output "dns_records_to_create" {
+  description = "Exactly what to add at the registrar."
+  value = [
+    "A  ${split(".", var.api_domain)[0]}  ${aws_eip.this.public_ip}",
+    "A  ${split(".", var.turn_domain)[0]}  ${aws_eip.this.public_ip}",
+  ]
+}
+
+output "api_domain" {
+  description = "What deploy.sh probes afterwards, and the client's one config value."
+  value       = var.api_domain
+}
+
+output "aws_region" {
+  value = var.aws_region
+}
+
+output "instance_id" {
+  description = "Target for deploy.sh and for aws ssm start-session."
+  value       = aws_instance.app.id
+}
+
+output "backup_bucket" {
+  description = "Snapshots under db/ and claims/, binaries under releases/, instance configuration under config/."
+  value       = aws_s3_bucket.backups.id
+}
+
+output "cognito_user_pool_id" {
+  value = aws_cognito_user_pool.this.id
+}
+
+output "cognito_issuer" {
+  description = "rc-api -cognito-issuer."
+  value       = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.this.id}"
+}
+
+output "cognito_app_client_id" {
+  description = "rc-api -cognito-audience, and the client id the sign-in page uses. Public by design: no secret."
+  value       = aws_cognito_user_pool_client.web.id
+}
+
+output "id_cert_kms_key_arn" {
+  description = "The device-id certificate signing key. Not wired into rc-api yet — see README 'The id-cert key'."
+  value       = aws_kms_key.id_cert.arn
+}
+
+output "ssm_parameter_prefix" {
+  description = "Where every secret this stack reads must be written, out of band."
+  value       = local.prefix
+}
+
+output "log_group" {
+  value = aws_cloudwatch_log_group.app.name
+}
+
+output "alarm_topic_arn" {
+  value = aws_sns_topic.alarms.arn
+}
+
+output "aws_account_id" {
+  description = "The account this stack is in. deploy.sh asserts the profile it was given resolves to it."
+  value       = data.aws_caller_identity.current.account_id
+}

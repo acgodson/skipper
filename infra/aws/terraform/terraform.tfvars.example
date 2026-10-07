@@ -1,0 +1,16 @@
+acme_email  = "ops@example.com"
+alarm_email = "ops@example.com"
+
+# aws_region         = "eu-west-2"
+# environment        = "prod"
+# api_domain         = "api.skipperdesk.app"
+# turn_domain        = "turn.skipperdesk.app"
+# web_base_url       = "https://skipperdesk.app"
+# monthly_budget_usd = 50
+
+# Turn on only after the Apple and Google parameters hold real values: creating the
+# providers makes Terraform read them, which puts them in state. See README "Secrets".
+# enable_social_idp = true
+
+# Turn on only after the A records exist at the registrar.
+# enable_endpoint_health_check = true

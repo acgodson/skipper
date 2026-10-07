@@ -1,0 +1,29 @@
+# One template unit for both databases: %i is db or claims.
+
+[Unit]
+Description=SkipperDesk SQLite snapshot to S3 (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=${service_user}
+Group=${service_user}
+EnvironmentFile=${config_dir}/backup.env
+ExecStart=${app_dir}/bin/backup.sh %i
+StandardOutput=append:${log_dir}/backup.log
+StandardError=append:${log_dir}/backup.log
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+ReadWritePaths=${log_dir} ${data_dir}

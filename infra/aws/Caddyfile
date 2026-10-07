@@ -1,0 +1,49 @@
+# TLS and the only public hop in front of rc-api and rc-signal.
+# The four values come from /etc/skipperdesk/caddy.env, which cloud-init renders.
+
+{
+	email {$SKIPPER_ACME_EMAIL}
+	admin off
+	log {
+		output stderr
+		format json
+	}
+}
+
+{$SKIPPER_API_DOMAIN} {
+	tls {
+		issuer acme {
+			disable_tlsalpn_challenge
+		}
+	}
+
+	# Defence in depth. rc-api already answers 404 for every /internal path on its public
+	# listener and the internal listeners are bound to loopback, so this rule should be
+	# unreachable; if it ever fires, something upstream of it is wrong.
+	handle /internal/* {
+		respond 404
+	}
+
+	handle /ws* {
+		reverse_proxy {$SKIPPER_SIGNAL_UPSTREAM} {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	handle /signal/healthz {
+		rewrite * /healthz
+		reverse_proxy {$SKIPPER_SIGNAL_UPSTREAM} {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	handle {
+		reverse_proxy {$SKIPPER_API_UPSTREAM} {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	log {
+		output discard
+	}
+}

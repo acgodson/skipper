@@ -1,0 +1,46 @@
+{
+  "agent": {
+    "run_as_user": "root",
+    "region": "${aws_region}"
+  },
+  "metrics": {
+    "namespace": "${metric_namespace}",
+    "append_dimensions": {
+      "InstanceId": "$${aws:InstanceId}"
+    },
+    "metrics_collected": {
+      "disk": {
+        "resources": ["/"],
+        "measurement": ["disk_used_percent"],
+        "drop_device": true,
+        "metrics_collection_interval": 300
+      }
+    }
+  },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "${log_dir}/rc-api.log",
+            "log_group_name": "${log_group}",
+            "log_stream_name": "rc-api",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "${log_dir}/rc-signal.log",
+            "log_group_name": "${log_group}",
+            "log_stream_name": "rc-signal",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "${log_dir}/backup.log",
+            "log_group_name": "${log_group}",
+            "log_stream_name": "backup",
+            "timezone": "UTC"
+          }
+        ]
+      }
+    }
+  }
+}

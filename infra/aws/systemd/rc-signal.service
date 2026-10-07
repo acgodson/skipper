@@ -1,0 +1,55 @@
+# Rendered by Terraform into /etc/systemd/system/rc-signal.service.
+# -entitlement http means rc-api owns the device registry and entitlement, so this unit
+# names no database and no id-cert key: in a deployment rc-signal holds neither.
+
+[Unit]
+Description=SkipperDesk signaling server
+After=network-online.target rc-api.service
+Wants=network-online.target
+Requires=rc-api.service
+
+[Service]
+Type=simple
+User=${service_user}
+Group=${service_user}
+EnvironmentFile=${config_dir}/rc-signal.env
+ExecStart=${app_dir}/bin/rc-signal \
+  -insecure-http \
+  -listen ${signal_listen} \
+  -internal-listen ${signal_internal_listen} \
+  -entitlement http \
+  -api-internal-url http://${api_internal_listen} \
+  -internal-token-file ${data_dir}/internal-token \
+  -turn-secret-file ${data_dir}/turn-secret \
+  -turn-urls ${turn_urls} \
+  -stun-urls ${stun_urls} \
+  -trusted-proxies ${trusted_proxies} \
+  -log-level info
+StandardOutput=append:${log_dir}/rc-signal.log
+StandardError=append:${log_dir}/rc-signal.log
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+ReadWritePaths=${data_dir} ${log_dir}
+
+[Install]
+WantedBy=multi-user.target
