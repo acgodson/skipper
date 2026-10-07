@@ -110,6 +110,7 @@ if [[ -n "$BIN" ]]; then
   fi
 fi
 
+HOOKS_SWIFT=apps/macos/Sources/RemoteControlCore/Config/DevelopmentHooks.swift
 echo "== 3c. Development environment hooks are compiled out of the shipped binary"
 if [[ -n "$BIN" ]]; then
   if /usr/libexec/PlistBuddy -c 'Print :SkipperTestHooks' "$PLIST" >/dev/null 2>&1; then
@@ -135,7 +136,19 @@ if [[ -n "$BIN" ]]; then
     "") report "could not locate the DevelopmentHooks.areCompiledIn storage byte" ;;
     *) report "DevelopmentHooks.areCompiledIn is stored as 0x$flag, not false" ;;
   esac
-  HOOK_VARS='RC_IDENTITY_DIR|SKIPPER_DEV_FILE_IDENTITY|RC_DUMP_FRAME|RC_INPUT_SELFTEST|RC_CAPTURE_SOURCE|RC_SYNTHETIC_SIZE|RC_PASTEBOARD_NAME|RC_SETTINGS_SUITE|RC_AUTOLINK|RC_AUTOCONNECT|RC_LOG_FILE|RC_DEVICE_LABEL|RC_HANDSHAKE_TIMEOUT|RC_REQUEST_TIMEOUT|RC_HEARTBEAT_SEC|RC_BACKOFF_MIN|RC_BACKOFF_MAX|RC_ICE_RESTART_DELAY|RC_ICE_FAILURE_GRACE|RC_ICE_POLICY'
+  # The list is read out of DevelopmentHooks.swift rather than restated here, because a
+  # hook added there and forgotten here is a hook this gate would stop looking for.
+  # RC_RENEW_SEC was missing from the hand-written list for exactly that reason.
+  HOOK_VARS=$(sed -nE 's/^[[:space:]]*case \.[A-Za-z]+: return "([A-Z_]+)"$/\1/p' "$HOOKS_SWIFT" \
+    | sort -u | paste -sd'|' -)
+  hook_count=$(grep -c . <<<"${HOOK_VARS//|/$'\n'}")
+  case_count=$(sed -nE '/^public enum DevelopmentHook: CaseIterable \{/,/^\}/p' "$HOOKS_SWIFT" \
+    | grep -cE '^[[:space:]]*case [a-z]')
+  if [[ "$hook_count" -ne "$case_count" || "$hook_count" -eq 0 ]]; then
+    report "DevelopmentHooks.swift names $case_count hooks but $hook_count variables -- cannot scan reliably"
+  else
+    echo "  ok    scanning for all $hook_count development variable names DevelopmentHooks.swift defines"
+  fi
   present=$(strings -a "$BIN" | grep -xE "$HOOK_VARS" | sort -u || true)
   if [[ -n "$present" ]]; then
     echo "$present" | sed 's/^/        /'
@@ -148,7 +161,6 @@ fi
 echo "== 3d. Only the configuration files read the process environment"
 SHIPPED_SWIFT=(apps/macos/Sources/RemoteControl apps/macos/Sources/RemoteControlCore apps/macos/Sources/SkipperCore apps/macos/Sources/SkipperDesign)
 CONFIG_SWIFT=apps/macos/Sources/RemoteControlCore/Config/Config.swift
-HOOKS_SWIFT=apps/macos/Sources/RemoteControlCore/Config/DevelopmentHooks.swift
 ENV_READ='processInfo\.environment|\b(get|set|unset|put)env\b'
 strangers=$(grep -rnE "$ENV_READ" "${SHIPPED_SWIFT[@]}" --include='*.swift' | grep -vE "^($CONFIG_SWIFT|$HOOKS_SWIFT):" || true)
 if [[ -n "$strangers" ]]; then

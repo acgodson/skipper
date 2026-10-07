@@ -253,8 +253,9 @@ The real risk is not the average, it is the individual:
 > the next 99 P2P users subsidise it.
 
 So the conclusion for Phase 6 is structural, not a number: **relay must be a priced dimension.**
-Everything needed is already recorded — `relayUsed` and `bytesRelayed` per session (`API.md`
-§5.1), settled server-side in `server/internal/policy`. Three options, all server-side with no
+Everything needed has a **column** — `relayUsed` and `bytesRelayed` per session (`API.md`
+§5.1), settled server-side in `server/internal/policy`. Nothing writes either value; see §8.2
+before building a price on them. Three options, all server-side with no
 client release (`API.md` §4.2): a higher per-minute rate while `relayUsed` is true; a relayed-GB
 allowance per top-up; or a flat relay surcharge. Pick one in Phase 6 with the measured relay
 fraction from milestone 3 in hand.
@@ -442,7 +443,9 @@ Each milestone is closed by an observation, not by a passing test (`CLAUDE.md`).
 | **5.5** | **Cutover** | Owner's Macs on the v5 build against the new backend; `relayUsed` and cost dashboards live | 7 consecutive days with no fallback to the legacy box, and the §6 switch-off criteria all true. Then our half of the legacy box is stopped and its three security-group rules removed — the instance itself is left alone |
 
 `TODO:` revisit §3 the day milestone 5.3 produces a real relay fraction. Everything in §3.3
-hangs off that one number.
+hangs off that one number — and §8.2 is why nothing produces it yet. 5.2's and 5.3's acceptance
+wording above is **superseded in part** by §8.1 and §8.2: read both before treating either row
+as a target.
 
 ### 8.1 What 5.2 found — the relay allocated and then carried nothing
 
@@ -489,3 +492,69 @@ both listeners. One mismatch was found and fixed: `expiresAt` reported the untru
 5.2 is not closed. What it still owes: the `ice_servers` push observed on the wire of a real
 metered session between two devices, rather than assembled from the production minting
 function and the live box's own `-turn-urls`. That needs the two-peer run 5.3 already requires.
+
+### 8.2 What 5.3 found before it started — nothing can report `relayUsed`
+
+`scripts/verify-relay.sh` is the gate for the half of 5.3 that can be run on one machine.
+Run on 2026-10-07 it proved the forced-relay switch real and the route observable, and it
+found that 5.3's acceptance as §8 words it **cannot be met by any run, on any number of
+machines, with the code as it stands.**
+
+**`relayUsed` is always `false` and `bytesRelayed` is always `NULL`.** The columns exist
+(`server/internal/apidb/apidb.go:96-97`), rc-api stores whatever the stop report says
+(`server/internal/apisrv/entitlement.go:172-173`), and `/v1/sessions` reads them back. But
+the only producer of a `SessionStopReport` in the repo sets neither field:
+
+```go
+// server/internal/hub/hub.go:358-359 — note what is NOT here
+h.reports.Stopped(protocol.SessionStopReport{
+	SessionID: s.ID, EndedAt: h.clock.Now().UnixMilli(), Reason: reason})
+```
+
+and the reconciliation sweep passes them explicitly empty
+(`server/internal/apisrv/entitlement.go:252`: `StopSession(..., false, nil, ...)`). There is
+**no wire field** for a client to report relay use — `ice_servers` is the only v5 addition to
+the message list, and `bye` carries a reason, not statistics. rc-signal relays `sdp`/`ice`/`pake`
+and never sees media, so it cannot infer either number. coturn is not read by anything: `server/cmd/turnprobe`
+probes it, and `infra/aws/coturn` has no accounting parser.
+
+So §8's 5.3 line — "the `/v1/sessions` row showing `relayUsed: true` and a non-zero
+`bytesRelayed`" — **is not achievable and should not be read as a target**, in the same way
+§8.1's "refused after `bye`" was not. §3.3's "Everything needed is already recorded —
+`relayUsed` and `bytesRelayed` per session" is **wrong**: the columns are recorded, the values
+are never written. §3's cost model, the relay fraction and the measured GB/hour all hang off a
+number nothing produces.
+
+What now exists, and what still has to be decided:
+
+* **The client can now see the route.** `ICEPathStatistics` (`apps/macos/Sources/RemoteControlCore/Transport/ICEPathStatistics.swift`)
+  reads the candidate pair libwebrtc settled on and reports both ends' `candidateType` with
+  the pair's byte counters; `rc-node ice-path` prints it. Before this, `isRelayOnly` reported
+  the policy we asked for and `holdsSessionICECredentials` reported that credentials arrived —
+  neither is evidence that a byte crossed a relay. This is the only available source for
+  `relayUsed`, and it is a **client-reported** number, which is a trust decision §7 has not
+  taken: a host that under-reports relay use under-pays. `TODO:` decide whether `relayUsed`
+  is client-reported with the honesty assumption stated, or taken from coturn, before a
+  relayed-GB price depends on it.
+* **The relay side cannot corroborate anything.** The deployed `/etc/turnserver.conf` runs
+  `simple-log` with no `verbose`, `no-cli` set and no prometheus exporter, so
+  `/var/log/turnserver/turnserver.log` holds **zero** allocation lines and zero byte counters —
+  only startup, the black-list, and `check_stun_auth` refusals. Confirmed read-only on
+  2026-10-07: `grep -cE 'usage:|rb=|sb=|allocat'` over the whole log is `0`. A relayed session
+  therefore leaves no trace on the box at all. **This needs deploying**: turning on coturn's
+  own session accounting is the one change that would make `bytesRelayed` a server-side fact
+  rather than a client's claim.
+* **§8.1's "It is not deployed" is now stale.** The live `/etc/turnserver.conf` has no bare
+  `denied-peer-ip=::` line (checked read-only on 2026-10-07, and `verify-relay.sh` section C
+  re-checks it on every run so the regression cannot come back unnoticed). The coturn fix is
+  live; that is why `verify-turn.sh`'s peer checks now pass.
+
+5.2 still owes exactly what §8.1 said it owes, and the reason is narrower than it looked. Two
+Go clients **can** drive a real metered session against production — the server does not verify
+SPAKE2 or the SDP body, so `connect_req` needs no access code and a `v=0` string starts
+metering. The one thing missing is an **entitled host**: entitlement is checked for the host
+device only (`server/internal/hub/handle.go:459`), and linking a device to an account needs a
+Cognito ID token from a browser sign-in, which is the owner's action and no agent's. See `docs/VERIFY.md`
+"Forced relay through the live London coturn, two instances on one Mac": that run captures the
+`ice_servers` push on a production session and the relayed media in one go, and it names the
+two things the owner must do that no agent can.
