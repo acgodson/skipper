@@ -82,7 +82,7 @@ func (p *pool) idTokenClaims() map[string]any {
 	return map[string]any{
 		"iss": p.issuer, "sub": "11111111-2222-3333-4444-555555555555",
 		"aud": testAudience, "token_use": "id", "email": "Owner@Example.com",
-		"exp": time.Now().Add(time.Hour).Unix(),
+		"email_verified": true, "exp": time.Now().Add(time.Hour).Unix(),
 	}
 }
 
@@ -103,8 +103,42 @@ func TestCognitoAcceptsTheIDToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a well-formed ID token was refused: %v", err)
 	}
-	if session.AccountID != "11111111-2222-3333-4444-555555555555" || session.Email != "owner@example.com" {
+	if session.Subject != "11111111-2222-3333-4444-555555555555" || session.Email != "owner@example.com" {
 		t.Fatalf("session = %+v", session)
+	}
+	if !session.EmailVerified {
+		t.Fatalf("a verified address came back unverified: %+v", session)
+	}
+}
+
+// review5 H2: the verifier read the email claim and never asked whether the pool had
+// verified it. The address is the account's display attribute and the address every
+// gift is sent to, so an unverified one is an address its holder merely asserted.
+func TestCognitoRefusesAnUnverifiedEmail(t *testing.T) {
+	p := newPool(t)
+	cognito := p.provider(t)
+
+	for _, claim := range []any{false, "false", nil, "", 0} {
+		claims := p.idTokenClaims()
+		if claim == nil {
+			delete(claims, "email_verified")
+		} else {
+			claims["email_verified"] = claim
+		}
+		if _, err := cognito.UserSession(context.Background(), p.token(t, testKid, claims)); err == nil {
+			t.Fatalf("email_verified=%v (%T) was accepted", claim, claim)
+		} else if !errors.Is(err, ErrUnauthenticated) {
+			t.Fatalf("email_verified=%v gave %v, want ErrUnauthenticated", claim, err)
+		}
+	}
+
+	// Cognito sends a boolean; some providers send the string. Both mean verified.
+	for _, claim := range []any{true, "true"} {
+		claims := p.idTokenClaims()
+		claims["email_verified"] = claim
+		if _, err := cognito.UserSession(context.Background(), p.token(t, testKid, claims)); err != nil {
+			t.Fatalf("email_verified=%v (%T) was refused: %v", claim, claim, err)
+		}
 	}
 }
 

@@ -359,7 +359,14 @@ func (s *Server) userSession(w http.ResponseWriter, r *http.Request) (*apidb.Acc
 		s.fail(w, r, http.StatusUnauthorized, protocol.APIErrUnauthenticated, "that user session is not valid")
 		return nil, false
 	}
-	account, err := s.opt.DB.EnsureAccount(session.AccountID, session.Email, s.now())
+	// An account is the subject, and its address is only an attribute if the
+	// provider verified it. The provider checks both; this is the boundary saying so,
+	// so a provider added later cannot weaken it by omission (review5 H2).
+	if session.Subject == "" || !session.EmailVerified {
+		s.fail(w, r, http.StatusUnauthorized, protocol.APIErrUnauthenticated, "that user session is not valid")
+		return nil, false
+	}
+	account, err := s.opt.DB.EnsureAccount(session.Subject, session.Email, s.now())
 	if err != nil {
 		s.internalError(w, r, err)
 		return nil, false

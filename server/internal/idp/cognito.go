@@ -81,7 +81,27 @@ func (c *Cognito) UserSession(ctx context.Context, bearer string) (Session, erro
 	if claims.Email == "" {
 		return Session{}, fmt.Errorf("%w: the token carries no email claim", ErrUnauthenticated)
 	}
-	return Session{AccountID: claims.Sub, Email: strings.ToLower(claims.Email)}, nil
+	// An unverified address is an address the holder only asserted, and the account's
+	// display attribute and every gift addressed to it hang off it (review5 H2).
+	if !bool(claims.EmailVerified) {
+		return Session{}, fmt.Errorf("%w: the token's email claim is not verified", ErrUnauthenticated)
+	}
+	return Session{Subject: claims.Sub, Email: strings.ToLower(claims.Email), EmailVerified: true}, nil
+}
+
+// jsonBool is an OIDC boolean claim. The spec says boolean and Cognito sends one,
+// but enough providers send the string "true" that accepting both is cheaper than
+// failing a real sign-in; anything else is false, so this cannot fail open.
+type jsonBool bool
+
+func (b *jsonBool) UnmarshalJSON(raw []byte) error {
+	switch string(raw) {
+	case "true", `"true"`:
+		*b = true
+	default:
+		*b = false
+	}
+	return nil
 }
 
 type jwtHeader struct {
@@ -90,12 +110,13 @@ type jwtHeader struct {
 }
 
 type jwtClaims struct {
-	Iss      string `json:"iss"`
-	Sub      string `json:"sub"`
-	Aud      string `json:"aud"`
-	TokenUse string `json:"token_use"`
-	Email    string `json:"email"`
-	Exp      int64  `json:"exp"`
+	Iss           string   `json:"iss"`
+	Sub           string   `json:"sub"`
+	Aud           string   `json:"aud"`
+	TokenUse      string   `json:"token_use"`
+	Email         string   `json:"email"`
+	EmailVerified jsonBool `json:"email_verified"`
+	Exp           int64    `json:"exp"`
 }
 
 func splitJWT(token string) (jwtHeader, jwtClaims, string, []byte, error) {

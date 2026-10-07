@@ -115,7 +115,7 @@ func (s *Server) linkSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderLink(w, http.StatusBadRequest, data)
 		return
 	}
-	account, err := s.opt.DB.EnsureAccount(session.AccountID, session.Email, s.now())
+	account, err := s.opt.DB.EnsureAccount(session.Subject, session.Email, s.now())
 	if err != nil {
 		data.Error = "The account could not be created."
 		s.renderLink(w, http.StatusInternalServerError, data)

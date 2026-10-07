@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -29,8 +30,12 @@ var (
 	ErrInsufficientBalance = errors.New("insufficient balance")
 )
 
+// Account.Subject is the identity provider's immutable identifier and the only
+// thing an account is resolved by; Email follows it and can change. A row migrated
+// from before the subject existed carries an empty one until a subject adopts it.
 type Account struct {
 	AccountID string
+	Subject   string
 	Email     string
 	CreatedAt int64
 	Suspended bool
@@ -150,7 +155,8 @@ type DB struct {
 const schema = `
 CREATE TABLE IF NOT EXISTS accounts (
   account_id     TEXT PRIMARY KEY,
-  email          TEXT NOT NULL UNIQUE,
+  subject        TEXT NOT NULL DEFAULT '',
+  email          TEXT NOT NULL,
   created_at     INTEGER NOT NULL,
   suspended      INTEGER NOT NULL DEFAULT 0,
   unbilled_units INTEGER NOT NULL DEFAULT 0
@@ -311,6 +317,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateCarryToUnbilledUnits(db); err != nil {
 		return err
 	}
+	if err := migrateAccountsToSubjectKey(db); err != nil {
+		return err
+	}
 	added, err := addColumnIfMissing(db, "idempotency", "replayable", "INTEGER NOT NULL DEFAULT 1")
 	if err != nil || !added {
 		return err
@@ -424,6 +433,63 @@ func migrateCarryToUnbilledUnits(db *sql.DB) error {
 	return err
 }
 
+// migrateAccountsToSubjectKey re-keys accounts on the identity provider's subject
+// and demotes the email to an attribute that can change (review5 H2).
+//
+// It is a table rewrite because the email's uniqueness is an inline constraint, and
+// that uniqueness is the defect: it is what made the address an identity. Keeping it
+// would turn the day a federated provider lands from an account takeover into a hard
+// refusal for every user who already signed up with the same address — better, but
+// still a landmine, and the table is small enough to settle now.
+//
+// Existing rows keep their account_id and get an empty subject, which the first
+// subject bearing their address adopts (see EnsureAccount). Keyed on the column's
+// absence, so a restart runs it again and changes nothing.
+func migrateAccountsToSubjectKey(db *sql.DB) error {
+	present, err := hasColumn(db, "accounts", "subject")
+	if err != nil {
+		return err
+	}
+	if !present {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		for _, stmt := range []string{
+			`CREATE TABLE accounts_subject_keyed (
+  account_id     TEXT PRIMARY KEY,
+  subject        TEXT NOT NULL DEFAULT '',
+  email          TEXT NOT NULL,
+  created_at     INTEGER NOT NULL,
+  suspended      INTEGER NOT NULL DEFAULT 0,
+  unbilled_units INTEGER NOT NULL DEFAULT 0
+)`,
+			`INSERT INTO accounts_subject_keyed
+ (account_id, subject, email, created_at, suspended, unbilled_units)
+ SELECT account_id, '', email, created_at, suspended, unbilled_units FROM accounts`,
+			`DROP TABLE accounts`,
+			`ALTER TABLE accounts_subject_keyed RENAME TO accounts`,
+		} {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("accounts subject migration: %w", err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	for _, stmt := range []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS accounts_subject ON accounts(subject) WHERE subject <> ''`,
+		`CREATE INDEX IF NOT EXISTS accounts_email ON accounts(email)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func hasColumn(db *sql.DB, table, column string) (bool, error) {
 	var n int
 	err := db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info(?) WHERE name=?`, table, column).Scan(&n)
@@ -453,12 +519,12 @@ func NormaliseEmail(s string) string { return strings.ToLower(strings.TrimSpace(
 
 // --- accounts ---------------------------------------------------------------
 
-const accountCols = `account_id, email, created_at, suspended`
+const accountCols = `account_id, subject, email, created_at, suspended`
 
 func scanAccount(row interface{ Scan(...any) error }) (*Account, error) {
 	var a Account
 	var suspended int
-	err := row.Scan(&a.AccountID, &a.Email, &a.CreatedAt, &suspended)
+	err := row.Scan(&a.AccountID, &a.Subject, &a.Email, &a.CreatedAt, &suspended)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -477,21 +543,52 @@ func (d *DB) AccountByEmail(email string) (*Account, error) {
 	return scanAccount(d.db.QueryRow(`SELECT `+accountCols+` FROM accounts WHERE email=?`, NormaliseEmail(email)))
 }
 
-// EnsureAccount upserts the account an identity provider just vouched for.
-func (d *DB) EnsureAccount(accountID, email string, now time.Time) (*Account, error) {
+func (d *DB) AccountBySubject(subject string) (*Account, error) {
+	return scanAccount(d.db.QueryRow(`SELECT `+accountCols+` FROM accounts WHERE subject=? AND subject<>''`, subject))
+}
+
+// EnsureAccount resolves the account an identity provider just vouched for, keyed on
+// the provider's immutable subject. The email is a display attribute: it follows the
+// subject rather than identifying it, so a user who changes address keeps their
+// account and a second identity carrying someone else's address gets its own
+// (review5 H2).
+//
+// An account predating the subject column is adopted by the first subject that
+// arrives bearing its address. That is the migration for the accounts that exist:
+// idempotent, because it only ever fills an empty subject, and sound on the live
+// pool, where email is the username and no federated provider exists, so two
+// subjects cannot carry one address. The window closes the first time the owner
+// signs in. A row whose subject is already set is never re-keyed by an address.
+func (d *DB) EnsureAccount(subject, email string, now time.Time) (*Account, error) {
+	if subject == "" {
+		return nil, fmt.Errorf("apidb: an account needs an identity provider subject")
+	}
 	email = NormaliseEmail(email)
-	if a, err := d.AccountByEmail(email); err == nil {
-		return a, nil
-	} else if !errors.Is(err, ErrNotFound) {
+	tx, err := d.db.Begin()
+	if err != nil {
 		return nil, err
 	}
-	if accountID == "" {
+	defer tx.Rollback()
+
+	var accountID, heldSubject, heldEmail string
+	err = tx.QueryRow(`SELECT account_id, subject, email FROM accounts
+ WHERE subject=? OR (subject='' AND email=?)`, subject, email).Scan(&accountID, &heldSubject, &heldEmail)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
 		accountID = NewID("acct_")
+		if _, err := tx.Exec(`INSERT INTO accounts (account_id, subject, email, created_at, suspended)
+ VALUES (?,?,?,?,0)`, accountID, subject, email, now.UnixMilli()); err != nil {
+			return nil, err
+		}
+	case err != nil:
+		return nil, err
+	case heldSubject == "" || heldEmail != email:
+		if _, err := tx.Exec(`UPDATE accounts SET subject=?, email=? WHERE account_id=?`,
+			subject, email, accountID); err != nil {
+			return nil, err
+		}
 	}
-	_, err := d.db.Exec(`INSERT INTO accounts (account_id, email, created_at, suspended)
- VALUES (?,?,?,0) ON CONFLICT(account_id) DO UPDATE SET email=excluded.email`,
-		accountID, email, now.UnixMilli())
-	if err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return d.AccountByID(accountID)
