@@ -6,6 +6,13 @@ hosted zone (`uburu.ai`), **no** registered domains, **no** Cognito user pools, 
 certificates and **no** customer-managed KMS keys in `eu-west-1` or `eu-west-2`. The legacy
 box is untouched and stays frozen (`infra/legacy/README.md`).
 
+Two AWS accounts already exist locally and **neither** is the one we deploy into:
+`219702648416` (profile `godson`) holds the frozen box, and `521831014979` (profile `regina`,
+IAM Identity Center at `d-90667fa3fd`) is in use for something else — its `ReginaDeployRole`
+carries explicit *denies* on EC2 and Cognito, so it was deliberately fenced and is not ours to
+widen. SkipperDesk gets its own member account under the same organization: one bill, one Cost
+Explorer, one SSO login, and a blast radius that cannot reach either of the other two.
+
 Scope and rationale: `docs/SCOPE.md` §4, §6, §7, §8. Contracts: `protocol/API.md`,
 `protocol/PROTOCOL.md`. Progress tracking: `docs/ROADMAP.md`.
 
@@ -24,8 +31,8 @@ All prices below were read from the AWS Pricing API on 2026-10-07 for EU (London
 
 | Thing | What it is | Where it lives | Notes / what breaks without it |
 |---|---|---|---|
-| Domain | `skipperdesk.app` | Route 53 Domains (registrar) | $20/yr registration, transfer and renewal (verified). The client's single config value (`API.md` §0) |
-| DNS | Hosted zone `skipperdesk.app`; `A` → ALB or EIP for `api.`, `A` → coturn EIP for `turn.`, `CNAME` for the website | Route 53 | $0.50/zone/month |
+| Domain | `skipperdesk.app` | **Already owned — Namecheap, paid** | $0 to this phase. The client's single config value (`API.md` §0) is `api.skipperdesk.app` |
+| DNS | Stays at Namecheap (`dns1/dns2.registrar-servers.com`). `A` records for `api.` and `turn.` → the Elastic IP, once it exists | Namecheap Advanced DNS | $0. No Route 53 hosted zone — nothing in the design needs one, and Caddy validates over HTTP-01, not DNS-01 |
 | TLS | Public CA cert for `api.skipperdesk.app` | ACM (Shape B) or Caddy + Let's Encrypt (Shape A) | ACM is free but only usable by ALB/CloudFront, not by a process on EC2. On Shape A, Caddy holds the cert and rc-api runs behind it on loopback |
 | Cognito user pool | Email + Apple + Google. **Hosted UI is not used** — `skipperdesk.app/sign-in` is our own page calling the Cognito API (SCOPE §3.2), so no hosted-UI domain and no client secret | Cognito, `eu-west-2` | Free to 10 k MAU (**unverified** — Cognito re-tiered in 2024/25; check the console's pricing panel when creating the pool). rc-api needs `RC_API_COGNITO_ISSUER` + `RC_API_COGNITO_AUDIENCE` (app client id) |
 | rc-api | REST `/v1`, the `/link` page, the `/ws` pass-through. **Two listeners**: public (`RC_API_LISTEN`) and internal (`RC_API_INTERNAL_LISTEN`, default `127.0.0.1:18081`) | ECS task or the one EC2 box | Refuses to start with the internal listener on the public port |
@@ -84,7 +91,7 @@ throwaway local key so `dev-backend.sh` still runs offline with no AWS at all.
 ### (a) Smallest — one EC2 box
 
 ```
-Route 53 → EIP → t4g.small (eu-west-2)
+Namecheap DNS → EIP → t4g.small (eu-west-2)
              ├── Caddy :443        → rc-api  127.0.0.1:18080  (+ internal :18081, loopback)
              │                       rc-signal 127.0.0.1:8443 (+ internal :18444, loopback)
              └── coturn :3478 udp/tcp, 49160-49200/udp  (host networking)
@@ -101,9 +108,9 @@ Route 53 → EIP → t4g.small (eu-west-2)
 ### (b) Managed — ALB + ECS/Fargate, coturn on EC2
 
 ```
-Route 53 → ALB (ACM cert) → Fargate: rc-api task, rc-signal task  (private subnets)
+Namecheap DNS → ALB (ACM cert) → Fargate: rc-api task, rc-signal task  (private subnets)
                                  ↕ internal surface over the VPC, security-group pinned
-         Route 53 → EIP → EC2 coturn (public subnet)
+         Namecheap DNS → EIP → EC2 coturn (public subnet)
          DynamoDB: device_id_claims        Aurora Serverless v2: the rest
 ```
 
@@ -160,16 +167,16 @@ Relayed GB per month = hosts × 10 h × 0.15 × 0.70 GB = **hosts × 1.05 GB**.
 | Public IPv4 | $0.005/h each | $3.65 | $3.65 | $10.95 |
 | EBS gp3 20 GB | $0.0928/GB-month | $1.86 | $1.86 | $1.86 |
 | Database | DynamoDB on-demand + Aurora SvL v2 0.5 ACU floor (**unverified**, ~$0.12/ACU-h) | — | — | $55.00 |
-| Route 53 zone + queries | $0.50 + $0.40/M | $0.55 | $0.60 | $1.00 |
-| Domain, amortised | $20/yr | $1.67 | $1.67 | $1.67 |
+| DNS | Namecheap, included with the domain | $0 | $0 | $0 |
+| Domain | already paid at Namecheap | $0 | $0 | $0 |
 | ACM | free | $0 | $0 | $0 |
 | Cognito | free ≤10 k MAU (**unverified**) | $0 | $0 | $0 |
 | KMS id-cert key + signs | $1/key-month + $0.15/10 k | $1.00 | $1.23 | $3.25 |
 | CloudWatch logs + 5 alarms | $0.10/alarm; ingest ~$0.57/GB (**unverified**) | $1.50 | $2.50 | $8.00 |
 | S3 backups | pennies | $0.20 | $0.30 | $0.50 |
 | **TURN egress** | GB above 100 free × $0.09 | 10.5 GB → **$0** | 525 GB → 425 × $0.09 = **$38.25** | 5 250 GB → 5 150 × $0.09 = **$463.50** |
-| **Monthly total** | | **$24.15** | **$63.78** | **$696.99** |
-| **Per paying host** | | **$2.42** | **$0.128** | **$0.139** |
+| **Monthly total** | | **$21.93** | **$61.51** | **$694.32** |
+| **Per paying host** | | **$2.19** | **$0.123** | **$0.139** |
 
 Sanity checks on the arithmetic: 500 hosts × 10 h × 0.15 = 750 relayed hours → 750 × 0.70 GB =
 525 GB. 5 000 hosts → 7 500 relayed hours → 5 250 GB, which is 10.3 concurrent relayed sessions
@@ -177,12 +184,12 @@ on average and realistically 40–60 at peak — about 90 Mbps of sustained egre
 coturn is two t4g.medium at that line and not one small box.
 
 At the conservative **1 GB per relayed hour** the relayed volume becomes hosts × 1.5 GB:
-500 hosts → 750 GB, less 100 free, = $58.50 egress (total **$84.03**); 5 000 hosts → 7 500 GB,
-less 100 free, = $666.00 egress (total **$899.49**). At **30 h/host/month** instead of 10, treble
+500 hosts → 750 GB, less 100 free, = $58.50 egress (total **$81.76**); 5 000 hosts → 7 500 GB,
+less 100 free, = $666.00 egress (total **$896.82**). At **30 h/host/month** instead of 10, treble
 the relayed volume before subtracting the free 100 GB.
 
 For comparison, Shape A scaled to 5 000 hosts (one app box + two coturn boxes, SQLite kept) is
-about **$555/month** — $140 cheaper and single-AZ with a single-writer database. That is the
+about **$552/month** — $142 cheaper and single-AZ with a single-writer database. That is the
 honest price of Shape B's redundancy, and it is why the trigger in §2 is a condition, not a
 headcount alone.
 
@@ -234,17 +241,35 @@ Nothing here can be delegated: it needs the root email, a card, or a console-onl
 
 | # | Step | Where | Cost |
 |---|---|---|---|
-| 1 | Create the AWS account with the `regina` root email. Use an email alias that is not reused anywhere else | `portal.aws.amazon.com/billing/signup` | $0 (card required) |
-| 2 | On root: enable MFA (hardware key or authenticator), delete any root access keys, set the account's alternate security contact | IAM → *Security credentials* (root) | $0 |
-| 3 | Set the billing alarm **before anything else is created**: AWS Budgets, monthly cost budget $50, alerts at 50% / 80% / 100% actual **and** 100% forecast, to a real inbox. Enable *IAM user and role access to Billing* | Billing and Cost Management → *Budgets*; → *Account settings* | $0 (first 2 budgets free) |
-| 4 | Create the IAM identity this project uses. Preferred: IAM Identity Center with one permission set, console + CLI via SSO. Acceptable: an IAM user `skipperdesk-deploy` with MFA and no console password, access key in the local keychain, CLI profile `skipperdesk` (**never** reuse the `godson` profile — it reaches the frozen box) | IAM Identity Center, or IAM → *Users* | $0 |
-| 5 | 💵 Register `skipperdesk.app`. Enable privacy protection and auto-renew. `.app` is HSTS-preloaded, so it is HTTPS-only by design — fine, that is the contract | Route 53 → *Registered domains* → *Register domains* | **$20/yr** |
-| 6 | Create the Cognito user pool: email sign-in, email verification on, MFA optional, password policy at defaults. Add the app client as a **public client, no secret**, with no hosted-UI domain (our own page calls the API — SCOPE §3.2). Record the pool id, the issuer URL and the app client id | Cognito → *User pools* | $0 to 10 k MAU (**unverified**) |
-| 7 | Configure the Apple and Google identity providers in that pool. **Console-only in practice**: both need secrets pasted from the Apple Developer portal (Services ID, key id, team id, `.p8` key) and the Google Cloud console (OAuth client id + secret) | Cognito → the pool → *Social and external providers* | $0 (Apple Developer account already held) |
-| 8 | 💵 Say "go" for provisioning. Everything from here is §5 and automatable | — | **≈$24/month** from this point |
+| 1 | Sign in as the `regina` root and check whether this account already manages an AWS Organization. If it offers *Create an organization*, create one — free, and it is what keeps billing and monitoring in **one** place | `console.aws.amazon.com/organizations/v2/home` | $0 |
+| 2 | Create a member account `skipperdesk-prod` inside that organization. AWS requires a globally unique root email, so use an alias of the regina inbox (`regina+skipperdesk@…`) and nothing reused elsewhere. Record the 12-digit account id | Organizations → *AWS accounts* → *Add an AWS account* → *Create an AWS account* | $0 (no card — the organization's card is used) |
+| 3 | Set the billing alarm **before anything is provisioned**: monthly cost budget $50, alerts at 50% / 80% / 100% actual **and** 100% forecast, filtered to the new account id. Enable *IAM user and role access to Billing* | `console.aws.amazon.com/billing/home#/budgets` (in the management account) | $0 (first 2 budgets free) |
+| 4 | Give this project a scoped identity in the new account: Identity Center → one permission set (`SkipperDeskAdmin`, AdministratorAccess **scoped to that account only**) → assign the regina user to the `skipperdesk-prod` account. **Never** reuse the `godson` profile (it reaches the frozen box) or `ReginaDeployRole` (it carries explicit denies on EC2 and Cognito) | `console.aws.amazon.com/singlesignon/home` → *Permission sets*, then *AWS accounts* | $0 |
+| 5 | Add the CLI profile and confirm it resolves to the new account id, not 521831014979 and not 219702648416 | terminal — see the commands in §4.1 | $0 |
+| 6 | Apple: create a **Services ID** for Sign in with Apple, a **Sign in with Apple key** (`.p8`, downloadable once), and note the key id and team id (`3UB3KZP9WH`) | `developer.apple.com/account/resources/identifiers` and → *Keys* | $0 (account already held) |
+| 7 | Google: create an **OAuth 2.0 Web client** and keep the client id + secret | `console.cloud.google.com/apis/credentials` | $0 |
+| 8 | 💵 Say "go". Provisioning begins — the Cognito pool, the VPC, the box, TLS and the KMS key are all Terraform, so nothing else here is yours to click | — | **≈$22/month** from this point |
+| 9 | After provisioning: add two `A` records at Namecheap, `api` and `turn`, both → the Elastic IP I give you. The apex currently points at Namecheap's parking page (162.255.119.78) — leave it until there is a website | Namecheap → *Domain List* → `skipperdesk.app` → *Advanced DNS* | $0 |
 
-Step 3 before step 5 is deliberate: the budget alarm must exist before the first chargeable
-resource.
+### 4.1 The commands for step 5
+
+```bash
+aws configure sso --profile skipperdesk
+aws sso login --profile skipperdesk
+aws sts get-caller-identity --profile skipperdesk
+```
+
+`configure sso` asks for the start URL — the existing one is
+`https://d-90667fa3fd.awsapps.com/start`, SSO region `us-east-1`. Choose the
+`skipperdesk-prod` account and the `SkipperDeskAdmin` role, and set the CLI region to
+`eu-west-2`. The third command must print the new account id.
+
+The Cognito user pool is **not** an owner step any more: Terraform creates the pool and the
+public app client, and only the Apple and Google secrets from steps 6 and 7 are pasted in (as
+SSM parameters, never into a console form).
+
+Step 3 before step 8 is deliberate: the budget alarm must exist before the first chargeable
+resource. The domain is no longer a step at all — it is bought, and its DNS stays where it is.
 
 ---
 
@@ -352,7 +377,7 @@ Each milestone is closed by an observation, not by a passing test (`CLAUDE.md`).
 | # | Milestone | What is built | Acceptance check (falsifiable) |
 |---|---|---|---|
 | **5.0** | Owner prerequisites | §4 steps 1–8 | `aws sts get-caller-identity` on the new profile returns the new account; `whois skipperdesk.app` shows the owner's registration; a Budgets alert e-mail has been received at least once (fire it with a $0.01 threshold, then set $50) |
-| **5.1** | **Reachable and signed in** — no TURN | Terraform: VPC, one t4g.small, EIP, EBS, Caddy, rc-api + rc-signal, Route 53 `api.skipperdesk.app`, Cognito, KMS id-cert key, backups, logs, 5 alarms | From a Mac with no local backend: `curl https://api.skipperdesk.app/v1/health` returns `200` with a publicly trusted chain and no cert exception; one real Mac completes the §1.1 link flow in a browser, `register` mints a Device ID, `GET /v1/entitlement` returns `trial`. `curl https://api.skipperdesk.app/internal/entitlement/<id>` returns **404** |
+| **5.1** | **Reachable and signed in** — no TURN | Terraform: VPC, one t4g.small, EIP, EBS, Caddy, rc-api + rc-signal, Cognito, KMS id-cert key, backups, logs, 5 alarms | From a Mac with no local backend: `curl https://api.skipperdesk.app/v1/health` returns `200` with a publicly trusted chain and no cert exception; one real Mac completes the §1.1 link flow in a browser, `register` mints a Device ID, `GET /v1/entitlement` returns `trial`. `curl https://api.skipperdesk.app/internal/entitlement/<id>` returns **404** |
 | **5.2** | **TURN exists** | coturn on the same box, EIP, `turn.skipperdesk.app`, secret in SSM, anti-proxy config carried over, quotas raised | A metered session pushes `ice_servers` with a TURN entry whose `username` is `<expiry>:<sessionId>` and `expiresAt` ≈ now + 10 min (`PROTOCOL.md` §2.18); the same credential is **refused** by coturn after `bye`; a TURN allocation to an RFC1918 peer is refused |
 | **5.3** | **Cross-network and relay proof** | Nothing new — the ROADMAP's queued item #1, which needed TURN. A cloud peer stands in for the second Mac | Two endpoints on two different networks hold a session through `skipperdesk.app`; then one is forced onto the relay (block UDP to the peer / `iceTransportPolicy: relay`) and the session still works, with the `/v1/sessions` row showing `relayUsed: true` and a non-zero `bytesRelayed`. **Record the relay fraction and the measured GB/hour — §3's assumptions are replaced by these numbers** |
 | **5.4** | **Fifth security review** (infrastructure) | The six items in §7 | No HIGH or CRITICAL finding outstanding |
