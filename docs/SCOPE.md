@@ -55,7 +55,7 @@ motion, states) implemented natively per platform (SwiftUI now, WinUI later). No
 UI toolkit.
 
 ### 3.2 Web (skipperdesk.app)
-Sign-in (Cognito under our own UI), account and devices, subscription/credits, gifting, payment
+Sign-in (Cognito's own hosted page, on our domain and in our colours), account and devices, subscription/credits, gifting, payment
 (crypto, last phase), download, docs. The app never handles passwords: sign-in happens in the
 browser and hands the app a short-lived token via a custom URL scheme.
 
@@ -115,6 +115,10 @@ Explicitly out: browser-style fingerprinting (spoofable, disliked by reviewers).
 ## 6. Accounts, entitlements, abuse rules
 
 - Sign-in via **Cognito** (free to ~10k MAU): email, Apple, Google; passkeys when practical.
+  Cognito's hosted page does the signing in, so no password, verification code or social token
+  ever passes through code we wrote. Decided 2026-10-07, revising the earlier "under our own UI":
+  Apple and Google federation needs a Cognito domain regardless, and the alternative was
+  implementing SPAKE-grade password handling ourselves or sending passwords in plaintext.
 - Account holds: subscription/credits, linked host devices, trial state, gifts.
 - Rules enforced server-side at every `connect`:
   1. Host device must be linked to an account with a valid trial or positive balance.
