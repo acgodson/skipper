@@ -74,6 +74,9 @@ cd server && go test ./... && go build -o bin/rc-signal ./cmd/rc-signal
 # Rust core + Windows host crates
 cargo test --workspace                    # from the repo root
 ./scripts/smoke-signal.sh                 # local server + two WS clients, PASS/FAIL per step
+./scripts/verify-turn.sh                  # live coturn: a minted credential allocates, a bad or
+                                          # expired one does not, private peers are refused
+                                          # (--wait-expiry adds the real ten-minute wait)
 
 # App
 ./scripts/build-core.sh                   # builds librc_ffi.a — required before swift build/run

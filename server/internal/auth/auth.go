@@ -173,10 +173,18 @@ func (s *Signer) Parse(token string) (TokenClaims, error) {
 // TurnCreds mints coturn REST-auth credentials; subject is the session id, so a
 // credential names the one session it was issued for.
 func TurnCreds(secret, subject string, now time.Time, ttl time.Duration) (username, credential string, expiresAt time.Time) {
-	expiresAt = now.Add(ttl)
+	// coturn enforces the whole second in the username, so expiresAt is truncated to it.
+	// Reporting the untruncated instant would promise the client up to a second of life the
+	// credential does not have, and a renewal timed off expiresAt would arrive late.
+	expiresAt = time.Unix(now.Add(ttl).Unix(), 0)
 	username = strconv.FormatInt(expiresAt.Unix(), 10) + ":" + subject
+	return username, TurnCredential(secret, username), expiresAt
+}
+
+// TurnCredential is the secret half of a coturn REST-auth credential for an existing
+// username, so a username minted earlier can be re-derived without inventing a new expiry.
+func TurnCredential(secret, username string) string {
 	m := hmac.New(sha1.New, []byte(secret))
 	m.Write([]byte(username))
-	credential = base64.StdEncoding.EncodeToString(m.Sum(nil))
-	return username, credential, expiresAt
+	return base64.StdEncoding.EncodeToString(m.Sum(nil))
 }
