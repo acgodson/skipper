@@ -133,6 +133,8 @@ const (
 	LedgerGiftReceived  = "gift_received"
 	LedgerGiftRefund    = "gift_refund"
 	LedgerAdjustment    = "adjustment"
+	LedgerTrialGrant    = "trial_grant"
+	LedgerTrialExpiry   = "trial_expiry"
 )
 
 const (
@@ -247,12 +249,13 @@ type Concurrency struct {
 
 // Entitlement is what the app renders; the client derives no policy from it.
 type Entitlement struct {
-	Status          string      `json:"status"`
-	Tier            string      `json:"tier"`
-	BalanceCents    *int64      `json:"balanceCents,omitempty"`
-	TrialEndsAt     *int64      `json:"trialEndsAt,omitempty"`
-	Concurrency     Concurrency `json:"concurrency"`
-	RefreshAfterSec int         `json:"refreshAfterSec"`
+	Status           string      `json:"status"`
+	Tier             string      `json:"tier"`
+	BalanceCents     *int64      `json:"balanceCents,omitempty"`
+	MinutesRemaining *int        `json:"minutesRemaining,omitempty"`
+	TrialEndsAt      *int64      `json:"trialEndsAt,omitempty"`
+	Concurrency      Concurrency `json:"concurrency"`
+	RefreshAfterSec  int         `json:"refreshAfterSec"`
 }
 
 // SessionRecord: no content of any session is ever recorded.

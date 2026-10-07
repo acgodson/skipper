@@ -11,27 +11,30 @@ import (
 )
 
 const (
-	TrialDays          = 7
-	RateCentsPerMinute = 1
-	MaxActivePairs     = protocol.MaxActivePairs
-	MinBalanceCents    = 1
-	DefaultTier        = protocol.TierBase
-	RefreshAfterSec    = protocol.EntitlementRefreshSec
-	MinGiftCents       = protocol.MinGiftAmountCents
-	GiftLifetime       = protocol.GiftTTLSec * time.Second
-	TrialLifetime      = TrialDays * 24 * time.Hour
-	FreeSessionLength  = time.Minute
+	RateCentsPerHour  = 10
+	MinutesPerHour    = 60
+	TrialGrantCents   = 50
+	TrialDays         = 14
+	MaxActivePairs    = protocol.MaxActivePairs
+	MinBalanceCents   = 1
+	DefaultTier       = protocol.TierBase
+	RefreshAfterSec   = protocol.EntitlementRefreshSec
+	MinGiftCents      = protocol.MinGiftAmountCents
+	GiftLifetime      = protocol.GiftTTLSec * time.Second
+	TrialLifetime     = TrialDays * 24 * time.Hour
+	FreeSessionLength = time.Minute
 )
 
 // Facts is everything the policy is allowed to look at.
 type Facts struct {
-	Known        bool
-	Unlinked     bool
-	Suspended    bool
-	HasAccount   bool
-	TrialEndsAt  int64
-	BalanceCents int64
-	ActivePairs  int
+	Known           bool
+	Unlinked        bool
+	Suspended       bool
+	HasAccount      bool
+	TrialEndsAt     int64
+	BalanceCents    int64
+	UnconsumedGrant int64
+	ActivePairs     int
 }
 
 // Decision carries the §4.1 answer and, when the answer is a refusal the client
@@ -46,13 +49,36 @@ func TrialEndsAt(now time.Time) int64 { return now.Add(TrialLifetime).UnixMilli(
 // GrantsTrial answers the only question hardwareHash exists for (API.md §3.2).
 func GrantsTrial(pubkeySeen, hardwareSeen bool) bool { return !pubkeySeen && !hardwareSeen }
 
-// ChargeCents is free below FreeSessionLength; from there on every started minute is billed.
-func ChargeCents(d time.Duration) int64 {
-	if d < FreeSessionLength {
+// ExpiredGrantClawback is the one adjustment that closes a grant window. It takes
+// only the part of the grant no session consumed, and never more than the balance,
+// so credit the user paid for survives the expiry (BETA.md §1.3).
+func ExpiredGrantClawback(unconsumedGrant, balance int64) int64 {
+	return max(0, min(unconsumedGrant, balance))
+}
+
+// MinutesRemaining is the whole minutes of hosting a balance still buys (API.md §4.1).
+// The client must never divide a balance by a rate itself (API.md §4.2).
+func MinutesRemaining(balanceCents int64) int {
+	if balanceCents <= 0 {
 		return 0
 	}
-	minutes := math.Ceil(d.Minutes())
-	return int64(minutes) * RateCentsPerMinute
+	return int(balanceCents * MinutesPerHour / RateCentsPerHour)
+}
+
+// Charge settles one session against the account's carry.
+//
+// The rate is per hour and is not a whole number of cents per minute, so a session's
+// cost is held in sixtieths of a cent: a started minute is worth RateCentsPerHour
+// sixtieths, whole cents are billed, and the remainder stays on the account as carry.
+// Nothing is rounded away, so N short sessions and one long session of the same
+// billed minutes cost the same to within the single cent still sitting in the carry.
+// Below FreeSessionLength a session is free and does not touch the carry.
+func Charge(d time.Duration, carry int64) (cents, newCarry int64) {
+	if d < FreeSessionLength {
+		return 0, carry
+	}
+	sixtieths := carry + int64(math.Ceil(d.Minutes()))*RateCentsPerHour
+	return sixtieths / MinutesPerHour, sixtieths % MinutesPerHour
 }
 
 func Decide(f Facts, now time.Time) Decision {
@@ -71,15 +97,18 @@ func Decide(f Facts, now time.Time) Decision {
 	}
 	if f.HasAccount {
 		balance := f.BalanceCents
+		minutes := MinutesRemaining(balance)
 		ent.BalanceCents = &balance
+		ent.MinutesRemaining = &minutes
 	}
 	switch {
-	case f.BalanceCents >= MinBalanceCents:
-		ent.Status = protocol.StatusActive
-	case f.TrialEndsAt > now.UnixMilli():
+	case f.BalanceCents >= MinBalanceCents && f.TrialEndsAt > now.UnixMilli() &&
+		f.UnconsumedGrant >= f.BalanceCents:
 		ent.Status = protocol.StatusTrial
 		trialEnds := f.TrialEndsAt
 		ent.TrialEndsAt = &trialEnds
+	case f.BalanceCents >= MinBalanceCents:
+		ent.Status = protocol.StatusActive
 	default:
 		ent.Status = protocol.StatusExhausted
 		reason := protocol.EntitlementTrialExpired

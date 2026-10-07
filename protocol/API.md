@@ -330,7 +330,7 @@ never asked to forward a device token over the WebSocket.
 | `createdAt` | int64 | Unix ms, first link. |
 | `linkedAt` | int64 | Unix ms, most recent link to the **current** account. |
 | `lastSeen` | int64 | Unix ms of the most recent authenticated activity on either surface. `0` if never. |
-| `trialEndsAt` | int64 | Unix ms. `0` when the device has no trial (§4). |
+| `trialEndsAt` | int64 | Unix ms the device's starting credits expire. `0` when it was never granted any (§4). |
 
 `hardwareHash` is part of the stored record and is **never** part of any response. It exists only
 to make trial farming expensive (§3.2) and is not a stable identifier the product relies on.
@@ -339,7 +339,7 @@ to make trial farming expensive (§3.2) and is not a stable identifier the produ
 
 - Computed server-side as `HMAC-SHA256(serverSalt, hardwareId)`, where `hardwareId` is the
   platform serial the app reads once at §1.4.
-- Used for exactly one decision: whether a *new* device is eligible for a *new* trial.
+- Used for exactly one decision: whether a *new* device is eligible for *new* starting credits.
 - Never exposed, never used to link accounts to each other, never used for any other purpose.
 - An OS wipe produces a new hash. That is accepted: the cost of the wipe is the deterrent.
 
@@ -389,10 +389,11 @@ session right now, and what should the UI say if not?**
 
 | Field | Type | Req | Meaning |
 |---|---|:--:|---|
-| `status` | string | yes | `trial`, `active`, `exhausted` or `unlinked`. Closed enum; an unrecognised value is treated as `exhausted`. |
+| `status` | string | yes | `trial`, `active`, `exhausted` or `unlinked`. Closed enum; an unrecognised value is treated as `exhausted`. `trial` means the balance is entirely unexpired starting credits; the first paid credit on the account makes it `active`. |
 | `tier` | string | yes | `base` or `skipper`. Open enum — what a tier unlocks is server policy. |
-| `balanceCents` | int64 | no | Present when the account has a credit balance. Absent is not zero; absent means "not applicable to this status". |
-| `trialEndsAt` | int64 | no | Unix ms. Present only when `status` is `trial`. |
+| `balanceCents` | int64 | no | Present when the device is linked to an account. Absent is not zero; absent means "not applicable to this status". Starting credits (§7.2) are part of it, so a device on a trial carries a balance too. |
+| `minutesRemaining` | int | no | Whole minutes of hosting the balance still buys, at the account's rate. Present whenever `balanceCents` is. Computed server-side: the client must not divide a balance by a rate (§4.2). |
+| `trialEndsAt` | int64 | no | Unix ms. Present only when `status` is `trial`: the moment the starting credits expire. |
 | `concurrency` | object | yes | `{"maxActivePairs": 1}`. The server states the limit; the client renders it. |
 | `refreshAfterSec` | int | yes | How long this answer may be cached. Currently **60**. |
 
@@ -400,6 +401,8 @@ session right now, and what should the UI say if not?**
 {
   "status": "trial",
   "tier": "base",
+  "balanceCents": 50,
+  "minutesRemaining": 300,
   "trialEndsAt": 1756000000000,
   "concurrency": {"maxActivePairs": 1},
   "refreshAfterSec": 60
@@ -410,12 +413,14 @@ session right now, and what should the UI say if not?**
 
 The client **must not** compute entitlement. It must not compare `balanceCents` to a rate, infer
 an expiry from `trialEndsAt`, or decide that `exhausted` means "show the payment screen" as
-anything other than a rendering of what the server said. Trial length, cents-per-hour, lock-out
-behaviour and tier contents all change server-side with no client release (SCOPE §6, §7).
+anything other than a rendering of what the server said. `minutesRemaining` exists so that the
+one division a client would be tempted to do is done here: the trial size, the rate, the
+cents-per-hour, lock-out behaviour and tier contents all change server-side with no client
+release (SCOPE §6, §7).
 
-The client's whole contract is: render `status`, `tier`, `balanceCents`, `trialEndsAt`; re-fetch
-after `refreshAfterSec`; and, on `error{entitlement}` from signaling, re-fetch once and render the
-reason.
+The client's whole contract is: render `status`, `tier`, `balanceCents`, `minutesRemaining`,
+`trialEndsAt`; re-fetch after `refreshAfterSec`; and, on `error{entitlement}` from signaling,
+re-fetch once and render the reason.
 
 ### 4.3 Entitlement reasons
 
@@ -425,8 +430,8 @@ The `reason` on a `402 entitlement` here, and on `error{entitlement}` over signa
 | `reason` | Meaning |
 |---|---|
 | `unlinked` | The host device is not linked to any account, or no device with that id exists. |
-| `trial_expired` | The device had a trial, it ended, and no balance remains. |
-| `no_balance` | The device never had a trial (§3.2) and the balance is zero or below the minimum a session requires. |
+| `trial_expired` | The device's starting credits expired or ran out, and no balance remains. |
+| `no_balance` | The device never had starting credits (§3.2) and the balance is zero or below the minimum a session requires. |
 | `concurrency` | The account's `maxActivePairs` is already in use by another pair. |
 | `suspended` | The account is administratively suspended. |
 
@@ -465,9 +470,21 @@ may appear again, completed, in a later query.
 ### 5.2 What a session costs
 
 A session is billed on its end, from `startedAt` to `endedAt`: **free below 60 seconds**; from
-60 seconds on, every started minute is charged at the account's per-minute rate (so 60 s is one
-minute, 61 s is two). The charge is one `session_charge` ledger entry (§7.2). Policy lives in the
-server (`server/internal/policy`); the client never computes it.
+60 seconds on, every started minute counts (so 60 s is one minute, 61 s is two). The rate is per
+**hour**, so a session's minutes are worth a fraction of a cent: whole cents are charged and the
+remainder stays on the account as a carry that the next session's charge starts from. Nothing is
+rounded away in either direction, so many short sessions cost what one long session of the same
+billed minutes costs, to within the single cent still sitting in the carry.
+
+The charge is one `session_charge` ledger entry (§7.2) per session, and it may be **less than the
+minutes were worth**: a charge is clamped to the balance available, never taken past zero (§7.2),
+and a clamped charge drops the carry rather than holding a shortfall against a later top-up. A
+session whose charge clamps is closed, and the account's next session is refused `no_balance`
+(§4.3). A session is settled when it ends, so between settlements it can outrun its balance; the
+reconciliation sweep (§6.2) closes a live session whose account has nothing left, which bounds the
+overrun to one sweep.
+
+Policy lives in the server (`server/internal/policy`); the client never computes it.
 
 ### 5.3 What is deliberately not here
 
@@ -625,7 +642,7 @@ Response: `entries`, `nextCursor`. Newest first.
 | Field | Type | Req | Meaning |
 |---|---|:--:|---|
 | `entryId` | string | yes | Opaque, stable, unique. |
-| `type` | string | yes | `topup`, `session_charge`, `gift_sent`, `gift_received`, `gift_refund`, `adjustment`. Open enum. |
+| `type` | string | yes | `topup`, `session_charge`, `gift_sent`, `gift_received`, `gift_refund`, `trial_grant`, `trial_expiry`, `adjustment`. Open enum. |
 | `amountCents` | int64 | yes | Signed. Negative is a debit. |
 | `balanceAfterCents` | int64 | yes | Balance after this entry. Makes the ledger self-checking. |
 | `createdAt` | int64 | yes | Unix ms. |
@@ -634,6 +651,25 @@ Response: `entries`, `nextCursor`. Newest first.
 | `memo` | string | no | Short human text, ≤ 140 chars. Never contains a secret. |
 
 The ledger is **append-only**. A correction is a new `adjustment` entry, never an edit.
+
+**No entry may take a balance below zero.** A debit larger than the balance is refused; the one
+exception is a `session_charge`, which is clamped to the balance available because the session has
+already happened (§5.2). `balanceAfterCents` is therefore always what it says, and always ≥ 0.
+
+**Starting credits** are a `trial_grant` on the device's first link (§3.2) — one entry, positive,
+with an expiry window. Session charges consume grant before paid credit. When the window closes,
+one `trial_expiry` entry takes back the part of the grant no session spent, and never more than
+the balance, so credit the user paid for survives it. A window that expires with nothing left to
+take still gets its `trial_expiry`, worth zero: the entry is what records that the window closed.
+`trial_expiry` is a type of its own rather than an `adjustment` so that an operator correction can
+never be mistaken for expired grant.
+
+Accounts that predate starting credits are migrated once, at startup: a device that held a
+calendar trial gets its `trial_grant` and a fresh window, and a balance the old code had driven
+below zero gets an `adjustment` bringing it to exactly `0`, memo `corrected`. The old balances are
+left in the ledger — it is append-only — so entries written before the correction may still read a
+negative `balanceAfterCents`. Nothing from the correction forward does. There is **no user-facing
+notice**: the app shows the current state, and the current state is a working trial.
 
 ### 7.3 Gifting
 

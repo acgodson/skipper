@@ -23,6 +23,7 @@ import (
 	"rc-signal/internal/idcert"
 	"rc-signal/internal/idp"
 	"rc-signal/internal/internalapi"
+	"rc-signal/internal/policy"
 	"rc-signal/internal/sqlitex"
 	protocol "rcprotocol"
 )
@@ -127,6 +128,17 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+
+	corrected, granted, err := db.MigrateTrialsToCredit(policy.TrialGrantCents,
+		policy.TrialLifetime.Milliseconds(), time.Now().UnixMilli())
+	if err != nil {
+		log.Error("the starting-credits migration did not complete", "err", err)
+		os.Exit(1)
+	}
+	if corrected > 0 || granted > 0 {
+		log.Info("migrated accounts onto starting credits",
+			"balancesCorrected", corrected, "grantsWritten", granted)
+	}
 
 	api, err := apisrv.New(apisrv.Options{
 		DB: db, IdP: provider, IDCert: authority, InternalToken: internalToken, HardwareSalt: []byte(*salt),

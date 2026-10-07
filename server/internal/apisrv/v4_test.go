@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"rc-signal/internal/clientip"
+	"rc-signal/internal/policy"
 	protocol "rcprotocol"
 )
 
@@ -238,8 +239,8 @@ func TestASubMinuteSessionIsFree(t *testing.T) {
 	if r := h.call("POST", protocol.PathInternalSessionStop, internalToken, "", stop); r.status != http.StatusNoContent {
 		t.Fatalf("stop: %d %s", r.status, r.body)
 	}
-	if got := h.balance("f@example.com"); got != 500 {
-		t.Fatalf("a 59 s session cost %d cents", 500-got)
+	if got := h.balance("f@example.com"); got != 500+policy.TrialGrantCents {
+		t.Fatalf("a 59 s session cost %d cents", 500+policy.TrialGrantCents-got)
 	}
 	bad := protocol.SessionStopReport{SessionID: strings.Repeat("c", 32), Reason: strings.Repeat("A", 70*1024)}
 	if r := h.call("POST", protocol.PathInternalSessionStop, internalToken, "", bad); r.status == http.StatusNoContent {
@@ -265,7 +266,7 @@ func TestReconciliationClosesRowsSignalingForgot(t *testing.T) {
 		t.Fatalf("an unreachable signaling closed %d rows (err=%v)", closed, err)
 	}
 
-	seen := start + (5 * time.Minute).Milliseconds()
+	seen := start + (30 * time.Minute).Milliseconds()
 	both := func(context.Context) (protocol.InternalLiveSessions, error) {
 		return protocol.InternalLiveSessions{SessionIDs: []string{lost, live}, ServerTime: seen}, nil
 	}
@@ -278,11 +279,12 @@ func TestReconciliationClosesRowsSignalingForgot(t *testing.T) {
 	if closed, err := h.api.Reconcile(context.Background(), onlyLive); err != nil || closed != 1 {
 		t.Fatalf("reconcile closed %d rows (err=%v), want 1", closed, err)
 	}
-	if got := h.balance("r@example.com"); got != 495 {
-		t.Fatalf("the forgotten session was billed %d cents, want 5 (to its last sighting)", 500-got)
+	funded := int64(500 + policy.TrialGrantCents)
+	if got := h.balance("r@example.com"); got != funded-5 {
+		t.Fatalf("the forgotten session was billed %d cents, want 5 (to its last sighting)", funded-got)
 	}
-	if got := h.balance("r2@example.com"); got != 500 {
-		t.Fatalf("the live session was billed %d cents", 500-got)
+	if got := h.balance("r2@example.com"); got != funded {
+		t.Fatalf("the live session was billed %d cents", funded-got)
 	}
 	r := h.call("GET", protocol.PathInternalEntitlement+"/"+host.DeviceID, internalToken, "", nil)
 	if r.status != http.StatusOK {
@@ -292,8 +294,8 @@ func TestReconciliationClosesRowsSignalingForgot(t *testing.T) {
 	if r := h.call("POST", protocol.PathInternalSessionStop, internalToken, "", late); r.status != http.StatusNoContent {
 		t.Fatalf("a late stop: %d %s", r.status, r.body)
 	}
-	if got := h.balance("r@example.com"); got != 495 {
-		t.Fatalf("a late stop billed the reconciled session again: %d", 500-got)
+	if got := h.balance("r@example.com"); got != funded-5 {
+		t.Fatalf("a late stop billed the reconciled session again: %d", funded-got)
 	}
 }
 

@@ -7,20 +7,37 @@ public enum EntitlementPresentation {
     public static func statusLine(for entitlement: Entitlement, now: Date = Date()) -> String {
         switch entitlement.status {
         case .trial:
-            guard let endsAt = entitlement.trialEndsAt else { return "Trial" }
-            return "Trial \u{00B7} ends \(relativeDate(endsAt, from: now))"
+            guard let minutes = entitlement.minutesRemaining else { return "Trial" }
+            return "Trial \u{00B7} \(hostingTime(minutes: minutes)) left"
         case .active:
             guard let cents = entitlement.balanceCents else { return "Active" }
-            return "Active \u{00B7} \(moneyString(cents: cents)) balance"
+            guard let minutes = entitlement.minutesRemaining else {
+                return "\(moneyString(cents: cents)) left"
+            }
+            return "\(moneyString(cents: cents)) left \u{00B7} \(hostingTime(minutes: minutes))"
         case .exhausted:
-            return "No balance \u{2014} top up at skipperdesk.app"
+            return "No balance. Top up to keep hosting."
         case .unlinked:
             return "Not signed in"
         }
     }
 
+    /// Hosting time in whole hours, rounded down so the figure is never a promise the
+    /// balance cannot keep. The server does the division (API.md §4.2); this only reads it.
+    public static func hostingTime(minutes: Int) -> String {
+        switch max(0, minutes) / 60 {
+        case 0: return "less than an hour"
+        case 1: return "about 1 hour"
+        case let hours: return "about \(hours) hours"
+        }
+    }
+
     public static func topUpURL(webBaseURL: URL) -> URL {
         webBaseURL.appendingPathComponent("credits")
+    }
+
+    public static func accountURL(webBaseURL: URL) -> URL {
+        webBaseURL.appendingPathComponent("account")
     }
 
     public static func moneyString(cents: Int64) -> String {
@@ -29,13 +46,6 @@ public enum EntitlementPresentation {
         let dollars = magnitude / 100
         let remainder = magnitude % 100
         return String(format: "%@$%d.%02d", negative ? "-" : "", dollars, remainder)
-    }
-
-    private static func relativeDate(_ unixMs: Int64, from now: Date) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(unixMs) / 1000)
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        return formatter.localizedString(for: date, relativeTo: now)
     }
 
     // MARK: - PROTOCOL.md §7 / API.md §4.3 connect-failure sentences
