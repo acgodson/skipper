@@ -50,7 +50,7 @@ output "cognito_app_client_id" {
 }
 
 output "id_cert_kms_key_arn" {
-  description = "The device-id certificate signing key. Not wired into rc-api yet — see README 'The id-cert key'."
+  description = "The device-id certificate signing key. rc-api signs with it directly: this ARN is what rc-api.service passes as -id-cert-kms-key-id, and the private half never leaves KMS."
   value       = aws_kms_key.id_cert.arn
 }
 

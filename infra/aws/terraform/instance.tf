@@ -15,6 +15,11 @@ locals {
     cognito_audience       = aws_cognito_user_pool_client.web.id
     turn_urls              = "turn:${var.turn_domain}:${var.turn_listen_port}?transport=udp,turn:${var.turn_domain}:${var.turn_listen_port}?transport=tcp"
     stun_urls              = "stun:${var.turn_domain}:${var.turn_listen_port}"
+
+    # The key ARN, never the alias. An alias can be retargeted at a different key, which
+    # would invalidate every certificate ever issued without changing a line of config,
+    # and iam.tf scopes kms:Sign to this ARN.
+    id_cert_kms_key_id = aws_kms_key.id_cert.arn
   }
 
   config_objects = {

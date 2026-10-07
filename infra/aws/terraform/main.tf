@@ -30,12 +30,15 @@ locals {
   # so the one address whose X-Forwarded-For may be believed is the loopback address.
   trusted_proxies = "127.0.0.1/32"
 
+  # No id-cert key here. The device-id certificate signer is the KMS key in kms.tf: the
+  # private half never leaves KMS, so there is nothing to put in Parameter Store. A
+  # SecureString holding a PEM PKCS#8 copy of it would make the claim "the signing key
+  # never exists outside KMS" false for the account even while it is true for the process.
   secret_parameters = {
     turn-secret    = "coturn static-auth-secret; rc-signal mints HMAC-SHA1 credentials from it"
     internal-token = "shared bearer for both internal listeners"
     hardware-salt  = "server salt for the hardware hash"
     token-secret   = "hex HMAC secret for session tokens"
-    id-cert-key    = "PEM PKCS#8 P-256 key that signs device-id certificates"
   }
 
   social_parameters = {

@@ -139,7 +139,13 @@ secret_file id-cert-key id-cert-key.pem
 HARDWARE_SALT="$(param hardware-salt)"
 TOKEN_SECRET="$(param token-secret)"
 umask 077
-printf 'RC_API_HARDWARE_SALT=%s\n' "$${HARDWARE_SALT}" >${config_dir}/rc-api.env
+# AWS_REGION is set rather than left to the SDK's own resolution: without it the SDK asks
+# IMDS for the region on every start, which is a round-trip it does not need and a hard
+# failure if the metadata service is ever restricted. rc-api needs it to reach KMS.
+{
+  printf 'RC_API_HARDWARE_SALT=%s\n' "$${HARDWARE_SALT}"
+  printf 'AWS_REGION=%s\n' "${aws_region}"
+} >${config_dir}/rc-api.env
 printf 'RC_TOKEN_SECRET=%s\n' "$${TOKEN_SECRET}" >${config_dir}/rc-signal.env
 chmod 0600 ${config_dir}/rc-api.env ${config_dir}/rc-signal.env
 umask 022
