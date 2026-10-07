@@ -42,6 +42,41 @@ data "aws_iam_policy_document" "audit_bucket" {
       values   = [local.trail_arn]
     }
   }
+
+  # The evidence is append-only to every principal, including the account's own
+  # administrator. Versioning already means a delete leaves a version behind; this is what
+  # stops the version itself being removed, which is the one action that actually destroys
+  # an audit record.
+  #
+  # Honest about what this is: an identity with AdministratorAccess can DeleteBucketPolicy
+  # and then delete freely. It is the same trade as the KMS key policy — two logged calls
+  # instead of one, and the audit-objects-deleted alarm fires on the first. The control
+  # that an account admin cannot lift is an SCP, and an SCP can only be written in the
+  # management account; see infra/aws/README.md "What an account admin can still do".
+  #
+  # Lifecycle expiration is unaffected: S3 applies its own rules internally rather than as
+  # a principal, so audit_log_expiration_days still ages these objects out. Terraform never
+  # deletes audit objects either, so nothing in the normal path trips on this.
+  # Only the two destruction actions. Suspending versioning would be just as damaging, but
+  # denying PutBucketVersioning here would also stop Terraform *repairing* versioning if it
+  # were ever suspended, which is a worse failure than the protection is worth — the
+  # audit-objects-deleted alarm watches that call instead.
+  statement {
+    sid    = "DenyAuditObjectDestruction"
+    effect = "Deny"
+    actions = [
+      "s3:DeleteObject",
+      "s3:DeleteObjectVersion",
+    ]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:s3:::${local.audit_bucket}/*",
+    ]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+  }
 }
 
 module "audit" {
@@ -174,6 +209,83 @@ resource "aws_cloudwatch_log_metric_filter" "id_cert_signs" {
     unit          = "Count"
     default_value = 0
   }
+}
+
+# Three events this account cannot prevent and must therefore notice. An identity holding
+# AdministratorAccess here — and there is exactly one, un-MFA'd, with no SCP above it — can
+# stop the trail, delete every audit object version and schedule the id-cert key for
+# deletion. None of that is preventable from inside the account: whatever this
+# configuration denies, the same identity can undo first, because it can rewrite the
+# policies that deny it. infra/aws/README.md "What an account admin can still do" says so
+# plainly and names the organization-level work that is the actual fix.
+#
+# What *is* achievable is that every one of those acts arrives as mail before it finishes.
+# Each is a single API call against a resource whose destruction is either irreversible or
+# unrecoverable, so the threshold is 1 and existence is the signal, not volume. These are
+# the inverse of the sign alarm below: notBreaching is right here, because zero of these
+# calls is the healthy state.
+#
+# kms:ScheduleKeyDeletion on the id-cert key gives a 30-day window to CancelKeyDeletion, so
+# an alarm genuinely saves the key. The key policy in kms.tf no longer grants the action at
+# all, which means the realistic path is PutKeyPolicy first — also matched here.
+locals {
+  tamper_alarms = {
+    trail-stopped = {
+      what    = "CloudTrail was stopped or deleted, so this account stopped recording management events"
+      pattern = "{ ($.eventSource = \"cloudtrail.amazonaws.com\") && (($.eventName = \"StopLogging\") || ($.eventName = \"DeleteTrail\") || ($.eventName = \"UpdateTrail\") || ($.eventName = \"PutEventSelectors\")) }"
+      metric  = "TrailTampering"
+    }
+    id-cert-key-at-risk = {
+      what    = "the device-id signing key was scheduled for deletion, disabled, or had its key policy rewritten. Losing this key invalidates every idCert ever issued (PHASE5 §1.2); a scheduled deletion can still be cancelled inside the 30-day window"
+      pattern = "{ ($.eventSource = \"kms.amazonaws.com\") && (($.eventName = \"ScheduleKeyDeletion\") || ($.eventName = \"DisableKey\") || ($.eventName = \"PutKeyPolicy\")) && ($.resources[0].ARN = \"${aws_kms_key.id_cert.arn}\") }"
+      metric  = "IdCertKeyTampering"
+    }
+    audit-objects-deleted = {
+      what    = "an object or object version was deleted from the audit or backups bucket, or one of their protective settings was rewritten"
+      pattern = "{ ($.eventSource = \"s3.amazonaws.com\") && (($.eventName = \"DeleteBucketPolicy\") || ($.eventName = \"PutBucketPolicy\") || ($.eventName = \"PutBucketVersioning\") || ($.eventName = \"DeleteBucket\")) && (($.requestParameters.bucketName = \"${local.audit_bucket}\") || ($.requestParameters.bucketName = \"${local.backup_bucket}\")) }"
+      metric  = "AuditBucketTampering"
+    }
+    admin-shell = {
+      what    = "a Run Command was sent to this account. CloudTrail hides the payload, so this alarm records that the administrative path was used and by whom; the command's own output goes to the runcommand log group when the caller asks for it"
+      pattern = "{ ($.eventSource = \"ssm.amazonaws.com\") && ($.eventName = \"SendCommand\") }"
+      metric  = "RunCommandsSent"
+    }
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "tamper" {
+  for_each = local.tamper_alarms
+
+  name           = "${local.name}-${each.key}"
+  log_group_name = aws_cloudwatch_log_group.audit.name
+  pattern        = each.value.pattern
+
+  metric_transformation {
+    name          = each.value.metric
+    namespace     = local.metric_namespace
+    value         = "1"
+    unit          = "Count"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "tamper" {
+  for_each = local.tamper_alarms
+
+  alarm_name        = "${local.name}-${each.key}"
+  alarm_description = each.value.what
+
+  namespace   = local.metric_namespace
+  metric_name = aws_cloudwatch_log_metric_filter.tamper[each.key].metric_transformation[0].name
+  statistic   = "Sum"
+  period      = 300
+
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
 }
 
 # Volume, not existence: registry.Local.Certify re-signs on every authenticated hello

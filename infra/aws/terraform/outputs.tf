@@ -88,6 +88,11 @@ output "session_log_group" {
   value       = aws_cloudwatch_log_group.sessions.name
 }
 
+output "runcommand_log_group" {
+  description = "Run Command output. Session Manager's preferences document cannot cover Run Command, and CloudTrail hides the payload, so this is the only place a send-command's effect is recorded. infra/aws/deploy.sh and scripts/publish-release.sh read this output and pass it as --cloud-watch-output-config."
+  value       = aws_cloudwatch_log_group.runcommand.name
+}
+
 output "alarm_topic_arn" {
   value = aws_sns_topic.alarms.arn
 }

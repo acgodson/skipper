@@ -149,12 +149,27 @@ one = ("set -e; printf '%s' '" + os.environ["REMOTE_B64"] + "'"
 json.dump({"Parameters": {"commands": [one]}}, open(sys.argv[1], "w"))
 PY
 
+# Run Command is the real administrative path to this box and CloudTrail records the call
+# with the payload redacted, so without this the swap left no account-side record of what
+# it did. The log group is created by Terraform; if the stack predates it the deploy still
+# runs, unlogged, and says so rather than failing.
+RUNCOMMAND_LOG_GROUP="$(tf_output runcommand_log_group)"
+OUTPUT_CONFIG=()
+if [[ -n "$RUNCOMMAND_LOG_GROUP" ]]; then
+  OUTPUT_CONFIG=(--cloud-watch-output-config
+    "CloudWatchLogGroupName=$RUNCOMMAND_LOG_GROUP,CloudWatchOutputEnabled=true")
+else
+  echo "note  no runcommand_log_group output; this command will not be logged. Apply"
+  echo "note  infra/aws/terraform to create the group."
+fi
+
 COMMAND_ID="$(aws ssm send-command \
   --profile "$PROFILE" --region "$REGION" \
   --instance-ids "$INSTANCE" \
   --document-name AWS-RunShellScript \
   --comment "skipperdesk deploy $STAMP" \
   --cli-input-json "file://$PARAMS" \
+  ${OUTPUT_CONFIG[@]+"${OUTPUT_CONFIG[@]}"} \
   --query Command.CommandId --output text)"
 
 STATUS=""

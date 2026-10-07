@@ -32,15 +32,23 @@ locals {
 
   cognito_domain_prefix = var.cognito_domain_prefix != "" ? var.cognito_domain_prefix : var.project
 
-  log_group         = "/${var.project}/${var.environment}/app"
-  audit_log_group   = "/${var.project}/${var.environment}/cloudtrail"
-  session_log_group = "/${var.project}/${var.environment}/sessions"
-  metric_namespace  = "${var.project}/${var.environment}"
+  log_group            = "/${var.project}/${var.environment}/app"
+  audit_log_group      = "/${var.project}/${var.environment}/cloudtrail"
+  session_log_group    = "/${var.project}/${var.environment}/sessions"
+  runcommand_log_group = "/${var.project}/${var.environment}/runcommand"
+  metric_namespace     = "${var.project}/${var.environment}"
 
   # The ARN SSM supplies as the PARAMETER_ARN encryption context on every SecureString
   # operation, minus the parameter's own name. It is what scopes both halves of the
   # read-a-secret pair in iam.tf: ssm:GetParameter by resource, kms:Decrypt by context.
   parameter_arn_prefix = "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.prefix}"
+
+  # The two backup prefixes, named once. backup.sh writes the prefix into its own `ok`
+  # line, which is what the metric filters match, so the key here is the S3 prefix.
+  backup_prefixes = {
+    db     = { metric_suffix = "Db", what = "main-database snapshot" }
+    claims = { metric_suffix = "Claims", what = "device-id claims snapshot" }
+  }
 
   trail_name = "${local.name}-management"
 

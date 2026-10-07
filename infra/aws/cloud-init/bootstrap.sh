@@ -210,6 +210,12 @@ printf 'TURNSERVER_ENABLED=1\n' >/etc/default/coturn
 install -d -m 0755 /etc/systemd/system/coturn.service.d
 install -m 0644 "$${CONFIG}/coturn.service.d/override.conf" /etc/systemd/system/coturn.service.d/override.conf
 
+# The coturn package ships no logrotate rule, and turnserver.conf now runs `verbose` for
+# session accounting, so without this the relay log grows without limit on the root volume
+# and carries peer addresses for ever. This file is the retention the logging exception in
+# infra/aws/README.md commits to.
+install -m 0644 "$${CONFIG}/logrotate/coturn" /etc/logrotate.d/coturn
+
 install -m 0755 "$${CONFIG}/backup.sh" ${app_dir}/bin/backup.sh
 install -m 0644 "$${CONFIG}/rc-api.service" /etc/systemd/system/rc-api.service
 install -d -m 0755 /etc/systemd/system/rc-api.service.d
@@ -233,7 +239,6 @@ systemctl daemon-reload
 # so what is on disk is what is actually serving.
 systemctl enable caddy coturn
 systemctl restart caddy coturn
-systemctl enable --now skipperdesk-backup-db.timer skipperdesk-backup-claims.timer
 systemctl enable rc-api.service rc-signal.service
 
 if aws s3 cp --region ${aws_region} --only-show-errors \
@@ -245,5 +250,11 @@ if aws s3 cp --region ${aws_region} --only-show-errors \
 else
   echo "note  no releases/current.tar.gz yet; run infra/aws/deploy.sh to install the binaries"
 fi
+
+# After rc-api, deliberately. The databases do not exist until rc-api opens them, and the
+# backup timers' first attempt is a real attempt now that a missing file is a failure.
+# Enabled unconditionally even when there were no binaries to start, so that a later
+# deploy.sh followed by a reboot comes up with both timers armed.
+systemctl enable --now skipperdesk-backup-db.timer skipperdesk-backup-claims.timer
 
 echo "== bootstrap done $(date -u +%Y-%m-%dT%H:%M:%SZ)"

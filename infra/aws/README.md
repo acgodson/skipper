@@ -360,14 +360,103 @@ aws ssm send-command --profile <p> --region eu-west-2 \
   --parameters 'commands=["cloud-init clean --logs && cloud-init init && cloud-init modules --mode=final"]'
 ```
 
+### Shipping the fifth review's configuration changes, in order
+
+There is still **no deploy path for a configuration change** — `docs/ROADMAP.md` carries it
+as a known gap: `deploy.sh` ships binaries only, and changing `turnserver.conf`, the
+Caddyfile, a unit or a logrotate rule means `terraform apply` to update the S3 object, then
+installing it on the box and restarting the service by hand. Until that is a script, this is
+the order for the H1/H5/H6 work, and nothing here is automatic:
+
+1. **`terraform apply`** in `infra/aws/terraform`. This alone does three things: rewrites the
+   `config/` objects in S3 (`turnserver.conf` with the new caps and `verbose`, the claims
+   timer, `backup.sh`, `skipperdesk-backup@.service`, `logrotate/coturn`), creates the eight
+   new alarms and the `runcommand` log group, and updates the IAM, KMS and bucket policies.
+   **The policies and alarms take effect here. The files on the box do not** — the instance
+   only reads `config/` at bootstrap.
+2. **Re-run the bootstrap** with the `cloud-init` command above. This installs the new
+   `backup.sh`, the claims timer, the service unit and `/etc/logrotate.d/coturn`, rewrites
+   `/etc/turnserver.conf`, and **restarts Caddy and coturn**.
+   **This kills every live relay.** Check `GET /internal/sessions/live` first — a redeploy
+   drops WebSockets but sessions resume, whereas a coturn restart drops the media itself.
+3. **Confirm the timers re-armed**, since step 2's whole point is that the claims timer no
+   longer waits for midnight:
+   ```
+   systemctl list-timers 'skipperdesk-backup-*' --all
+   ```
+   `skipperdesk-backup-claims.timer` must show a `NEXT` within 15 minutes, not `00:00`.
+4. **Confirm the first claims object exists**, which is the one fact that was false before:
+   ```
+   aws s3 ls s3://<backup bucket>/claims/
+   ```
+   Empty 20 minutes after step 2 means the fix did not take; `/var/log/skipperdesk/backup.log`
+   will now say why, because the script no longer exits 0 silently.
+5. **Confirm coturn took the caps and is accounting**:
+   ```
+   grep -E '^(max-bps|bps-capacity|verbose)' /etc/turnserver.conf
+   grep -cE 'usage:|rb=|sb=' /var/log/turnserver/turnserver.log
+   ```
+   The second was `0` before. It stays `0` until a session actually relays, so drive one —
+   `scripts/verify-relay.sh` — and re-check.
+
+If only the Terraform-side resources are wanted and the relay must not be interrupted, stop
+after step 1: the alarms, the log group and every policy change are live, and only the coturn
+caps, the accounting and the backup fix need step 2. Note that **the backup fix needs step 2**
+— the alarms from step 1 will correctly start firing about a claims prefix that is still
+empty.
+
 ## Backups, and restoring the claims database
 
-`skipperdesk-backup@db.timer` snapshots `rc-api.db` every 15 minutes;
-`skipperdesk-backup@claims.timer` snapshots `rc-api-claims.db` once a day. Both use
-`sqlite3 .backup`, gzip, and `aws s3 cp` into two separate prefixes with two separate
-lifecycle rules. `db/` transitions to Standard-IA and then expires; **`claims/` never
-expires**, because losing a claim lets a Device ID be reissued to a second key
-(`API.md` §6.1).
+`skipperdesk-backup-db.timer` snapshots `rc-api.db` every 15 minutes, and
+`skipperdesk-backup-claims.timer` snapshots `rc-api-claims.db` on the **same** 15-minute
+cadence. Both use `sqlite3 .backup`, gzip, and `aws s3 cp` into two separate prefixes with
+two separate lifecycle rules. `db/` transitions to Standard-IA and then expires;
+**`claims/` never expires**, because losing a claim lets a Device ID be reissued to a
+second key (`API.md` §6.1).
+
+`API.md` §6.1 asks for a separate prefix, a separate schedule and a separate retention. It
+does **not** ask for a worse RPO: the requirement is about never restoring the two together,
+and the claims database is the one unrecoverable asset in the design. It had the 24-hour
+cadence and the main database the 15-minute one, which was the inversion exactly backwards.
+
+### Why `claims/` was empty, and what stops it recurring
+
+The fifth security review found `claims/` with **zero objects and zero versions** for the
+life of the bucket, while the unit reported `Result=success`. Four things lined up:
+
+1. `bootstrap.sh` ran `systemctl enable --now` on the backup timers **before**
+   `systemctl start rc-api.service`, and rc-api is what creates the database files.
+2. The claims timer was `OnCalendar=daily` with `Persistent=true`. A fresh root volume has
+   no `/var/lib/systemd/timers/stamp-*` file, so systemd treated the daily elapse as missed
+   and fired the catch-up the instant the timer was enabled — 08:45:02 on the box reviewed.
+3. `rc-api-claims.db` did not exist yet. Its mtime was 10:31:25, **1h46m later**.
+4. `backup.sh` exited 0 on that path, so nothing failed — and the stamp systemd then wrote
+   suppressed every retry until the next midnight.
+
+So it was never one unlucky boot. **Every fresh instance reproduced it**, and an instance
+replaced more than once in a day — the ordinary deploy-iteration pattern — never backed the
+claims database up at all. The box reviewed had also rebooted at 12:43:37 without re-firing
+the timer, correctly: the stamp said 08:45:02 and the next elapse was still in the future.
+That is what made the gap invisible.
+
+Four changes, each closing one of the four:
+
+- `backup.sh` exits **non-zero** on a missing or empty source, on a `sqlite3 .backup` that
+  produces nothing, and on an upload it cannot then list back out of the bucket. There is
+  no longer any path that reports success without an object existing. The read-back uses
+  `list-objects-v2`, not `head-object`, because the instance role deliberately holds
+  `s3:ListBucket` and **not** `s3:GetObject` on these prefixes — the box must not be able to
+  read the backups it writes.
+- the claims timer is `OnBootSec`/`OnUnitActiveSec`, which has no calendar elapse to miss,
+  so there is no catch-up to mis-fire and a failure is retried in 15 minutes, not a day.
+- `skipperdesk-backup@.service` is ordered `After=rc-api.service`, and `bootstrap.sh`
+  enables the timers after rc-api rather than before it. Neither is a `Requires`: a backup
+  must still run when rc-api is down, because the data is still there.
+- two `-backup-stale-*` alarms, one per prefix. They count the `ok` line `backup.sh` prints
+  **only after the object reads back**, so they measure objects that exist rather than
+  invocations that returned — the one check a unit exiting 0 cannot fool. Their
+  `treat_missing_data` is `breaching`: this alarm fires on absence, and `notBreaching` would
+  reproduce the original failure at the alarm layer.
 
 Restoring is deliberately asymmetric. The two databases are **never** restored together.
 
@@ -431,7 +520,17 @@ volume cannot be shrunk.
 | `-host-unreachable` | `AWS/EC2 StatusCheckFailed` | coturn has no probeable endpoint; the relay is down whenever the host is |
 | `-disk-used-root` | `disk_used_percent` from the CloudWatch agent, `path=/` | The root volume still carries the logs and the release directories |
 | `-disk-used-data` | `disk_used_percent` from the CloudWatch agent, `path=/var/lib/skipperdesk` | The volume that must not fill: SQLite stops writing while the box keeps answering. The metric's dimensions include the filesystem type, which is why `filesystem_type` is a variable |
+| `-network-out` | `AWS/EC2 NetworkOut`, `Sum` over 300 s, two consecutive periods | Relay egress, which nothing watched. "Relay bandwidth" below has the threshold arithmetic. `period` is 300 because the instance runs `monitoring = false`, so EC2 publishes at five-minute resolution |
+| `-backup-stale-db`, `-backup-stale-claims` | log metric filter on `backup.sh`'s `ok` line, one per prefix | The check a unit exiting 0 cannot fool. `treat_missing_data` is `breaching`, the opposite of every other alarm here, because these fire on absence |
+| `-trail-stopped` | log metric filter over the CloudTrail log group on `StopLogging`/`DeleteTrail`/`UpdateTrail`/`PutEventSelectors` | The account stopped recording itself |
+| `-id-cert-key-at-risk` | the same group, on `ScheduleKeyDeletion`/`DisableKey`/`PutKeyPolicy` against the id-cert key | A scheduled deletion can still be cancelled inside the 30-day window, so this alarm genuinely saves the key |
+| `-audit-objects-deleted` | the same group, on bucket-policy and versioning changes to the audit or backup bucket | The evidence being made deletable |
+| `-admin-shell` | the same group, on `ssm:SendCommand` | CloudTrail hides the payload, so this records that the administrative path was used and by whom. "Run Command is the path that is actually used" below |
 | budget | AWS Budgets, actual at 80% and forecast at 100% | `docs/PHASE5.md` §4 step 3 also sets one in the management account; this one is scoped to this account and is in code |
+
+The last four fire on **existence**, not volume: each is a single API call whose effect is
+irreversible or unrecoverable, so the threshold is 1. They cannot prevent anything — see
+"What an account admin can still do" — they make it arrive as mail.
 
 The CloudWatch agent is configured to read exactly three files —
 `/var/log/skipperdesk/{rc-api,rc-signal,backup}.log` — and one disk metric on each of the two
@@ -583,6 +682,204 @@ bounded by a condition.
 
 No KMS action was added, and none is needed: CloudWatch Logs encrypts on the writer's behalf
 using the grant in the key policy, so the instance role never touches the key itself.
+
+### Run Command is the path that is actually used
+
+`PHASE5.md` §1 calls Session Manager "the *entire* administrative path". It is not. Both
+automated callers — `infra/aws/deploy.sh` and `scripts/publish-release.sh` — use
+`ssm send-command`, and CloudTrail records that call as:
+
+```
+"documentName":"AWS-RunShellScript","parameters":"HIDDEN_DUE_TO_SECURITY_REASONS"
+```
+
+The session preferences document cannot cover it: its `sessionType` is `Standard_Stream`
+and Run Command is not a session. There is also no account setting that forces a caller to
+ask for output — `cloudWatchOutputConfig` is a per-call parameter.
+
+What *was* missing is the half that makes asking work. SSM Agent writes Run Command output
+under the **instance role**, and `ShipOwnLogs` named only the app and session groups — so a
+caller who had passed `--cloud-watch-output-enabled` would have been denied and the output
+would have gone nowhere, silently. `/skipperdesk/prod/runcommand` now exists, the grant
+includes it, and both callers pass it, printing a `note` rather than failing if the stack
+predates the group.
+
+That covers the automated path. An operator typing `aws ssm send-command` by hand still
+chooses whether to be logged; the `-admin-shell` alarm records that they did it either way.
+Closing that choice means denying `ssm:SendCommand` on `AWS-RunShellScript` to the admin
+principal, which cannot be done from this account — see below.
+
+## What an account admin can still do
+
+State this plainly, because it bounds everything above. There is exactly one human identity
+with access to this account: an Identity Center permission set granting
+`AdministratorAccess`, whose every CloudTrail record carries `"mfaAuthenticated":"false"`,
+with no SCP above it. `OrganizationAccountAccessRole` additionally trusts
+`arn:aws:iam::521831014979:root` with no MFA or `ExternalId` condition, so control of the
+management account is control of this one.
+
+**Nothing this configuration denies can stop that identity**, because it can rewrite the
+denial first. Every control added for the fifth security review's H6 is therefore a
+*detection* control plus a second logged call, not a prevention:
+
+| What it would take | What now stands in the way |
+|---|---|
+| Stop the audit trail | `-trail-stopped` fires on the call |
+| Delete audit object versions | The bucket policy denies both delete actions, so the policy must be removed first — two calls, and `-audit-objects-deleted` fires on the first |
+| Destroy the id-cert signing key | The key policy no longer grants `kms:ScheduleKeyDeletion`, so `PutKeyPolicy` must come first — `-id-cert-key-at-risk` fires on either, and `kms_deletion_window_days` is already the 30-day maximum, so there is a month to `CancelKeyDeletion` |
+| Run an unlogged root shell | `-admin-shell` records every `SendCommand`; the payload stays hidden |
+
+### What the owner must do at the organization level
+
+These are the only real fixes, and none of them can be applied from inside account
+`388699643285`. Confirmed by attempt: `aws organizations list-policies` returns
+`AccessDeniedException` with the `skipperdesk` profile. The organization is
+`o-li53etmhxk`, management account `521831014979`, `FeatureSet: ALL`, and
+`SERVICE_CONTROL_POLICY` is **already enabled** — so the lever exists and is one level up.
+
+1. **Require MFA on the `SkipperDeskAdmin` permission set.** Every record today says
+   `mfaAuthenticated: false`. This is the single highest-value change on the list.
+2. **Attach an SCP** to this account denying `cloudtrail:StopLogging`,
+   `cloudtrail:DeleteTrail`, `s3:DeleteObjectVersion` on the audit bucket,
+   `s3:PutBucketPolicy` on the audit bucket, `kms:ScheduleKeyDeletion` on the id-cert key,
+   and `ssm:SendCommand` on `AWS-RunShellScript`. An SCP is the only control an
+   account-local `AdministratorAccess` cannot lift.
+3. **Add an MFA condition** to `OrganizationAccountAccessRole`'s trust policy (also `L10`).
+4. **Make the trail an organization trail** delivering into the management account, so the
+   evidence does not live in the account it is evidence about.
+5. **Enable S3 Object Lock on the audit bucket**, in governance or compliance mode. This is
+   deliberately **not** in Terraform: `aws_s3_bucket`'s `object_lock_enabled` forces
+   replacement, and replacing these two buckets would destroy the audit trail and the
+   backups. Versioning is already on, so it can be enabled out of band with
+   `aws s3api put-object-lock-configuration`, or on a new bucket the trail is re-pointed at.
+
+## Relay bandwidth
+
+`bps-capacity` and `max-bps` were both absent, so relay egress had no ceiling but the NIC:
+roughly 28.8 GB/hour of billed egress, about $62/day, against a $50 monthly budget that
+only emails at 80% with up to a day of lag.
+
+**Both options are BYTES per second, not bits, and coturn meters the input and output
+streams separately.** This is the detail everything below turns on, and it is confirmed
+against the installed build's own man page (coturn 4.6.1-1build4):
+
+> `-s, --max-bps` Max bytes-per-second bandwidth a TURN session is allowed to handle (input
+> and output network streams are treated separately).
+
+A limit of *N* therefore permits *N* in and *N* out, which is exactly one relayed direction,
+so both values are sized per direction.
+
+### `max-bps` — what a legitimate session actually needs
+
+The binding fact is that the **shipped** client asks for 8 Mbps in *every* quality mode,
+including `auto`. `QualityProfile.profile(for:…)` sets `maxBitrateBps = burstBitrateBps =
+8_000_000` and only `maximumWidth` varies between modes — which is `BETA.md` §2.3's point,
+that quality is not a bandwidth control today. `BETA.md` §2 *proposes* capping `auto` at
+2 Mbps, but that is unshipped client work. **So a legitimate session at the `auto` ceiling
+needs 8 Mbps, not 2**, and a cap derived from the proposal would clip real sessions.
+
+| Term | Value | Source |
+|---|---:|---|
+| Video ceiling, every mode including `auto` | 8,000,000 bit/s | `QualityProfile.swift` `burstBitrateBps`; `PLAN.md` §5's "8 Mbps burst" |
+| `ctrl` + `hi` data channels | 100,000 bit/s | Allowance for input events and clipboard |
+| Payload subtotal | 8,100,000 bit/s | |
+| × 1.05 framing | 8,505,000 bit/s | 48 B per 1200 B packet (RTP 12 + SRTP tag 4 + UDP 8 + IPv4 20 + TURN ChannelData 4 = 4.0%), plus RTCP and RFC 7675 consent refreshes |
+| × 1.15 queueing margin | 9,780,750 bit/s | Stated allowance, so a transient does not meet coturn's drop behaviour |
+| **`max-bps`** | **1,222,600 B/s** | 9.78 Mbps per direction |
+
+That is **1.22×** what the client can request, so it cannot break a session at the quality
+ceiling, and **25×** the 383–391 kbps `VERIFY.md` actually measured. Because every mode
+shares the 8 Mbps ceiling today, this one value covers `smooth`, `auto` and `sharp` alike,
+and it only gains headroom if `BETA.md` §2's tiering ever ships.
+
+### `bps-capacity` — the box-wide ceiling
+
+Derived from the NIC, because the NIC is what the money followed:
+
+- t4g.small sustained network baseline: **0.128 Gbps** = 128 Mbps (burst higher on credits).
+- × 0.90, reserving a tenth for Caddy's TLS, both Go services, the WebSocket traffic, the
+  15-minute backup upload, the CloudWatch and SSM agents: 115.2 Mbps.
+- Split across the two directions coturn meters separately: **57.6 Mbps per direction**.
+- **`bps-capacity` = 7,200,000 B/s.**
+
+Cross-checks: that is 5 concurrent sessions at the full 8 Mbps ceiling, against `PHASE5.md`
+§3's 4–6 concurrent relayed sessions at peak for this shape; or about **147** concurrent at
+the measured bitrate. So it is generous for real traffic and bites only on simultaneous
+worst-case abuse, which is the intent.
+
+### The cap is not a cost control — the alarm is
+
+Say this out loud, because it is the easy mistake: **a rate cap bounds the blast radius per
+instant, and only an alarm bounds the month.** 57.6 Mbps sustained is 25.92 GB/h, $2.33/h,
+**$56/day** — still ruinous against a $50 monthly budget. Sizing the cap at the
+budget-affordable *average* instead would mean about 1.08 Mbps, which would throttle a
+single legitimate 8 Mbps session to an eighth. That trade is not available.
+
+So the money is bounded by `-network-out`:
+
+- Fixed monthly cost: **$26.83** = `PHASE5.md` §3.2's ten-host column ($26.13) + $0.70 for
+  the seven alarms this review adds.
+- Egress headroom under the $50 budget: **$23.17** → 257 GB at $0.09/GB, plus the 100 GB
+  free tier = **357 GB/month**.
+- The rate which, sustained for 24 hours, spends all of that: 357.4e9 ÷ 24 ÷ 12 =
+  **1,241,200,000 bytes per five-minute period**.
+
+That threshold is **3.5×** `PHASE5.md` §3's legitimate peak for this shape, so real load
+cannot reach it, and **57%** of what `bps-capacity` now permits, so it fires *before* the
+cap saturates rather than after. Two consecutive periods are required, so a backup upload
+or one spike cannot trip it. It arrives long before the budget email, which lags up to 24
+hours and only sends at 80% of $50.
+
+**Still missing, and the owner's call:** nothing *stops* the spend. `PHASE5.md` §3's
+suggestion of a budget action or an SNS-triggered Lambda that halts coturn is not here,
+because stopping the relay is a decision about an outage and should not be taken by default
+on a threshold derived from an unmeasured model. The alarm now makes it a choice rather than
+a discovery.
+
+### The relay log exception
+
+`verbose` is now set, and it is a **deliberate, bounded exception** to `API.md` §9 and
+`PROTOCOL.md` §8.
+
+It is the only lever available. coturn 4.6.1 gates its `usage:` lines on
+`TURN_LOG_LEVEL_INFO`, which only `verbose` admits; the Ubuntu build has no prometheus
+exporter; and the admin CLI stays shut under `no-cli` — re-opening it would trade a disk log
+for a listening admin port *and* give no historical record, which is the whole point. With
+`simple-log` and no `verbose`, `grep -cE 'usage:|rb=|sb=|allocat'` over the entire live log
+returned **0**.
+
+**Exactly what now lands on disk:**
+
+| Line | Contents | Permitted by `API.md` §9 / `PROTOCOL.md` §8? |
+|---|---|---|
+| `usage:` per session | realm, TURN username, `rp`/`rb`/`sp`/`sb` packet and byte counters | **Yes.** The username is `<expiry>:<sessionId>`, and `sessionId` and byte counts are both on the allowed list |
+| allocation, `CreatePermission`, `ChannelBind` | the **peer address** | **No.** This is the exception |
+| session `closed` | local and remote addresses | **No.** This is the exception |
+
+So the exception is narrow and specific: **peer IP addresses** — a user's public address,
+which §8 covers under ICE candidates. The TURN *password* is never logged; only the
+username, which the peer already knows and which is useless without the HMAC.
+
+**Containment, and the retention:**
+
+- `infra/aws/logrotate/coturn` keeps **7 days**, compressed, with `copytruncate`. The coturn
+  package ships no logrotate rule at all, so before this the log was unrotated — harmless
+  with only startup lines in it, not harmless with a usage line and an address per session.
+  `copytruncate` rather than a reload because the alternative, restarting coturn, kills
+  every live relay.
+- `cloudwatch-agent.json` deliberately does **not** collect `turnserver.log`. It still reads
+  exactly the three `/var/log/skipperdesk/*.log` files. The addresses stay on the instance's
+  own encrypted volume, never reach a log group or its 30-day retention, and never leave the
+  account.
+- `/var/log/turnserver` is `0750 turnserver:turnserver`.
+
+**What this buys:** bytes become attributable. The username carries the session id, which
+joins to `/v1/sessions` and hence to an account, so relay abuse can be traced to who did it.
+
+**What it does not buy, and who owes it:** nothing *parses* those lines. `PHASE5.md` §8.2's
+debt — making `bytesRelayed` a server-side fact rather than a client's claim — needs a
+reader in `server/`, which is outside this change. The data now exists on the box; turning
+it into the `bytesRelayed` column is server work still outstanding.
 
 ## Sign-in, and the website
 

@@ -1,13 +1,23 @@
-# Its own schedule, on purpose: the claims database is never snapshotted or restored
-# together with the main one (API.md §6.1).
+# Its own timer, its own S3 prefix, its own retention, and never restored together with
+# the main database (API.md §6.1). That requirement is about the restore, not about the
+# cadence: the claims database is the one unrecoverable asset in the design, so it gets the
+# same 15-minute RPO as the database that can be rebuilt, not a worse one.
+#
+# OnCalendar=daily with Persistent=true is what left claims/ empty for the life of the
+# bucket. A fresh root volume has no timer stamp, so systemd treated the daily elapse as
+# missed and fired the catch-up the moment bootstrap.sh enabled the timer — before rc-api
+# had created the file. The run found nothing, exited 0, and the stamp it then wrote
+# suppressed every retry until the next midnight. OnBootSec/OnUnitActiveSec has no calendar
+# elapse to miss, so there is no catch-up to mis-fire and a failure is retried in 15
+# minutes rather than in a day.
 
 [Unit]
-Description=SkipperDesk device-id claims snapshot, daily
+Description=SkipperDesk device-id claims snapshot every 15 minutes
 
 [Timer]
-OnCalendar=daily
-RandomizedDelaySec=15min
-Persistent=true
+OnBootSec=10min
+OnUnitActiveSec=15min
+AccuracySec=1min
 Unit=skipperdesk-backup@claims.service
 
 [Install]

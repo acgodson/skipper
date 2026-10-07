@@ -40,6 +40,7 @@ locals {
       log_dir          = local.log_dir
       data_dir         = local.data_dir
     })
+    "logrotate/coturn" = file("${path.module}/../logrotate/coturn")
     "turnserver.conf" = templatefile("${path.module}/../coturn/turnserver.conf", {
       turn_listen_port    = var.turn_listen_port
       turn_relay_min_port = var.turn_relay_min_port
@@ -48,6 +49,8 @@ locals {
       external_ip         = aws_eip.this.public_ip
       turn_user_quota     = var.turn_user_quota
       turn_total_quota    = var.turn_total_quota
+      turn_max_bps        = var.turn_max_bps
+      turn_bps_capacity   = var.turn_bps_capacity
     })
   }
 }

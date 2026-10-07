@@ -24,6 +24,19 @@ resource "aws_kms_alias" "id_cert" {
 # Administration without use. Every customer-managed key in this stack starts from this
 # statement and then grants exactly one principal exactly the operations it needs, so a
 # key administrator cannot sign a certificate or read a session transcript.
+#
+# kms:ScheduleKeyDeletion and kms:Delete* are deliberately **not** here, by the same logic
+# that already omits kms:Sign: an administrator who wants to destroy the root of Device-ID
+# ownership must first grant themselves the action with PutKeyPolicy, which is a second
+# call, a CloudTrail event, and the id-cert-key-at-risk alarm in audit.tf. It does not stop
+# them — nothing in this account can — it makes the first irreversible step arrive as mail.
+#
+# kms:Put* stays, and must: KMS refuses a key policy that leaves no principal able to
+# PutKeyPolicy, so removing it would make the key unmanageable. CancelKeyDeletion stays
+# because it is the recovery action, and kms:Delete* was only ever reachable as
+# DeleteAlias and DeleteImportedKeyMaterial — neither applies to a key whose material KMS
+# generated, so dropping it costs nothing. DeleteAlias is restored explicitly so Terraform
+# can still manage the aliases.
 data "aws_iam_policy_document" "kms_account_administration" {
   statement {
     sid    = "AccountAdministration"
@@ -38,10 +51,9 @@ data "aws_iam_policy_document" "kms_account_administration" {
       "kms:Revoke*",
       "kms:Disable*",
       "kms:Get*",
-      "kms:Delete*",
+      "kms:DeleteAlias",
       "kms:TagResource",
       "kms:UntagResource",
-      "kms:ScheduleKeyDeletion",
       "kms:CancelKeyDeletion",
     ]
     resources = ["*"]

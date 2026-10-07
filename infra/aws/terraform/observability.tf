@@ -45,6 +45,50 @@ resource "aws_cloudwatch_metric_alarm" "api_5xx" {
   ok_actions          = [aws_sns_topic.alarms.arn]
 }
 
+# The check a unit exiting 0 cannot fool. backup.sh prints its `ok` line only after it has
+# listed the object back out of the bucket, so this counts objects that demonstrably exist
+# rather than invocations that returned. Both databases get one: the claims prefix was
+# empty for the life of the bucket while the unit reported Result=success, and nothing
+# would have said so.
+#
+# Polarity is the opposite of every other alarm here — it fires on the *absence* of a
+# metric — so treat_missing_data must be breaching. notBreaching would reproduce the
+# original failure at the alarm layer: no backups, no data points, no alarm.
+resource "aws_cloudwatch_log_metric_filter" "backup_ok" {
+  for_each = local.backup_prefixes
+
+  name           = "${local.name}-backup-ok-${each.key}"
+  log_group_name = aws_cloudwatch_log_group.app.name
+  pattern        = "\"ok    ${each.key}/\""
+
+  metric_transformation {
+    name          = "BackupsWritten${each.value.metric_suffix}"
+    namespace     = local.metric_namespace
+    value         = "1"
+    unit          = "Count"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "backup_stale" {
+  for_each = local.backup_prefixes
+
+  alarm_name        = "${local.name}-backup-stale-${each.key}"
+  alarm_description = "No ${each.value.what} reached s3://${local.backup_bucket}/${each.key}/ in the last ${var.backup_stale_alarm_hours} hour(s). Both timers run every 15 minutes, so this is ${var.backup_stale_alarm_hours * 4} consecutive missed snapshots"
+
+  namespace   = local.metric_namespace
+  metric_name = aws_cloudwatch_log_metric_filter.backup_ok[each.key].metric_transformation[0].name
+  statistic   = "Sum"
+  period      = var.backup_stale_alarm_hours * 3600
+
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+}
+
 # Probes https://<api domain>/signal/healthz from outside AWS, which is the only way to
 # learn that Caddy, its certificate and rc-signal are all serving. It needs the A record,
 # so it stays off until the registrar step is done.
@@ -116,6 +160,39 @@ resource "aws_cloudwatch_metric_alarm" "host_unreachable" {
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+
+  dimensions = {
+    InstanceId = aws_instance.app.id
+  }
+}
+
+# Relay egress, which nothing watched. The coturn caps in turnserver.conf bound the rate
+# per instant; this bounds the month, which a rate cap cannot: bps-capacity still permits
+# $56/day if it were saturated continuously. NetworkOut counts every byte the box sends,
+# relay and API alike, which is the right denominator because egress is billed the same way.
+#
+# The instance runs with monitoring = false, so EC2 publishes at five-minute resolution and
+# period must be 300 to match. Sum, not Average: the metric is bytes per period already.
+#
+# treat_missing_data is notBreaching, which is correct polarity for an excess alarm — a
+# NetworkOut metric that stops appearing means the instance is gone, and host-unreachable
+# is the alarm for that.
+resource "aws_cloudwatch_metric_alarm" "network_out" {
+  alarm_name        = "${local.name}-network-out"
+  alarm_description = "The box sent more than ${var.network_out_alarm_bytes} bytes in each of ${var.network_out_alarm_periods} consecutive five-minute periods. Sustained for a day that is the entire monthly egress allowance of the $${var.monthly_budget_usd} budget"
+
+  namespace   = "AWS/EC2"
+  metric_name = "NetworkOut"
+  statistic   = "Sum"
+  period      = 300
+
+  evaluation_periods  = var.network_out_alarm_periods
+  datapoints_to_alarm = var.network_out_alarm_periods
+  threshold           = var.network_out_alarm_bytes
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alarms.arn]
   ok_actions          = [aws_sns_topic.alarms.arn]
 
