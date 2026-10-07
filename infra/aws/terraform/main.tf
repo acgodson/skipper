@@ -13,6 +13,25 @@ locals {
   backup_bucket = var.backup_bucket_name != "" ? var.backup_bucket_name : "${local.name}-backups-${data.aws_caller_identity.current.account_id}"
   audit_bucket  = var.audit_bucket_name != "" ? var.audit_bucket_name : "${local.name}-audit-${data.aws_caller_identity.current.account_id}"
 
+  # One value names the site — rc-api's -web-base-url — so the host the sign-in page is
+  # served from is never configured twice. The regex also rejects a malformed value at plan
+  # time rather than producing a callback URL Cognito will not match.
+  web_domain = regex("^https://([a-z0-9.-]+)/?$", var.web_base_url)[0]
+
+  # Only the apex. Caddy is not involved any more and CloudFront sends www to the apex
+  # before any script runs, so a www callback could never be reached and would only widen
+  # the allowlist. /link is both the outbound page and its own redirect target.
+  cognito_callback_urls = concat(
+    ["https://${local.web_domain}/link"],
+    var.extra_cognito_callback_urls,
+  )
+  cognito_logout_urls = concat(
+    ["https://${local.web_domain}/"],
+    var.extra_cognito_logout_urls,
+  )
+
+  cognito_domain_prefix = var.cognito_domain_prefix != "" ? var.cognito_domain_prefix : var.project
+
   log_group         = "/${var.project}/${var.environment}/app"
   audit_log_group   = "/${var.project}/${var.environment}/cloudtrail"
   session_log_group = "/${var.project}/${var.environment}/sessions"
