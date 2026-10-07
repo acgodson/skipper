@@ -33,6 +33,12 @@ type Session struct {
 	metered   bool
 	meteredAt time.Time
 	pakeSent  [protocol.PakeStepLast + 1]bool
+
+	// What the host said about its own route, for measurement only (PROTOCOL.md
+	// §2.14.1). Only the host's bye ever writes these; a controller's claim about a
+	// host's relay use is discarded, because the host is the party that would pay.
+	relayUsed    bool
+	bytesRelayed *int64
 }
 
 func newSessionID() (string, error) {

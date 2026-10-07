@@ -111,6 +111,47 @@ const (
 	TierSkipper = "skipper"
 )
 
+// The quality modes, ordered cheapest first. These are the `quality` ctrl message's
+// own wire values (PROTOCOL.md §5), reused here so the server can state a ceiling in
+// the vocabulary the host already applies. Tier is a purchased feature set and says
+// nothing about bandwidth, so it is not the carrier for this (API.md §4.4).
+const (
+	QualitySmooth = "smooth"
+	QualityAuto   = "auto"
+	QualitySharp  = "sharp"
+)
+
+// QualityModes is the ladder, cheapest first. Open enum: a client that meets a value
+// it does not know clamps to the highest it does know at or below it, which for an
+// unknown value means QualityAuto — the same fail-closed answer as a stale cache.
+var QualityModes = []string{QualitySmooth, QualityAuto, QualitySharp}
+
+// QualityRank orders the ladder. The second result is false for a value this build
+// does not know, which callers must treat as "no higher than auto".
+func QualityRank(mode string) (int, bool) {
+	for i, known := range QualityModes {
+		if known == mode {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// ClampQuality is the host's gate: the requested mode, or the ceiling, whichever is
+// lower. An unrecognised ceiling or request resolves to QualityAuto rather than to the
+// top of the ladder, so a value neither side understands never buys the best tier.
+func ClampQuality(requested, ceiling string) string {
+	ceilingRank, ok := QualityRank(ceiling)
+	if !ok {
+		ceilingRank, _ = QualityRank(QualityAuto)
+	}
+	requestedRank, ok := QualityRank(requested)
+	if !ok {
+		requestedRank, _ = QualityRank(QualityAuto)
+	}
+	return QualityModes[min(requestedRank, ceilingRank)]
+}
+
 const (
 	PlatformMacOS   = "macos"
 	PlatformWindows = "windows"
@@ -247,6 +288,13 @@ type Concurrency struct {
 	MaxActivePairs int `json:"maxActivePairs"`
 }
 
+// Limits is what the server will not let this account ask for, in the units the client
+// already speaks. It is an object so a later ceiling joins it without another top-level
+// field, and it is always present so a client never has to guess a default.
+type Limits struct {
+	MaxQuality string `json:"maxQuality"`
+}
+
 // Entitlement is what the app renders; the client derives no policy from it.
 type Entitlement struct {
 	Status           string      `json:"status"`
@@ -255,6 +303,7 @@ type Entitlement struct {
 	MinutesRemaining *int        `json:"minutesRemaining,omitempty"`
 	TrialEndsAt      *int64      `json:"trialEndsAt,omitempty"`
 	Concurrency      Concurrency `json:"concurrency"`
+	Limits           Limits      `json:"limits"`
 	RefreshAfterSec  int         `json:"refreshAfterSec"`
 }
 

@@ -634,6 +634,34 @@ dropped.
 |---|---|:--:|---|
 | `sessionId` | string | yes | 32 lowercase hex; any other shape is `bad_request`. |
 | `reason` | string | yes | *v4, a closed set:* exactly one of `user_ended`, `host_ended`, `timeout`, `failed`, `code_refreshed`, `replaced`, `shutdown`, `error`, `peer_auth_failed`, `auth_failed`, `declined`, `displaced`. Any other value — including the empty string — is answered `error{bad_request}`; the session is left as it was and nothing is relayed. `protocol/vectors/vectors.json` lists the set (`byeReasons`) and values that must be refused (`invalidByeReasons`). |
+| `relayUsed` | bool | no | *v5, additive.* The **host's** claim that its own media left through a TURN relay. Measurement only, never billed (§2.14.1). |
+| `bytesRelayed` | int64 | no | *v5, additive.* Bytes the host's selected candidate pair carried, sent plus received. Meaningful only with `relayUsed: true`. Measurement only, never billed (§2.14.1). |
+
+#### 2.14.1 The two relay fields are a measurement, not a price
+
+`bye` is **not** in §0's strict-decode set — that set is exactly `sdp`, `ice` and `pake`
+(v5 change 2), which the server re-encodes from its own schema. `bye` is decoded
+permissively, so these two fields are additive: a v5 peer that never sends them is
+unchanged on the wire, and every `bye` vector that existed before them still encodes to
+the same bytes.
+
+Three rules make the trust boundary explicit, and all three are enforced in code rather
+than documented and hoped for:
+
+1. **Only the host's own `bye` is read.** The host is the party whose account would pay,
+   so the only self-report accepted is the one that costs its author. The same fields on a
+   controller's `bye` are discarded without comment: a controller must not be able to
+   write a number into a host's record.
+2. **Nothing prices it.** `server/internal/policy.Charge` takes a duration and the
+   account's carry. It has no parameter that could carry a relay figure, so a future
+   change cannot start pricing this number by accident — it would have to change the
+   signature, which is the point.
+3. **It is a claim, not evidence.** A host that under-reports under-pays nothing, because
+   nothing is charged for it; a host that over-reports only distorts our own cost model.
+   coturn's own `usage:` accounting is the server-side truth (`docs/PHASE5.md` §8.2), and
+   no relay price may rest on this field before the two agree.
+
+`API.md` §5.1 and §5.4 say the same about the column these fields land in.
 
 `displaced` is *v4* and sent only by the server: the host's `deviceId` was restored to the key
 its certificate names (§2.2), so a session held under another key for that id ended.

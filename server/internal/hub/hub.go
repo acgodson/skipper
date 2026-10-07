@@ -366,7 +366,8 @@ func (h *Hub) reportStopLocked(s *Session, reason string) {
 		return
 	}
 	h.reports.Stopped(protocol.SessionStopReport{
-		SessionID: s.ID, EndedAt: h.clock.Now().UnixMilli(), Reason: reason})
+		SessionID: s.ID, EndedAt: h.clock.Now().UnixMilli(), Reason: reason,
+		RelayUsed: s.relayUsed, BytesRelayed: s.bytesRelayed})
 }
 
 func (h *Hub) sendLocked(c *Client, typ, re string, payload any) {

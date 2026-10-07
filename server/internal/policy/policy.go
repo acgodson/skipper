@@ -27,7 +27,29 @@ const (
 	// farm: the grant cannot be keyed on anything the client asserts, so it is keyed
 	// on the one durable fact there is. The device rules only ever withhold further.
 	MaxTrialGrantsPerMailbox = 1
+
+	// TrialMaxQuality is the ceiling a trial host may be configured to. It is the
+	// middle tier because the trial's whole worst case is priced off that tier's
+	// bitrate: TrialGrantCents buys TrialGrantCents/RateCentsPerHour hours, and those
+	// hours are affordable only at the `auto` ceiling (BETA.md §1.1, §2.3). Letting a
+	// trial ask for `sharp` would multiply its worst case by four against a grant
+	// already sized and granted.
+	TrialMaxQuality = protocol.QualityAuto
+
+	// PaidMaxQuality is the top of the ladder. A paid hour is charged whatever route
+	// it takes, and at RateCentsPerHour egress alone cannot break it (PHASE5.md §3.3).
+	PaidMaxQuality = protocol.QualitySharp
 )
+
+// MaxQuality is the ceiling the server states for a status (API.md §4.4). Everything
+// that cannot host is given the trial ceiling rather than the paid one: the answer is
+// moot while hosting is refused, and if it is ever read it must fail closed.
+func MaxQuality(status string) string {
+	if status == protocol.StatusActive {
+		return PaidMaxQuality
+	}
+	return TrialMaxQuality
+}
 
 // Facts is everything the policy is allowed to look at.
 type Facts struct {
@@ -107,11 +129,11 @@ func Decide(f Facts, now time.Time) Decision {
 	}
 	if !f.Known || f.Unlinked {
 		ent.Status = protocol.StatusUnlinked
-		return Decision{Entitlement: ent, Reason: protocol.EntitlementUnlinked}
+		return decision(ent, protocol.EntitlementUnlinked)
 	}
 	if f.Suspended {
 		ent.Status = protocol.StatusExhausted
-		return Decision{Entitlement: ent, Reason: protocol.EntitlementSuspended}
+		return decision(ent, protocol.EntitlementSuspended)
 	}
 	if f.HasAccount {
 		balance := f.BalanceCents
@@ -133,10 +155,17 @@ func Decide(f Facts, now time.Time) Decision {
 		if f.HasAccount && f.TrialEndsAt == 0 {
 			reason = protocol.EntitlementNoBalance
 		}
-		return Decision{Entitlement: ent, Reason: reason}
+		return decision(ent, reason)
 	}
 	if f.ActivePairs >= MaxActivePairs {
-		return Decision{Entitlement: ent, Reason: protocol.EntitlementConcurrency}
+		return decision(ent, protocol.EntitlementConcurrency)
 	}
-	return Decision{Entitlement: ent}
+	return decision(ent, "")
+}
+
+// decision stamps the ceiling the status implies, so no branch of Decide can answer
+// without one and none of them has to remember to.
+func decision(ent protocol.Entitlement, reason string) Decision {
+	ent.Limits = protocol.Limits{MaxQuality: MaxQuality(ent.Status)}
+	return Decision{Entitlement: ent, Reason: reason}
 }

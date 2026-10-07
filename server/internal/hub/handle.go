@@ -718,6 +718,9 @@ func (h *Hub) handleByeLocked(c *Client, e protocol.Envelope) {
 		h.sendErrLocked(c, e.ID, protocol.ErrNoSession, "unknown session", 0)
 		return
 	}
+	if s.sideFor(c.deviceID) == &s.Host {
+		s.relayUsed, s.bytesRelayed = p.RelayReport()
+	}
 	h.closeSessionLocked(s, p.Reason)
 }
 
