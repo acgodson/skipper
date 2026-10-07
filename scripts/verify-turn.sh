@@ -249,7 +249,8 @@ if [[ "$WAIT_EXPIRY" -eq 1 ]]; then
     if [[ -z "$username" ]]; then
         report "could not recover the minted username from the udp probe output"
     else
-        wait_for=$(("${username%%:*}" - $(date +%s) + 15))
+        expiry="${username%%:*}"
+        wait_for=$((expiry - $(date +%s) + 15))
         step "waiting ${wait_for}s for ${username} to expire, then re-presenting it"
         [[ "$wait_for" -gt 0 ]] && sleep "$wait_for"
         if ! probe -network udp -expect-expired "$username"; then

@@ -443,3 +443,33 @@ Each milestone is closed by an observation, not by a passing test (`CLAUDE.md`).
 
 `TODO:` revisit §3 the day milestone 5.3 produces a real relay fraction. Everything in §3.3
 hangs off that one number.
+
+### 8.1 What 5.2 found — the relay allocated and then carried nothing
+
+`scripts/verify-turn.sh` is the gate for 5.2. Run against the live box on 2026-10-07 it proved
+the credential path whole and the peer path broken.
+
+Proven: coturn's `static-auth-secret` and rc-signal's `-turn-secret-file` hold the same 64-byte
+value (SHA-256 prefix `fc484f85ef7d5214` on both sides). A credential minted by
+`auth.TurnCreds` allocates on the live coturn over udp **and** tcp, relayed address
+`3.8.76.202:49186`, coturn's own `LIFETIME` 600 s. A credential with one base64 character
+changed, a credential for another session id, and a past-dated one are each `401`. The same
+credential that allocated at 13:26:25Z was `401` at 13:36:46Z — 600 s exactly, as
+`PROTOCOL.md` §2.18 and `protocol.TurnCredTTLSec` both say.
+
+Broken: **every** `CreatePermission` answered `403 Forbidden IP`, a public peer included.
+coturn 4.6.1 compares a single `denied-peer-ip` without gating on address family, so the one
+line `denied-peer-ip=::` matched every IPv4 peer. The relay therefore handed out allocations
+and refused every peer, which is a relay that cannot carry a byte — and it reads, from the
+outside, exactly like a network problem. Bisected against throwaway loopback coturn instances
+on the box: the line alone denies `1.1.1.1`; with it removed the IPv4 ranges behave as written
+(`1.1.1.1` allowed, `169.254.169.254` and `10.0.0.1` denied). The line was never in
+`infra/legacy/coturn/turnserver.conf`; it was added when the config moved to `infra/aws`.
+
+`infra/aws/coturn/turnserver.conf` is fixed in the repo. **It is not deployed** — the gate
+stays red until it is, and the deny list it checks is read straight out of that file, so the
+same run re-proves the fix.
+
+5.2 is not closed. What it still owes: the `ice_servers` push observed on the wire of a real
+metered session between two devices, rather than assembled from the production minting
+function and the live box's own `-turn-urls`. That needs the two-peer run 5.3 already requires.
