@@ -1,0 +1,3 @@
+# Terraform writes the real one into the bucket; scripts/serve-web.sh writes a local one.
+# Committing it would put the pool's app client id and the region in the repository.
+config.js
