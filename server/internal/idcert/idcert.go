@@ -4,6 +4,7 @@
 package idcert
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -19,10 +20,28 @@ import (
 	protocol "rcprotocol"
 )
 
-// TODO: move the signing key to AWS KMS in Phase 5; the file is the local stand-in.
+// signer owns the private half and nothing else. The file and KMS paths differ only
+// here: everything that decides the bytes on the wire stays in Authority, so a
+// certificate signed either way is byte-for-byte the same shape.
+type signer interface {
+	signDigest(ctx context.Context, digest []byte) ([]byte, error)
+}
 
 type Authority struct {
+	pub    *ecdsa.PublicKey
+	signer signer
+}
+
+type localKey struct {
 	key *ecdsa.PrivateKey
+}
+
+func (l localKey) signDigest(_ context.Context, digest []byte) ([]byte, error) {
+	return ecdsa.SignASN1(rand.Reader, l.key, digest)
+}
+
+func fromPrivateKey(key *ecdsa.PrivateKey) *Authority {
+	return &Authority{pub: &key.PublicKey, signer: localKey{key: key}}
 }
 
 // Load reads a PEM "PRIVATE KEY" (PKCS#8) holding a P-256 key.
@@ -43,7 +62,7 @@ func Load(path string) (*Authority, error) {
 	if !ok || key.Curve != elliptic.P256() {
 		return nil, errors.New("device-id certificate key: want a P-256 key")
 	}
-	return &Authority{key: key}, nil
+	return fromPrivateKey(key), nil
 }
 
 // Ephemeral makes a throwaway authority; certificates die with the process.
@@ -52,17 +71,33 @@ func Ephemeral() (*Authority, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Authority{key: key}, nil
+	return fromPrivateKey(key), nil
 }
 
-// Open loads path, or in insecure local mode with no path makes an ephemeral authority.
-func Open(path string, insecure bool) (*Authority, bool, error) {
-	if path != "" {
-		a, err := Load(path)
+// Config says where the signing key lives. KMSKeyID is the only option whose private
+// half never exists in this process; KeyFile is the local stand-in and they are
+// mutually exclusive.
+type Config struct {
+	KeyFile  string
+	KMSKeyID string
+	Insecure bool
+}
+
+// Open resolves cfg to an authority, reporting whether the key is a throwaway one.
+func Open(ctx context.Context, cfg Config) (*Authority, bool, error) {
+	if cfg.KeyFile != "" && cfg.KMSKeyID != "" {
+		return nil, false, errors.New("-id-cert-key-file and -id-cert-kms-key-id are mutually exclusive: pass only -id-cert-kms-key-id to keep the private key inside KMS")
+	}
+	if cfg.KMSKeyID != "" {
+		a, err := openKMS(ctx, cfg.KMSKeyID)
 		return a, false, err
 	}
-	if !insecure {
-		return nil, false, errors.New("a device-id certificate key file is required unless running insecure local HTTP")
+	if cfg.KeyFile != "" {
+		a, err := Load(cfg.KeyFile)
+		return a, false, err
+	}
+	if !cfg.Insecure {
+		return nil, false, errors.New("a device-id certificate key is required unless running insecure local HTTP: pass -id-cert-kms-key-id or -id-cert-key-file")
 	}
 	a, err := Ephemeral()
 	return a, true, err
@@ -85,14 +120,19 @@ func digest(deviceID, pubkeyB64 string) ([]byte, error) {
 }
 
 // Issue returns the base64 DER ECDSA signature binding deviceID to pubkeyB64.
-func (a *Authority) Issue(deviceID, pubkeyB64 string) (string, error) {
+// A KMS-backed authority makes a network call here, so a failure means no certificate
+// rather than a wrong one: the caller must treat the error as the registration failing.
+func (a *Authority) Issue(ctx context.Context, deviceID, pubkeyB64 string) (string, error) {
 	sum, err := digest(deviceID, pubkeyB64)
 	if err != nil {
 		return "", err
 	}
-	sig, err := ecdsa.SignASN1(rand.Reader, a.key, sum)
+	sig, err := a.signer.signDigest(ctx, sum)
 	if err != nil {
 		return "", err
+	}
+	if len(sig) == 0 {
+		return "", errors.New("device-id certificate: the signer returned no signature")
 	}
 	return base64.StdEncoding.EncodeToString(sig), nil
 }
@@ -118,5 +158,5 @@ func (a *Authority) Verify(deviceID, pubkeyB64, cert string) bool {
 	if err != nil {
 		return false
 	}
-	return ecdsa.VerifyASN1(&a.key.PublicKey, sum, sig)
+	return ecdsa.VerifyASN1(a.pub, sum, sig)
 }

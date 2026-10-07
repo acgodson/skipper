@@ -1507,7 +1507,7 @@ func TestADurableClaimKeepsAnIDFromEverChangingHands(t *testing.T) {
 	hn.resetBackend(false)
 
 	squatter := hn.newPeer()
-	forged, err := hn.authority.Issue(id, squatter.pubB64)
+	forged, err := hn.authority.Issue(context.Background(), id, squatter.pubB64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1543,7 +1543,7 @@ func TestAfterLosingEverythingTheFirstCertifiedClaimantKeepsTheID(t *testing.T) 
 	hn.resetBackend(true)
 
 	holder := hn.newPeer()
-	holderCert, err := hn.authority.Issue(id, holder.pubB64)
+	holderCert, err := hn.authority.Issue(context.Background(), id, holder.pubB64)
 	if err != nil {
 		t.Fatal(err)
 	}

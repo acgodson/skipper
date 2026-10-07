@@ -40,7 +40,7 @@ func (s *Server) internalRegister(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	cert, err := s.opt.IDCert.Issue(device.DeviceID, device.Pubkey)
+	cert, err := s.opt.IDCert.Issue(r.Context(), device.DeviceID, device.Pubkey)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -89,7 +89,7 @@ func (s *Server) internalDeviceCert(w http.ResponseWriter, r *http.Request) {
 	if s.deviceMissing(w, r, err) {
 		return
 	}
-	cert, err := s.opt.IDCert.Issue(device.DeviceID, device.Pubkey)
+	cert, err := s.opt.IDCert.Issue(r.Context(), device.DeviceID, device.Pubkey)
 	if err != nil {
 		s.internalError(w, r, err)
 		return

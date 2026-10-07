@@ -33,6 +33,7 @@ const (
 	purgeEvery     = 10 * time.Minute
 	reconcileEvery = time.Minute
 	readTimeouts   = 15 * time.Second
+	startupTimeout = 15 * time.Second
 )
 
 func main() {
@@ -47,6 +48,7 @@ func main() {
 		internalFile = flag.String("internal-token-file", envx.Env("RC_API_INTERNAL_TOKEN_FILE", ""), "file holding the shared bearer secret for the internal surfaces; preferred over -internal-token (RC_API_INTERNAL_TOKEN_FILE)")
 		internal     = flag.String("internal-token", "", "DEPRECATED, readable by every local user in ps: use -internal-token-file or RC_API_INTERNAL_TOKEN")
 		idCertKey    = flag.String("id-cert-key-file", envx.Env("RC_API_ID_CERT_KEY_FILE", ""), "PEM PKCS#8 P-256 key that signs device-id certificates (RC_API_ID_CERT_KEY_FILE)")
+		idCertKMS    = flag.String("id-cert-kms-key-id", envx.Env("RC_API_ID_CERT_KMS_KEY_ID", ""), "KMS key id, alias or ARN that signs device-id certificates; the private key never leaves KMS. Mutually exclusive with -id-cert-key-file (RC_API_ID_CERT_KMS_KEY_ID)")
 		signalURL    = flag.String("signal-internal-url", envx.Env("RC_API_SIGNAL_INTERNAL_URL", ""), "rc-signal's internal base URL for the session reconciliation sweep (RC_API_SIGNAL_INTERNAL_URL)")
 		trusted      = flag.String("trusted-proxies", envx.Env("RC_API_TRUSTED_PROXIES", ""), "comma-separated CIDRs whose X-Forwarded-For is honoured (RC_API_TRUSTED_PROXIES)")
 		idpName      = flag.String("idp", envx.Env("RC_API_IDP", ""), "dev|cognito — how a user session is authenticated (RC_API_IDP)")
@@ -92,12 +94,16 @@ func main() {
 	if err != nil {
 		exit(err.Error())
 	}
-	authority, ephemeral, err := idcert.Open(*idCertKey, *insecure)
+	startCtx, startCancel := context.WithTimeout(context.Background(), startupTimeout)
+	authority, ephemeral, err := idcert.Open(startCtx, idcert.Config{
+		KeyFile: *idCertKey, KMSKeyID: *idCertKMS, Insecure: *insecure,
+	})
+	startCancel()
 	if err != nil {
 		exit(err.Error())
 	}
 	if ephemeral {
-		log.Warn("no -id-cert-key-file: device-id certificates die with this process (local only)")
+		log.Warn("no -id-cert-kms-key-id or -id-cert-key-file: device-id certificates die with this process (local only)")
 	}
 	provider, err := makeIdP(*idpName, *insecure, *issuer, *audience)
 	if err != nil {
@@ -153,7 +159,8 @@ func main() {
 	go func() { errCh <- internalSrv.ListenAndServe() }()
 	log.Info("rc-api started", "addr", *addr, "internalAddr", *internalAddr, "tls", !*insecure, "db", *dbPath,
 		"claimsDb", *claimsPath,
-		"idp", provider.Name(), "signalUpstream", *upstream, "reconcile", signaling != nil)
+		"idp", provider.Name(), "signalUpstream", *upstream, "reconcile", signaling != nil,
+		"idCertSigner", idCertSigner(*idCertKMS, ephemeral))
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -256,6 +263,18 @@ func reconcile(ctx context.Context, api *apisrv.Server, signaling *internalapi.C
 				log.Info("session reconciliation closed rows", "closed", closed)
 			}
 		}
+	}
+}
+
+// idCertSigner is what the startup line says about where the signing key lives.
+func idCertSigner(kmsKeyID string, ephemeral bool) string {
+	switch {
+	case kmsKeyID != "":
+		return "kms"
+	case ephemeral:
+		return "ephemeral"
+	default:
+		return "file"
 	}
 }
 

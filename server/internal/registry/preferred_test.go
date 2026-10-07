@@ -114,7 +114,7 @@ func TestAClaimedDeviceIDSurvivesARegistryResetInBothRegistries(t *testing.T) {
 			if err != nil || stolen.Device.DeviceID == id || !protocol.ValidDeviceID(stolen.Device.DeviceID) {
 				t.Fatalf("another key's certificate claimed the id: %+v err=%v", stolen, err)
 			}
-			second, err := authority.Issue(id, squatter)
+			second, err := authority.Issue(ctx, id, squatter)
 			if err != nil {
 				t.Fatal(err)
 			}
