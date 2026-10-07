@@ -147,6 +147,7 @@ func (s *Server) routes() {
 	in.HandleFunc("GET "+protocol.PathInternalPairs+"/{hostDeviceId}/{controllerDeviceId}", s.internalOnly(s.internalPair))
 	in.HandleFunc("POST "+protocol.PathInternalSessionStart, s.internalOnly(s.internalSessionStart))
 	in.HandleFunc("POST "+protocol.PathInternalSessionStop, s.internalOnly(s.internalSessionStop))
+	in.HandleFunc("POST "+protocol.PathInternalReleases, s.internalOnly(s.publishRelease))
 	in.HandleFunc("GET /healthz", s.healthz)
 	in.HandleFunc("/", s.notFound)
 }

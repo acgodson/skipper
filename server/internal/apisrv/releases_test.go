@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"rc-signal/internal/idp"
 	protocol "rcprotocol"
 )
 
@@ -142,5 +143,57 @@ func TestDevPublishReleaseValidates(t *testing.T) {
 
 	if r := h.call("POST", protocol.PathDevReleases, "", "", local); r.status != http.StatusUnauthorized {
 		t.Fatalf("anonymous publish: %d, want 401", r.status)
+	}
+}
+
+// The production publisher. Under `cognito` the dev route is gone, so this is the only
+// way a release is ever published — and it must stay off the public listener.
+func TestInternalPublishIsTheProductionPublisher(t *testing.T) {
+	h := newHarness(t)
+	req := devRelease(protocol.ArchARM64, protocol.ChannelStable, "9")
+
+	deployed := h.withIdP(namedIdP{idp.Dev{}})
+	if r := h.callAt(deployed, "POST", protocol.PathDevReleases, publisher, "", req, nil); r.status != http.StatusNotFound {
+		t.Fatalf("the dev publisher under a deployed IdP: %d %s, want 404", r.status, r.body)
+	}
+
+	if r := h.call("POST", protocol.PathInternalReleases, internalToken, "", req); r.status != http.StatusCreated {
+		t.Fatalf("internal publish: %d %s, want 201", r.status, r.body)
+	}
+	status, got, _ := h.latest("platform=macos&arch=arm64")
+	if status != http.StatusOK || got.Build != "9" || got.SHA256 != strings.Repeat("ab", 32) ||
+		got.Size != 1234 || got.PublishedAt == 0 {
+		t.Fatalf("a release published internally must be served publicly: %d %+v", status, got)
+	}
+
+	for _, credential := range []string{"", publisher, "not-the-internal-token"} {
+		r := h.call("POST", protocol.PathInternalReleases, credential, "", req)
+		if r.status != http.StatusUnauthorized {
+			t.Fatalf("internal publish with %q: %d %s, want 401", credential, r.status, r.body)
+		}
+	}
+
+	for _, base := range []string{h.url, deployed} {
+		r := h.callAt(base, "POST", protocol.PathInternalReleases, internalToken, "", req, nil)
+		if r.status != http.StatusNotFound || r.apiError(t).Code != protocol.APIErrNotFound {
+			t.Fatalf("the publish path must not exist on the public listener: %d %s", r.status, r.body)
+		}
+	}
+}
+
+func TestInternalPublishValidatesLikeTheDevRoute(t *testing.T) {
+	h := newHarness(t)
+	for name, mutate := range map[string]func(*protocol.DevReleaseRequest){
+		"plain http elsewhere": func(r *protocol.DevReleaseRequest) { r.URL = "http://downloads.example.com/a.dmg" },
+		"short sha":            func(r *protocol.DevReleaseRequest) { r.SHA256 = "abcd" },
+		"zero size":            func(r *protocol.DevReleaseRequest) { r.Size = 0 },
+		"unknown arch":         func(r *protocol.DevReleaseRequest) { r.Arch = "ppc" },
+		"textual build":        func(r *protocol.DevReleaseRequest) { r.Build = "3b" },
+	} {
+		req := devRelease(protocol.ArchARM64, protocol.ChannelStable, "3")
+		mutate(&req)
+		if r := h.call("POST", protocol.PathInternalReleases, internalToken, "", req); r.status != http.StatusBadRequest {
+			t.Fatalf("%s: %d %s, want 400", name, r.status, r.body)
+		}
 	}
 }

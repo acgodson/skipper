@@ -14,6 +14,14 @@
 #
 # /config.js is deliberately excluded. Terraform owns it, because it is the one file that
 # carries the sign-in origin and the app client id.
+#
+#   infra/web/deploy.sh --profile <aws profile> --dmg dist/SkipperDesk-<version>.dmg
+#
+# uploads one release image to /assets/ and does nothing else: no site sync, no
+# invalidation. /assets/* is cached immutable for a year, so the filename carries the
+# version and an existing object is never overwritten -- a reused name would be stale at
+# every edge and in every browser that already fetched it. The site sync leaves *.dmg
+# alone for the same reason: it runs with --delete, and the image is not in the repository.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -26,6 +34,7 @@ DISTRIBUTION=""
 DOMAIN=""
 ACCOUNT=""
 DRY_RUN=0
+DMG=""
 TF_DIR="infra/web/terraform"
 SITE="web"
 
@@ -37,8 +46,9 @@ while [[ $# -gt 0 ]]; do
     --distribution) DISTRIBUTION="${2:-}"; shift 2 ;;
     --domain) DOMAIN="${2:-}"; shift 2 ;;
     --account) ACCOUNT="${2:-}"; shift 2 ;;
+    --dmg) DMG="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -h | --help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "FAIL  unknown argument '$1'"; exit 2 ;;
   esac
 done
@@ -72,6 +82,52 @@ echo "  region       $REGION"
 echo "  bucket       $BUCKET"
 echo "  distribution $DISTRIBUTION${DOMAIN:+ ($DOMAIN)}"
 
+if [[ -n "$DMG" ]]; then
+  [[ -f "$DMG" ]] || { echo "FAIL  no such image: $DMG"; exit 1; }
+  NAME="$(basename "$DMG")"
+  case "$NAME" in
+    SkipperDesk-*.dmg) ;;
+    *) echo "FAIL  '$NAME' must be named SkipperDesk-<version>.dmg: /assets/ is immutable for a year"; exit 1 ;;
+  esac
+  KEY="assets/$NAME"
+
+  echo
+  echo "== checking the image"
+  echo "  file         $DMG"
+  echo "  key          s3://$BUCKET/$KEY"
+  echo "  sha256       $(shasum -a 256 "$DMG" | awk '{print $1}')"
+  echo "  size         $(wc -c <"$DMG" | tr -d ' ') bytes"
+
+  # An immutable object is never replaced: the version in the name is what makes a new
+  # release a new URL, and overwriting one would serve two different images from one
+  # address for up to a year.
+  if aws s3api head-object --profile "$PROFILE" --region "$REGION" \
+    --bucket "$BUCKET" --key "$KEY" >/dev/null 2>&1; then
+    echo "FAIL  $KEY already exists; bump the version rather than reusing an immutable name"
+    exit 1
+  fi
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo
+    echo "DRY RUN  nothing was uploaded"
+    exit 0
+  fi
+
+  echo
+  echo "== uploading the image as immutable"
+  aws s3 cp --profile "$PROFILE" --region "$REGION" --only-show-errors \
+    "$DMG" "s3://$BUCKET/$KEY" \
+    --content-type application/x-apple-diskimage \
+    --cache-control "public, max-age=31536000, immutable"
+
+  echo
+  echo "  the image is at $(tf_output site_url)$KEY"
+  echo "  publish it with scripts/publish-release.sh"
+  echo
+  echo "UPLOAD PASSED"
+  exit 0
+fi
+
 # The repository never carries config.js — Terraform writes it straight into the bucket —
 # so a copy here is a local one scripts/serve-web.sh left behind. Syncing it would overwrite
 # the real values with whatever that run used.
@@ -81,7 +137,7 @@ fi
 
 echo
 echo "== checking the site"
-for required in index.html link/index.html 404.html assets/styles.css assets/link.js; do
+for required in index.html link/index.html download/index.html 404.html assets/styles.css assets/link.js; do
   if [[ ! -f "$SITE/$required" ]]; then
     echo "FAIL  $SITE/$required is missing"
     exit 1
@@ -98,9 +154,13 @@ SYNC=(aws s3 sync --profile "$PROFILE" --region "$REGION" --only-show-errors --d
 # object's own Cache-Control is what the browser obeys. Pages revalidate every time; an
 # asset is immutable for a year and is busted by the ?v= the pages ask for.
 echo
-echo "== uploading /assets/ as immutable"
+# --exclude keeps --delete away from the release images: they live under /assets/ for the
+# immutable cache policy, they are uploaded by --dmg above, and they are not in the
+# repository -- so without this the next copy change would delete the app download.
+echo "== uploading /assets/ as immutable (release images untouched)"
 "${SYNC[@]}" \
   "$SITE/assets/" "s3://$BUCKET/assets/" \
+  --exclude "*.dmg" \
   --cache-control "public, max-age=31536000, immutable"
 
 echo "== uploading the pages as no-cache"

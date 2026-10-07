@@ -30,6 +30,7 @@ const (
 	InternalEpochSuffix      = "/epoch"
 	InternalCertSuffix       = "/cert"
 	PathInternalPairs        = "/internal/pairs"
+	PathInternalReleases     = "/internal/releases"
 
 	PathInternalLiveSessions = "/internal/sessions/live"
 	PathInternalSessionClose = "/internal/sessions/close"
