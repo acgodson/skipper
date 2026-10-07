@@ -35,7 +35,18 @@ public final class AccountLinker: ObservableObject {
     @Published public private(set) var state: AccountState = .unlinked
     @Published public private(set) var entitlement: CachedEntitlement?
 
-    nonisolated public static let linkAttemptLifetime: TimeInterval = 120
+    /// How long a browser sign-in may take before a `skipperdesk://link` callback
+    /// is discarded (API.md §1.1 rule 1). It has to cover a first-time sign-up:
+    /// inventing a password, waiting for a verification email and reading it on
+    /// another device. 120 s could not, so every first attempt died and the person
+    /// had to choose Sign in twice.
+    ///
+    /// This timer is not a security control. The handoff is protected by the
+    /// nonce-to-code binding, the single-use 120 s code the server mints *after*
+    /// sign-in, the public-key equality check and the constant-time nonce
+    /// comparison — none of which this number touches. What it bounds is how long
+    /// the app will sit in "Signing in…" for a sign-in nobody is going to finish.
+    nonisolated public static let linkAttemptLifetime: TimeInterval = 15 * 60
     nonisolated public static let callbackScheme = "skipperdesk"
     nonisolated public static let callbackHost = "link"
 

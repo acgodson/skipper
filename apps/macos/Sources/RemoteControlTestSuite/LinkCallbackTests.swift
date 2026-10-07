@@ -75,9 +75,17 @@ public let linkCallbackSuite = TestSuite("LinkCallback", [
         try expectEqual(verdict(callback(), pending: nil), .noAttempt)
     },
 
-    TestCase("an attempt older than 120 s is expired whatever the callback says") {
+    TestCase("an attempt older than its lifetime is expired whatever the callback says") {
         try expectEqual(verdict(callback(), after: AccountLinker.linkAttemptLifetime), .expired)
-        try expectEqual(verdict(callback(nonce: "wrong"), after: 500), .expired)
+        try expectEqual(verdict(callback(nonce: "wrong"), after: AccountLinker.linkAttemptLifetime * 2), .expired)
+    },
+
+    TestCase("the window fits a first-time sign-up, verification email and all") {
+        try expect(AccountLinker.linkAttemptLifetime >= 10 * 60,
+                   "a sign-up that waits for a verification email cannot finish in \(AccountLinker.linkAttemptLifetime) s")
+        try expectEqual(verdict(callback(), after: 9 * 60), .accepted(code: "one-time-code", nonce: pendingNonce))
+        try expectEqual(verdict(callback(), after: AccountLinker.linkAttemptLifetime - 1),
+                        .accepted(code: "one-time-code", nonce: pendingNonce))
     },
 
     TestCase("other URLs are not ours") {

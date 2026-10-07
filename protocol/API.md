@@ -160,9 +160,19 @@ exactly as the signaling `challenge` of PROTOCOL.md §2.1 is.
 Normative rules:
 
 1. The app **must** discard any `skipperdesk://link?code=…&nonce=…` callback whose in-memory link
-   attempt has expired (120 s) or was never started, or whose `nonce` is missing or differs from
-   the attempt's (compared in constant time). Any such mismatch also ends the pending attempt; the
-   app logs it and shows nothing. The browser is an untrusted messenger.
+   attempt has expired (**15 minutes**) or was never started, or whose `nonce` is missing or
+   differs from the attempt's (compared in constant time). Any such mismatch also ends the pending
+   attempt; the app logs it and shows nothing. The browser is an untrusted messenger.
+
+   The 15 minutes bound how long the app waits, nothing more. A first-time user signs up, waits
+   for a verification email and reads it on another device, and 120 s could not fit that, so
+   every first attempt died and the person had to choose Sign in twice. Nothing about the
+   handoff's security rests on this number: the code is bound to the `nonce` (rule 2) and to the
+   `pubkey` (rule 4), is single-use and lives 120 s from the moment the server mints it at step 3
+   — *after* sign-in — and the `nonce` comparison is constant-time. A callback that arrives late
+   carries a code the server has already expired. The website refuses to mint a code past
+   **14 minutes**, a minute inside the app's window, because it starts counting at page load and
+   so always reads later than the app does.
 2. The one-time `code` is bound to the step 1 `nonce`. The server stores only
    `SHA-256(code)` and `SHA-256(nonce)`, never either value. A step 6 request whose `nonce` is missing or different is
    `400 bad_request` with `reason: nonce_mismatch`, and the code is burned. This is what stops a
