@@ -103,6 +103,7 @@ resource "aws_instance" "app" {
     api_domain    = var.api_domain
     api_listen    = local.api_listen
     signal_listen = local.signal_listen
+    external_ip   = aws_eip.this.public_ip
   })
 
   tags = { Name = local.name }

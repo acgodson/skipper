@@ -86,6 +86,22 @@ install -m 0644 "$${CONFIG}/Caddyfile" /etc/caddy/Caddyfile
 install -d -m 0755 /etc/systemd/system/caddy.service.d
 install -m 0644 "$${CONFIG}/caddy.service.d/override.conf" /etc/systemd/system/caddy.service.d/override.conf
 
+# The Elastic IP is associated a moment after launch, so until it is, this instance answers
+# on a different address than the one coturn is about to advertise as external-ip. Waiting
+# here is cheaper than noticing it later as relays that allocate and never connect.
+for _ in $(seq 1 60); do
+  TOKEN="$(curl -fsS -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+    http://169.254.169.254/latest/api/token || true)"
+  PUBLIC="$(curl -fsS -H "X-aws-ec2-metadata-token: $${TOKEN}" \
+    http://169.254.169.254/latest/meta-data/public-ipv4 || true)"
+  [ "$${PUBLIC}" = "${external_ip}" ] && break
+  sleep 5
+done
+if [ "$${PUBLIC}" != "${external_ip}" ]; then
+  echo "note  the Elastic IP ${external_ip} is still not this instance's address; coturn will"
+  echo "note  advertise it anyway, and needs a restart if the association never lands"
+fi
+
 # coturn takes its secret only from its configuration file, never from a flag, so the
 # placeholder line is dropped and the real value appended; the file is group-readable by
 # the turnserver user and by nobody else.
