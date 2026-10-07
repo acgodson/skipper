@@ -8,12 +8,16 @@ terraform {
     }
   }
 
-  # TODO: move state to S3 with DynamoDB locking the day a second person can deploy.
-  # Local state is correct for exactly one operator: it cannot be locked, it cannot be
-  # read by anyone else, and a lost laptop loses the only copy. See README "State".
-  backend "local" {
-    path = "terraform.tfstate"
-  }
+  # State is remote and encrypted before anything is applied, because this state holds
+  # secrets: aws_cognito_identity_provider takes the Apple .p8 and the Google client
+  # secret as literal arguments, so the first apply with enable_social_idp on writes both
+  # into state in the clear.
+  #
+  # A partial configuration: a backend block cannot interpolate, and the bucket name and
+  # the key ARN both carry the account id, which is not hardcoded anywhere in this repo.
+  # The rest comes from backend.hcl, which bootstrap-state prints —
+  # infra/aws/README.md "State" has the exact two-step first run.
+  backend "s3" {}
 }
 
 provider "aws" {

@@ -8,6 +8,10 @@ After=network-online.target rc-api.service
 Wants=network-online.target
 Requires=rc-api.service
 
+# The turn secret and the internal token are files on the data volume, so this unit waits
+# for the mount itself rather than for a guess at how long it takes.
+RequiresMountsFor=${data_dir}
+
 [Service]
 Type=simple
 User=${service_user}

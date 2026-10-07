@@ -12,14 +12,16 @@ Nothing here provisions on its own and nothing here is applied yet.
 |---|---|
 | `terraform/network.tf` | VPC, one public subnet, internet gateway, route table, the security group, the Elastic IP and its association |
 | `terraform/instance.tf` | The `t4g.small`, its encrypted gp3 root volume, IMDSv2-only metadata, the user data, and the instance's configuration files as S3 objects |
+| `terraform/data_volume.tf` | The separate encrypted gp3 volume the two SQLite files live on, and its attachment. `prevent_destroy` is on it |
+| `terraform/bootstrap-state/` | A root module of its own, with local state: the state bucket, its KMS key and the DynamoDB lock table, and nothing else. Applied once, before the stack |
 | `terraform/iam.tf` | The instance role: `AmazonSSMManagedInstanceCore`, its own SSM parameters, `kms:Sign` on one key, its own three S3 prefixes, its own log group, one metric namespace |
 | `terraform/kms.tf` | The `ECC_NIST_P256` / `SIGN_VERIFY` key for the device-ID certificate signer, with a key policy that lets only the instance role sign |
 | `terraform/ssm.tf` | Eleven `SecureString` parameters, created holding a placeholder |
 | `terraform/cognito.tf` | The user pool (email sign-in), the public app client with no secret and no hosted-UI domain, and the Apple and Google providers |
 | `terraform/backups.tf` | The backup bucket: versioned, SSE-S3, public access blocked, TLS-only, four lifecycle rules |
-| `terraform/observability.tf` | The 30-day log group, the SNS topic, and the five alarms |
+| `terraform/observability.tf` | The 30-day log group, the SNS topic, and the six alarms |
 | `cloud-init/` | The bootstrap the instance runs, the backup script, the CloudWatch agent configuration |
-| `systemd/` | `rc-api.service`, `rc-signal.service`, the two backup timers, and drop-ins over the `caddy` and `coturn` units Ubuntu ships |
+| `systemd/` | `rc-api.service`, `rc-signal.service`, the two backup timers, a drop-in over `rc-api` that makes the data mount a hard requirement, and drop-ins over the `caddy` and `coturn` units Ubuntu ships |
 | `Caddyfile` | TLS over HTTP-01, the reverse proxies, and the `X-Forwarded-For` rule |
 | `coturn/turnserver.conf` | `use-auth-secret`, the relay range, and the peer deny list |
 | `deploy.sh` | Builds both binaries for `linux/arm64`, uploads, swaps, restarts, verifies |
@@ -43,8 +45,15 @@ TLS-ALPN challenge, so HTTP-01 is the only path. That is why `80/tcp` is open.
    belong to other accounts (`scripts/aws-profile-guard.sh`).
 2. `cp terraform/terraform.tfvars.example terraform/terraform.tfvars` and set `acme_email`
    and `alarm_email`. Leave `enable_social_idp` and `enable_endpoint_health_check` off.
-3. `cd terraform && terraform init && terraform plan -out=tfplan` — read the plan.
-4. `terraform apply tfplan`.
+3. The state backend, once ever — see "State" for why it is a module of its own:
+
+   ```
+   cd terraform/bootstrap-state
+   terraform init && terraform apply
+   terraform output -raw backend_config > ../backend.hcl
+   ```
+4. `cd .. && terraform init -backend-config=backend.hcl`, then
+   `terraform plan -out=tfplan` — read the plan — then `terraform apply tfplan`.
 5. Write the real secrets into the parameters created in step 4 (below), then
    `aws ssm send-command` the bootstrap again, or simply reboot, so the files are rewritten.
 6. Add the two `A` records at the registrar from `terraform output dns_records_to_create`.
@@ -65,7 +74,8 @@ list, with a description on each. The ones worth setting deliberately:
 | `alarm_email` | `""` | Empty means the alarms have nowhere to go |
 | `api_domain`, `turn_domain` | `api.`/`turn.skipperdesk.app` | A staging name |
 | `instance_type` | `t4g.small` | coturn's CPU and packet rate is what gives first |
-| `root_volume_gb` | `20` | Both SQLite files live here |
+| `root_volume_gb` | `20` | The OS, the two binaries and the logs. No database |
+| `data_volume_gb` | `20` | The volume both SQLite files live on. Growing it is a resize plus `resize2fs`, not a replacement |
 | `turn_user_quota`, `turn_total_quota` | `12`, `200` | `docs/PHASE5.md` §7: the 1:1 values were 6 and 12 |
 | `enable_social_idp` | `false` | See "Secrets" |
 | `enable_endpoint_health_check` | `false` | Needs the `A` records first |
@@ -94,11 +104,21 @@ aws ssm put-parameter --profile <p> --region eu-west-2 --overwrite \
 |---|---|---|
 | `turn-secret` | file `0600`, owned by the service user | `-turn-secret-file` |
 | `internal-token` | file `0600`, owned by the service user | `-internal-token-file`, both services |
-| `id-cert-key` | file `0600`, owned by the service user | `-id-cert-key-file` |
 | `hardware-salt` | `EnvironmentFile`, `0600`, root-owned | `RC_API_HARDWARE_SALT` |
 | `token-secret` | `EnvironmentFile`, `0600`, root-owned | `RC_TOKEN_SECRET` |
 | `apple-services-id`, `apple-team-id`, `apple-key-id`, `apple-private-key` | Terraform, into the Cognito provider | — |
 | `google-client-id`, `google-client-secret` | Terraform, into the Cognito provider | — |
+
+The device-id certificate signing key is **not** in this table, and that is the point. It is
+the `ECC_NIST_P256` KMS key in `terraform/kms.tf`; `rc-api` is given its ARN with
+`-id-cert-kms-key-id` and calls `kms:Sign`, so the private half never exists outside KMS and
+there is no parameter, no file and nothing to rotate out of Parameter Store. The ARN is not a
+secret — it is an identifier, and `kms.tf`'s key policy plus `iam.tf`'s `kms:Sign` statement
+are what decide who may use it. Every signature is a CloudTrail event
+(`docs/PHASE5.md` §1.2).
+
+`rc-api.env` therefore also carries `AWS_REGION`, so the SDK does not have to ask IMDS where
+it is on every start.
 
 No secret reaches either binary on the command line. The command line is readable by every
 local user through `ps`, which is why the deprecated `-internal-token` flag is never used and
@@ -116,19 +136,83 @@ providers makes Terraform read the parameters and write them into state. There i
 around it in the provider. Consequences, plainly:
 
 - `enable_social_idp` is `false` by default, so a first apply holds no secret at all.
-- The moment it is turned on, `terraform.tfstate` is as sensitive as the secrets themselves.
-  Treat it that way: it is gitignored here, and the move to an encrypted S3 backend below is
-  what makes it tolerable long-term.
+- The moment it is turned on, the state is as sensitive as the secrets themselves. That is
+  why the state backend below exists and why it is set up *first*: the state lives in a
+  versioned, SSE-KMS bucket with a customer-managed key, and no state file is written beside
+  the configuration at all.
 - Rotating either secret means rotating the parameter *and* re-applying.
 
 ## State
 
-Local, deliberately, for now — one operator, no locking to coordinate. It cannot stay that
-way: local state cannot be locked, cannot be read by a second person, and a lost laptop loses
-the only record of what exists. The `TODO:` is in `terraform/versions.tf`. The move is a
-versioned, SSE-KMS S3 bucket plus a DynamoDB table for the lock, created in a tiny separate
-root module (it cannot create the bucket it stores itself in), then
-`terraform init -migrate-state`. Do it the day a second person can deploy.
+Remote, encrypted and locked, and that is true before the first apply rather than after it.
+The reason is the paragraph above: `aws_cognito_identity_provider` takes the Apple `.p8` and
+the Google client secret as literal arguments, so the state file is as sensitive as the
+secrets in it the moment `enable_social_idp` goes on. Local state cannot be locked, cannot
+be read by a second person, and a lost laptop loses the only record of what exists.
+
+The bucket cannot be created by the configuration that uses it as a backend, so
+`terraform/bootstrap-state/` is a separate root module with local state that creates exactly
+three things: a customer-managed KMS key (rotation on — symmetric KMS rotation keeps old key
+versions, so old state stays readable), the state bucket, and the DynamoDB lock table. The
+bucket is versioned, SSE-KMS with that key, public-access-blocked, TLS-only, denies a
+`PutObject` that asks for the wrong encryption or the wrong key, and expires superseded
+versions after 90 days — each one is a copy of every secret the state held at the time.
+
+Its own state stays local on purpose. It holds no secret, and the three things it describes
+are named rather than discovered, so losing that file costs three `terraform import`
+commands.
+
+### The first run, exactly
+
+```
+cd infra/aws/terraform/bootstrap-state
+terraform init
+terraform apply
+terraform output -raw backend_config > ../backend.hcl
+
+cd ..
+terraform init -backend-config=backend.hcl
+terraform plan -out=tfplan
+```
+
+`backend.hcl` is gitignored, and it has to be: the bucket name and the KMS key ARN both
+carry the account id, which is not written down anywhere in this repository. That is also
+why `versions.tf` holds a bare `backend "s3" {}` — a backend block cannot interpolate, so
+the parts that vary come from the file. Every later `terraform init` in this directory needs
+the same `-backend-config=backend.hcl`; the other commands do not, because `init` records it
+under `.terraform/`.
+
+### Why a DynamoDB table and not `use_lockfile`
+
+Recent Terraform locks state with an S3 object and deprecates the table. This repository
+pins Terraform `1.9.8` (`.terraform.lock.hcl`, and the binary the work was done with), and
+its S3 backend does not have that argument at all. Checked rather than assumed, with the S3
+endpoint pointed at `http://127.0.0.1:1` so no AWS call was possible:
+
+```
+# backend "s3" { ... use_lockfile = true }
+Error: Unsupported argument
+  on main.tf line 17, in terraform:
+  17:     use_lockfile                = true
+An argument named "use_lockfile" is not expected here.
+
+# backend "s3" { ... definitely_not_an_arg = true }   <- the control
+Error: Unsupported argument
+An argument named "definitely_not_an_arg" is not expected here.
+
+# backend "s3" { ... dynamodb_table = "example-lock" }
+Error: Failed to get existing workspaces: ... dial tcp 127.0.0.1:1: connect: connection refused
+```
+
+`use_lockfile` fails identically to an argument that was invented for the control case;
+`dynamodb_table` passes the schema and gets as far as the socket. Note that
+`terraform init -backend=false` does **not** check the backend schema — it accepted the
+invented argument too — so a check that uses it proves nothing.
+
+`use_lockfile` arrived in Terraform 1.10. When this repo moves to 1.10 or later: add
+`use_lockfile = true` to `backend.hcl`, `terraform init -reconfigure`, confirm a lock is
+taken, then drop `dynamodb_table` and the table. Until then the table is the only mechanism
+this version has.
 
 ## The trusted proxy, and why `X-Forwarded-For` is safe here
 
@@ -177,8 +261,10 @@ sudo systemctl restart rc-api rc-signal
 
 ### Changing the bootstrap
 
-`aws_instance.app` has `user_data_replace_on_change = false`, because this box holds the only
-copy of both SQLite files and a changed bootstrap must never silently replace it. After a
+`aws_instance.app` has `user_data_replace_on_change = false`, because a changed bootstrap must
+never silently replace the box. The databases would now survive that — they are on their own
+volume, which reattaches — but the ACME certificate and `/opt/skipperdesk/releases` would not,
+so a surprise replacement still means a cold start and a fresh Let's Encrypt issuance. After a
 `terraform apply` that changes `cloud-init/` or any file under `systemd/`, `Caddyfile` or
 `coturn/`, re-run the bootstrap deliberately:
 
@@ -219,8 +305,36 @@ alone**. Devices then re-register with their certificates and get their own ids 
 nobody else can obtain them. Wiping both together is the one unrecoverable operation in this
 system.
 
-The root volume has `delete_on_termination = false`, so terminating the instance leaves the
-volume behind rather than the databases with it. Delete the orphan once a restore is proven.
+### The volume the databases are on
+
+Neither database is on the root volume. `terraform/data_volume.tf` creates a separate
+encrypted gp3 volume, the bootstrap mounts it at `/var/lib/skipperdesk`, and the root volume
+is back to `delete_on_termination = true` because it now holds nothing that matters. So:
+
+- Replacing the instance **reattaches** this volume. The previous arrangement — a root volume
+  kept past termination — left an orphan holding live data that nothing reattached.
+- `prevent_destroy` is set on `aws_ebs_volume.data`, so `terraform destroy` fails, and so does
+  an apply that would remove the volume. That is the point. To genuinely remove it, delete the
+  `lifecycle` block in a commit of its own, so the intent is reviewable.
+- The mount is in `/etc/fstab` **by filesystem UUID**, never by device name: on Nitro the
+  `/dev/nvme*n1` names are assigned in attachment order and are not stable across a reboot,
+  and `/dev/sdf` — the name EC2 is asked for — is not a name Linux uses at all. The bootstrap
+  finds the disk through `/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_<volume id>`.
+- The entry carries `nofail`, so a volume that is missing or late leaves the box booted and
+  reachable over `aws ssm start-session` instead of dropping it into emergency mode. The
+  services do not start in that state: `rc-api`, `rc-signal` and the backup units all name the
+  path with `RequiresMountsFor=`, which systemd turns into `Requires=` plus `After=` on the
+  mount unit it generates from the fstab line. The failure is therefore "rc-api is down and
+  says why", not "rc-api opened an empty database on the root volume and started issuing
+  Device IDs the claims file has never heard of".
+- The bootstrap formats the volume **only** when `blkid` exits with its "not found" code and
+  names neither a filesystem nor a partition table, **and** `wipefs` succeeds and recognises
+  no signature. Any other outcome, including a probe that failed to answer, mounts the volume
+  untouched. A re-run of the bootstrap, and a replaced instance, therefore read the databases
+  that are already there.
+
+Growing it: `data_volume_gb`, apply, then `sudo resize2fs /dev/<device>` on the box. An EBS
+volume cannot be shrunk.
 
 ## Alarms
 
@@ -229,11 +343,13 @@ volume behind rather than the databases with it. Delete the orphan once a restor
 | `-api-5xx` | log metric filter `{ $.msg = "request" && $.status >= 500 }` | rc-api logs one JSON object per request with its status |
 | `-signal-healthz` | `AWS/Route53 HealthCheckStatus` | A health check probes `https://<api domain>/signal/healthz`, which Caddy rewrites to rc-signal's `/healthz`. The alarm lives in `us-east-1` because that is the only region those metrics exist in |
 | `-host-unreachable` | `AWS/EC2 StatusCheckFailed` | coturn has no probeable endpoint; the relay is down whenever the host is |
-| `-disk-used` | `disk_used_percent` from the CloudWatch agent | Its dimensions include the filesystem type, which is why `root_filesystem_type` is a variable |
+| `-disk-used-root` | `disk_used_percent` from the CloudWatch agent, `path=/` | The root volume still carries the logs and the release directories |
+| `-disk-used-data` | `disk_used_percent` from the CloudWatch agent, `path=/var/lib/skipperdesk` | The volume that must not fill: SQLite stops writing while the box keeps answering. The metric's dimensions include the filesystem type, which is why `filesystem_type` is a variable |
 | budget | AWS Budgets, actual at 80% and forecast at 100% | `docs/PHASE5.md` §4 step 3 also sets one in the management account; this one is scoped to this account and is in code |
 
 The CloudWatch agent is configured to read exactly three files —
-`/var/log/skipperdesk/{rc-api,rc-signal,backup}.log` — and one disk metric. It is not a
+`/var/log/skipperdesk/{rc-api,rc-signal,backup}.log` — and one disk metric on each of the two
+mount points. It is not a
 general log scraper, and nothing is added that could capture a request or WebSocket body
 (`API.md` §9, `PROTOCOL.md` §8). Caddy's access log is switched off for the same reason.
 
@@ -247,13 +363,11 @@ the PR that does it.
 
 ## What is deliberately not here yet
 
-- **Done:** the id-cert key is now used — `rc-api` signs through `-id-cert-kms-key-id` and no PEM reaches the volume.
 - **No key rotation.** KMS cannot rotate an asymmetric key, and the contract has no verifier
   that accepts two signing keys at once. The `TODO:` is in `terraform/kms.tf`.
 - **No DynamoDB claims table.** `API.md` §6.1 and `docs/PHASE5.md` §2 both say the claims
   database moves to DynamoDB with point-in-time recovery and deletion protection, early and on
-  its own. It has not moved; it is a file on the gp3 volume with its own backup schedule.
-- **No remote state.** See "State".
+  its own. It has not moved; it is a file on the data volume with its own backup schedule.
 - **No mTLS on the internal listeners.** They are loopback plain HTTP with a bearer, which is
   what `API.md` §6 specifies for a single box. The `TODO:` there comes due with Shape B.
 - **No second instance, no second AZ, no load balancer, no zero-downtime deploy.** That is
@@ -271,6 +385,10 @@ the PR that does it.
 ## Costs
 
 `docs/PHASE5.md` §3.2 computes the whole bill. The fixed part of this stack is the
-`t4g.small`, the public IPv4 address, the 20 GB gp3 volume, the KMS key, the alarms, the log
-group and the bucket — about **$22/month** before any relay egress, which is the term that
-actually grows.
+`t4g.small`, the public IPv4 address, the two 20 GB gp3 volumes, the two KMS keys, the six
+alarms, the log group, the backup bucket and the state bucket's lock table — about
+**$25/month** before any relay egress, which is the term that actually grows.
+
+The separate data volume is $1.86/month more than keeping the databases on the root volume,
+and the state backend is about $1.10 (the customer-managed key is $1 of it). Both are priced
+into `docs/PHASE5.md` §3.2.

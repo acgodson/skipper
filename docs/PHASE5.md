@@ -38,7 +38,7 @@ All prices below were read from the AWS Pricing API on 2026-10-07 for EU (London
 | rc-api | REST `/v1`, the `/link` page, the `/ws` pass-through. **Two listeners**: public (`RC_API_LISTEN`) and internal (`RC_API_INTERNAL_LISTEN`, default `127.0.0.1:18081`) | ECS task or the one EC2 box | Refuses to start with the internal listener on the public port |
 | rc-signal | `/ws` signaling, `/healthz`. **Two listeners**: public (`RC_LISTEN`) and internal (`RC_INTERNAL_LISTEN`, default `127.0.0.1:18444`) | same | In a deployment it holds no registry: it asks rc-api over the internal surface (`API.md` §6) |
 | coturn | UDP relay, `3478` udp+tcp, relay range `49160-49200/udp`, `use-auth-secret`, anti-proxy denies from `infra/legacy/coturn/turnserver.conf` | EC2 with an Elastic IP — **always**, both shapes | Needs UDP and a stable public IP, so it cannot sit behind an ALB on Fargate. Raise `user-quota`/`total-quota` above the 1:1 values (6/12) before more than three hosts use it |
-| `rc-api.db` | Main SQLite: accounts, devices, tokens, sessions, ledger, idempotency | EBS gp3 volume (Shape A) | Single-writer. See §1.1 |
+| `rc-api.db` | Main SQLite: accounts, devices, tokens, sessions, ledger, idempotency | Its own EBS gp3 volume, **never the root volume** (Shape A) | Single-writer. See §1.1 |
 | `rc-api-claims.db` | `device_id_claims` — every Device ID ever assigned and the key it went to (`RC_API_CLAIMS_DB`) | **its own file, its own backup schedule** | Losing it lets an ID be reissued to a second key. Never reset or restore it with the main DB (`API.md` §6.1). `TODO` in the contract already says Phase 5 moves it to DynamoDB with PITR + deletion protection — do that |
 | id-cert signing key | P-256 PEM PKCS#8, `RC_API_ID_CERT_KEY_FILE`. Signs the Device-ID ↔ pubkey binding on register and on `POST /internal/devices/{id}/cert` | **Done: KMS asymmetric ECC_NIST_P256, `SIGN_VERIFY`, key policy allowing only the rc-api role, no key material export — `-id-cert-kms-key-id`** | See §1.2 |
 | TURN secret | coturn `static-auth-secret`; rc-signal mints `HMAC-SHA1` credentials from it (`RC_TURN_SECRET_FILE` — a **file**, never a flag) | Secrets Manager or SSM Parameter Store (SecureString), written to a file at boot with mode 0600 | Leak = free relay for anyone. Rotatable: write a new secret, restart coturn and rc-signal; in-flight 10-minute credentials die |
@@ -46,7 +46,8 @@ All prices below were read from the AWS Pricing API on 2026-10-07 for EU (London
 | Backups | `sqlite3 .backup` to S3 (SSE-S3, versioning, lifecycle to IA at 30 d) every 15 min for the main DB; **separate prefix, separate schedule, separate retention** for the claims DB; EBS snapshot daily | S3 one-zone is enough for snapshots; the claims prefix gets object-lock-style retention (never expire) | Pennies/month at this size |
 | Logs | Both binaries already emit JSON to stdout (`slog`). CloudWatch Logs, 30-day retention. `API.md` §9 and `PROTOCOL.md` §8 bound what may be logged — do not add a log agent that scrapes anything else | CloudWatch Logs | Ingest ≈$0.57/GB (**unverified**), storage $0.0315/GB-month (verified) |
 | Metrics | `/healthz` + `/v1/health` probes; relay bytes from the `bytesRelayed` column (`API.md` §5.1); NAT-vs-relay ratio from `relayUsed` | CloudWatch | `relayUsed` is the number §3's whole cost model turns on. Report it from day one |
-| Alarms | 5 alarms: rc-api 5xx rate, rc-signal `/healthz` fail, coturn host unreachable, EBS/disk >80%, **AWS Budgets actual + forecast** | CloudWatch, $0.10/alarm/month (verified) | The budget alarm is the one that protects the user, not the service |
+| Alarms | 6 alarms: rc-api 5xx rate, rc-signal `/healthz` fail, coturn host unreachable, **root volume >80%**, **data volume >80%**, **AWS Budgets actual + forecast** | CloudWatch, $0.10/alarm/month (verified) | The budget alarm is the one that protects the user, not the service. The two disk alarms are separate because the volumes fail differently: a full data volume stops SQLite writing while the box keeps answering |
+| Terraform state | The record of everything above | **S3, versioned, SSE-KMS with a customer-managed key, public access blocked, DynamoDB lock table** | Must exist *before* the first apply, not after: `aws_cognito_identity_provider` takes the Apple `.p8` and the Google client secret as literal arguments, so state holds both in the clear the moment social sign-in is on. Created by its own root module, `infra/aws/terraform/bootstrap-state` — a configuration cannot create the bucket it uses as its own backend |
 
 ### 1.1 Does SQLite survive this phase?
 
@@ -109,12 +110,14 @@ Namecheap DNS → EIP → t4g.small (eu-west-2)
              ├── Caddy :443        → rc-api  127.0.0.1:18080  (+ internal :18081, loopback)
              │                       rc-signal 127.0.0.1:8443 (+ internal :18444, loopback)
              └── coturn :3478 udp/tcp, 49160-49200/udp  (host networking)
-         EBS gp3 20 GB: rc-api.db, rc-api-claims.db   →  S3 snapshots
+         EBS gp3 20 GB root: the OS, both binaries, the logs  (dies with the instance)
+         EBS gp3 20 GB data: rc-api.db, rc-api-claims.db      →  S3 snapshots
+                             mounted at /var/lib/skipperdesk by UUID; outlives the box
 ```
 
 | | |
 |---|---|
-| Cost | ~$24/month fixed (§3) |
+| Cost | ~$25/month fixed (§3) |
 | What it buys | One box, one deploy script, loopback-only internal listeners by construction, the shape the code already assumes. Caddy does ACME so TLS needs no ALB |
 | Complexity cost | One AZ, no redundancy. A redeploy drops WebSockets (sessions survive — `PROTOCOL.md` §4.1 resume — but the socket reconnects). Caddy is one new dependency to name in the PR. No horizontal scale at all |
 | What breaks first | coturn's CPU/PPS and the t4g burst credits under sustained relay — before the UDP bandwidth does. Then SQLite write contention, then the fact that there is one of everything |
@@ -130,15 +133,15 @@ Namecheap DNS → ALB (ACM cert) → Fargate: rc-api task, rc-signal task  (priv
 
 | | |
 |---|---|
-| Cost | ~$93/month fixed before any relay (§3) — about 4× Shape A, mostly ALB + Fargate idle + Aurora's 0.5-ACU floor |
+| Cost | ~$94/month fixed before any relay (§3) — about 4× Shape A, mostly ALB + Fargate idle + Aurora's 0.5-ACU floor |
 | What it buys | Rolling zero-downtime deploys, two AZs, horizontal scale, ACM instead of ACME, internal listeners reachable only inside the VPC (the `API.md` §6 `TODO`) |
 | Complexity cost | VPC, subnets, NAT or VPC endpoints, task definitions, IAM task roles, a DB migration, and the three `TODO`s that multi-instance signaling opens (shared rate-limit buckets, multi-instance reconciliation, shared presence). coturn is still a hand-run EC2 box either way, so this buys managed for two thirds of the system |
-| What breaks first | Nothing operational; the budget. $93/month before a single paying host is the wrong shape for a product whose principle is "near-zero at idle" |
+| What breaks first | Nothing operational; the budget. $94/month before a single paying host is the wrong shape for a product whose principle is "near-zero at idle" |
 
 ### Recommendation
 
 **Launch on Shape A.** It matches the code as written (single-writer SQLite, loopback internal
-listeners, one TURN secret file), costs ~$24/month at idle, and the only thing it genuinely cannot
+listeners, one TURN secret file), costs ~$25/month at idle, and the only thing it genuinely cannot
 do is a deploy without a socket blip — which does not end sessions. Shape B's $69/month premium
 buys redundancy for a product with no users yet.
 
@@ -179,18 +182,20 @@ Relayed GB per month = hosts × 10 h × 0.15 × 0.70 GB = **hosts × 1.05 GB**.
 | ALB | $0.02646/h + ~$0.0084/LCU-h | — | — | $30.00 |
 | coturn EC2 | t4g.small / t4g.small / 2× t4g.medium | (shared box) | (shared box) | $54.90 |
 | Public IPv4 | $0.005/h each | $3.65 | $3.65 | $10.95 |
-| EBS gp3 20 GB | $0.0928/GB-month | $1.86 | $1.86 | $1.86 |
+| EBS gp3 root volume, 20 GB | $0.0928/GB-month | $1.86 | $1.86 | $1.86 |
+| EBS gp3 data volume, 20 GB — the two SQLite files | $0.0928/GB-month | $1.86 | $1.86 | — |
 | Database | DynamoDB on-demand + Aurora SvL v2 0.5 ACU floor (**unverified**, ~$0.12/ACU-h) | — | — | $55.00 |
 | DNS | Namecheap, included with the domain | $0 | $0 | $0 |
 | Domain | already paid at Namecheap | $0 | $0 | $0 |
 | ACM | free | $0 | $0 | $0 |
 | Cognito | free ≤10 k MAU (**unverified**) | $0 | $0 | $0 |
 | KMS id-cert key + signs | $1/key-month + $0.15/10 k | $1.00 | $1.23 | $3.25 |
-| CloudWatch logs + 5 alarms | $0.10/alarm; ingest ~$0.57/GB (**unverified**) | $1.50 | $2.50 | $8.00 |
+| CloudWatch logs + 6 alarms | $0.10/alarm; ingest ~$0.57/GB (**unverified**) | $1.60 | $2.60 | $8.00 |
 | S3 backups | pennies | $0.20 | $0.30 | $0.50 |
+| Terraform state: bucket, KMS key, lock table | $1/key-month; bucket and on-demand table are pennies | $1.10 | $1.10 | $1.10 |
 | **TURN egress** | GB above 100 free × $0.09 | 10.5 GB → **$0** | 525 GB → 425 × $0.09 = **$38.25** | 5 250 GB → 5 150 × $0.09 = **$463.50** |
-| **Monthly total** | | **$21.93** | **$61.51** | **$694.32** |
-| **Per paying host** | | **$2.19** | **$0.123** | **$0.139** |
+| **Monthly total** | | **$24.99** | **$64.57** | **$695.42** |
+| **Per paying host** | | **$2.50** | **$0.129** | **$0.139** |
 
 Sanity checks on the arithmetic: 500 hosts × 10 h × 0.15 = 750 relayed hours → 750 × 0.70 GB =
 525 GB. 5 000 hosts → 7 500 relayed hours → 5 250 GB, which is 10.3 concurrent relayed sessions
@@ -198,12 +203,12 @@ on average and realistically 40–60 at peak — about 90 Mbps of sustained egre
 coturn is two t4g.medium at that line and not one small box.
 
 At the conservative **1 GB per relayed hour** the relayed volume becomes hosts × 1.5 GB:
-500 hosts → 750 GB, less 100 free, = $58.50 egress (total **$81.76**); 5 000 hosts → 7 500 GB,
-less 100 free, = $666.00 egress (total **$896.82**). At **30 h/host/month** instead of 10, treble
+500 hosts → 750 GB, less 100 free, = $58.50 egress (total **$84.82**); 5 000 hosts → 7 500 GB,
+less 100 free, = $666.00 egress (total **$897.92**). At **30 h/host/month** instead of 10, treble
 the relayed volume before subtracting the free 100 GB.
 
 For comparison, Shape A scaled to 5 000 hosts (one app box + two coturn boxes, SQLite kept) is
-about **$552/month** — $142 cheaper and single-AZ with a single-writer database. That is the
+about **$555/month** — $140 cheaper and single-AZ with a single-writer database. That is the
 honest price of Shape B's redundancy, and it is why the trigger in §2 is a condition, not a
 headcount alone.
 
@@ -262,7 +267,7 @@ Nothing here can be delegated: it needs the root email, a card, or a console-onl
 | 5 | Add the CLI profile and confirm it resolves to the new account id, not 521831014979 and not 219702648416 | terminal — see the commands in §4.1 | $0 |
 | 6 | Apple: create a **Services ID** for Sign in with Apple, a **Sign in with Apple key** (`.p8`, downloadable once), and note the key id and team id (`3UB3KZP9WH`) | `developer.apple.com/account/resources/identifiers` and → *Keys* | $0 (account already held) |
 | 7 | Google: create an **OAuth 2.0 Web client** and keep the client id + secret | `console.cloud.google.com/apis/credentials` | $0 |
-| 8 | 💵 Say "go". Provisioning begins — the Cognito pool, the VPC, the box, TLS and the KMS key are all Terraform, so nothing else here is yours to click | — | **≈$22/month** from this point |
+| 8 | 💵 Say "go". Provisioning begins — the state bucket first, then the Cognito pool, the VPC, the box, TLS and the KMS key, all Terraform, so nothing else here is yours to click | — | **≈$25/month** from this point |
 | 9 | After provisioning: add two `A` records at Namecheap, `api` and `turn`, both → the Elastic IP I give you. The apex currently points at Namecheap's parking page (162.255.119.78) — leave it until there is a website | Namecheap → *Domain List* → `skipperdesk.app` → *Advanced DNS* | $0 |
 
 ### 4.1 The commands for step 5
@@ -293,13 +298,15 @@ resource. The domain is no longer a step at all — it is bought, and its DNS st
 
 | Option | Verdict against CLAUDE.md "minimal, audited dependencies" |
 |---|---|
-| **Terraform** | **Chosen.** One statically linked binary, no language runtime, no transitive package tree. Declarative, so drift is visible (`plan`), which is exactly what `infra/legacy` lacks. State in S3 with DynamoDB locking. One new dependency, named in the PR |
+| **Terraform** | **Chosen.** One statically linked binary, no language runtime, no transitive package tree. Declarative, so drift is visible (`plan`), which is exactly what `infra/legacy` lacks. State in S3, versioned and SSE-KMS, locked by a DynamoDB table — Terraform 1.9.8's S3 backend has no `use_lockfile`, so the table is not optional at this version. One new dependency, named in the PR |
 | CDK | Rejected. Pulls a full npm dependency tree into a repo that is about to be public and dependency-gated (`scripts/verify-deps.sh`). The security benefit of a smaller supply chain outweighs the ergonomics |
 | CloudFormation | Closest to "AWS-managed first" and needs no new tool at all. Rejected on drift visibility and on how badly it handles the EC2 + userdata + coturn part. Reasonable fallback if Terraform's licence becomes a problem |
 | Plain shell + AWS CLI | What `infra/legacy` did. It works and it drifted: the box's real state lives in a README, not in the repo. Keep shell only for the in-instance half (install, config render, service start), driven by Terraform userdata |
 
-Layout: `infra/aws/` with one state per environment, `infra/aws/modules/{network,app,turn,data}`.
-`infra/legacy/` is not touched and not imported.
+Layout: `infra/aws/` with one state per environment, plus `infra/aws/terraform/bootstrap-state`,
+a separate root module with local state that creates only the backend's own bucket, key and
+lock table — a configuration cannot create the bucket it stores itself in, so that first step
+is a module of its own and runs once. `infra/legacy/` is not touched and not imported.
 
 ### 5.2 Secrets layout
 
@@ -391,7 +398,7 @@ Each milestone is closed by an observation, not by a passing test (`CLAUDE.md`).
 | # | Milestone | What is built | Acceptance check (falsifiable) |
 |---|---|---|---|
 | **5.0** | Owner prerequisites | §4 steps 1–8 | `aws sts get-caller-identity` on the new profile returns the new account; `whois skipperdesk.app` shows the owner's registration; a Budgets alert e-mail has been received at least once (fire it with a $0.01 threshold, then set $50) |
-| **5.1** | **Reachable and signed in** — no TURN | Terraform: VPC, one t4g.small, EIP, EBS, Caddy, rc-api + rc-signal, Cognito, KMS id-cert key, backups, logs, 5 alarms | From a Mac with no local backend: `curl https://api.skipperdesk.app/v1/health` returns `200` with a publicly trusted chain and no cert exception; one real Mac completes the §1.1 link flow in a browser, `register` mints a Device ID, `GET /v1/entitlement` returns `trial`. `curl https://api.skipperdesk.app/internal/entitlement/<id>` returns **404** |
+| **5.1** | **Reachable and signed in** — no TURN | `bootstrap-state` first, then Terraform against it: VPC, one t4g.small, EIP, the root volume and the separate data volume, Caddy, rc-api + rc-signal, Cognito, KMS id-cert key, backups, logs, 6 alarms | From a Mac with no local backend: `curl https://api.skipperdesk.app/v1/health` returns `200` with a publicly trusted chain and no cert exception; one real Mac completes the §1.1 link flow in a browser, `register` mints a Device ID, `GET /v1/entitlement` returns `trial`. `curl https://api.skipperdesk.app/internal/entitlement/<id>` returns **404**. On the box, `findmnt /var/lib/skipperdesk` shows the data volume and `systemctl show -p RequiresMountsFor rc-api` names it; `terraform state pull` reads from S3, not from a local file |
 | **5.2** | **TURN exists** | coturn on the same box, EIP, `turn.skipperdesk.app`, secret in SSM, anti-proxy config carried over, quotas raised | A metered session pushes `ice_servers` with a TURN entry whose `username` is `<expiry>:<sessionId>` and `expiresAt` ≈ now + 10 min (`PROTOCOL.md` §2.18); the same credential is **refused** by coturn after `bye`; a TURN allocation to an RFC1918 peer is refused |
 | **5.3** | **Cross-network and relay proof** | Nothing new — the ROADMAP's queued item #1, which needed TURN. A cloud peer stands in for the second Mac | Two endpoints on two different networks hold a session through `skipperdesk.app`; then one is forced onto the relay (block UDP to the peer / `iceTransportPolicy: relay`) and the session still works, with the `/v1/sessions` row showing `relayUsed: true` and a non-zero `bytesRelayed`. **Record the relay fraction and the measured GB/hour — §3's assumptions are replaced by these numbers** |
 | **5.4** | **Fifth security review** (infrastructure) | The six items in §7 | No HIGH or CRITICAL finding outstanding |

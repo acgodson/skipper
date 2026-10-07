@@ -10,7 +10,7 @@
     },
     "metrics_collected": {
       "disk": {
-        "resources": ["/"],
+        "resources": ["/", "${data_dir}"],
         "measurement": ["disk_used_percent"],
         "drop_device": true,
         "metrics_collection_interval": 300

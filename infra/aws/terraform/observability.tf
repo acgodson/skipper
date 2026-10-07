@@ -124,9 +124,17 @@ resource "aws_cloudwatch_metric_alarm" "host_unreachable" {
   }
 }
 
+# One alarm per mounted volume. The data volume is the one that must not fill — SQLite
+# cannot write and the box keeps answering — and the root volume still carries the logs
+# and the release directories, so a full one of those is an outage too.
 resource "aws_cloudwatch_metric_alarm" "disk_used" {
-  alarm_name          = "${local.name}-disk-used"
-  alarm_description   = "The gp3 root volume holding both SQLite files is over ${var.disk_used_percent_threshold}% full"
+  for_each = {
+    root = { path = "/", what = "root volume carrying the operating system, the binaries and the logs" }
+    data = { path = local.data_dir, what = "data volume carrying both SQLite files" }
+  }
+
+  alarm_name          = "${local.name}-disk-used-${each.key}"
+  alarm_description   = "The gp3 ${each.value.what} is over ${var.disk_used_percent_threshold}% full"
   namespace           = local.metric_namespace
   metric_name         = "disk_used_percent"
   statistic           = "Maximum"
@@ -140,8 +148,8 @@ resource "aws_cloudwatch_metric_alarm" "disk_used" {
 
   dimensions = {
     InstanceId = aws_instance.app.id
-    path       = "/"
-    fstype     = var.root_filesystem_type
+    path       = each.value.path
+    fstype     = var.filesystem_type
   }
 }
 

@@ -8,9 +8,12 @@
 #
 # This file is a Terraform template: a brace expansion below is substituted before the
 # script exists, so no shell ever sees it, and a variable belonging to the script itself is
-# written with a doubled dollar. That is the whole reason for the three suppressions.
+# written with a doubled dollar. That is the whole reason for the suppressions: every
+# `$${name}` here reads as a literal `$` followed by text until Terraform has rendered it,
+# which is why `[ -z "$${name}" ]` looks like a test on a constant. The rendered script,
+# which is the one that runs, is clean without any of them.
 # shellcheck shell=bash
-# shellcheck disable=SC2154,SC2086,SC2034,SC2193
+# shellcheck disable=SC2154,SC2086,SC2034,SC2193,SC2157
 set -euo pipefail
 exec >>/var/log/${project}-bootstrap.log 2>&1
 echo "== bootstrap $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -35,7 +38,71 @@ fi
 
 install -d -m 0755 ${app_dir} ${app_dir}/bin ${app_dir}/releases
 install -d -m 0755 ${config_dir}
-install -d -m 0750 -o ${service_user} -g ${service_user} ${data_dir} ${log_dir}
+install -d -m 0750 -o ${service_user} -g ${service_user} ${log_dir}
+
+# The databases live on their own EBS volume and never on the root volume. The disk is
+# found by the volume id EBS writes into the NVMe serial number: on Nitro the kernel's
+# /dev/nvme*n1 names are handed out in attachment order and are not stable across a
+# reboot, and the name EC2 was asked for is not a name Linux ever uses.
+DATA_LINK=/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${data_volume_serial}
+for _ in $(seq 1 60); do
+  [ -e "$${DATA_LINK}" ] && break
+  sleep 5
+done
+if [ ! -e "$${DATA_LINK}" ]; then
+  echo "FAIL  the data volume never appeared at $${DATA_LINK}" >&2
+  exit 1
+fi
+DATA_DEV="$(readlink -f "$${DATA_LINK}")"
+
+# Format only a disk that is provably blank, and treat a probe that does not answer
+# cleanly as "not blank". A false "blank" here is the one operation in this system that
+# destroys data irrecoverably, so the formatting branch needs three things to agree:
+# blkid exits 2, which is its "nothing found" code and not its error code; blkid names
+# neither a filesystem nor a partition table; and wipefs recognises no signature at all.
+# Any other combination — including a probe that failed — mounts the volume untouched.
+# Neither probe's exit status is read through a pipe, because a pipeline's status depends
+# on pipefail and this decision must not.
+PROBE="$(blkid -p -o value -s TYPE -s PTTYPE "$${DATA_DEV}" 2>/dev/null)" && PROBE_RC=0 || PROBE_RC=$?
+if SIGNATURE_TABLE="$(wipefs --no-act --output TYPE "$${DATA_DEV}" 2>/dev/null)"; then
+  SIGNATURES="$(printf '%s\n' "$${SIGNATURE_TABLE}" | tail -n +2)"
+else
+  SIGNATURES=probe-failed
+fi
+
+if [ "$${PROBE_RC}" = 2 ] && [ -z "$${PROBE}" ] && [ -z "$${SIGNATURES}" ]; then
+  echo "note  $${DATA_DEV} carries no filesystem and no signature; formatting it once"
+  mkfs.${filesystem_type} -L ${project}-data "$${DATA_DEV}"
+elif [ "$${SIGNATURES}" = probe-failed ]; then
+  echo "note  wipefs could not probe $${DATA_DEV}; refusing to format on one probe alone"
+else
+  echo "note  $${DATA_DEV} already carries a filesystem; mounting it untouched"
+fi
+
+DATA_UUID="$(blkid -o value -s UUID "$${DATA_DEV}")"
+if [ -z "$${DATA_UUID}" ]; then
+  echo "FAIL  $${DATA_DEV} has no filesystem UUID to mount by. If this volume is new, the" >&2
+  echo "FAIL  probes above disagreed about whether it was blank and nothing was formatted;" >&2
+  echo "FAIL  run 'blkid -p' and 'wipefs --no-act' against it and decide by hand." >&2
+  exit 1
+fi
+
+# By UUID, never by device name. nofail so a volume that is missing or late leaves the
+# box bootable and reachable over SSM; rc-api then refuses to start, because its unit
+# names this mount as a requirement, rather than opening a fresh empty database on the
+# root volume and serving from it.
+install -d -m 0755 ${data_dir}
+sed -i "\\#[[:space:]]${data_dir}[[:space:]]#d" /etc/fstab
+printf 'UUID=%s %s %s defaults,nofail,noatime 0 2\n' \
+  "$${DATA_UUID}" "${data_dir}" "${filesystem_type}" >>/etc/fstab
+systemctl daemon-reload
+mountpoint -q ${data_dir} || mount ${data_dir}
+if ! mountpoint -q ${data_dir}; then
+  echo "FAIL  ${data_dir} did not mount" >&2
+  exit 1
+fi
+chown ${service_user}:${service_user} ${data_dir}
+chmod 0750 ${data_dir}
 
 CONFIG=/run/${project}-config
 rm -rf "$${CONFIG}"
@@ -75,7 +142,13 @@ secret_file internal-token internal-token
 HARDWARE_SALT="$(param hardware-salt)"
 TOKEN_SECRET="$(param token-secret)"
 umask 077
-printf 'RC_API_HARDWARE_SALT=%s\n' "$${HARDWARE_SALT}" >${config_dir}/rc-api.env
+# AWS_REGION is set rather than left to the SDK's own resolution: without it the SDK asks
+# IMDS for the region on every start, which is a round-trip it does not need and a hard
+# failure if the metadata service is ever restricted. rc-api needs it to reach KMS.
+{
+  printf 'RC_API_HARDWARE_SALT=%s\n' "$${HARDWARE_SALT}"
+  printf 'AWS_REGION=%s\n' "${aws_region}"
+} >${config_dir}/rc-api.env
 printf 'RC_TOKEN_SECRET=%s\n' "$${TOKEN_SECRET}" >${config_dir}/rc-signal.env
 chmod 0600 ${config_dir}/rc-api.env ${config_dir}/rc-signal.env
 umask 022
@@ -131,6 +204,8 @@ install -m 0644 "$${CONFIG}/coturn.service.d/override.conf" /etc/systemd/system/
 
 install -m 0755 "$${CONFIG}/backup.sh" ${app_dir}/bin/backup.sh
 install -m 0644 "$${CONFIG}/rc-api.service" /etc/systemd/system/rc-api.service
+install -d -m 0755 /etc/systemd/system/rc-api.service.d
+install -m 0644 "$${CONFIG}/rc-api.service.d/mount.conf" /etc/systemd/system/rc-api.service.d/mount.conf
 install -m 0644 "$${CONFIG}/rc-signal.service" /etc/systemd/system/rc-signal.service
 install -m 0644 "$${CONFIG}/skipperdesk-backup@.service" /etc/systemd/system/skipperdesk-backup@.service
 install -m 0644 "$${CONFIG}/skipperdesk-backup-db.timer" /etc/systemd/system/skipperdesk-backup-db.timer

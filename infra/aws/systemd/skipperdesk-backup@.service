@@ -5,6 +5,10 @@ Description=SkipperDesk SQLite snapshot to S3 (%i)
 After=network-online.target
 Wants=network-online.target
 
+# Both databases are on the data volume. Without the mount this would see an empty
+# directory, decide there is nothing to back up, and say so quietly every 15 minutes.
+RequiresMountsFor=${data_dir}
+
 [Service]
 Type=oneshot
 User=${service_user}
