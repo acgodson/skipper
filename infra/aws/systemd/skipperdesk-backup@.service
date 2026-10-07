@@ -2,11 +2,13 @@
 
 [Unit]
 Description=SkipperDesk SQLite snapshot to S3 (%i)
-After=network-online.target
+After=network-online.target rc-api.service
 Wants=network-online.target
 
-# Both databases are on the data volume. Without the mount this would see an empty
-# directory, decide there is nothing to back up, and say so quietly every 15 minutes.
+# Both databases are on the data volume, and rc-api is what creates them. Without the
+# mount this would see an empty directory and fail; ordering after rc-api keeps a boot
+# from spending its first attempt on a file that does not exist yet. Neither is a
+# Requires: a backup must still run when rc-api is down, because the data is still there.
 RequiresMountsFor=${data_dir}
 
 [Service]

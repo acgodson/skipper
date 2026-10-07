@@ -295,3 +295,9 @@ variable "api_5xx_threshold" {
   type        = number
   default     = 10
 }
+
+variable "backup_stale_alarm_hours" {
+  description = "Hours without a confirmed snapshot in a backup prefix before the backup-stale alarm fires. Both timers run every 15 minutes, so the default of 1 allows four consecutive failures - enough to ride out a transient S3 error or a boot whose first attempt precedes rc-api opening the databases, and short enough that the claims prefix can never again go a day unwritten unnoticed. See infra/aws/README.md \"Backups\"."
+  type        = number
+  default     = 1
+}

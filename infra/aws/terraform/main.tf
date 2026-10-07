@@ -42,6 +42,13 @@ locals {
   # read-a-secret pair in iam.tf: ssm:GetParameter by resource, kms:Decrypt by context.
   parameter_arn_prefix = "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.prefix}"
 
+  # The two backup prefixes, named once. backup.sh writes the prefix into its own `ok`
+  # line, which is what the metric filters match, so the key here is the S3 prefix.
+  backup_prefixes = {
+    db     = { metric_suffix = "Db", what = "main-database snapshot" }
+    claims = { metric_suffix = "Claims", what = "device-id claims snapshot" }
+  }
+
   trail_name = "${local.name}-management"
 
   # Built rather than read off aws_cloudtrail.management, so the trail's bucket policy and

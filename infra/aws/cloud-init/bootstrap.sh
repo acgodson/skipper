@@ -233,7 +233,6 @@ systemctl daemon-reload
 # so what is on disk is what is actually serving.
 systemctl enable caddy coturn
 systemctl restart caddy coturn
-systemctl enable --now skipperdesk-backup-db.timer skipperdesk-backup-claims.timer
 systemctl enable rc-api.service rc-signal.service
 
 if aws s3 cp --region ${aws_region} --only-show-errors \
@@ -245,5 +244,11 @@ if aws s3 cp --region ${aws_region} --only-show-errors \
 else
   echo "note  no releases/current.tar.gz yet; run infra/aws/deploy.sh to install the binaries"
 fi
+
+# After rc-api, deliberately. The databases do not exist until rc-api opens them, and the
+# backup timers' first attempt is a real attempt now that a missing file is a failure.
+# Enabled unconditionally even when there were no binaries to start, so that a later
+# deploy.sh followed by a reboot comes up with both timers armed.
+systemctl enable --now skipperdesk-backup-db.timer skipperdesk-backup-claims.timer
 
 echo "== bootstrap done $(date -u +%Y-%m-%dT%H:%M:%SZ)"

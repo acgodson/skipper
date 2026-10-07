@@ -45,6 +45,50 @@ resource "aws_cloudwatch_metric_alarm" "api_5xx" {
   ok_actions          = [aws_sns_topic.alarms.arn]
 }
 
+# The check a unit exiting 0 cannot fool. backup.sh prints its `ok` line only after it has
+# listed the object back out of the bucket, so this counts objects that demonstrably exist
+# rather than invocations that returned. Both databases get one: the claims prefix was
+# empty for the life of the bucket while the unit reported Result=success, and nothing
+# would have said so.
+#
+# Polarity is the opposite of every other alarm here — it fires on the *absence* of a
+# metric — so treat_missing_data must be breaching. notBreaching would reproduce the
+# original failure at the alarm layer: no backups, no data points, no alarm.
+resource "aws_cloudwatch_log_metric_filter" "backup_ok" {
+  for_each = local.backup_prefixes
+
+  name           = "${local.name}-backup-ok-${each.key}"
+  log_group_name = aws_cloudwatch_log_group.app.name
+  pattern        = "\"ok    ${each.key}/\""
+
+  metric_transformation {
+    name          = "BackupsWritten${each.value.metric_suffix}"
+    namespace     = local.metric_namespace
+    value         = "1"
+    unit          = "Count"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "backup_stale" {
+  for_each = local.backup_prefixes
+
+  alarm_name        = "${local.name}-backup-stale-${each.key}"
+  alarm_description = "No ${each.value.what} reached s3://${local.backup_bucket}/${each.key}/ in the last ${var.backup_stale_alarm_hours} hour(s). Both timers run every 15 minutes, so this is ${var.backup_stale_alarm_hours * 4} consecutive missed snapshots"
+
+  namespace   = local.metric_namespace
+  metric_name = aws_cloudwatch_log_metric_filter.backup_ok[each.key].metric_transformation[0].name
+  statistic   = "Sum"
+  period      = var.backup_stale_alarm_hours * 3600
+
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+}
+
 # Probes https://<api domain>/signal/healthz from outside AWS, which is the only way to
 # learn that Caddy, its certificate and rc-signal are all serving. It needs the A record,
 # so it stays off until the registrar step is done.
