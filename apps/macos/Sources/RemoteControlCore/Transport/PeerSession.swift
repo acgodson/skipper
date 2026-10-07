@@ -306,7 +306,17 @@ public final class PeerSession {
     // MARK: - Media statistics
 
     public func videoStatistics() async -> VideoStatistics {
-        guard let connection else { return VideoStatistics() }
+        guard let entries = await statisticsEntries() else { return VideoStatistics() }
+        return VideoStatistics.parse(entries)
+    }
+
+    public func icePathStatistics() async -> ICEPathStatistics? {
+        guard let entries = await statisticsEntries() else { return nil }
+        return ICEPathStatistics.parse(entries)
+    }
+
+    private func statisticsEntries() async -> [(type: String, values: [String: Any])]? {
+        guard let connection else { return nil }
         return await withCheckedContinuation { continuation in
             connection.statistics { report in
                 let entries = report.statistics.values.map { statistic -> (type: String, values: [String: Any]) in
@@ -314,7 +324,7 @@ public final class PeerSession {
                     values["id"] = statistic.id
                     return (type: statistic.type, values: values)
                 }
-                continuation.resume(returning: VideoStatistics.parse(entries))
+                continuation.resume(returning: entries)
             }
         }
     }

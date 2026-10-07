@@ -856,6 +856,11 @@ public extension SessionCoordinator {
         return await peer.videoStatistics()
     }
 
+    func icePathStatistics() async -> ICEPathStatistics? {
+        guard let peer else { return nil }
+        return await peer.icePathStatistics()
+    }
+
     internal var remoteTrack: RTCVideoTrack? { peer?.remoteVideoTrack }
 }
 

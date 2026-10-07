@@ -32,6 +32,7 @@ public let allSuites: [TestSuite] = [
     qualitySuite,
     mediaProtocolSuite,
     videoStatsSuite,
+    icePathSuite,
     keyMappingSuite,
     pointerInjectionSuite,
     sequenceGateSuite,

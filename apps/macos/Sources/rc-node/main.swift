@@ -302,6 +302,25 @@ final class Node {
                 ])
             }
 
+        case "ice-path":
+            Task {
+                guard let path = await coordinator.icePathStatistics() else {
+                    emit("ice_path", ["selected": false])
+                    return
+                }
+                emit("ice_path", [
+                    "selected": path.selected,
+                    "local": path.localCandidateType,
+                    "remote": path.remoteCandidateType,
+                    "relayProtocol": path.localRelayProtocol,
+                    "sendsThroughRelay": path.sendsThroughRelay,
+                    "usesRelay": path.usesRelay,
+                    "bytesSent": path.bytesSent,
+                    "bytesReceived": path.bytesReceived,
+                    "rttMs": path.roundTripMs,
+                ])
+            }
+
         case "codecs":
             var fields: [String: Any] = [:]
             for (key, value) in PeerSession.videoCodecReport() { fields[key] = value }
