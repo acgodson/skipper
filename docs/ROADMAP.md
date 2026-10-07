@@ -32,10 +32,11 @@ A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone 
 | `infra/aws`: Terraform, cloud-init, systemd, Caddy, coturn, backups, deploy — carrying nothing from `infra/legacy` | done |
 | `rc-api` signs device-ID certificates inside KMS; no private key on the box | done |
 | Databases on their own encrypted volume; Terraform state in S3 before any secret reaches it | done |
-| IAM scoping, CloudTrail, Session Manager logging | in progress |
-| `terraform apply`, then the two DNS records at the registrar | next |
-
-Nothing is provisioned yet beyond the budget alarm.
+| IAM scoping, CloudTrail, Session Manager logging | done |
+| Applied. `api.skipperdesk.app` and `turn.skipperdesk.app` live on `3.8.76.202`, TLS from Let's Encrypt | done |
+| **5.1 acceptance**: health 200 on a trusted chain, `/internal/*` 404 from the internet, `/signal/healthz` 200, TURN 3478 udp+tcp open | done |
+| 5.1 remaining: a real Mac signs in against this backend and registers | next |
+| 5.2 TURN credentials end to end; 5.3 cross-network + forced relay; 5.4 fifth review; 5.5 cutover | queued |
 
 ## Queued, in order
 
@@ -93,3 +94,4 @@ These are observed on a second machine during beta, not before.
 | macOS has no "busy" or diagonal-resize cursor | Cosmetic, documented |
 | Lock Screen gesture unverified | Held back from the palette (fourth review); the wire name and plumbing stay, it returns when lock-screen viewing lands |
 | `ci-local.sh` fails if a dev backend holds its ports | Stop `dev-backend.sh` first |
+| Intermittent: signing in twice while a sign-out is unfinished opens two browser windows | `SignOutTests.swift:226` failed once in ~10 runs with `expected 1, got 2`. The queued first attempt can fire after the retried sign-out succeeds. Harmless but wrong, and it is in the sign-in path 5.1 exercises |
