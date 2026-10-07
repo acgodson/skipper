@@ -26,9 +26,14 @@ data "aws_iam_policy_document" "app" {
     sid       = "ReadOwnParameters"
     effect    = "Allow"
     actions   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
-    resources = ["arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.prefix}/*"]
+    resources = ["${local.parameter_arn_prefix}/*"]
   }
 
+  # Resource stays "*" because the AWS-managed alias/aws/ssm key's ARN carries a key id
+  # this configuration cannot name. Both conditions are load-bearing, and the second one
+  # is what keeps the grant off every other SecureString in the region. Plain StringLike:
+  # an IfExists or a set operator would allow a Decrypt carrying no encryption context,
+  # which is the hole being closed. infra/aws/README.md "Secrets" holds the verification.
   statement {
     sid       = "DecryptOwnParameters"
     effect    = "Allow"
@@ -39,6 +44,12 @@ data "aws_iam_policy_document" "app" {
       test     = "StringEquals"
       variable = "kms:ViaService"
       values   = ["ssm.${var.aws_region}.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "kms:EncryptionContext:PARAMETER_ARN"
+      values   = ["${local.parameter_arn_prefix}/*"]
     }
   }
 

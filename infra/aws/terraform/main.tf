@@ -15,6 +15,11 @@ locals {
   log_group        = "/${var.project}/${var.environment}/app"
   metric_namespace = "${var.project}/${var.environment}"
 
+  # The ARN SSM supplies as the PARAMETER_ARN encryption context on every SecureString
+  # operation, minus the parameter's own name. It is what scopes both halves of the
+  # read-a-secret pair in iam.tf: ssm:GetParameter by resource, kms:Decrypt by context.
+  parameter_arn_prefix = "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.prefix}"
+
   service_user = var.project
   app_dir      = "/opt/${var.project}"
   data_dir     = "/var/lib/${var.project}"
