@@ -85,10 +85,13 @@ public enum SecretStorage {
     /// The one answer that cannot be wrong: write, read back and delete a throwaway item
     /// in the data-protection keychain under the access group the app would really use.
     static func probe(accessGroup: String) -> Bool {
+        // Every argument is explicit: the defaults read SecretStorage.mode and
+        // .downgradeRefused, which are decided by this probe's own result.
         let item = KeychainItem(
             account: "storage-probe-\(UUID().uuidString)",
             mode: .dataProtection,
-            accessGroup: accessGroup
+            accessGroup: accessGroup,
+            sealed: false
         )
         let written = Data([0x53])
         defer { try? item.remove() }

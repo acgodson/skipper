@@ -25,6 +25,7 @@ step "macOS core, tests, app, release gate"
 (cd apps/macos && swift run rc-tests)
 ./scripts/test-provision-profile.sh >/dev/null
 ./scripts/build.sh >/dev/null
+./scripts/verify-launch.sh
 ./scripts/check-isolation.sh
 
 echo
