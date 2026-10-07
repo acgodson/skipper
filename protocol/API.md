@@ -43,7 +43,7 @@ Every endpoint in §7 is exactly one of these three.
 | Class | Credential | Who holds it | Notes |
 |---|---|---|---|
 | **unauthenticated** | none | anyone | Only the link/token bootstrap, `/v1/health` and the release feed (§10). Rate limited by IP. |
-| **user session** | `Authorization: Bearer <Cognito ID token>` | the website, in the browser | Short-lived, refreshed by Cognito. The desktop app never holds one. The **ID** token, not the access token: the check needs an `email` claim, and Cognito puts one only in the ID token. It is audience-bound to our own app client, which is what the server verifies. |
+| **user session** | `Authorization: Bearer <Cognito ID token>` | the website, in the browser | Short-lived, refreshed by Cognito. The desktop app never holds one. The **ID** token, not the access token: the server requires `token_use: "id"` and refuses anything else as `unauthenticated`, because the check needs an `email` claim and Cognito puts one only in the ID token. Do not relax this — an access token from the same pool verifies under the same keys and names the same app client, so `token_use` is the only claim that tells the two apart. `aud` must be our own app client; an access token's `client_id` is never accepted in its place. |
 | **device token** | `Authorization: Bearer <device token>` | the desktop app | Long-lived, revocable, bound to one device public key. See §1. |
 
 A device token presented to a user-session endpoint is `forbidden`, and vice versa. There is no
@@ -160,9 +160,19 @@ exactly as the signaling `challenge` of PROTOCOL.md §2.1 is.
 Normative rules:
 
 1. The app **must** discard any `skipperdesk://link?code=…&nonce=…` callback whose in-memory link
-   attempt has expired (120 s) or was never started, or whose `nonce` is missing or differs from
-   the attempt's (compared in constant time). Any such mismatch also ends the pending attempt; the
-   app logs it and shows nothing. The browser is an untrusted messenger.
+   attempt has expired (**15 minutes**) or was never started, or whose `nonce` is missing or
+   differs from the attempt's (compared in constant time). Any such mismatch also ends the pending
+   attempt; the app logs it and shows nothing. The browser is an untrusted messenger.
+
+   The 15 minutes bound how long the app waits, nothing more. A first-time user signs up, waits
+   for a verification email and reads it on another device, and 120 s could not fit that, so
+   every first attempt died and the person had to choose Sign in twice. Nothing about the
+   handoff's security rests on this number: the code is bound to the `nonce` (rule 2) and to the
+   `pubkey` (rule 4), is single-use and lives 120 s from the moment the server mints it at step 3
+   — *after* sign-in — and the `nonce` comparison is constant-time. A callback that arrives late
+   carries a code the server has already expired. The website refuses to mint a code past
+   **14 minutes**, a minute inside the app's window, because it starts counting at page load and
+   so always reads later than the app does.
 2. The one-time `code` is bound to the step 1 `nonce`. The server stores only
    `SHA-256(code)` and `SHA-256(nonce)`, never either value. A step 6 request whose `nonce` is missing or different is
    `400 bad_request` with `reason: nonce_mismatch`, and the code is burned. This is what stops a
@@ -192,12 +202,21 @@ The website then redirects to `skipperdesk://link?code=<code>&nonce=<nonce>`, ec
 it was given at step 1 unchanged.
 
 This is the **only** endpoint a browser calls, and the website is a different origin from the
-API (`skipperdesk.app` against `api.skipperdesk.app`). It therefore needs CORS: a preflight
-answer for `OPTIONS`, and `Access-Control-Allow-Origin` on **every** response including the
-errors below — a 409 whose body the browser may not read becomes an unexplained failure on
-screen. The allowed origin is an exact value from configuration, never `*`, and
-`Access-Control-Allow-Credentials` stays off: the credential is a bearer header, not a cookie.
-rc-api does not do any of this yet.
+API (`skipperdesk.app` against `api.skipperdesk.app`). It therefore has CORS, and no other
+route does:
+
+- `OPTIONS /v1/auth/link` answers `204` with `Access-Control-Allow-Methods: POST`,
+  `Access-Control-Allow-Headers: Authorization, Content-Type, Idempotency-Key` and
+  `Access-Control-Max-Age: 600` — the longest preflight cache Chrome honours.
+- `Access-Control-Allow-Origin` and `Vary: Origin` are on **every** answer from the route,
+  the `201` and each of `400`, `401`, `403`, `409`, `426`, `429` and `5xx`. A 409 whose body
+  the browser may not read becomes an unexplained failure on screen, and the one message that
+  tells an owner their Mac belongs to another account never appears.
+- The allowed origin is the exact origin of `-web-base-url`, never `*` and never reflected
+  from the request. A request from any other origin gets no CORS header at all and the browser
+  does the refusing; there is no status code for it, because there is no page to read one.
+- `Access-Control-Allow-Credentials` stays **off**. The credential is a bearer header the page
+  sets itself, not a cookie the browser attaches.
 
 Linking a key that is already linked to **another** account is `409 conflict` with
 `reason: linked_elsewhere`; the owner must unlink it first (§3.6).

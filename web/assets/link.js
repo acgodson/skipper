@@ -22,10 +22,15 @@
 	var HANDOFF_SCHEME = "skipperdesk://link";
 	var SCOPES = "openid email profile";
 
-	/* The app abandons a sign-in 120 s after it opened the browser (§1.1 rule 1, and
+	/* The app abandons a sign-in 15 minutes after it opened the browser (§1.1 rule 1, and
 	   AccountLinker.linkAttemptLifetime). Past this point the handoff would be dropped
-	   with nothing on screen, so the page says so instead of burning a one-time code. */
-	var ATTEMPT_BUDGET_MS = 110000;
+	   with nothing on screen, so the page says so instead of burning a one-time code.
+
+	   The margin is a minute, and it is one-sided on purpose: this page starts counting
+	   when it loads, which is always after the app started counting, so the page's clock
+	   reading is behind the app's by however long the browser took to launch. A minute
+	   covers that and matches the skew the API tolerates elsewhere (§0, Clock). */
+	var ATTEMPT_BUDGET_MS = 14 * 60 * 1000;
 
 	var NONCE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 	var PUBKEY_PATTERN = /^[A-Za-z0-9+/]{100,400}={0,2}$/;

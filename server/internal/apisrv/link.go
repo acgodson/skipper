@@ -1,5 +1,10 @@
 package apisrv
 
+// The local-development stand-in for the sign-in website: it mints a user
+// session from a typed address and runs the API.md §1.2 body with it. It is
+// registered only under `-idp dev`. The deployed sign-in page is `web/`, served
+// from the website's own origin, and the API host serves no page at all.
+
 import (
 	"html/template"
 	"net/http"
@@ -22,11 +27,6 @@ var linkTemplate = template.Must(template.New("link").Parse(`<!doctype html>
 <html><head><meta charset="utf-8"><title>Link this Mac &middot; SkipperDesk</title>
 <style>` + linkStyle + `</style></head><body>
 <h1>Link this Mac</h1>
-{{if .Cognito}}
-<p>TODO: the SkipperDesk website at <code>{{.WebBase}}</code> signs the user in with Cognito
-here and then calls <code>POST /v1/auth/link</code> with its user session. That page is
-Phase 5 web work.</p>
-{{else}}
 <p>Local development sign-in. Enter the address this Mac should be linked to; the
 account is created if it does not exist yet.</p>
 <p><code>device={{.DeviceKey}}</code></p>
@@ -39,7 +39,6 @@ account is created if it does not exist yet.</p>
 </form>
 {{if .Error}}<p class="note">{{.Error}}</p>{{end}}
 <p class="note">The code is valid for {{.Lifetime}} seconds and can be used once.</p>
-{{end}}
 </body></html>`))
 
 var handoffTemplate = template.Must(template.New("handoff").Parse(`<!doctype html>
@@ -52,8 +51,6 @@ var handoffTemplate = template.Must(template.New("handoff").Parse(`<!doctype htm
 </body></html>`))
 
 type linkPageData struct {
-	Cognito   bool
-	WebBase   string
 	Handoff   template.URL
 	Nonce     string
 	Pubkey    string
@@ -65,9 +62,7 @@ type linkPageData struct {
 }
 
 func (s *Server) renderLink(w http.ResponseWriter, status int, data linkPageData) {
-	data.Cognito = s.opt.IdP.Name() != "dev"
 	data.Lifetime = protocol.LinkCodeTTLSec
-	data.WebBase = s.opt.WebBaseURL
 	if len(data.Pubkey) > 24 {
 		data.DeviceKey = data.Pubkey[:24] + "…"
 	} else {
@@ -82,7 +77,7 @@ func (s *Server) linkPage(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	nonce := query.Get("nonce")
 	pubkey := query.Get("device")
-	if s.opt.IdP.Name() == "dev" && (nonce == "" || pubkey == "") {
+	if nonce == "" || pubkey == "" {
 		s.renderLink(w, http.StatusBadRequest, linkPageData{
 			Error: "This page needs the nonce and device key the app supplies."})
 		return
@@ -98,13 +93,7 @@ func platformOrDefault(platform string) string {
 	return platform
 }
 
-// linkSubmit is the dev stand-in for the website: it mints a user session from
-// the typed address and runs the §1.2 body with it.
 func (s *Server) linkSubmit(w http.ResponseWriter, r *http.Request) {
-	if s.opt.IdP.Name() != "dev" {
-		s.renderLink(w, http.StatusNotFound, linkPageData{})
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		s.renderLink(w, http.StatusBadRequest, linkPageData{Error: "That form could not be read."})
 		return

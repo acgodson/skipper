@@ -35,7 +35,18 @@ public final class AccountLinker: ObservableObject {
     @Published public private(set) var state: AccountState = .unlinked
     @Published public private(set) var entitlement: CachedEntitlement?
 
-    nonisolated public static let linkAttemptLifetime: TimeInterval = 120
+    /// How long a browser sign-in may take before a `skipperdesk://link` callback
+    /// is discarded (API.md §1.1 rule 1). It has to cover a first-time sign-up:
+    /// inventing a password, waiting for a verification email and reading it on
+    /// another device. 120 s could not, so every first attempt died and the person
+    /// had to choose Sign in twice.
+    ///
+    /// This timer is not a security control. The handoff is protected by the
+    /// nonce-to-code binding, the single-use 120 s code the server mints *after*
+    /// sign-in, the public-key equality check and the constant-time nonce
+    /// comparison — none of which this number touches. What it bounds is how long
+    /// the app will sit in "Signing in…" for a sign-in nobody is going to finish.
+    nonisolated public static let linkAttemptLifetime: TimeInterval = 15 * 60
     nonisolated public static let callbackScheme = "skipperdesk"
     nonisolated public static let callbackHost = "link"
 
@@ -54,6 +65,7 @@ public final class AccountLinker: ObservableObject {
 
     private var attempt: LinkAttempt?
     private var token: DeviceToken?
+    private var signOutBeforeLink: Task<Void, Never>?
 
     public var hasPendingLink: Bool { attempt != nil }
 
@@ -115,7 +127,11 @@ public final class AccountLinker: ObservableObject {
 
     public func beginLink() {
         if hasPendingUnlink {
-            Task { await finishSignOutThenLink() }
+            guard signOutBeforeLink == nil else { return }
+            signOutBeforeLink = Task {
+                await finishSignOutThenLink()
+                signOutBeforeLink = nil
+            }
             return
         }
         guard let nonce = try? Self.freshNonce() else {
@@ -139,9 +155,16 @@ public final class AccountLinker: ObservableObject {
 
     /// An unfinished sign-out is finished before this Mac is signed in again,
     /// so a second account never inherits a device the first one still holds.
+    ///
+    /// `signOutBeforeLink` keeps this to one at a time. Choosing Sign in again
+    /// while the retry is still on the wire used to start a second one, and two
+    /// retries that both succeed each went on to open a browser window. A second
+    /// choice of Sign in is the same request, not another one.
+    ///
+    /// It also proceeds on the outcome of *its own* retry rather than on whether
+    /// anything is pending now, so it can never read another attempt's success.
     private func finishSignOutThenLink() async {
-        await retryPendingUnlink()
-        guard !hasPendingUnlink else {
+        guard await retryPendingUnlink() else {
             state = .error(message: Self.signOutUnfinished)
             return
         }
@@ -302,9 +325,11 @@ public final class AccountLinker: ObservableObject {
 
     /// Finishes a sign-out the server never confirmed. Everything the pending
     /// marker holds stays until the server answers, or says the device is
-    /// already gone.
-    public func retryPendingUnlink() async {
-        guard let pending = loadPendingUnlink() else { return }
+    /// already gone. The answer reports whether this call settled it, so a caller
+    /// cannot mistake a concurrent attempt's success for its own.
+    @discardableResult
+    public func retryPendingUnlink() async -> Bool {
+        guard let pending = loadPendingUnlink() else { return true }
         do {
             try await client.unlinkDevice(id: pending.deviceId, token: pending.token)
             RCLog.info("account: the pending sign-out of \(pending.deviceId) completed")
@@ -312,12 +337,13 @@ public final class AccountLinker: ObservableObject {
             RCLog.info("account: the pending sign-out of \(pending.deviceId) was already done (\(error.code.wire))")
         } catch {
             RCLog.error("account: the pending sign-out of \(pending.deviceId) failed again; it stays queued")
-            return
+            return false
         }
         try? pendingUnlinks.remove()
         if token?.deviceId == pending.deviceId {
             clearLocalAccount()
         }
+        return true
     }
 
     /// A token the server no longer honours, or a device it no longer lists,

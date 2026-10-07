@@ -1,6 +1,6 @@
 // Package apisrv is the rc-api HTTP surface: every endpoint of protocol/API.md
-// and the browser link page on the public handler, and the internal surface the
-// signaling server calls on a separate handler that is served on its own listener.
+// on the public handler, and the internal surface the signaling server calls on
+// a separate handler that is served on its own listener.
 package apisrv
 
 import (
@@ -52,11 +52,12 @@ type Options struct {
 type CloseSessions func(ctx context.Context, deviceID, reason string) error
 
 type Server struct {
-	opt      Options
-	mux      *http.ServeMux
-	internal *http.ServeMux
-	limiter  *ratelimit.Limiter
-	proxy    *httputil.ReverseProxy
+	opt       Options
+	mux       *http.ServeMux
+	internal  *http.ServeMux
+	limiter   *ratelimit.Limiter
+	proxy     *httputil.ReverseProxy
+	webOrigin string
 }
 
 const callbackScheme = "skipperdesk://link"
@@ -80,7 +81,12 @@ func New(opt Options) (*Server, error) {
 	if opt.Now == nil {
 		opt.Now = time.Now
 	}
-	s := &Server{opt: opt, mux: http.NewServeMux(), internal: http.NewServeMux(), limiter: ratelimit.New()}
+	origin, err := webOriginOf(opt.WebBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	s := &Server{opt: opt, mux: http.NewServeMux(), internal: http.NewServeMux(),
+		limiter: ratelimit.New(), webOrigin: origin}
 	if err := s.buildProxy(); err != nil {
 		return nil, err
 	}
@@ -100,7 +106,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /healthz", s.healthz)
 	m.HandleFunc("GET "+protocol.PathAppReleasesLatest, s.latestRelease)
 
-	m.HandleFunc("POST /v1/auth/link", s.authLink)
+	m.HandleFunc("POST /v1/auth/link", s.browserCallable(s.authLink))
+	m.HandleFunc("OPTIONS /v1/auth/link", s.browserCallable(s.linkPreflight))
 	m.HandleFunc("POST /v1/auth/device/challenge", s.authChallenge)
 	m.HandleFunc("POST /v1/auth/device/token", s.authToken)
 	m.HandleFunc("POST /v1/auth/device/refresh", s.authRefresh)
@@ -124,8 +131,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /v1/credits/gifts/{giftId}/accept", s.acceptGift)
 	m.HandleFunc("POST /v1/credits/gifts/{giftId}/cancel", s.cancelGift)
 
-	m.HandleFunc("GET /link", s.linkPage)
-	m.HandleFunc("POST /link", s.linkSubmit)
+	if s.opt.IdP.Name() == "dev" {
+		m.HandleFunc("GET /link", s.linkPage)
+		m.HandleFunc("POST /link", s.linkSubmit)
+	}
 	m.HandleFunc("/ws", s.proxyWS)
 	m.HandleFunc("/", s.notFound)
 

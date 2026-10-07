@@ -94,4 +94,4 @@ These are observed on a second machine during beta, not before.
 | macOS has no "busy" or diagonal-resize cursor | Cosmetic, documented |
 | Lock Screen gesture unverified | Held back from the palette (fourth review); the wire name and plumbing stay, it returns when lock-screen viewing lands |
 | `ci-local.sh` fails if a dev backend holds its ports | Stop `dev-backend.sh` first |
-| Intermittent: signing in twice while a sign-out is unfinished opens two browser windows | `SignOutTests.swift:226` failed once in ~10 runs with `expected 1, got 2`. The queued first attempt can fire after the retried sign-out succeeds. Harmless but wrong, and it is in the sign-in path 5.1 exercises |
+| ~~Intermittent: signing in twice while a sign-out is unfinished opens two browser windows~~ | Fixed. `beginLink()` spawned a sign-out-then-link task per call, and two whose retries both succeeded each opened a window; one runs at a time now. The test waited on `Task.yield()`, which does not wait for a URLSession answer — that is why it failed one run in ten rather than every time. It waits on the clock now, and both cases fail 3/3 with the fix reverted |
