@@ -506,7 +506,10 @@ with permissions:
 
 ### Still needs two machines
 
-* Cross-network NAT traversal, and the TURN relay path (no coturn locally).
+* Cross-network NAT traversal. The TURN relay path itself no longer needs two
+  machines — see "Relay verification (added 2026-10-07)" below — but traversal
+  between two different NATs does, and forcing relay on one Mac does not
+  substitute for it.
 * Items 15 and 16 as written — a real network cut of the **media** path, which
   on one Mac would mean `pfctl`/sudo.
 * Items 9 and 14, and the "on" half of item 11. Accessibility is granted now and
@@ -520,3 +523,179 @@ with permissions:
 * Item 19's reboot half.
 * Item 17 across two machines. It now passes on one Mac, against the real
   backend, with the fix above.
+
+## Relay verification (added 2026-10-07)
+
+Three procedures, in increasing cost. The first runs now and needs nothing; the
+second needs one action from the owner; the third needs a second network.
+Read `docs/PHASE5.md` §8.1 and §8.2 first — they say which parts of milestone
+5.2's and 5.3's written acceptance are not achievable and why.
+
+### What the forced-relay proof does and does not cover
+
+`RC_ICE_POLICY=relay` sets `iceTransportPolicy: .relay` on both peers, so
+libwebrtc gathers **only** relayed candidates. A session that connects under it
+went through a TURN server; `scripts/verify-relay.sh` section B proves the
+negative half — with no usable TURN, relay-only connects to nothing at all, so
+the switch cannot be silently falling back to a host candidate.
+
+Covered by forcing relay on one Mac: that coturn allocates for two real peers,
+permits them to each other, and carries real H.264 both ways; that the selected
+candidate pair reads `relay` on both ends; that the app survives on the relay
+path (bitrate, latency, reconnect).
+
+**Not covered, and no amount of forcing on one machine will cover it:**
+
+* **Real NAT traversal.** Both peers are on one host behind one NAT with one
+  public address. Nothing exercises two independent NATs, hairpinning, address
+  mapping behaviour, or whether a relay candidate is reachable from a *different*
+  network. A relay-only run on one Mac would still work if the relay only ever
+  accepted traffic from one address.
+* **Why the relay was needed.** The relay fraction — the number §3 of
+  `docs/PHASE5.md` turns on — is "how often does P2P fail for real users". Forcing
+  relay measures nothing about that; it is set to 100% by hand.
+* **Anything server-side.** `relayUsed` and `bytesRelayed` stay `false`/`NULL`
+  whatever happens on the wire (§8.2). A forced-relay run does **not** make
+  `/v1/sessions` say the session relayed.
+* **CGNAT and corporate firewalls**, the two populations the 15% assumption is
+  really about. Neither is a home Mac on one LAN.
+
+### Scaffolding: the route is observable and relay-only is real
+
+Runs unattended, no AWS credentials needed, no account touched, nothing
+metered. Takes about two minutes.
+
+    ./scripts/verify-relay.sh              # add --skip-ssm to skip section C
+
+Pass: `RELAY SCAFFOLDING VERIFIED`, 13 checks, 0 failures. Section A must report
+`local=host remote=host` and non-zero bytes both ways; section B must report that
+relay-only did **not** connect. Section C reads the live box read-only and must
+find coturn active and no bare `denied-peer-ip=::` (the §8.1 regression).
+
+### Forced relay through the live London coturn, two instances on one Mac
+
+Twenty minutes. This is the strongest proof available without a second machine.
+It needs a TURN credential, which only a **metered production session** mints,
+which needs an **entitled host** — so it must run against
+`https://api.skipperdesk.app` with the Mac that is already linked, and it
+consumes real entitlement (1 cent per started minute above the first 60 s;
+under 60 s is free — `server/internal/policy/policy.go`).
+
+Two instances on one Mac is fine: there is no single-instance guard, no
+`LSMultipleInstancesProhibited`, no lock file and no fixed port. Setting
+`RC_IDENTITY_DIR` on the second instance also moves it off the Keychain
+entirely, so the two identities cannot collide. Both bundles must be signed with
+the **same** Developer ID, because TCC keys grants to the designated requirement:
+sign both and Screen Recording is granted once, for both.
+
+**Two things the owner must do; neither can be automated.**
+
+1. On the host app, turn **unattended access ON** (or be ready to click Allow on
+   the consent prompt in step 5). `consentRequired = !unattendedAccess`, and the
+   setting lives in the data-protection Keychain, which only the app can write.
+2. Read the host's **access code** off its own window and pass it in step 4. It
+   is in the Keychain for the same reason, so nothing else can read it.
+
+Then:
+
+1. Build the hooks bundle and a second copy of it:
+
+       SKIPPER_TEAM_ID=3UB3KZP9WH ./scripts/build.sh --test-hooks
+       cp -R dist/SkipperDesk.app /tmp/SkipperDeskCtrl.app
+
+2. Quit any running SkipperDesk, then launch the **host** — the real, linked,
+   entitled identity, so no `RC_IDENTITY_DIR`:
+
+       open -n dist/SkipperDesk.app \
+         --env RC_ICE_POLICY=relay --env RC_DEBUG=1 \
+         --env RC_LOG_FILE=/tmp/relay-host.log
+
+3. Launch the **controller** as a second, throwaway identity. It needs no
+   account: entitlement is checked for the host device only.
+
+       mkdir -p /tmp/relay-ctrl
+       defaults write com.godson.remotecontrol.relayctrl rc.role controller
+       open -n /tmp/SkipperDeskCtrl.app \
+         --env RC_ICE_POLICY=relay --env RC_DEBUG=1 \
+         --env RC_IDENTITY_DIR=/tmp/relay-ctrl \
+         --env RC_SETTINGS_SUITE=com.godson.remotecontrol.relayctrl \
+         --env RC_PASTEBOARD_NAME=relay-ctrl \
+         --env RC_LOG_FILE=/tmp/relay-ctrl.log \
+         --env RC_AUTOCONNECT=<host Device ID>:<host access code>
+
+   `RC_AUTOCONNECT` needs `RC_IDENTITY_DIR` set and the role to be `controller`,
+   or it is ignored.
+
+4. If unattended access is off, click **Allow** on the host's consent prompt.
+
+5. Watch for, in order: the host's first `sdp` (metering starts), then the
+   `ice_servers` push on **both** logs carrying a TURN entry. Keep the session
+   to about 60 seconds, then end it.
+
+**What counts as a pass — all four, or it is not a relay proof:**
+
+* The `ice_servers` push arrived on both ends with a TURN entry whose `username`
+  is `<unixExpirySeconds>:<sessionId>` for *this* session and whose `expiresAt`
+  is that same whole second × 1000 (`PROTOCOL.md` §2.5, §2.18). STUN first, TURN
+  last, both `transport=udp` and `transport=tcp`.
+* The host's log shows `transport: ICE transport policy is now relay-only` or the
+  session started relay-only, and the remote video appeared.
+* **The selected candidate pair is `relay` on both ends.** This is the one that
+  cannot be faked by wishful reading. Read it with `rc-node`'s `ice-path`
+  command, or from the log; `local` and `remote` must both be `relay`, and
+  `bytesSent`/`bytesReceived` must both be non-zero and must **rise** between two
+  samples taken seconds apart. A still picture with a frozen counter is a fail.
+* The relay address in the local candidate is coturn's own external address, on a
+  port inside the relay range — `49160–49200` by default
+  (`infra/aws/terraform/variables.tf`, `turn_relay_min_port`/`turn_relay_max_port`;
+  the template that consumes them is `infra/aws/coturn/turnserver.conf`). On the
+  box as deployed on 2026-10-07 that address is `3.8.76.202`, which is also the
+  relayed address §8.1 recorded. Anything else means the media did not go to
+  London — check the live `external-ip` before calling it a fail.
+
+Note what you will **not** be able to check: coturn's own allocation and byte
+counters. The deployed config is `simple-log` with no `verbose`, `no-cli`, and no
+prometheus, so the relay logs nothing about the session (§8.2). Until that
+changes, the client's candidate-pair statistics are the only evidence, and
+`/v1/sessions` will still say `relayUsed: false`.
+
+### Cross-network traversal: a phone hotspot, twenty minutes
+
+The only test that covers what forcing relay cannot. Needs a second machine, or
+one machine and a second network.
+
+**Setup.** Put the **controller** on a phone hotspot and leave the **host** on
+the home Wi-Fi — two different public addresses and two different NATs. Check
+they really differ before starting: `curl -s https://api.skipperdesk.app/v1/health`
+works from both, and `curl -s ifconfig.me` returns two **different** addresses.
+If they match, the hotspot is backhauling through the same connection and the
+test is worthless.
+
+**Run A — plain traversal, no forcing.** No `RC_ICE_POLICY`. Connect controller
+to host with Device ID + access code.
+
+*Pass:* the session establishes and the remote screen appears. Then take the
+candidate pair (`ice-path`): record whether `local`/`remote` are `host`, `srflx`
+or `relay`. **This single observation is the relay-fraction datum §3 needs** —
+write down which it was, with the two networks described. One sample is not a
+fraction, but it is the first real one.
+
+**Run B — forced onto the relay.** Same two machines, same networks, relaunch
+both with `RC_ICE_POLICY=relay`.
+
+*Pass:* the session still establishes, the screen still appears, and `ice-path`
+reports `relay` on both ends with both byte counters rising. Note the round-trip
+time from `ice-path` against run A's: the difference is the real cost of the
+London hop for this pair of networks.
+
+**Run C — the relay is the only way out.** Optional, and the strongest. On the
+host, block UDP to the controller's public address only
+(`pfctl`, needs sudo), leave TURN reachable, and run without
+`RC_ICE_POLICY`. *Pass:* the session establishes anyway and `ice-path` shows
+`relay` — i.e. the fallback works unforced, which is what a real user behind a
+hostile NAT depends on. Remove the `pfctl` rule afterwards.
+
+**Record, in this file:** the two public addresses (or just "home Wi-Fi" and
+"<carrier> hotspot"), the candidate types from each run, the round-trip times,
+the measured bitrate, and the session durations. Those numbers replace §3's
+assumptions in `docs/PHASE5.md`, which is the whole point of milestone 5.3.

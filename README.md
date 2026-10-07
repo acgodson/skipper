@@ -77,10 +77,13 @@ cargo test --workspace                    # from the repo root
 ./scripts/verify-turn.sh                  # live coturn: a minted credential allocates, a bad or
                                           # expired one does not, private peers are refused
                                           # (--wait-expiry adds the real ten-minute wait)
+./scripts/verify-relay.sh                 # the route media took is observed, and relay-only
+                                          # really excludes every other route (--skip-ssm for
+                                          # the local sections only)
 
 # App
 ./scripts/build-core.sh                   # builds librc_ffi.a — required before swift build/run
-cd apps/macos && swift run rc-tests              # 271 unit/scenario tests (swift test needs Xcode)
+cd apps/macos && swift run rc-tests              # 430 unit/scenario tests (swift test needs Xcode)
 ./scripts/make-signing-cert.sh            # once: stable identity so TCC grants survive rebuilds
 ./scripts/make-signing-cert.sh --undo     # removes it again
 ./scripts/build.sh                        # -> dist/SkipperDesk.app
