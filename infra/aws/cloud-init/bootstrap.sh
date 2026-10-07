@@ -20,7 +20,15 @@ echo "== bootstrap $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y --no-install-recommends ca-certificates curl sqlite3 awscli coturn
+apt-get install -y --no-install-recommends ca-certificates curl unzip sqlite3 coturn
+
+# Ubuntu 24.04 dropped the awscli package, so the CLI comes from Amazon's own installer.
+if ! command -v aws >/dev/null 2>&1; then
+  curl -fsSL -o /tmp/awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip
+  unzip -q -o /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install --update
+  rm -rf /tmp/aws /tmp/awscliv2.zip
+fi
 
 if ! apt-get install -y --no-install-recommends caddy; then
   echo "FAIL  this image's archive has no caddy package; see infra/aws/README.md 'Caddy'"
