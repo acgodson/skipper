@@ -352,8 +352,8 @@ func (d *DB) MigrateTrialsToCredit(grantCents, windowMS, now int64) (corrected, 
 
 	pending, err := scanAccountAmounts(tx, `SELECT DISTINCT d.account_id, 0 FROM devices d
  WHERE d.trial_ends_at > 0 AND d.account_id <> ''
- AND NOT EXISTS (SELECT 1 FROM ledger l WHERE l.account_id = d.account_id AND l.type = '`+
-		protocol.LedgerTrialGrant+`')`)
+ AND NOT EXISTS (SELECT 1 FROM ledger l WHERE l.account_id = d.account_id AND l.type = ?)`,
+		protocol.LedgerTrialGrant)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -384,8 +384,8 @@ type accountAmount struct {
 	amount    int64
 }
 
-func scanAccountAmounts(tx *sql.Tx, query string) ([]accountAmount, error) {
-	rows, err := tx.Query(query)
+func scanAccountAmounts(tx *sql.Tx, query string, args ...any) ([]accountAmount, error) {
+	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
