@@ -470,6 +470,22 @@ on the box: the line alone denies `1.1.1.1`; with it removed the IPv4 ranges beh
 stays red until it is, and the deny list it checks is read straight out of that file, so the
 same run re-proves the fix.
 
+The §8 table's own 5.2 wording — "the same credential is **refused** by coturn after `bye`" —
+is **not achievable and should not be read as a target.** coturn in `use-auth-secret` mode
+knows nothing but the username's timestamp and the HMAC; it has never heard of a session and
+cannot be told one ended. `PROTOCOL.md` §2.5 says so plainly ("The server cannot revoke a
+credential it issued, which is why it lives only 10 minutes"). What is true, and what was
+proven, is that a credential dies 600 s after it was minted whether or not the session
+outlived it, and that the client drops it at `bye`. A credential handed out one second before
+`bye` stays usable against coturn for the remaining 599.
+
+`ice_servers` otherwise matches §2.5 and §2.18 field for field: STUN entry first, TURN last,
+`username` = `<unixExpirySeconds>:<sessionId>`, `credential` = base64 HMAC-SHA1, `expiresAt`
+in Unix ms, both `transport=udp` and `transport=tcp` URLs, and coturn accepts the credential on
+both listeners. One mismatch was found and fixed: `expiresAt` reported the untruncated instant
+(`…195477`) while the username named the whole second (`…195`), so the wire promised up to
+999 ms the credential did not have.
+
 5.2 is not closed. What it still owes: the `ice_servers` push observed on the wire of a real
 metered session between two devices, rather than assembled from the production minting
 function and the live box's own `-turn-urls`. That needs the two-peer run 5.3 already requires.
