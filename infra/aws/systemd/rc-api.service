@@ -6,7 +6,6 @@
 
 [Unit]
 Description=SkipperDesk REST API
-Documentation=https://github.com/acgodson/skipper/blob/main/protocol/API.md
 After=network-online.target
 Wants=network-online.target
 

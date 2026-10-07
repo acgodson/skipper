@@ -4,7 +4,6 @@
 
 [Unit]
 Description=SkipperDesk signaling server
-Documentation=https://github.com/acgodson/skipper/blob/main/protocol/PROTOCOL.md
 After=network-online.target rc-api.service
 Wants=network-online.target
 Requires=rc-api.service

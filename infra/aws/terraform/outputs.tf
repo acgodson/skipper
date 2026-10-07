@@ -11,6 +11,15 @@ output "dns_records_to_create" {
   ]
 }
 
+output "api_domain" {
+  description = "What deploy.sh probes afterwards, and the client's one config value."
+  value       = var.api_domain
+}
+
+output "aws_region" {
+  value = var.aws_region
+}
+
 output "instance_id" {
   description = "Target for deploy.sh and for aws ssm start-session."
   value       = aws_instance.app.id

@@ -2,7 +2,6 @@
 
 [Unit]
 Description=SkipperDesk SQLite snapshot to S3 (%i)
-Documentation=https://github.com/acgodson/skipper/blob/main/protocol/API.md
 After=network-online.target
 Wants=network-online.target
 

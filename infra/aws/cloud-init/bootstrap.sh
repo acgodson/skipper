@@ -5,6 +5,12 @@
 # It never puts a secret on a command line. The two Go binaries arrive separately, through
 # infra/aws/deploy.sh; the units are enabled either way, so a reboot starts them once they
 # are there.
+#
+# This file is a Terraform template: a brace expansion below is substituted before the
+# script exists, so no shell ever sees it, and a variable belonging to the script itself is
+# written with a doubled dollar. That is the whole reason for the three suppressions.
+# shellcheck shell=bash
+# shellcheck disable=SC2154,SC2086,SC2034
 set -euo pipefail
 exec >>/var/log/${project}-bootstrap.log 2>&1
 echo "== bootstrap $(date -u +%Y-%m-%dT%H:%M:%SZ)"
