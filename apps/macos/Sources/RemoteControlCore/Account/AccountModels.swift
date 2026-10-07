@@ -67,12 +67,13 @@ public struct Entitlement: Decodable, Equatable {
     public let status: EntitlementStatus
     public let tier: String
     public let balanceCents: Int64?
+    public let minutesRemaining: Int?
     public let trialEndsAt: Int64?
     public let concurrency: Concurrency
     public let refreshAfterSec: Int
 
     private enum CodingKeys: String, CodingKey {
-        case status, tier, balanceCents, trialEndsAt, concurrency, refreshAfterSec
+        case status, tier, balanceCents, minutesRemaining, trialEndsAt, concurrency, refreshAfterSec
     }
 
     public init(from decoder: Decoder) throws {
@@ -80,6 +81,7 @@ public struct Entitlement: Decodable, Equatable {
         status = EntitlementStatus(wire: try container.decode(String.self, forKey: .status))
         tier = try container.decodeIfPresent(String.self, forKey: .tier) ?? "base"
         balanceCents = try container.decodeIfPresent(Int64.self, forKey: .balanceCents)
+        minutesRemaining = try container.decodeIfPresent(Int.self, forKey: .minutesRemaining)
         trialEndsAt = try container.decodeIfPresent(Int64.self, forKey: .trialEndsAt)
         concurrency = try container.decodeIfPresent(Concurrency.self, forKey: .concurrency)
             ?? Concurrency(maxActivePairs: 1)

@@ -85,14 +85,18 @@ private struct SignedInRow: View {
             Spacer(minLength: SkipperSpace.s)
 
             if model.account?.entitlement?.value.status == .exhausted {
-                Button("Top Up\u{2026}") {
-                    NSWorkspace.shared.open(
-                        EntitlementPresentation.topUpURL(webBaseURL: AccountLinker.defaultWebBaseURL()))
-                }
-                .skipperButton(.primary)
+                Button("Top Up\u{2026}") { AccountActions.openOnTheWeb(EntitlementPresentation.topUpURL) }
+                    .skipperButton(.primary)
             }
 
             Menu {
+                Button("Account on the web\u{2026}") {
+                    AccountActions.openOnTheWeb(EntitlementPresentation.accountURL)
+                }
+                Button("Add credit\u{2026}") {
+                    AccountActions.openOnTheWeb(EntitlementPresentation.topUpURL)
+                }
+                Divider()
                 Button("Sign Out\u{2026}") { AccountActions.confirmSignOut(model) }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -125,6 +129,10 @@ struct AccountAvatar: View {
 }
 
 enum AccountActions {
+
+    static func openOnTheWeb(_ page: (URL) -> URL) {
+        NSWorkspace.shared.open(page(AccountLinker.defaultWebBaseURL()))
+    }
 
     @MainActor
     static func confirmSignOut(_ model: AppModel) {

@@ -3,10 +3,12 @@ import RCTestKit
 import RemoteControlCore
 
 private func entitlement(
-    status: String, tier: String, balanceCents: Int64? = nil, trialEndsAt: Int64? = nil
+    status: String, tier: String, balanceCents: Int64? = nil,
+    minutesRemaining: Int? = nil, trialEndsAt: Int64? = nil
 ) throws -> Entitlement {
     var fields = ["\"status\":\"\(status)\"", "\"tier\":\"\(tier)\""]
     if let balanceCents { fields.append("\"balanceCents\":\(balanceCents)") }
+    if let minutesRemaining { fields.append("\"minutesRemaining\":\(minutesRemaining)") }
     if let trialEndsAt { fields.append("\"trialEndsAt\":\(trialEndsAt)") }
     let json = "{\(fields.joined(separator: ","))}"
     return try JSONDecoder().decode(Entitlement.self, from: Data(json.utf8))
@@ -187,26 +189,55 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
 
     // MARK: - API.md §4.1 host status line
 
-    TestCase("trial shows a relative end date, active shows the balance and never a tier slug") {
-        let now = Date(timeIntervalSince1970: 1_756_000_000)
+    TestCase("the status line talks in hours left, never in cents, a date or a URL") {
         let trial = try entitlement(
-            status: "trial", tier: "base",
-            trialEndsAt: Int64((now.addingTimeInterval(3 * 86_400).timeIntervalSince1970) * 1000))
-        try expect(EntitlementPresentation.statusLine(for: trial, now: now).hasPrefix("Trial \u{00B7} ends"))
+            status: "trial", tier: "base", balanceCents: 50, minutesRemaining: 300,
+            trialEndsAt: 1_756_000_000_000)
+        try expectEqual(EntitlementPresentation.statusLine(for: trial), "Trial \u{00B7} about 5 hours left",
+                        "a trial is hours of credit, not a countdown to a date")
+
+        let active = try entitlement(
+            status: "active", tier: "skipper", balanceCents: 430, minutesRemaining: 2_580)
+        try expectEqual(
+            EntitlementPresentation.statusLine(for: active),
+            "$4.30 left \u{00B7} about 43 hours",
+            "the tier slug is an internal name and never reaches the screen")
 
         let activeNoBalance = try entitlement(status: "active", tier: "base")
         try expectEqual(EntitlementPresentation.statusLine(for: activeNoBalance), "Active")
 
-        let activeWithBalance = try entitlement(status: "active", tier: "skipper", balanceCents: 1234)
-        try expectEqual(
-            EntitlementPresentation.statusLine(for: activeWithBalance),
-            "Active \u{00B7} $12.34 balance",
-            "the tier slug is an internal name and never reaches the screen")
-
-        let exhausted = try entitlement(status: "exhausted", tier: "base")
+        let exhausted = try entitlement(status: "exhausted", tier: "base", balanceCents: 0,
+                                        minutesRemaining: 0)
         try expectEqual(
             EntitlementPresentation.statusLine(for: exhausted),
-            "No balance \u{2014} top up at skipperdesk.app")
+            "No balance. Top up to keep hosting.",
+            "DESIGN \u{00A7}4 rule 8: the button is the route to the web, not a URL in the copy")
+
+        let unlinked = try entitlement(status: "unlinked", tier: "base")
+        try expectEqual(EntitlementPresentation.statusLine(for: unlinked), "Not signed in")
+
+        for line in [trial, active, activeNoBalance, exhausted, unlinked].map({
+            EntitlementPresentation.statusLine(for: $0)
+        }) {
+            for banned in ["skipperdesk.app", "http", "entitlement", "ledger", "credit\u{00A0}", "cents"] {
+                try expect(!line.lowercased().contains(banned),
+                           "the status line \"\(line)\" names \(banned)")
+            }
+        }
+    },
+
+    TestCase("hours round down and never read as a promise the balance cannot keep") {
+        try expectEqual(EntitlementPresentation.hostingTime(minutes: 300), "about 5 hours")
+        try expectEqual(EntitlementPresentation.hostingTime(minutes: 119), "about 1 hour")
+        try expectEqual(EntitlementPresentation.hostingTime(minutes: 60), "about 1 hour")
+        try expectEqual(EntitlementPresentation.hostingTime(minutes: 59), "less than an hour")
+        try expectEqual(EntitlementPresentation.hostingTime(minutes: 0), "less than an hour")
+        try expectEqual(EntitlementPresentation.hostingTime(minutes: -5), "less than an hour")
+
+        let nearlyOut = try entitlement(status: "trial", tier: "base", balanceCents: 4,
+                                        minutesRemaining: 24, trialEndsAt: 1_756_000_000_000)
+        try expectEqual(EntitlementPresentation.statusLine(for: nearlyOut),
+                        "Trial \u{00B7} less than an hour left")
     },
 
     TestCase("the top-up URL is the web base plus /credits") {
