@@ -1,6 +1,6 @@
 // Package apisrv is the rc-api HTTP surface: every endpoint of protocol/API.md
-// and the browser link page on the public handler, and the internal surface the
-// signaling server calls on a separate handler that is served on its own listener.
+// on the public handler, and the internal surface the signaling server calls on
+// a separate handler that is served on its own listener.
 package apisrv
 
 import (
@@ -124,8 +124,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /v1/credits/gifts/{giftId}/accept", s.acceptGift)
 	m.HandleFunc("POST /v1/credits/gifts/{giftId}/cancel", s.cancelGift)
 
-	m.HandleFunc("GET /link", s.linkPage)
-	m.HandleFunc("POST /link", s.linkSubmit)
+	if s.opt.IdP.Name() == "dev" {
+		m.HandleFunc("GET /link", s.linkPage)
+		m.HandleFunc("POST /link", s.linkSubmit)
+	}
 	m.HandleFunc("/ws", s.proxyWS)
 	m.HandleFunc("/", s.notFound)
 

@@ -1,5 +1,5 @@
 // Command rc-api is the SkipperDesk REST API of protocol/API.md: accounts,
-// devices, entitlement, session accounting, credits, and the browser link page.
+// devices, entitlement, session accounting, credits, and the dev-only /link page.
 // It never stores a raw hardware id, a plaintext device token or link code, or session content.
 package main
 

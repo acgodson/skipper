@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Local SkipperDesk backend: rc-signal (signaling) behind rc-api (REST, the
-# /link page, and a /ws pass-through), both plain HTTP on 127.0.0.1.
+# dev /link page, and a /ws pass-through), both plain HTTP on 127.0.0.1.
 # The app needs one value, the API base URL; everything else is derived from it.
 # Stops both services on Ctrl-C. Nothing here talks to AWS.
 set -uo pipefail

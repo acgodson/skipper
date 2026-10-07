@@ -22,7 +22,7 @@ func randomToken(n int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// mintLinkCode is the §1.2 body, shared by the REST endpoint and the /link page.
+// mintLinkCode is the §1.2 body, shared by the REST endpoint and the dev /link page.
 // Only the code's SHA-256 is stored.
 func (s *Server) mintLinkCode(account *apidb.Account, req protocol.LinkRequest) (protocol.LinkResponse, string, error) {
 	existing, err := s.opt.DB.DeviceByPubkey(req.Pubkey)
