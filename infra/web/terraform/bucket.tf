@@ -35,6 +35,32 @@ data "aws_iam_policy_document" "cloudfront_read" {
   }
 }
 
+# The module versions every bucket it makes, which is right — a bad deploy is recoverable —
+# but every `deploy.sh --delete` leaves a delete marker and every edit leaves a version, and
+# a site deployed often would otherwise keep all of them for ever.
+resource "aws_s3_bucket_lifecycle_configuration" "site" {
+  bucket = module.site.id
+
+  rule {
+    id     = "expire-superseded-versions"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}
+
 # The one file in the site that is configuration rather than content: it carries the sign-in
 # origin, the app client id and the API domain. Terraform owns it so those three values have
 # exactly one source, and deploy.sh excludes it from the sync for the same reason.
