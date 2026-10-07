@@ -38,8 +38,9 @@ A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone 
 | Reboot proven: the data volume remounts and all four services start unattended | done |
 | Sign-in website built, on its own stack and its own Terraform state (`web/`, `infra/web/`) | done |
 | CORS on the link call, the Cognito ID token pinned by `token_use`, a sign-in that cannot double-open | done |
-| Website stack: certificate issued; distribution and the apex DNS cutover | in progress |
-| 5.1 remaining: a real Mac signs in against this backend and registers | next |
+| Website live at `skipperdesk.app` on CloudFront, private bucket, full security headers | done |
+| **5.1 closed** — a real Mac signed in against the live backend: link 201, device registered, certificate signed in KMS in 6 ms, entitlement 200 | done |
+| 5.2 TURN credentials end to end | next |
 | 5.2 TURN credentials end to end; 5.3 cross-network + forced relay; 5.4 fifth review; 5.5 cutover | queued |
 
 ## Queued, in order
@@ -98,4 +99,5 @@ These are observed on a second machine during beta, not before.
 | macOS has no "busy" or diagonal-resize cursor | Cosmetic, documented |
 | Lock Screen gesture unverified | Held back from the palette (fourth review); the wire name and plumbing stay, it returns when lock-screen viewing lands |
 | `ci-local.sh` fails if a dev backend holds its ports | Stop `dev-backend.sh` first |
+| rc-api's plaintext warning says "local testing only" in production | It is correct — Caddy terminates TLS and rc-api is on loopback — but it reads like a misconfiguration, and it is worded identically whether the listener is loopback or `0.0.0.0`. The dangerous case should be the loud one |
 | ~~Intermittent: signing in twice while a sign-out is unfinished opens two browser windows~~ | Fixed. `beginLink()` spawned a sign-out-then-link task per call, and two whose retries both succeeded each opened a window; one runs at a time now. The test waited on `Task.yield()`, which does not wait for a URLSession answer — that is why it failed one run in ten rather than every time. It waits on the clock now, and both cases fail 3/3 with the fix reverted |
