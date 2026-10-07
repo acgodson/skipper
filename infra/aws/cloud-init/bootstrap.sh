@@ -73,13 +73,17 @@ fi
 if [ "$${PROBE_RC}" = 2 ] && [ -z "$${PROBE}" ] && [ -z "$${SIGNATURES}" ]; then
   echo "note  $${DATA_DEV} carries no filesystem and no signature; formatting it once"
   mkfs.${filesystem_type} -L ${project}-data "$${DATA_DEV}"
+elif [ "$${SIGNATURES}" = probe-failed ]; then
+  echo "note  wipefs could not probe $${DATA_DEV}; refusing to format on one probe alone"
 else
   echo "note  $${DATA_DEV} already carries a filesystem; mounting it untouched"
 fi
 
 DATA_UUID="$(blkid -o value -s UUID "$${DATA_DEV}")"
 if [ -z "$${DATA_UUID}" ]; then
-  echo "FAIL  $${DATA_DEV} has no filesystem UUID to mount by" >&2
+  echo "FAIL  $${DATA_DEV} has no filesystem UUID to mount by. If this volume is new, the" >&2
+  echo "FAIL  probes above disagreed about whether it was blank and nothing was formatted;" >&2
+  echo "FAIL  run 'blkid -p' and 'wipefs --no-act' against it and decide by hand." >&2
   exit 1
 fi
 
