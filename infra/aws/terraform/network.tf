@@ -94,7 +94,7 @@ resource "aws_vpc_security_group_ingress_rule" "turn_relay" {
 
 resource "aws_vpc_security_group_egress_rule" "all" {
   security_group_id = aws_security_group.app.id
-  description       = "ACME, SSM, CloudWatch, SSM Parameter Store, S3, and the relay's own return path"
+  description       = "ACME, SSM, CloudWatch, SSM Parameter Store, S3, and the relay return path"
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
 }
