@@ -175,8 +175,13 @@ func (s *Signer) Parse(token string) (TokenClaims, error) {
 func TurnCreds(secret, subject string, now time.Time, ttl time.Duration) (username, credential string, expiresAt time.Time) {
 	expiresAt = now.Add(ttl)
 	username = strconv.FormatInt(expiresAt.Unix(), 10) + ":" + subject
+	return username, TurnCredential(secret, username), expiresAt
+}
+
+// TurnCredential is the secret half of a coturn REST-auth credential for an existing
+// username, so a username minted earlier can be re-derived without inventing a new expiry.
+func TurnCredential(secret, username string) string {
 	m := hmac.New(sha1.New, []byte(secret))
 	m.Write([]byte(username))
-	credential = base64.StdEncoding.EncodeToString(m.Sum(nil))
-	return username, credential, expiresAt
+	return base64.StdEncoding.EncodeToString(m.Sum(nil))
 }
