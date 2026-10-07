@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   account_id     TEXT PRIMARY KEY,
   subject        TEXT NOT NULL DEFAULT '',
   email          TEXT NOT NULL,
+  mailbox_key    TEXT NOT NULL DEFAULT '',
   created_at     INTEGER NOT NULL,
   suspended      INTEGER NOT NULL DEFAULT 0,
   unbilled_units INTEGER NOT NULL DEFAULT 0
@@ -461,13 +462,14 @@ func migrateAccountsToSubjectKey(db *sql.DB) error {
   account_id     TEXT PRIMARY KEY,
   subject        TEXT NOT NULL DEFAULT '',
   email          TEXT NOT NULL,
+  mailbox_key    TEXT NOT NULL DEFAULT '',
   created_at     INTEGER NOT NULL,
   suspended      INTEGER NOT NULL DEFAULT 0,
   unbilled_units INTEGER NOT NULL DEFAULT 0
 )`,
 			`INSERT INTO accounts_subject_keyed
- (account_id, subject, email, created_at, suspended, unbilled_units)
- SELECT account_id, '', email, created_at, suspended, unbilled_units FROM accounts`,
+ (account_id, subject, email, mailbox_key, created_at, suspended, unbilled_units)
+ SELECT account_id, '', email, '', created_at, suspended, unbilled_units FROM accounts`,
 			`DROP TABLE accounts`,
 			`ALTER TABLE accounts_subject_keyed RENAME TO accounts`,
 		} {
@@ -482,8 +484,38 @@ func migrateAccountsToSubjectKey(db *sql.DB) error {
 	for _, stmt := range []string{
 		`CREATE UNIQUE INDEX IF NOT EXISTS accounts_subject ON accounts(subject) WHERE subject <> ''`,
 		`CREATE INDEX IF NOT EXISTS accounts_email ON accounts(email)`,
+		`CREATE INDEX IF NOT EXISTS accounts_mailbox ON accounts(mailbox_key)`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return backfillMailboxKeys(db)
+}
+
+// backfillMailboxKeys fills the mailbox a row's address belongs to, which the trial
+// grant cap counts over (review5 H4). The fold is a Go function, so this cannot be
+// one UPDATE. Keyed on the empty value it writes over, so a restart is a no-op.
+func backfillMailboxKeys(db *sql.DB) error {
+	rows, err := db.Query(`SELECT account_id, email FROM accounts WHERE mailbox_key=''`)
+	if err != nil {
+		return err
+	}
+	keys := map[string]string{}
+	for rows.Next() {
+		var id, email string
+		if err := rows.Scan(&id, &email); err != nil {
+			rows.Close()
+			return err
+		}
+		keys[id] = MailboxKey(email)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for id, key := range keys {
+		if _, err := db.Exec(`UPDATE accounts SET mailbox_key=? WHERE account_id=?`, key, id); err != nil {
 			return err
 		}
 	}
@@ -516,6 +548,26 @@ func NewID(prefix string) string {
 }
 
 func NormaliseEmail(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
+// MailboxKey folds an address to the mailbox behind it by dropping a plus tag, so
+// one mailbox is worth one trial grant however many addresses it yields
+// (review5 H4). It is used only to decide whether a *free grant* is due: it never
+// merges accounts, never resolves an identity and never denies anyone service, so
+// the cost of folding two genuinely distinct addresses together is 50 cents of
+// credit, not access. Dots are left alone: they are a provider-specific convention
+// and treating them as insignificant would be wrong on most domains.
+func MailboxKey(email string) string {
+	email = NormaliseEmail(email)
+	at := strings.LastIndex(email, "@")
+	if at < 0 {
+		return email
+	}
+	local, domain := email[:at], email[at:]
+	if plus := strings.Index(local, "+"); plus >= 0 {
+		local = local[:plus]
+	}
+	return local + domain
+}
 
 // --- accounts ---------------------------------------------------------------
 
@@ -576,15 +628,16 @@ func (d *DB) EnsureAccount(subject, email string, now time.Time) (*Account, erro
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		accountID = NewID("acct_")
-		if _, err := tx.Exec(`INSERT INTO accounts (account_id, subject, email, created_at, suspended)
- VALUES (?,?,?,?,0)`, accountID, subject, email, now.UnixMilli()); err != nil {
+		if _, err := tx.Exec(`INSERT INTO accounts
+ (account_id, subject, email, mailbox_key, created_at, suspended) VALUES (?,?,?,?,?,0)`,
+			accountID, subject, email, MailboxKey(email), now.UnixMilli()); err != nil {
 			return nil, err
 		}
 	case err != nil:
 		return nil, err
 	case heldSubject == "" || heldEmail != email:
-		if _, err := tx.Exec(`UPDATE accounts SET subject=?, email=? WHERE account_id=?`,
-			subject, email, accountID); err != nil {
+		if _, err := tx.Exec(`UPDATE accounts SET subject=?, email=?, mailbox_key=? WHERE account_id=?`,
+			subject, email, MailboxKey(email), accountID); err != nil {
 			return nil, err
 		}
 	}
@@ -1198,13 +1251,30 @@ func (d *DB) UnconsumedGrant(accountID string) (cents int64, open bool, err erro
 	return max(0, granted.Int64-charged.Int64), true, nil
 }
 
-// HasLiveTrial reports whether any device on the account is still inside its grant
-// window, so one device's expiry never claws back another device's live grant.
-func (d *DB) HasLiveTrial(accountID string, now int64) (bool, error) {
+// TrialGrantsForMailbox counts the grants already written to every account whose
+// address folds to the same mailbox. The count is server-side fact, which is what
+// makes it a bound where the device inputs are not (review5 H4).
+func (d *DB) TrialGrantsForMailbox(email string) (int, error) {
 	var n int
-	err := d.db.QueryRow(`SELECT COUNT(1) FROM devices
- WHERE account_id=? AND unlinked=0 AND trial_ends_at>?`, accountID, now).Scan(&n)
-	return n > 0, err
+	err := d.db.QueryRow(`SELECT COUNT(1) FROM ledger l JOIN accounts a
+ ON a.account_id = l.account_id
+ WHERE l.type=? AND a.mailbox_key=?`,
+		protocol.LedgerTrialGrant, MailboxKey(email)).Scan(&n)
+	return n, err
+}
+
+// TrialWindowForAccount is when the account's starting credits expire: the latest
+// window any of its linked devices holds, 0 if none does.
+//
+// The grant is one per account, so the window has to be read per account too. Read
+// off the calling device alone, a second device on the account reported no window
+// while spending the account's starting credits, which made it read `active` where
+// API.md §4.1 says `trial`.
+func (d *DB) TrialWindowForAccount(accountID string) (int64, error) {
+	var at sql.NullInt64
+	err := d.db.QueryRow(`SELECT MAX(trial_ends_at) FROM devices
+ WHERE account_id=? AND unlinked=0`, accountID).Scan(&at)
+	return at.Int64, err
 }
 
 type LedgerQuery struct {

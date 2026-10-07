@@ -23,9 +23,10 @@ const (
 	GiftLifetime     = protocol.GiftTTLSec * time.Second
 	TrialLifetime    = TrialDays * 24 * time.Hour
 
-	// MaxTrialGrantsPerAccount bounds what one verified identity is worth to a
-	// trial farm. The device rules below it only ever withhold a grant further.
-	MaxTrialGrantsPerAccount = 1
+	// MaxTrialGrantsPerMailbox bounds what one verified mailbox is worth to a trial
+	// farm: the grant cannot be keyed on anything the client asserts, so it is keyed
+	// on the one durable fact there is. The device rules only ever withhold further.
+	MaxTrialGrantsPerMailbox = 1
 )
 
 // Facts is everything the policy is allowed to look at.
@@ -50,7 +51,15 @@ type Decision struct {
 func TrialEndsAt(now time.Time) int64 { return now.Add(TrialLifetime).UnixMilli() }
 
 // GrantsTrial answers the only question hardwareHash exists for (API.md §3.2).
-func GrantsTrial(pubkeySeen, hardwareSeen bool) bool { return !pubkeySeen && !hardwareSeen }
+//
+// Both device inputs are client-chosen: a stranger generates a fresh keypair and
+// sends any hardwareId they like, so neither can be made trustworthy and this
+// deliberately does not pretend otherwise (review5 H4). What bounds the damage is
+// the count of grants the account already holds, which is server-side fact. The
+// device rules are kept because they only ever withhold a grant further.
+func GrantsTrial(pubkeySeen, hardwareSeen bool, grantsHeld int) bool {
+	return !pubkeySeen && !hardwareSeen && grantsHeld < MaxTrialGrantsPerMailbox
+}
 
 // ExpiredGrantClawback is the one adjustment that closes a grant window. It takes
 // only the part of the grant no session consumed, and never more than the balance,

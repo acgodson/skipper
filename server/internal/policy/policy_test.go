@@ -7,18 +7,25 @@ import (
 	protocol "rcprotocol"
 )
 
-func TestTrialIsKeyedByDeviceAndHardware(t *testing.T) {
+// The device inputs are both client-chosen, so the grants the account already holds
+// is the only one of the three that bounds anything (review5 H4).
+func TestTrialIsCappedPerAccountAndWithheldByTheDeviceRules(t *testing.T) {
 	cases := []struct {
-		pubkeySeen, hardwareSeen, want bool
+		pubkeySeen, hardwareSeen bool
+		grantsHeld               int
+		want                     bool
 	}{
-		{false, false, true},
-		{true, false, false},
-		{false, true, false},
-		{true, true, false},
+		{false, false, 0, true},
+		{true, false, 0, false},
+		{false, true, 0, false},
+		{true, true, 0, false},
+		{false, false, MaxTrialGrantsPerMailbox, false},
+		{false, false, MaxTrialGrantsPerMailbox + 5, false},
 	}
 	for _, c := range cases {
-		if got := GrantsTrial(c.pubkeySeen, c.hardwareSeen); got != c.want {
-			t.Errorf("GrantsTrial(pubkey=%v, hardware=%v) = %v, want %v", c.pubkeySeen, c.hardwareSeen, got, c.want)
+		if got := GrantsTrial(c.pubkeySeen, c.hardwareSeen, c.grantsHeld); got != c.want {
+			t.Errorf("GrantsTrial(pubkey=%v, hardware=%v, held=%d) = %v, want %v",
+				c.pubkeySeen, c.hardwareSeen, c.grantsHeld, got, c.want)
 		}
 	}
 }

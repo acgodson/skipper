@@ -11,6 +11,7 @@ import (
 	"rc-signal/internal/apidb"
 	"rc-signal/internal/auth"
 	"rc-signal/internal/policy"
+	"rc-signal/internal/ratelimit"
 	protocol "rcprotocol"
 )
 
@@ -241,7 +242,7 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 		}
 		hardwareHash := s.hardwareHash(req.HardwareID)
 		req.HardwareID = ""
-		device, err := s.linkDevice(registered, pending, req, hardwareHash)
+		device, err := s.linkDevice(registered, pending, req, hardwareHash, s.clientIP(r))
 		if err != nil {
 			s.internalError(w, r, err)
 			return
@@ -256,7 +257,8 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // linkDevice attaches a registered device to the account; the trial starts at its first link.
-func (s *Server) linkDevice(device *apidb.Device, pending *apidb.LinkCode, req protocol.DeviceTokenRequest, hardwareHash string) (*apidb.Device, error) {
+func (s *Server) linkDevice(device *apidb.Device, pending *apidb.LinkCode,
+	req protocol.DeviceTokenRequest, hardwareHash, ip string) (*apidb.Device, error) {
 	label := protocol.TrimLabel(req.Label)
 	if label == "" {
 		label = pending.Label
@@ -264,13 +266,12 @@ func (s *Server) linkDevice(device *apidb.Device, pending *apidb.LinkCode, req p
 	if label == "" {
 		label = device.Label
 	}
-	hardwareSeen, err := s.opt.DB.HardwareSeen(hardwareHash)
+	granted, err := s.grantsTrial(device, pending.AccountID, hardwareHash, ip)
 	if err != nil {
 		return nil, err
 	}
-	linkedBefore := device.LinkedAt != 0
 	trialEndsAt := int64(0)
-	if policy.GrantsTrial(linkedBefore, hardwareSeen) {
+	if granted {
 		trialEndsAt = policy.TrialEndsAt(s.now())
 	}
 	if err := s.opt.DB.UpdateDeviceLink(device.DeviceID, pending.AccountID, label,
@@ -284,6 +285,36 @@ func (s *Server) linkDevice(device *apidb.Device, pending *apidb.LinkCode, req p
 		}
 	}
 	return s.opt.DB.DeviceByID(device.DeviceID)
+}
+
+// grantsTrial decides whether this link earns starting credits.
+//
+// The device inputs are a fresh keypair and a string the client chose, so they bound
+// nothing on their own (review5 H4). The durable bounds are asked first and in order
+// of how hard they are to forge: how many grants the mailbox behind this address
+// already holds, then how many grants this address has taken recently.
+//
+// A refusal withholds the grant and nothing else. Linking still succeeds, because
+// the device is legitimate either way and failing the link would punish an honest
+// user who happens to share an office address with a farm.
+func (s *Server) grantsTrial(device *apidb.Device, accountID, hardwareHash, ip string) (bool, error) {
+	held, err := s.opt.DB.TrialGrantsForMailbox(s.accountEmail(accountID))
+	if err != nil {
+		return false, err
+	}
+	hardwareSeen, err := s.opt.DB.HardwareSeen(hardwareHash)
+	if err != nil {
+		return false, err
+	}
+	if !policy.GrantsTrial(device.LinkedAt != 0, hardwareSeen, held) {
+		return false, nil
+	}
+	if ok, _ := s.limiter.Take(s.now(), ratelimit.Charge{Rule: limitTrialGrantIP, Key: ip}); !ok {
+		s.opt.Logger.Info("a trial grant was withheld: this address has taken its budget",
+			"deviceId", device.DeviceID)
+		return false, nil
+	}
+	return true, nil
 }
 
 // authRefresh spends exactly the nonce the caller signed and charges the

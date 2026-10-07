@@ -253,8 +253,10 @@ one `register_ok` returned. A key the registry has never seen is `400 bad_reques
 `reason: unregistered`; the code is not consumed, and the app registers with signaling, requests
 a fresh §1.3 nonce and retries.
 
-The first link of a device starts its trial, subject to §3.2. Re-linking a device — to the same
-or another account — never starts a second trial.
+The first link on an account grants its starting credits, subject to §3.2 — **one grant per
+verified mailbox**, so a second device on the account does not earn a second one. Re-linking a
+device, to the same or another account, never grants again. The grant's window is the account's:
+every linked device on it reports the same `trialEndsAt`.
 
 The device token is:
 
@@ -330,18 +332,23 @@ never asked to forward a device token over the WebSocket.
 | `createdAt` | int64 | Unix ms, first link. |
 | `linkedAt` | int64 | Unix ms, most recent link to the **current** account. |
 | `lastSeen` | int64 | Unix ms of the most recent authenticated activity on either surface. `0` if never. |
-| `trialEndsAt` | int64 | Unix ms the device's starting credits expire. `0` when it was never granted any (§4). |
+| `trialEndsAt` | int64 | Unix ms this device's own grant expires. `0` when this device was not the one granted; the account's window is what `/v1/entitlement` reports (§4.1). |
 
-`hardwareHash` is part of the stored record and is **never** part of any response. It exists only
-to make trial farming expensive (§3.2) and is not a stable identifier the product relies on.
+`hardwareHash` is part of the stored record and is **never** part of any response. It can withhold
+starting credits but cannot earn them (§3.2), and it is not a stable identifier the product relies on.
 
 ### 3.2 `hardwareHash`, stated plainly
 
 - Computed server-side as `HMAC-SHA256(serverSalt, hardwareId)`, where `hardwareId` is the
   platform serial the app reads once at §1.4.
-- Used for exactly one decision: whether a *new* device is eligible for *new* starting credits.
+- Used for exactly one decision, and only in one direction: a hash seen before **withholds** new
+  starting credits. It never earns them.
 - Never exposed, never used to link accounts to each other, never used for any other purpose.
-- An OS wipe produces a new hash. That is accepted: the cost of the wipe is the deterrent.
+- **It is a value the client chooses**, so it is not a defence and this document no longer claims
+  it makes anything expensive. A stranger sends any string they like and gets a fresh hash; so does
+  an OS wipe, and so does a VM. What actually bounds starting credits is that they are granted
+  **once per verified mailbox**, rate-limited per IP, which is server-side fact (review5 H4).
+  `BETA.md` §1.4 states what remains possible and at what cost.
 
 ### 3.3 `GET /v1/devices` — user session
 
@@ -393,7 +400,7 @@ session right now, and what should the UI say if not?**
 | `tier` | string | yes | `base` or `skipper`. Open enum — what a tier unlocks is server policy. |
 | `balanceCents` | int64 | no | Present when the device is linked to an account. Absent is not zero; absent means "not applicable to this status". Starting credits (§7.2) are part of it, so a device on a trial carries a balance too. |
 | `minutesRemaining` | int | no | Whole minutes of hosting the balance still buys, at the account's rate. Present whenever `balanceCents` is. Computed server-side: the client must not divide a balance by a rate (§4.2). |
-| `trialEndsAt` | int64 | no | Unix ms. Present only when `status` is `trial`: the moment the starting credits expire. |
+| `trialEndsAt` | int64 | no | Unix ms. Present only when `status` is `trial`: the moment the account's starting credits expire. The grant is one per account, so every linked device on the account reports the same value. |
 | `concurrency` | object | yes | `{"maxActivePairs": 1}`. The server states the limit; the client renders it. |
 | `refreshAfterSec` | int | yes | How long this answer may be cached. Currently **60**. |
 

@@ -82,9 +82,12 @@ func TestABalanceNeverGoesBelowZeroAndTheSessionIsClosed(t *testing.T) {
 	if last.AmountCents != -1 || last.BalanceAfterCents != 0 {
 		t.Fatalf("the clamped charge is %+v, want -1 leaving 0", last)
 	}
+	// The account did get starting credits and they ran out, so the reason is
+	// trial_expired rather than no_balance (API.md §4.3). The grant's window is the
+	// account's, so a second device on it reports the window the first one holds.
 	if status, reason := h.internalEntitlement(host.DeviceID); status != http.StatusPaymentRequired ||
-		reason != protocol.EntitlementNoBalance {
-		t.Fatalf("after the credit ran out: %d/%s, want 402/no_balance", status, reason)
+		reason != protocol.EntitlementTrialExpired {
+		t.Fatalf("after the credit ran out: %d/%s, want 402/trial_expired", status, reason)
 	}
 	if !closedFor(h, host.DeviceID) {
 		t.Fatalf("the session was left running on a balance of zero; closes = %+v", h.closes.calls())

@@ -463,9 +463,10 @@ func TestSessionsEnforceConcurrencyAndMeter(t *testing.T) {
 	r = h.call("GET", protocol.PathCredits, "dev:carol@example.com", "", nil)
 	var balance protocol.Balance
 	r.decode(t, &balance)
-	want := int64(500 + 2*policy.TrialGrantCents - 5)
+	// One grant per account, however many devices link to it (review5 H4).
+	want := int64(500 + policy.TrialGrantCents - 5)
 	if balance.BalanceCents != want {
-		t.Fatalf("balance after a 30-minute session = %d, want %d ($5 plus two starting grants, less 5 cents)",
+		t.Fatalf("balance after a 30-minute session = %d, want %d ($5 plus one starting grant, less 5 cents)",
 			balance.BalanceCents, want)
 	}
 	if r := h.call("GET", protocol.PathInternalEntitlement+"/"+second.DeviceID, internalToken, "", nil); r.status != http.StatusOK {

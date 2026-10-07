@@ -104,7 +104,7 @@ vectors (`protocol/vectors/`) before shipping.
 | Session transport | WebRTC DTLS-SRTP (AES-GCM) | Already E2E vs outsiders; SDP fingerprints now **signed by the device key** so a compromised server cannot MITM |
 | Signaling/API | TLS from a public CA on skipperdesk.app | Replaces self-signed pin; `NSAllowsArbitraryLoads` removed |
 | Concurrency | **One controller per host at any time**; one active pair per subscription | Enforced server-side at connect |
-| Abuse / trial | Trial keyed by **host device key** (not account); plus server-salted hash of hardware serial for trial purposes only (as AnyDesk/RustDesk machine-id) | OS wipe = new device; acceptable, made expensive by the serial hash |
+| Abuse / trial | Trial keyed by **verified mailbox**, one grant each. The device key and the salted serial hash still withhold a grant but cannot earn one — both are client-chosen, so neither makes anything expensive (review5 H4, `BETA.md` §1.4) | A farmed trial costs one confirmable mailbox per 50¢; the binding ceiling is Cognito's ~50 emails/day until SES |
 | Privacy | No screen, keystroke, clipboard or code on the server. Session metadata (who/when/bytes) only, for billing | Documented in a public security page |
 | Isolation | Never touches system/browser networking (no proxy/VPN/DNS/extension) | `check-isolation.sh` stays a release gate |
 | Supply chain | Reproducible builds, signed + notarized, signed auto-update, dependency pinning, SBOM | Required for open source credibility |
@@ -124,7 +124,9 @@ Explicitly out: browser-style fingerprinting (spoofable, disliked by reviewers).
   1. Host device must be linked to an account with a valid trial or positive balance.
   2. One active session per host; a second controller gets `busy`.
   3. One active pair per subscription/credit pool at a time.
-- Multiple accounts are allowed; the device rules make trial farming pointless.
+- Multiple accounts are allowed. The device rules do **not** make trial farming pointless — they are
+  client-chosen (review5 H4) — so the grant is capped at one per verified mailbox and bounded per IP;
+  `BETA.md` §1.4 states what remains possible and at what cost.
 - Lock-outs/timeouts that require payment are defined in the business phase (§7), not hard-coded
   in the client — the client obeys entitlement responses, so the policy can change server-side.
 

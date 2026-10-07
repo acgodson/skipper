@@ -29,8 +29,15 @@ func (s *Server) decide(device *apidb.Device) (policy.Decision, error) {
 			facts.HasAccount = true
 			facts.Suspended = account.Suspended
 		}
+		// The grant is one per account, so its window is the account's, not this
+		// device's: a second device on the account spends the same starting credits.
+		window, err := s.opt.DB.TrialWindowForAccount(device.AccountID)
+		if err != nil {
+			return policy.Decision{}, err
+		}
+		facts.TrialEndsAt = window
 		if facts.HasAccount {
-			if err := s.settleExpiredGrant(device); err != nil {
+			if err := s.settleExpiredGrant(device.AccountID, window); err != nil {
 				return policy.Decision{}, err
 			}
 		}
@@ -55,30 +62,27 @@ func (s *Server) decide(device *apidb.Device) (policy.Decision, error) {
 
 // settleExpiredGrant writes the one trial_expiry entry that closes a grant window,
 // the first time anybody asks after it has passed. The window is a property of the
-// ledger and the device row, so there is nothing to schedule: the answer is settled
+// ledger and the device rows, so there is nothing to schedule: the answer is settled
 // before it is given, and an unasked account costs nothing.
 //
-// It claws back only grant no session consumed, so a top-up is never taken back, and
-// it waits until no device on the account is still inside its own window.
-func (s *Server) settleExpiredGrant(device *apidb.Device) error {
+// It claws back only grant no session consumed, so a top-up is never taken back.
+// windowEndsAt is the account's latest window, so one device's expiry never closes
+// a window another device on the account is still inside.
+func (s *Server) settleExpiredGrant(accountID string, windowEndsAt int64) error {
 	now := s.nowMS()
-	if device.TrialEndsAt == 0 || device.TrialEndsAt > now {
+	if windowEndsAt == 0 || windowEndsAt > now {
 		return nil
 	}
-	live, err := s.opt.DB.HasLiveTrial(device.AccountID, now)
-	if err != nil || live {
-		return err
-	}
-	grant, open, err := s.opt.DB.UnconsumedGrant(device.AccountID)
+	grant, open, err := s.opt.DB.UnconsumedGrant(accountID)
 	if err != nil || !open {
 		return err
 	}
-	balance, err := s.opt.DB.Balance(device.AccountID)
+	balance, err := s.opt.DB.Balance(accountID)
 	if err != nil {
 		return err
 	}
 	clawback := policy.ExpiredGrantClawback(grant, balance)
-	_, err = s.opt.DB.Append(device.AccountID, protocol.LedgerTrialExpiry, -clawback, now,
+	_, err = s.opt.DB.Append(accountID, protocol.LedgerTrialExpiry, -clawback, now,
 		"", "", "starting credits expired")
 	return err
 }
