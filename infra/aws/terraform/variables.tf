@@ -70,13 +70,13 @@ variable "ami_ssm_parameter" {
 }
 
 variable "root_volume_gb" {
-  description = "gp3 root volume size. The two SQLite files and the claims database live on it."
+  description = "gp3 root volume size. It carries the operating system, the two binaries and the log files — no database: those are on the separate data volume."
   type        = number
   default     = 20
 }
 
-variable "root_filesystem_type" {
-  description = "Filesystem of the root volume. It is a dimension of the disk metric the CloudWatch agent publishes, so the alarm has to name it."
+variable "filesystem_type" {
+  description = "Filesystem of both volumes. It is a dimension of the disk metric the CloudWatch agent publishes, so the alarms have to name it."
   type        = string
   default     = "ext4"
 }
@@ -91,6 +91,30 @@ variable "root_volume_throughput" {
   description = "gp3 baseline MiB/s; 125 is included in the per-GB price."
   type        = number
   default     = 125
+}
+
+variable "data_volume_gb" {
+  description = "gp3 size of the volume mounted at /var/lib/<project>. rc-api.db and rc-api-claims.db live only here; it survives the instance."
+  type        = number
+  default     = 20
+}
+
+variable "data_volume_iops" {
+  description = "gp3 baseline IOPS on the data volume; 3000 is included in the per-GB price."
+  type        = number
+  default     = 3000
+}
+
+variable "data_volume_throughput" {
+  description = "gp3 baseline MiB/s on the data volume; 125 is included in the per-GB price."
+  type        = number
+  default     = 125
+}
+
+variable "data_volume_device_name" {
+  description = "Attachment name asked of EC2. On Nitro the kernel renames it to an unstable /dev/nvme*, which is why the bootstrap finds the disk by its volume id and mounts it by filesystem UUID."
+  type        = string
+  default     = "/dev/sdf"
 }
 
 variable "turn_listen_port" {

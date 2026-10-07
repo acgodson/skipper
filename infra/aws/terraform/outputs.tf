@@ -25,6 +25,11 @@ output "instance_id" {
   value       = aws_instance.app.id
 }
 
+output "data_volume_id" {
+  description = "The volume holding rc-api.db and rc-api-claims.db. It outlives the instance, and prevent_destroy keeps Terraform from removing it."
+  value       = aws_ebs_volume.data.id
+}
+
 output "backup_bucket" {
   description = "Snapshots under db/ and claims/, binaries under releases/, instance configuration under config/."
   value       = aws_s3_bucket.backups.id

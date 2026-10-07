@@ -25,6 +25,7 @@ locals {
     "skipperdesk-backup-db.timer"     = file("${path.module}/../systemd/skipperdesk-backup-db.timer")
     "skipperdesk-backup-claims.timer" = file("${path.module}/../systemd/skipperdesk-backup-claims.timer")
     "rc-api.service"                  = templatefile("${path.module}/../systemd/rc-api.service", local.unit_vars)
+    "rc-api.service.d/mount.conf"     = templatefile("${path.module}/../systemd/rc-api.service.d/mount.conf", local.unit_vars)
     "rc-signal.service"               = templatefile("${path.module}/../systemd/rc-signal.service", local.unit_vars)
     "skipperdesk-backup@.service"     = templatefile("${path.module}/../systemd/skipperdesk-backup@.service", local.unit_vars)
     "cloudwatch-agent.json" = templatefile("${path.module}/../cloud-init/cloudwatch-agent.json", {
@@ -32,6 +33,7 @@ locals {
       metric_namespace = local.metric_namespace
       log_group        = local.log_group
       log_dir          = local.log_dir
+      data_dir         = local.data_dir
     })
     "turnserver.conf" = templatefile("${path.module}/../coturn/turnserver.conf", {
       turn_listen_port    = var.turn_listen_port
@@ -80,30 +82,33 @@ resource "aws_instance" "app" {
     iops                  = var.root_volume_iops
     throughput            = var.root_volume_throughput
     encrypted             = true
-    delete_on_termination = false
+    delete_on_termination = true
 
     tags = { Name = "${local.name}-root" }
   }
 
-  # Deliberately false: this box holds the only copy of both SQLite files, so a changed
-  # bootstrap must never silently replace it. Re-run the bootstrap over SSM instead —
-  # infra/aws/README.md "Changing the bootstrap".
+  # Deliberately false: a changed bootstrap must never silently replace this box. The
+  # databases would survive it now that they are on their own volume, but the ACME
+  # certificate and the release directories would not — infra/aws/README.md
+  # "Changing the bootstrap".
   user_data_replace_on_change = false
   user_data = templatefile("${path.module}/../cloud-init/bootstrap.sh", {
-    project       = var.project
-    aws_region    = var.aws_region
-    backup_bucket = aws_s3_bucket.backups.id
-    ssm_prefix    = local.prefix
-    service_user  = local.service_user
-    app_dir       = local.app_dir
-    data_dir      = local.data_dir
-    config_dir    = local.config_dir
-    log_dir       = local.log_dir
-    acme_email    = var.acme_email
-    api_domain    = var.api_domain
-    api_listen    = local.api_listen
-    signal_listen = local.signal_listen
-    external_ip   = aws_eip.this.public_ip
+    project            = var.project
+    aws_region         = var.aws_region
+    backup_bucket      = aws_s3_bucket.backups.id
+    ssm_prefix         = local.prefix
+    service_user       = local.service_user
+    app_dir            = local.app_dir
+    data_dir           = local.data_dir
+    config_dir         = local.config_dir
+    log_dir            = local.log_dir
+    acme_email         = var.acme_email
+    api_domain         = var.api_domain
+    api_listen         = local.api_listen
+    signal_listen      = local.signal_listen
+    external_ip        = aws_eip.this.public_ip
+    filesystem_type    = var.filesystem_type
+    data_volume_serial = replace(aws_ebs_volume.data.id, "-", "")
   })
 
   tags = { Name = local.name }
