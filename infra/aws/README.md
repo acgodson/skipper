@@ -22,6 +22,23 @@ Nothing here provisions on its own and nothing here is applied yet.
 | `terraform/audit.tf` | The audit bucket, the CloudTrail management-events trail, its CloudWatch Logs copy and delivery role, and the metric filter and alarm on `kms:Sign` against the id-cert key |
 | `terraform/session_logging.tf` | The `SSM-SessionManagerRunShell` session preferences, the log group transcripts stream to, and that group's KMS key |
 | `terraform/modules/hardened-bucket/` | The settings both buckets share — ACLs disabled, public access blocked, versioned, encrypted, TLS-only. Lifecycle rules and extra policy statements stay with the caller, because that is where the two differ |
+
+The backup bucket moved into that module after this stack was written but **before** it was
+ever applied, so there is nothing to migrate. If you are replaying these commits onto a state
+file that already holds `aws_s3_bucket.backups`, do **not** apply: Terraform reads a moved
+address as a destroy-and-create, and that bucket holds the `claims/` snapshots that must never
+be lost. Move the six addresses first and then apply —
+
+```
+cd infra/aws/terraform
+for r in aws_s3_bucket aws_s3_bucket_ownership_controls aws_s3_bucket_public_access_block \
+         aws_s3_bucket_versioning aws_s3_bucket_server_side_encryption_configuration \
+         aws_s3_bucket_policy; do
+  terraform state mv "$r.backups" "module.backups.$r.this"
+done
+```
+
+`aws_s3_bucket_lifecycle_configuration.backups` keeps its address and must not be moved.
 | `terraform/observability.tf` | The 30-day log group, the SNS topic, and the seven alarms |
 | `cloud-init/` | The bootstrap the instance runs, the backup script, the CloudWatch agent configuration |
 | `systemd/` | `rc-api.service`, `rc-signal.service`, the two backup timers, a drop-in over `rc-api` that makes the data mount a hard requirement, and drop-ins over the `caddy` and `coturn` units Ubuntu ships |
@@ -517,6 +534,11 @@ mixed in with service logs.
 `cloudWatchStreamingEnabled` is `true`: output is written as it happens rather than uploaded
 when the session ends, so a session that is killed — or that kills the agent — still leaves
 behind everything it did.
+
+Terraform **creates** this document, so a first apply fails with `DocumentAlreadyExists` in an
+account where anyone has ever saved Session Manager preferences in the console — the console
+creates the same document under the same fixed name. This account is empty, so it does not
+arise here; if it ever does, the fix is `terraform import`, not a second document.
 
 **`cloudWatchEncryptionEnabled` and the log group's key are driven from one variable**,
 `enable_session_log_cmk`, and that is deliberate. The preference does not mean "encrypt if
