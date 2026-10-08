@@ -334,7 +334,7 @@ public let qualitySuite = TestSuite("Quality", [
         let profile = QualityProfile.profile(for: .auto, displayWidth: 0, displayHeight: 0)
         try expectEqual(profile.encodeWidth, 0)
         try expectEqual(profile.scaleResolutionDownBy, 1.0)
-        try expectEqual(profile.maxBitrateBps, 8_000_000)
+        try expectEqual(profile.maxBitrateBps, QualityProfile.maximumBitrateBps(for: .auto))
     },
 
     TestCase("the adaptive frame rate drops to 5 fps idle and 1 fps deep idle") {

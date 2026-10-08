@@ -422,7 +422,7 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
             match action {
                 SessionAction::SendBye { session_id, reason } => {
                     let _ = conn
-                        .send(msg::BYE, &sig::Bye { session_id: session_id.clone(), reason: reason.clone() })
+                        .send(msg::BYE, &sig::Bye { session_id: session_id.clone(), reason: reason.clone(), relay_used: None, bytes_relayed: None })
                         .await;
                 }
                 SessionAction::SendResume { session_id, session_token } => {

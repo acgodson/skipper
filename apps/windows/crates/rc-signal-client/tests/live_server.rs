@@ -237,7 +237,7 @@ async fn full_signaling_lifecycle_against_the_real_server() {
     assert_ne!(renewed.session_token, ok.session_token, "renew must rotate the token");
 
     // Bye from the controller reaches the host.
-    ctrl.send(msg::BYE, &sig::Bye { session_id: ok.session_id.clone(), reason: "user_ended".into() })
+    ctrl.send(msg::BYE, &sig::Bye { session_id: ok.session_id.clone(), reason: "user_ended".into(), relay_used: None, bytes_relayed: None })
         .await
         .unwrap();
     match next_push(&mut host_rx, "bye").await {
