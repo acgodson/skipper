@@ -16,7 +16,7 @@ public enum EntitlementPresentation {
             }
             return "\(moneyString(cents: cents)) left \u{00B7} \(hostingTime(minutes: minutes))"
         case .exhausted:
-            return "No balance. Top up to keep hosting."
+            return "No hosting time left. This Mac can still connect to other Macs."
         case .unlinked:
             return "Not signed in"
         }
@@ -43,6 +43,9 @@ public enum EntitlementPresentation {
         return "The sharpest picture is available once you add credit."
     }
 
+    /// Where builds already in testers' hands send "Add credit…" and the `exhausted` button.
+    /// No current affordance opens it — paid top-ups are not open, so the app no longer offers
+    /// one — but the path stays alive on the website and lands on the account page.
     public static func topUpURL(webBaseURL: URL) -> URL {
         webBaseURL.appendingPathComponent("credits")
     }

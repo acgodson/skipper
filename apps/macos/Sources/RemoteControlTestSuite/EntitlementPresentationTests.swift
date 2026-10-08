@@ -210,8 +210,9 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
                                         minutesRemaining: 0)
         try expectEqual(
             EntitlementPresentation.statusLine(for: exhausted),
-            "No balance. Top up to keep hosting.",
-            "DESIGN \u{00A7}4 rule 8: the button is the route to the web, not a URL in the copy")
+            "No hosting time left. This Mac can still connect to other Macs.",
+            "it promises nothing the product cannot do: paid top-ups are not open, so the line "
+                + "states the position and the one thing that still works")
 
         let unlinked = try entitlement(status: "unlinked", tier: "base")
         try expectEqual(EntitlementPresentation.statusLine(for: unlinked), "Not signed in")
