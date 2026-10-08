@@ -24,10 +24,10 @@
     },
     "divider": {
       "lightMode": {
-        "borderColor": "c9d2ccff"
+        "borderColor": "7e8c84ff"
       },
       "darkMode": {
-        "borderColor": "566762ff"
+        "borderColor": "74867fff"
       }
     },
     "dropDown": {
@@ -38,7 +38,7 @@
         },
         "hover": {
           "itemBackgroundColor": "e4e4dbff",
-          "itemBorderColor": "c9d2ccff",
+          "itemBorderColor": "7e8c84ff",
           "itemTextColor": "203b3aff"
         },
         "match": {
@@ -52,7 +52,7 @@
         },
         "hover": {
           "itemBackgroundColor": "172322ff",
-          "itemBorderColor": "566762ff",
+          "itemBorderColor": "74867fff",
           "itemTextColor": "edf1e9ff"
         },
         "match": {
@@ -79,14 +79,14 @@
       "lightMode": {
         "defaults": {
           "backgroundColor": "eeeee8ff",
-          "borderColor": "c9d2ccff"
+          "borderColor": "7e8c84ff"
         },
         "placeholderColor": "566762ff"
       },
       "darkMode": {
         "defaults": {
           "backgroundColor": "2b3b37ff",
-          "borderColor": "566762ff"
+          "borderColor": "74867fff"
         },
         "placeholderColor": "b4c2baff"
       }
@@ -129,7 +129,7 @@
       "lightMode": {
         "defaults": {
           "backgroundColor": "eeeee8ff",
-          "borderColor": "c9d2ccff"
+          "borderColor": "7e8c84ff"
         },
         "selected": {
           "backgroundColor": "0e6f7aff",
@@ -139,7 +139,7 @@
       "darkMode": {
         "defaults": {
           "backgroundColor": "2b3b37ff",
-          "borderColor": "566762ff"
+          "borderColor": "74867fff"
         },
         "selected": {
           "backgroundColor": "80cfceff",
@@ -179,7 +179,7 @@
         "lightMode": {
           "defaults": {
             "backgroundColor": "eeeee8ff",
-            "borderColor": "c9d2ccff",
+            "borderColor": "7e8c84ff",
             "textColor": "203b3aff"
           },
           "hover": {
@@ -196,7 +196,7 @@
         "darkMode": {
           "defaults": {
             "backgroundColor": "2b3b37ff",
-            "borderColor": "566762ff",
+            "borderColor": "74867fff",
             "textColor": "edf1e9ff"
           },
           "hover": {
@@ -251,7 +251,7 @@
         },
         "disabled": {
           "backgroundColor": "eeeee8ff",
-          "borderColor": "c9d2ccff"
+          "borderColor": "7e8c84ff"
         }
       },
       "darkMode": {
@@ -269,7 +269,7 @@
         },
         "disabled": {
           "backgroundColor": "2b3b37ff",
-          "borderColor": "566762ff"
+          "borderColor": "74867fff"
         }
       }
     },
