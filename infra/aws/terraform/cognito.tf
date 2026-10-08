@@ -79,6 +79,48 @@ resource "aws_cognito_user_pool_ui_customization" "hosted_ui" {
   depends_on = [aws_cognito_user_pool_domain.this]
 }
 
+# Brand for managed login, which is what managed_login_version = 2 serves. The mechanism is
+# a branding settings document plus base64 image assets — CreateManagedLoginBranding, not
+# CSS: the vocabulary is the keys of the merged settings schema AWS returns from
+# DescribeManagedLoginBrandingByClient, and Cognito ignores anything outside it. Per app
+# client, not pool-wide, which is the one structural difference from version 1: a second
+# client would need its own style. Omitted entirely at version 1, where the branding
+# designer does not render and the resource above is the one that applies.
+#
+# This reaches the warm page canvas and the pill corners that version 1 could not. It still
+# does not reach the 440px form column or the system font: the settings schema has no width
+# and no font-family key at all — infra/aws/README.md "Sign-in" records what that costs.
+#
+# The settings document is partial on purpose. categories.auth is absent so that nothing
+# here can reorder or re-shape an authentication method; signUp, instructions,
+# languageSelector and sessionTimerDisplay are absent because AWS documents them as
+# reserved and not implemented; statusIndicator and alert are absent because the design
+# handoff has no status tokens and Cognito's own defaults are accessible.
+resource "aws_cognito_managed_login_branding" "managed_login" {
+  count = var.cognito_managed_login_version == 2 ? 1 : 0
+
+  user_pool_id = aws_cognito_user_pool.this.id
+  client_id    = aws_cognito_user_pool_client.web.id
+
+  settings = file("${path.module}/branding/managed-login-settings.json")
+
+  asset {
+    category   = "FORM_LOGO"
+    color_mode = "DYNAMIC"
+    extension  = "SVG"
+    bytes      = filebase64("${path.module}/branding/managed-login-mark.svg")
+  }
+
+  asset {
+    category   = "FAVICON_SVG"
+    color_mode = "DYNAMIC"
+    extension  = "SVG"
+    bytes      = filebase64("${path.module}/branding/managed-login-mark.svg")
+  }
+
+  depends_on = [aws_cognito_user_pool_domain.this]
+}
+
 # Public client: no secret, because the page that drives the sign-in is static and served
 # from a bucket. A secret in a page is not a secret, so the authorization code is bound to
 # the browser with PKCE instead (protocol/API.md §1.1, infra/web/README.md).
