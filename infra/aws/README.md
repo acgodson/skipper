@@ -903,58 +903,13 @@ instance, and the site files do not travel through the S3 `config/` prefix.
 
 ### Branding the hosted sign-in
 
-`cognito_managed_login_version` picks both the branding version the domain serves **and**
-which branding resource exists. It is the only switch:
-
-| value | domain serves | resource that applies | the other resource |
-|---|---|---|---|
-| `1` | classic hosted UI | `aws_cognito_user_pool_ui_customization.hosted_ui` | `count = 0` |
-| `2` | managed login | `aws_cognito_managed_login_branding.managed_login` | `count = 0` |
-
-Both are committed and both stay applicable, so the switch goes either way as one line.
-Branding is presentation alone at either version: neither resource touches the tier, the
-domain name, the app client, the flows, the scopes, PKCE, the callback or logout URLs, nonce
-handling, MFA, or the `skipperdesk://link` return path.
-
-**To apply managed login** (the owner; nothing here is applied by an agent):
-
-```
-cd infra/aws/terraform
-terraform plan  -var cognito_managed_login_version=2 -out tfplan
-terraform apply tfplan
-```
-
-Expect exactly three changes: the domain's `managed_login_version` 1 → 2, a new
-`aws_cognito_managed_login_branding.managed_login`, and the version 1 customisation
-destroyed because its `count` goes to 0. The two files version 1 reads stay in the repo,
-which is what makes the rollback a re-apply rather than a rebuild.
-
-The version change is an **in-place update**, not a replacement: `managed_login_version` has
-no `ForceNew` and the provider sends it through `UpdateUserPoolDomain`, so the domain name,
-its CloudFront distribution and its certificate are untouched. The provider then waits for
-the domain to go back to `ACTIVE`, which on a prefix domain is a minute or two, so do not
-interrupt the apply.
-
-**To roll back to version 1**, re-apply with the default, or `-var
-cognito_managed_login_version=1`. **To return to stock AWS**, apply with version 1 and
-`aws_cognito_user_pool_ui_customization.hosted_ui` commented out — or, to confirm the
-rollback target before committing to it,
-`terraform destroy -target aws_cognito_user_pool_ui_customization.hosted_ui`, which leaves a
-stock classic page and nothing else changed. Cognito applies a branding change to the live
-pages immediately, so each of these is visible within seconds, and none of them signs anyone
-out or invalidates a token.
-
-Pin the provider: `aws_cognito_managed_login_branding` arrived in hashicorp/aws **6.12.0**,
-and 6.13.0 fixed reading it back in a pool with more than one app client, which is why this
-stack is on `~> 6.13` rather than the `~> 5.60` it used to be.
-
-#### Version 1 — classic hosted UI
-
-At version 1 the only branding mechanism is `SetUICustomization` — a logo image plus CSS. That is
+`cognito_managed_login_version` is 1, so the domain serves the **classic hosted UI** and the
+only branding mechanism is `SetUICustomization` — a logo image plus CSS. That is
 `aws_cognito_user_pool_ui_customization.hosted_ui`, set pool-wide, reading two reviewable
 files: `branding/cognito-hosted-ui.css` and `branding/cognito-hosted-ui-logo.png` (the
 compass from `web/assets/mark.svg`, rasterised to a 192×192 transparent PNG because the API
-takes PNG/JPG only).
+takes PNG/JPG only). Branding is presentation alone: it does not touch flows, scopes, PKCE,
+callback or logout URLs.
 
 The CSS is **not** free-form. Cognito accepts only the eighteen `*-customizable` class names
 and, within each, only the properties the AWS reference lists for it; the request as a whole
@@ -969,79 +924,13 @@ selectors that are not customizable:
   card keeps its own edge;
 - no `font-family` anywhere, so body text stays Arial rather than the system sans stack.
 
-Managed login (version 2) reaches the **first and third** of those four. It does not reach
-the other two — see below.
+Reaching those four needs managed login (version 2), which is a domain-level switch and a
+different resource. It is not a tier change — the pool is already `ESSENTIALS` — but it
+re-renders every page for every client, so it is its own decision, not a branding tweak.
 
 To preview before applying, render `branding/cognito-hosted-ui.css` against real hosted-UI
 markup rather than trusting a mock: fetch the login page, inject the stylesheet after
-Cognito's own two, and look at it at 1440px and 375px. That is
-`scripts/preview-cognito-branding.sh`.
-
-#### Version 2 — managed login
-
-Managed login is configured through a **branding settings document plus image assets**, not
-CSS, and its vocabulary has nothing in common with version 1's. `aws_cognito_managed_login_branding.managed_login`
-reads two reviewable files:
-
-- `branding/managed-login-settings.json` — the brand table mapped onto the settings schema.
-  Colours are 8-digit RGBA with no leading hash; a `#rrggbb` value is **silently ignored**
-  rather than rejected, which is why the check script looks for it.
-- `branding/managed-login-mark.svg` — the compass, uploaded as `FORM_LOGO` and `FAVICON_SVG`
-  at `color_mode = DYNAMIC`. SVG is accepted natively for both, so unlike version 1 there is
-  no rasterising. It is `web/assets/mark.svg` with `role` and `aria-label` removed: AWS
-  sanitises uploaded SVG against a fixed element and attribute allow-list and those two are
-  not on it. `<title>` is, so the accessible name survives.
-
-The authoritative vocabulary is the merged settings document AWS itself returns, not a guess:
-`aws cognito-idp describe-managed-login-branding-by-client --return-merged-resources` on a
-pool that has a style, and the same document appears verbatim as the example in the
-[`CreateManagedLoginBranding` API reference](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_CreateManagedLoginBranding.html).
-Cognito ignores anything outside that schema, and a request **preserves settings it does not
-mention**, which is why this document is deliberately partial.
-
-It is partial in three ways, all on purpose:
-
-- **`categories.auth` is absent.** That subtree orders and shapes the authentication methods.
-  A branding file must not be able to reach it.
-- **`signUp`, `instructions`, `languageSelector` and `sessionTimerDisplay` are absent**
-  because AWS documents them as reserved and not implemented.
-- **`statusIndicator` and `alert` are absent.** The design handoff has no status tokens and no
-  dark-mode error colour; Cognito's own defaults are accessible, and inventing an error red
-  is worse than inheriting one.
-
-Managed login **is** adaptive, so the handoff's dark column is used in full: every
-`darkMode` block carries it, and `categories.global.colorSchemeMode` is `DYNAMIC`, which
-defers to the viewer's browser preference the same way the website's media query does.
-
-Two values in the document are the only ones AWS does not publish an enumeration for:
-`colorSchemeMode: DYNAMIC` and `spacingDensity: RELAXED`. `DYNAMIC` is the documented spelling
-of adaptive in this same API (it is a valid asset `ColorMode`), and `RELAXED` is the loose end
-of the editor's spacing control. If an apply returns `InvalidParameterException` naming either
-one, set them to the values AWS's own example ships — `LIGHT` and `REGULAR` — and re-apply;
-with `LIGHT` the `darkMode` blocks simply go unused.
-
-**What managed login still cannot do.** Two of the designer's four version 1 casualties
-survive the move, because the settings schema has no key for either:
-
-- **the 440px form column.** There is no width anywhere in the schema.
-  `categories.global.spacingDensity` changes the space between elements, not the column.
-  Managed login's container is wider than the classic 350px, but its width is AWS's number,
-  not ours.
-- **the system sans-serif stack.** There is no `font-family` key anywhere in the schema.
-  Managed login does not use Arial, so the specific version 1 complaint goes away, but the
-  typeface is still AWS's and not the viewer's system font.
-
-Text itself is not editable at either version; AWS supports localisation through a `lang`
-query parameter and nothing else.
-
-The pages cannot be previewed offline — AWS renders them from the settings document, so there
-is no stylesheet to inject and no markup of ours, and a hand-drawn mock-up would prove
-nothing. `scripts/check-managed-login-branding.sh` is what there is instead: it fails on a
-malformed colour, on an `auth` or reserved key, on an SVG element or attribute outside AWS's
-allow-list, on a request over the 2 MB `CreateManagedLoginBranding` ceiling, and on any brand
-pair below its WCAG floor (4.5:1 for text, 3:1 for boundaries and focus rings). It also writes
-a swatch sheet with the measured ratios, which is a token sheet and is labelled as one. The
-pages themselves get verified on the real domain after the owner applies.
+Cognito's own two, and look at it at 1440px and 375px.
 
 ## Caddy
 

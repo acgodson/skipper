@@ -250,7 +250,7 @@ variable "cognito_domain_prefix" {
 }
 
 variable "cognito_managed_login_version" {
-  description = "Branding version the domain serves, and with it which branding resource exists. 1 is the classic hosted UI, branded by aws_cognito_user_pool_ui_customization from CSS plus a PNG logo. 2 is managed login, branded by aws_cognito_managed_login_branding from a settings document plus SVG assets. Each resource is counted out at the other's version, so this is the whole switch, and 1 is the rollback. See infra/aws/README.md \"Branding the hosted sign-in\"."
+  description = "1 is the classic hosted UI, which needs no branding resource. 2 is managed login, which renders from the branding designer and so needs an aws_cognito_managed_login_branding alongside it."
   type        = number
   default     = 1
 
