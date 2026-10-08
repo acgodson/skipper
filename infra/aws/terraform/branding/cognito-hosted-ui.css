@@ -1,0 +1,117 @@
+/* Classic hosted UI (ManagedLoginVersion 1). Only the *-customizable classes and the
+   properties listed per class in the AWS "Customizing hosted UI (classic) branding"
+   reference are accepted; anything else is dropped or rejected. Budget is 3 KB of CSS
+   and 100 KB of logo. Web tokens live in web/assets/styles.css. */
+
+.background-customizable {
+  background-color: #faf9f6;
+}
+
+.banner-customizable {
+  padding: 36px 0px 20px 0px;
+  background-color: #faf9f6;
+}
+
+.logo-customizable {
+  max-width: 24%;
+  max-height: 24%;
+}
+
+.label-customizable {
+  font-weight: 600;
+  color: #203b3a;
+}
+
+.textDescription-customizable {
+  display: block;
+  font-size: 15px;
+  padding-top: 4px;
+  padding-bottom: 22px;
+  color: #566762;
+}
+
+.inputField-customizable {
+  width: 100%;
+  height: 48px;
+  color: #203b3a;
+  background-color: #eeeee8;
+  border: 1px solid #c9d2cc;
+}
+
+.inputField-customizable:focus {
+  border-color: #0e6f7a;
+  outline: 2px solid #0e6f7a;
+}
+
+.submitButton-customizable {
+  font-size: 16px;
+  font-weight: bold;
+  margin: 26px 0px 14px 0px;
+  width: 100%;
+  height: 50px;
+  color: #ffffff;
+  background-color: #0e6f7a;
+}
+
+.submitButton-customizable:hover {
+  color: #ffffff;
+  background-color: #0a555e;
+}
+
+.redirect-customizable {
+  color: #566762;
+}
+
+.errorMessage-customizable {
+  margin: 0px 0px 18px 0px;
+  padding: 12px;
+  font-size: 15px;
+  width: 100%;
+  background: #f7e9e7;
+  border: 1px solid #a33630;
+  color: #a33630;
+  box-sizing: border-box;
+}
+
+.passwordCheck-valid-customizable {
+  color: #286945;
+}
+
+.passwordCheck-notValid-customizable {
+  color: #a33630;
+}
+
+.idpDescription-customizable {
+  display: block;
+  font-size: 15px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  color: #566762;
+}
+
+.idpButton-customizable {
+  height: 50px;
+  width: 100%;
+  text-align: center;
+  margin-bottom: 12px;
+  color: #203b3a;
+  background-color: #eeeee8;
+  border-color: #c9d2cc;
+}
+
+.idpButton-customizable:hover {
+  color: #203b3a;
+  background-color: #e4e4db;
+}
+
+.socialButton-customizable {
+  height: 50px;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 12px;
+}
+
+.legalText-customizable {
+  font-size: 12px;
+  color: #566762;
+}
