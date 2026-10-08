@@ -1,7 +1,12 @@
 /* Classic hosted UI (ManagedLoginVersion 1). Only the *-customizable classes and the
    properties listed per class in the AWS "Customizing hosted UI (classic) branding"
    reference are accepted; anything else is dropped or rejected. Budget is 3 KB of CSS
-   and 100 KB of logo. Web tokens live in web/assets/styles.css. */
+   and 100 KB of logo. Web tokens live in web/assets/styles.css.
+
+   One declaration sits outside that reference: border-color on the submit button, which
+   AWS's own default sheet sets (to Bootstrap blue) but its property table omits. Without
+   it the teal action keeps a blue edge. Extra keys are documented as "not reflected"
+   rather than rejected, so the cost if it is ignored is the blue edge we already have. */
 
 .background-customizable {
   background-color: #faf9f6;
@@ -51,11 +56,13 @@
   height: 50px;
   color: #ffffff;
   background-color: #0e6f7a;
+  border-color: #0e6f7a;
 }
 
 .submitButton-customizable:hover {
   color: #ffffff;
   background-color: #0a555e;
+  border-color: #0a555e;
 }
 
 .redirect-customizable {
