@@ -40,7 +40,7 @@
   height: 48px;
   color: #203b3a;
   background-color: #eeeee8;
-  border: 1px solid #c9d2cc;
+  border: 1px solid #7e8c84;
 }
 
 .inputField-customizable:focus {
@@ -103,7 +103,7 @@
   margin-bottom: 12px;
   color: #203b3a;
   background-color: #eeeee8;
-  border-color: #c9d2cc;
+  border-color: #7e8c84;
 }
 
 .idpButton-customizable:hover {
