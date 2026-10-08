@@ -78,7 +78,7 @@ public enum EntitlementPresentation {
         switch reason {
         case "unlinked": return "That Mac isn't signed in to SkipperDesk yet."
         case "trial_expired": return "That Mac's trial has ended."
-        case "no_balance": return "That Mac's account has no balance."
+        case "no_balance": return "That Mac has no credit left."
         case "concurrency": return "That account is already in a session on another Mac."
         case "suspended": return "That Mac's account is suspended."
         default: return fallback

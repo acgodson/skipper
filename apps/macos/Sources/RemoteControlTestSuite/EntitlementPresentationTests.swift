@@ -27,7 +27,7 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
             "That Mac's trial has ended.")
         try expectEqual(
             EntitlementPresentation.entitlementSentence(reason: "no_balance", fallback: "fallback"),
-            "That Mac's account has no balance.")
+            "That Mac has no credit left.")
         try expectEqual(
             EntitlementPresentation.entitlementSentence(reason: "concurrency", fallback: "fallback"),
             "That account is already in a session on another Mac.")
@@ -90,7 +90,7 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
         try expectEqual(
             EntitlementPresentation.connectFailureSentence(
                 code: "entitlement", reason: "no_balance", retryAfterSec: nil, fallback: "old wording"),
-            "That Mac's account has no balance.")
+            "That Mac has no credit left.")
         try expectEqual(
             EntitlementPresentation.connectFailureSentence(
                 code: "entitlement", reason: nil, retryAfterSec: nil, fallback: "old wording"),
