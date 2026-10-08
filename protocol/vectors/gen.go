@@ -255,6 +255,11 @@ func main() {
 		"the host proved the code but its owner declined the connection, or did not answer in 30 s",
 		"", "", ts,
 		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByeDeclined})
+	add("bye_host_relay_report", "signaling", p.TypeBye,
+		"v5 additive: the host's own measurement of the route it took. Read only from the host's bye, and never priced (PROTOCOL.md §2.14.1). A bye without these two fields is unchanged — every other bye vector here proves it",
+		"", "", ts,
+		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByeUserEnded,
+			RelayUsed: boolPtr(true), BytesRelayed: int64Ptr(41_377_280)})
 	add("bye_displaced", "signaling", p.TypeBye,
 		"v4: the server ended the session because the device id was restored to its certified key",
 		"", "", ts,
@@ -389,6 +394,10 @@ func main() {
 }
 
 func intPtr(v int) *int { return &v }
+
+func boolPtr(v bool) *bool { return &v }
+
+func int64Ptr(v int64) *int64 { return &v }
 
 func write(path string, v any) {
 	b, err := json.MarshalIndent(v, "", "  ")

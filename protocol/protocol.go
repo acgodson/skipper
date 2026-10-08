@@ -329,9 +329,30 @@ type PeerState struct {
 	Attached  bool   `json:"attached"`
 }
 
+// Bye's two relay fields are a measurement and nothing else. They are read only from
+// the host's own bye — the host is the party that would pay, so a controller cannot
+// inflate a host's record — and they reach no pricing path: policy.Charge takes a
+// duration and a carry and has no argument that could carry them (API.md §5.4).
+// Both are omitted when absent, so every bye that does not report keeps the bytes it
+// had before this field existed.
 type Bye struct {
-	SessionID string `json:"sessionId"`
-	Reason    string `json:"reason"`
+	SessionID    string `json:"sessionId"`
+	Reason       string `json:"reason"`
+	RelayUsed    *bool  `json:"relayUsed,omitempty"`
+	BytesRelayed *int64 `json:"bytesRelayed,omitempty"`
+}
+
+// RelayReport is the host's claim about the route its own media took, normalised:
+// bytes survive only alongside a true relayUsed, and a negative count is dropped
+// rather than stored. A bye that claims nothing reports nothing.
+func (b Bye) RelayReport() (relayUsed bool, bytesRelayed *int64) {
+	if b.RelayUsed == nil || !*b.RelayUsed {
+		return false, nil
+	}
+	if b.BytesRelayed == nil || *b.BytesRelayed < 0 {
+		return true, nil
+	}
+	return true, b.BytesRelayed
 }
 
 // RefreshCode replaces the calling device's access-code verifier and kills all of its sessions and tokens.

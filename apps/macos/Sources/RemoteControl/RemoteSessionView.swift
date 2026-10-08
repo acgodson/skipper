@@ -181,10 +181,12 @@ private struct QualityMenu: View {
             )) {
                 ForEach(QualityMode.allCases) { mode in
                     Text(mode.displayName).tag(mode)
+                        .disabled(!model.qualityModeAvailable(mode))
                 }
             }
             .pickerStyle(.inline)
             .labelsHidden()
+            if let note = model.qualityCeilingNote { Text(note) }
         } label: {
             Label(model.settings.qualityMode.displayName, systemImage: "slider.horizontal.3")
                 .font(SkipperFont.caption.weight(.medium))

@@ -365,11 +365,22 @@ fn is_zero_i32(v: &i32) -> bool {
     *v == 0
 }
 
+/// The two relay fields are host-reported measurement, never a price (PROTOCOL.md §2.14,
+/// API.md §5.4). Both are omitted when absent, so a bye that reports nothing encodes to
+/// exactly the bytes it did before the fields existed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bye {
     #[serde(rename = "sessionId")]
     pub session_id: String,
     pub reason: String,
+    #[serde(rename = "relayUsed", default, skip_serializing_if = "Option::is_none")]
+    pub relay_used: Option<bool>,
+    #[serde(
+        rename = "bytesRelayed",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub bytes_relayed: Option<i64>,
 }
 
 pub type RefreshCode = CodeVerifier;

@@ -32,6 +32,17 @@ public enum EntitlementPresentation {
         }
     }
 
+    // MARK: - API.md §4.4 quality ceiling
+
+    /// Why a quality mode is not offered, or nil when every mode is. Courtesy only: the
+    /// host enforces the ceiling whatever a controller's menu shows (API.md §4.4). The
+    /// sentence names what to do and never the mechanism — DESIGN §4 rules 2 and 8, so no
+    /// "entitlement", no "tier", no bitrate.
+    public static func qualityUnavailableNote(ceiling: QualityWireMode) -> String? {
+        guard ceiling.rank < QualityWireMode.sharp.rank else { return nil }
+        return "The sharpest picture is available once you add credit."
+    }
+
     public static func topUpURL(webBaseURL: URL) -> URL {
         webBaseURL.appendingPathComponent("credits")
     }

@@ -225,13 +225,100 @@ public let qualitySuite = TestSuite("Quality", [
         }
     },
 
-    TestCase("every mode keeps the 8 Mbps burst ceiling (PLAN.md §5)") {
+    // This replaces a test that asserted every mode kept the 8 Mbps burst. That was
+    // true and was the bug: it made "quality" a resolution control, so gating it saved
+    // no bandwidth at all, and bitrate is the dominant variable cost (BETA.md §2.3).
+    TestCase("each mode has its own bitrate ceiling, and sharp alone keeps the burst") {
+        try expectEqual(QualityProfile.maximumBitrateBps(for: .sharp), 8_000_000)
+        try expectEqual(QualityProfile.maximumBitrateBps(for: .auto), 2_000_000)
+        try expectEqual(QualityProfile.maximumBitrateBps(for: .smooth), 1_000_000)
+    },
+
+    TestCase("the ceiling falls as the ladder does, so a tier always costs less than the one above") {
+        for (lower, upper) in zip(QualityWireMode.ladder, QualityWireMode.ladder.dropFirst()) {
+            let low = QualityProfile.maximumBitrateBps(for: lower)
+            let high = QualityProfile.maximumBitrateBps(for: upper)
+            try expectEqual(low < high, true, "\(lower) must cost less than \(upper)")
+        }
+    },
+
+    // The trial's whole worst case is 5 hours at the `auto` ceiling, fully relayed
+    // (BETA.md §1.1). That bound is what the live 50¢ grant was sized against, so a
+    // change to this number silently changes what a trial costs.
+    TestCase("auto's ceiling keeps the trial's worst case inside the margin that covers it") {
+        let gbPerRelayedHour = Double(QualityProfile.maximumBitrateBps(for: .auto)) / 1e6 * 0.45
+        let worstCaseTrial = gbPerRelayedHour * 0.09 * 5.0
+        try expectEqual(worstCaseTrial <= 0.4325, true,
+                        "5 trial hours at auto cost $\(worstCaseTrial), over the $0.4325 margin")
+    },
+
+    TestCase("the floor is a quarter of the ceiling, capped, so a weak link can still adapt") {
+        try expectEqual(QualityProfile.minimumBitrateBps(for: .sharp), 400_000)
+        try expectEqual(QualityProfile.minimumBitrateBps(for: .auto), 400_000)
+        try expectEqual(QualityProfile.minimumBitrateBps(for: .smooth), 250_000)
         for mode in QualityWireMode.allCases {
             let profile = QualityProfile.profile(for: mode, displayWidth: 3024, displayHeight: 1964)
-            try expectEqual(profile.maxBitrateBps, 8_000_000,
-                            "\(mode) must not hard-cap below the burst; BWE picks the steady rate")
-            try expectEqual(profile.minBitrateBps, 400_000)
+            try expectEqual(profile.minBitrateBps < profile.maxBitrateBps, true,
+                            "\(mode) has no room between its floor and its ceiling")
         }
+    },
+
+    TestCase("a profile carries its mode's own ceiling, display size or not") {
+        for mode in QualityWireMode.allCases {
+            let sized = QualityProfile.profile(for: mode, displayWidth: 3024, displayHeight: 1964)
+            let unsized = QualityProfile.profile(for: mode, displayWidth: 0, displayHeight: 0)
+            try expectEqual(sized.maxBitrateBps, QualityProfile.maximumBitrateBps(for: mode))
+            try expectEqual(unsized.maxBitrateBps, QualityProfile.maximumBitrateBps(for: mode),
+                            "\(mode) fell back to the burst when the display was unknown")
+        }
+    },
+
+    // The gate: a ceiling only ever lowers what was asked for, and anything the build
+    // does not recognise resolves to `auto`, never to the top (API.md §4.4).
+    TestCase("a trial's auto ceiling refuses sharp, and never raises what was asked") {
+        try expectEqual(QualityWireMode.sharp.clamped(to: .auto), .auto)
+        try expectEqual(QualityWireMode.smooth.clamped(to: .sharp), .smooth)
+        for requested in QualityWireMode.ladder {
+            for ceiling in QualityWireMode.ladder {
+                let applied = requested.clamped(to: ceiling)
+                try expectEqual(applied.rank <= min(requested.rank, ceiling.rank), true,
+                                "\(requested) under \(ceiling) gave \(applied)")
+            }
+        }
+    },
+
+    TestCase("an absent or unrecognised ceiling is auto, so the gate fails closed") {
+        try expectEqual(QualityWireMode.ceiling(wire: nil), .auto)
+        try expectEqual(QualityWireMode.ceiling(wire: ""), .auto)
+        try expectEqual(QualityWireMode.ceiling(wire: "platinum"), .auto)
+        try expectEqual(QualityWireMode.ceiling(wire: "SHARP"), .sharp)
+    },
+
+    // The acceptance the gate exists for: a trial host that is sent quality{sharp} —
+    // by an honest controller or by one with its picker patched out — configures auto.
+    TestCase("a trial host asked for sharp configures auto, not sharp") {
+        let applied = QualityWireMode.permitted(requested: .sharp, stated: .auto, fresh: true)
+        try expectEqual(applied, .auto,
+                        "a trial host configured \(applied); the host-side gate is open")
+
+        let profile = QualityProfile.profile(for: applied, displayWidth: 3840, displayHeight: 2160)
+        try expectEqual(profile.encodeWidth <= 1920, true)
+        try expectEqual(profile.maxBitrateBps <= 2_000_000, true)
+    },
+
+    TestCase("a stale or missing entitlement clamps to auto rather than trusting the ask") {
+        try expectEqual(QualityWireMode.permitted(requested: .sharp, stated: .sharp, fresh: false), .auto)
+        try expectEqual(QualityWireMode.permitted(requested: .sharp, stated: nil, fresh: true), .auto)
+        try expectEqual(QualityWireMode.permitted(requested: .sharp, stated: nil, fresh: false), .auto)
+    },
+
+    TestCase("paid credit asked for sharp gets sharp") {
+        try expectEqual(QualityWireMode.permitted(requested: .sharp, stated: .sharp, fresh: true), .sharp)
+    },
+
+    TestCase("a ceiling never forces a cheaper ask upward") {
+        try expectEqual(QualityWireMode.permitted(requested: .smooth, stated: .sharp, fresh: true), .smooth)
+        try expectEqual(QualityWireMode.permitted(requested: .smooth, stated: .auto, fresh: false), .smooth)
     },
 
     TestCase("encode dimensions are always even (H.264 4:2:0)") {

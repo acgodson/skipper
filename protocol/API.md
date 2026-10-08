@@ -402,6 +402,7 @@ session right now, and what should the UI say if not?**
 | `minutesRemaining` | int | no | Whole minutes of hosting the balance still buys, at the account's rate. Present whenever `balanceCents` is. Computed server-side: the client must not divide a balance by a rate (§4.2). |
 | `trialEndsAt` | int64 | no | Unix ms. Present only when `status` is `trial`: the moment the account's starting credits expire. The grant is one per account, so every linked device on the account reports the same value. |
 | `concurrency` | object | yes | `{"maxActivePairs": 1}`. The server states the limit; the client renders it. |
+| `limits` | object | yes | `{"maxQuality": "auto"}`. The ceilings this account may ask for, in the client's own vocabulary. Always present. §4.4. |
 | `refreshAfterSec` | int | yes | How long this answer may be cached. Currently **60**. |
 
 ```json
@@ -412,6 +413,7 @@ session right now, and what should the UI say if not?**
   "minutesRemaining": 300,
   "trialEndsAt": 1756000000000,
   "concurrency": {"maxActivePairs": 1},
+  "limits": {"maxQuality": "auto"},
   "refreshAfterSec": 60
 }
 ```
@@ -426,8 +428,33 @@ cents-per-hour, lock-out behaviour and tier contents all change server-side with
 release (SCOPE §6, §7).
 
 The client's whole contract is: render `status`, `tier`, `balanceCents`, `minutesRemaining`,
-`trialEndsAt`; re-fetch after `refreshAfterSec`; and, on `error{entitlement}` from signaling,
-re-fetch once and render the reason.
+`trialEndsAt`; **clamp what it configures to `limits`**; re-fetch after `refreshAfterSec`; and,
+on `error{entitlement}` from signaling, re-fetch once and render the reason.
+
+### 4.4 `limits.maxQuality` — a ceiling the host enforces
+
+`maxQuality` is one of the `quality` ctrl message's own wire values (PROTOCOL.md §5),
+ordered **`smooth` < `auto` < `sharp`**. Open enum: a client that meets a value it does not
+know treats the ceiling as `auto`, never as the top of the ladder.
+
+| `status` | `maxQuality` | Why |
+|---|---|---|
+| `trial` | `auto` | The trial's worst case is priced at the `auto` ceiling. §7.2's grant was sized against that number, so a trial that could ask for `sharp` would cost four times what it was granted for (BETA.md §1.1) |
+| `active` | `sharp` | A paid hour is charged whatever route and whatever bitrate it takes, and at the hourly rate egress alone cannot break the unit economics (PHASE5.md §3.3) |
+| `exhausted`, `unlinked` | `auto` | Moot — hosting is refused — and if it is ever read it must fail closed |
+
+**Why this is not carried by `tier`.** `tier` is a purchased feature set; `base` and `skipper`
+are both charged the same per hour and a trial and a paying account are both `base`. The
+quality ceiling tracks `status`, not `tier`, so folding it into `tier` would make the client
+hold a tier→bitrate table — the one thing §4.2 forbids — and would wrongly promise the top
+tier to any future `skipper` account still inside its trial. `limits` is an object so a later
+ceiling joins it without another top-level field.
+
+**The host is the enforcement point, and it is the only one that matters.** The host owns the
+encoder: it clamps the mode a controller asks for to its own cached `maxQuality` before it
+configures anything, and a cache older than `refreshAfterSec` clamps to `auto`. A patched
+controller can send any mode it likes and the host simply never configures it. The
+controller's own greyed-out menu item is courtesy, not the gate.
 
 ### 4.3 Entitlement reasons
 
@@ -468,8 +495,8 @@ sessions of all devices on the account.
 | `role` | string | yes | The **caller's** role in that session: `host` or `controller`. |
 | `startedAt` | int64 | yes | Unix ms at which the host relayed its first `sdp` for the session — the moment the session was proved and metering began (PROTOCOL.md §3.4). A session that never got there has no record. |
 | `endedAt` | int64 | no | Unix ms, session `closed`, or for a row closed by reconciliation (§6.2) the last time signaling was seen holding it. Absent while the session is still live. |
-| `relayUsed` | bool | yes | Whether any traffic went through a TURN relay. Always present, including `false`. |
-| `bytesRelayed` | int64 | no | Bytes relayed through TURN. Absent when unknown or when `relayUsed` is `false`. Never the peer-to-peer byte count — the server cannot know it. |
+| `relayUsed` | bool | yes | Whether any traffic went through a TURN relay, **as the host reported it on `bye`** (PROTOCOL.md §2.14). Always present, including `false`. A measurement, never billed — §5.4. |
+| `bytesRelayed` | int64 | no | Bytes relayed through TURN, **as the host reported them**. Absent when unknown or when `relayUsed` is `false`. Never the peer-to-peer byte count — the server cannot know it. A measurement, never billed — §5.4. |
 
 Ordering is `startedAt` descending. A session that is still live appears with no `endedAt` and
 may appear again, completed, in a later query.
@@ -506,6 +533,25 @@ the feature that is wrong (SCOPE §2, principle 2).
 
 ---
 
+### 5.4 `relayUsed` and `bytesRelayed` are host-reported and are not billed
+
+Both values arrive on the host's `bye` (PROTOCOL.md §2.14.1), filled from the ICE candidate
+pair the host's own WebRTC stack settled on. **They are recorded so the relay fraction in
+`docs/PHASE5.md` §3 can stop being an assumption. Nothing prices them, and nothing may.**
+
+Read this before building anything on these two columns:
+
+| | |
+|---|---|
+| Who reports it | the **host** — the party whose account would pay. Deliberate: the only self-report accepted is the one that costs its author. The same two fields on a **controller's** `bye` are discarded, so a controller cannot write a number into a host's record |
+| What it is worth as evidence | **nothing.** It is a claim. A host that under-reports under-pays nothing today, because nothing is charged for it; what it can do is distort our own cost model, and that is the whole exposure |
+| What charges it | nothing. A session is billed on its duration alone (§5.2). `server/internal/policy.Charge` takes a duration and the account's carry and has **no parameter** that could carry a relay figure, so pricing it would mean changing that signature — which is the point of writing it this way |
+| What would make it evidence | coturn's own `usage:` accounting, which names the TURN username `<expiry>:<sessionId>` and the byte counters, so bytes join back to a session. `docs/PHASE5.md` §8.2 has the state of that |
+| The bar before any relay price | coturn-side accounting ingested, **and** at least 20 sessions where the host's claim and coturn's count agree within 10%. Until then a relay price would be a price on an unverified self-report |
+
+A session whose `relayUsed` is `true` and one whose is `false` cost exactly the same for the
+same duration. If that ever stops being true, this section is the thing that was violated.
+
 ## 6. Internal surface (not part of the client contract)
 
 The two services talk over a private path. It is documented here only so that both are written
@@ -532,7 +578,7 @@ rc-api's internal listener:
 | `POST /internal/devices/{deviceId}/cert` | `{pubkey}` | *v5.* The only lookup that signs: called by signaling after a `hello` signature verified (PROTOCOL.md §2.4). `200 {deviceId, pubkey, codeEpoch, idCert}` when `pubkey` owns `deviceId`; `404 not_found`, with no signature made, when the id is unknown or bound to another key. |
 | `POST /internal/devices/{deviceId}/epoch` | `{}` | Bumps `codeEpoch` (PROTOCOL.md §2.15 `refresh_code`, §3.2 session-token epoch). Answers the updated `{deviceId, pubkey, codeEpoch}`; unknown id is `404`. |
 | `POST /internal/sessions/start` | `sessionId` (32 hex), `hostDeviceId`, `controllerDeviceId`, `startedAt` | Opens the accounting record and claims the host's concurrency slot. Sent when the host's first `sdp` is relayed (PROTOCOL.md §3.4), not at `connect_ok`. `402 entitlement` when the account's slot is already taken; signaling then ends the session. |
-| `POST /internal/sessions/stop` | `sessionId` (32 hex), `endedAt`, `relayUsed`, `bytesRelayed`, `reason` (a PROTOCOL.md §2.14 reason, else `400`) | Closes the record, settles the charge against the balance (§5.2), frees the slot. A stop for a record that is already closed is `204` and charges nothing. |
+| `POST /internal/sessions/stop` | `sessionId` (32 hex), `endedAt`, `relayUsed`, `bytesRelayed` (both as the **host** reported them on `bye`, measurement only — §5.4), `reason` (a PROTOCOL.md §2.14 reason, else `400`) | Closes the record, settles the charge against the balance (§5.2), frees the slot. A stop for a record that is already closed is `204` and charges nothing. |
 | `GET /internal/entitlement/{deviceId}` | — | Gates `connect_req`. `200` with the §4.1 body when the host may open a session; otherwise `402 entitlement` with the §4.3 `reason`. An id the registry does not hold, or a registered device that is not linked, is `unlinked`. This call never creates a record. |
 | `GET /internal/pairs/{hostDeviceId}/{controllerDeviceId}` | — | *v5.* `{known: bool}`: whether this controller has had a metered session with this host — a session row exists (`POST /internal/sessions/start`). Signaling asks it for a `connect_req` that is about to be delivered, so a known pair spends its own rate-limit bucket instead of the host's (PROTOCOL.md §3.3). Durable: it is the session table, so it survives restarts of either service. Malformed ids are `400`. |
 | `POST /internal/releases` | The §6.3 release body: `platform`, `arch`, `channel` (default `stable`), `version`, `build`, `minimumOS`, `url`, `sha256`, `size`, optional `notes`, `critical` | Publishes a §10 release. Republishing a build on the same track replaces it. `201` with the §10.1 body. **This is how a release reaches production**; `POST /v1/dev/releases` (§6.3) is `404` under any identity provider but `dev`. It lives here rather than on the public listener because this surface is already loopback-only and token-authenticated: a public authenticated publish endpoint would be new attack surface for one call the owner makes by hand. The caller is `scripts/publish-release.sh`, over SSM. |

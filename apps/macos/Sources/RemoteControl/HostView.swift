@@ -200,12 +200,14 @@ struct QualityPicker: View {
             )) {
                 ForEach(QualityMode.allCases) { mode in
                     Text(mode.displayName).tag(mode)
+                        .disabled(!model.qualityModeAvailable(mode))
                 }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
 
             SkipperNote(model.settings.qualityMode.detail)
+            if let note = model.qualityCeilingNote { SkipperNote(note) }
         }
     }
 }

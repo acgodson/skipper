@@ -102,4 +102,19 @@ extension AppModel {
         let id = settings.savedPeerDeviceID
         return id.isEmpty ? "the other Mac" : DeviceID.formatted(id)
     }
+
+    /// The ceiling this Mac's own account states (`API.md` §4.4). Greying the picker from
+    /// it is courtesy: it is right in the shape this product is actually used in — both
+    /// Macs on one account — and the host enforces the ceiling regardless.
+    var qualityCeiling: QualityWireMode {
+        QualityWireMode.ceiling(wire: account?.entitlement?.value.limits.maxQuality)
+    }
+
+    func qualityModeAvailable(_ mode: QualityMode) -> Bool {
+        mode.wireMode.rank <= qualityCeiling.rank
+    }
+
+    var qualityCeilingNote: String? {
+        EntitlementPresentation.qualityUnavailableNote(ceiling: qualityCeiling)
+    }
 }

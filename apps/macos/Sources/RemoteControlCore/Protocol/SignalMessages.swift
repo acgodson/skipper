@@ -489,10 +489,22 @@ public struct PakePayload: Codable, Equatable {
     public var message: PakeMessage { PakeMessage(step: step, payload: payload) }
 }
 
+/// The two relay fields are host-reported measurement and are never priced
+/// (PROTOCOL.md §2.14, API.md §5.4). Both encode only when present, so a bye that
+/// reports nothing is byte-identical to one sent before the fields existed.
 public struct ByePayload: Codable, Equatable {
     public var sessionId: String
     public var reason: String
-    public init(sessionId: String, reason: String) { self.sessionId = sessionId; self.reason = reason }
+    public var relayUsed: Bool?
+    public var bytesRelayed: Int64?
+
+    public init(sessionId: String, reason: String,
+                relayUsed: Bool? = nil, bytesRelayed: Int64? = nil) {
+        self.sessionId = sessionId
+        self.reason = reason
+        self.relayUsed = relayUsed
+        self.bytesRelayed = bytesRelayed
+    }
 }
 
 public struct RefreshCodeOKPayload: Codable, Equatable {

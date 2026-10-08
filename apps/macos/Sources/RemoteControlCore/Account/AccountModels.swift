@@ -64,17 +64,32 @@ public struct Entitlement: Decodable, Equatable {
         public init(maxActivePairs: Int) { self.maxActivePairs = maxActivePairs }
     }
 
+    /// The server's ceilings (`API.md` §4.4). `maxQuality` is kept as the wire string,
+    /// not an enum, so a value this build does not know survives decoding and is resolved
+    /// by `QualityWireMode.ceiling(wire:)` — which answers `auto` for it.
+    public struct Limits: Decodable, Equatable {
+        public let maxQuality: String?
+
+        public init(maxQuality: String?) { self.maxQuality = maxQuality }
+    }
+
     public let status: EntitlementStatus
     public let tier: String
     public let balanceCents: Int64?
     public let minutesRemaining: Int?
     public let trialEndsAt: Int64?
     public let concurrency: Concurrency
+    public let limits: Limits
     public let refreshAfterSec: Int
 
     private enum CodingKeys: String, CodingKey {
-        case status, tier, balanceCents, minutesRemaining, trialEndsAt, concurrency, refreshAfterSec
+        case status, tier, balanceCents, minutesRemaining, trialEndsAt, concurrency, limits,
+             refreshAfterSec
     }
+
+    /// The highest mode this account may be configured to. An absent `limits` is a server
+    /// older than the field, and answers `auto`: fail closed, never `sharp`.
+    public var maxQuality: QualityWireMode { QualityWireMode.ceiling(wire: limits.maxQuality) }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -85,6 +100,8 @@ public struct Entitlement: Decodable, Equatable {
         trialEndsAt = try container.decodeIfPresent(Int64.self, forKey: .trialEndsAt)
         concurrency = try container.decodeIfPresent(Concurrency.self, forKey: .concurrency)
             ?? Concurrency(maxActivePairs: 1)
+        limits = try container.decodeIfPresent(Limits.self, forKey: .limits)
+            ?? Limits(maxQuality: nil)
         refreshAfterSec = try container.decodeIfPresent(Int.self, forKey: .refreshAfterSec) ?? 60
     }
 }

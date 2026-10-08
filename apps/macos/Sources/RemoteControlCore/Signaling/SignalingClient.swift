@@ -530,9 +530,12 @@ public final class SignalingClient {
                                 sdpMid: sdpMid, sdpMLineIndex: sdpMLineIndex))
     }
 
-    public func sendBye(sessionID: String, reason: String) async throws {
+    public func sendBye(sessionID: String, reason: String,
+                        relayUsed: Bool? = nil, bytesRelayed: Int64? = nil) async throws {
         try await sendFireAndForget(type: Wire.MessageType.bye,
-                                    payload: ByePayload(sessionId: sessionID, reason: reason))
+                                    payload: ByePayload(sessionId: sessionID, reason: reason,
+                                                        relayUsed: relayUsed,
+                                                        bytesRelayed: bytesRelayed))
     }
 
     public func sendPake(sessionID: String, message: PakeMessage) async throws {
