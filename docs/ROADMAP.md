@@ -111,6 +111,13 @@ These are observed on a second machine during beta, not before.
 | Apple Silicon only at launch (decided 2026-10-07) | `scripts/build.sh` is `ARCH="arm64"`; the app will not launch on an Intel Mac at all. Accepted — the first testers are on Apple Silicon. The download page says so plainly |
 | The download page will detect the visitor's machine | Only once there is more than one build to choose between: Intel, Apple Silicon, and later Windows. Pointless with one build, and a wrong guess is worse than a plain statement |
 
+## Owner decisions, recorded so they are not re-raised
+
+| Decision | Note |
+|---|---|
+| **MFA on the owner's own AWS admin access: deferred, deliberately** (2026-10-08) | `SkipperDeskAdmin` in Identity Center is the owner's own login, not a user-facing control; nobody testing the product touches it. The fifth review ranked it highest because that identity can stop the audit trail, delete audit versions and schedule the id-cert key for deletion, and those paths are *detectable* but not *preventable* from inside the account. The owner will add it at their convenience. **Do not raise again.** |
+| Cognito user-pool MFA stays `OPTIONAL` | Users' sign-in friction during beta. The email code at sign-up is address verification, not a second factor — worth remembering when MFA for users is eventually considered |
+
 ## Smaller items, not blocking
 
 | Item | Note |
