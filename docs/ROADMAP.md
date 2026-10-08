@@ -54,6 +54,9 @@ A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone 
 | Audit finding fixed: the refusal at zero is read from whether the account was ever paid for, not from a timestamp that is never cleared; the host refreshes on an interval and at session end; a session ended for money says `no_balance` rather than blaming the other Mac | done |
 | **🖐 Before the link goes to anyone: add the `support@skipperdesk.app` forward at Namecheap.** The account page names it as the one way to reach a human, and the MX records are already live — only the rule is missing. Deployed 2026-10-08 with the owner aware | owner |
 | `bye{error}` still conflates "that account is already in a session" with a brief rc-api outage. A bye reason cannot carry the sentence — the cause has to be threaded through `reports`, `entitlement` and `hub`. Scoped out deliberately rather than guessed at | deferred |
+| **Shipped.** `SkipperDesk-1.0.0.dmg` signed, notarised and stapled, on CloudFront, published to the update feed. Downloaded as a stranger would and verified: hash matches the feed, `spctl` says `source=Notarized Developer ID`, the stapled ticket validates offline, and the publish path still 404s from the internet | done |
+| `package-dmg.sh --release` now refuses an image that is not signed **and** notarised. It once produced a notarised app inside an **unsigned image** — Gatekeeper assesses the image first, so it would have warned on a build that was in fact fine. Cause: `VAR=x ./build.sh && ./package-dmg.sh` sets `VAR` for `build.sh` alone | done |
+| 5.3 remainder: `ice_servers` on a live session, media over the relay, two real NATs — all three fall out of the first session with someone on another network | waiting on a tester |
 | 5.5 cutover, legacy box off | queued |
 
 ## Queued, in order
