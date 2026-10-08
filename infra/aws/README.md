@@ -901,6 +901,37 @@ is there for a local origin. Only `https://<web domain>/link` is registered: Clo
 **Caddy serves `api.skipperdesk.app` and nothing else.** The apex and `www` never reach this
 instance, and the site files do not travel through the S3 `config/` prefix.
 
+### Branding the hosted sign-in
+
+`cognito_managed_login_version` is 1, so the domain serves the **classic hosted UI** and the
+only branding mechanism is `SetUICustomization` — a logo image plus CSS. That is
+`aws_cognito_user_pool_ui_customization.hosted_ui`, set pool-wide, reading two reviewable
+files: `branding/cognito-hosted-ui.css` and `branding/cognito-hosted-ui-logo.png` (the
+compass from `web/assets/mark.svg`, rasterised to a 192×192 transparent PNG because the API
+takes PNG/JPG only). Branding is presentation alone: it does not touch flows, scopes, PKCE,
+callback or logout URLs.
+
+The CSS is **not** free-form. Cognito accepts only the eighteen `*-customizable` class names
+and, within each, only the properties the AWS reference lists for it; the request as a whole
+must stay under 135 KB, with 3 KB the practical CSS ceiling and 100 KB the logo ceiling. Four
+things the website does are therefore **out of reach at version 1**, because they live on
+selectors that are not customizable:
+
+- the page surround stays Cognito's `#909090` grey — `background-customizable` is the card,
+  and `body` cannot be targeted;
+- the form column is Cognito's 350px, not 440px: no width property is offered on the card;
+- no `border-radius` anywhere, so actions are square-ish Bootstrap buttons, not pills, and the
+  card keeps its own edge;
+- no `font-family` anywhere, so body text stays Arial rather than the system sans stack.
+
+Reaching those four needs managed login (version 2), which is a domain-level switch and a
+different resource. It is not a tier change — the pool is already `ESSENTIALS` — but it
+re-renders every page for every client, so it is its own decision, not a branding tweak.
+
+To preview before applying, render `branding/cognito-hosted-ui.css` against real hosted-UI
+markup rather than trusting a mock: fetch the login page, inject the stylesheet after
+Cognito's own two, and look at it at 1440px and 375px.
+
 ## Caddy
 
 `caddy` and `coturn` both come from the distribution's own archive, so no third-party apt

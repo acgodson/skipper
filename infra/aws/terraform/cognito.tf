@@ -59,6 +59,26 @@ resource "aws_cognito_user_pool_domain" "this" {
   managed_login_version = var.cognito_managed_login_version
 }
 
+# Brand for the classic hosted UI, which is what managed_login_version = 1 serves. The
+# mechanism is a logo image plus CSS restricted to the *-customizable classes and the
+# per-class property list in the AWS classic-branding reference — not the managed-login
+# branding editor, which exists only at version 2. Set pool-wide, so it covers the web
+# client and any client added later. Omitted entirely at version 2, where it would have
+# no effect and aws_cognito_managed_login_branding is the resource instead.
+#
+# The grey page surround, the 350px card, the card's own border and the Arial body font
+# come from Cognito's stylesheet on selectors that are not in the allow-list, so they are
+# not reachable from here — infra/aws/README.md "Sign-in" records what that costs.
+resource "aws_cognito_user_pool_ui_customization" "hosted_ui" {
+  count = var.cognito_managed_login_version == 1 ? 1 : 0
+
+  user_pool_id = aws_cognito_user_pool.this.id
+  css          = file("${path.module}/branding/cognito-hosted-ui.css")
+  image_file   = filebase64("${path.module}/branding/cognito-hosted-ui-logo.png")
+
+  depends_on = [aws_cognito_user_pool_domain.this]
+}
+
 # Public client: no secret, because the page that drives the sign-in is static and served
 # from a bucket. A secret in a page is not a secret, so the authorization code is bound to
 # the browser with PKCE instead (protocol/API.md §1.1, infra/web/README.md).
