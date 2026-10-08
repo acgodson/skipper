@@ -1,47 +1,67 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex, nofollow">
-<meta name="referrer" content="no-referrer">
-<title>Sign in · SkipperDesk</title>
-<link rel="stylesheet" href="/assets/styles.css?v=1">
-<link rel="icon" href="/assets/mark.svg" type="image/svg+xml">
-</head>
-<body>
-
-<header class="site">
-	<a class="mark" href="/">
-		<img src="/assets/mark.svg" width="28" height="28" alt="">
-		SkipperDesk
-	</a>
-</header>
-
-<main>
-	<section class="hero stack-s">
-		<h1>Sign in to SkipperDesk</h1>
-
-		<div class="row" id="working">
-			<span class="spinner" aria-hidden="true"></span>
-			<p class="caption" id="working-text">One moment…</p>
-		</div>
-
-		<div class="banner hidden" id="message" role="status">
-			<strong id="message-title"></strong>
-			<p class="caption" id="message-body"></p>
-		</div>
-
-		<div class="actions hidden" id="actions">
-			<a class="button" id="handoff" href="#">Open SkipperDesk</a>
-		</div>
-	</section>
-</main>
-
-<footer class="site">SkipperDesk</footer>
-
-<script src="/config.js"></script>
-<script src="/assets/link.js?v=2"></script>
-
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Sign in · SkipperDesk</title>
+    <link rel="stylesheet" href="/assets/styles.css?v=2" />
+    <link rel="icon" href="/assets/mark.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site">
+      <a class="mark" href="/"
+        ><img
+          src="/assets/mark.svg"
+          width="28"
+          height="28"
+          alt=""
+        />SkipperDesk</a
+      >
+      <nav aria-label="Main navigation">
+        <a href="/download">Download</a><a href="/account">Account</a>
+      </nav>
+    </header>
+    <main id="main" class="utility">
+      <section class="utility-content">
+        <img
+          class="utility-mark"
+          src="/assets/mark.svg"
+          width="64"
+          height="64"
+          alt=""
+        />
+        <p class="eyebrow">Account</p>
+        <h1>Sign in to SkipperDesk</h1>
+        <div class="row" id="working">
+          <span class="spinner" aria-hidden="true"></span>
+          <p class="caption" id="working-text">One moment…</p>
+        </div>
+        <div class="banner hidden" id="message" role="status">
+          <strong id="message-title"></strong>
+          <p class="caption" id="message-body"></p>
+        </div>
+        <div class="actions hidden" id="actions">
+          <a class="button" id="handoff" href="#">Open SkipperDesk</a>
+        </div>
+        <noscript
+          ><p class="caption">
+            Turn on JavaScript in your browser, then return to SkipperDesk and
+            choose Sign in again.
+          </p></noscript
+        >
+      </section>
+    </main>
+    <footer class="site">
+      <p>A little closer to your Mac.</p>
+      <nav aria-label="Footer">
+        <a href="/download">Download</a><a href="/account">Account</a
+        ><a href="mailto:support@skipperdesk.app">Email support</a>
+      </nav>
+    </footer>
+    <script src="/config.js"></script>
+    <script src="/assets/link.js?v=2"></script>
+  </body>
 </html>

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 410">
+<title>Your Mac at home, your Mac with you</title>
+<defs>
+ <clipPath id="desktop"><rect x="90" y="65" width="386" height="238" rx="7"/></clipPath>
+ <clipPath id="laptop"><rect x="624" y="136" width="276" height="178" rx="5"/></clipPath>
+ <symbol id="coast" viewBox="0 0 386 238"><path fill="#d9e9df" d="M0 0h386v238H0z"/><circle cx="285" cy="55" r="23" fill="#f9e7ad"/><path d="M0 139Q74 69 164 139T386 127V238H0Z" fill="#7bada2"/><path d="M0 175Q113 101 240 170T386 160V238H0Z" fill="#387c77"/><path d="M386 169Q292 153 264 181T190 238H386Z" fill="#f0d6a6"/><path d="M386 189Q300 169 282 195T236 238H386Z" fill="#b8dcd1"/></symbol>
+</defs>
+<g fill="none" stroke="#97b6ab" stroke-width="2" stroke-linecap="round"><path d="M446 325C545 418 626 365 575 305C541 265 504 314 560 326C599 334 609 290 635 287" stroke-dasharray="5 8"/><path d="m627 279 11 7-9 10"/></g>
+<ellipse cx="284" cy="363" rx="220" ry="8" fill="#99aea1" opacity=".13"/>
+<ellipse cx="764" cy="360" rx="174" ry="7" fill="#99aea1" opacity=".13"/>
+<path d="m249 317-7 34-35 7v5h154v-5l-36-7-7-34" fill="#afc0b8"/>
+<rect x="77" y="51" width="412" height="275" rx="17" fill="#bfd0c7"/>
+<rect x="77" y="51" width="412" height="264" rx="17" fill="#284a47"/>
+<g clip-path="url(#desktop)"><use href="#coast" x="90" y="65" width="386" height="238"/></g>
+<circle cx="283" cy="58" r="2" fill="#7b9e91"/>
+<rect x="612" y="124" width="300" height="205" rx="14" fill="#31524e"/>
+<g clip-path="url(#laptop)"><use href="#coast" x="618" y="136" width="288" height="178"/></g>
+<path d="M612 328h300l29 20q0 9-17 9H599q-17 0-17-9Z" fill="#bdcdc4"/>
+<path d="M582 348h359q0 9-17 9H599q-17 0-17-9" fill="#8fa89a"/>
+<path d="M731 328h62l7 6h-76Z" fill="#8fa89a"/>
+<g fill="none" stroke="#729386" stroke-width="2" stroke-linecap="round"><path d="m530 94 5-12m8 25 13-3m-44-13-7-9"/></g>
+</svg>

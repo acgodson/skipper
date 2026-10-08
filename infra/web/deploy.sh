@@ -161,6 +161,7 @@ echo "== uploading /assets/ as immutable (release images untouched)"
 "${SYNC[@]}" \
   "$SITE/assets/" "s3://$BUCKET/assets/" \
   --exclude "*.dmg" \
+  --exclude ".DS_Store" \
   --cache-control "public, max-age=31536000, immutable"
 
 echo "== uploading the pages as no-cache"
@@ -169,6 +170,8 @@ echo "== uploading the pages as no-cache"
   --exclude "assets/*" \
   --exclude "config.js" \
   --exclude "config.sample.js" \
+  --exclude ".DS_Store" \
+  --exclude "*/.DS_Store" \
   --exclude ".gitignore" \
   --cache-control "no-cache"
 
