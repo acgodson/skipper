@@ -111,17 +111,10 @@ const (
 	TierSkipper = "skipper"
 )
 
-// The quality modes, ordered cheapest first. These are the `quality` ctrl message's
-// own wire values (PROTOCOL.md §5), reused here so the server can state a ceiling in
-// the vocabulary the host already applies. Tier is a purchased feature set and says
-// nothing about bandwidth, so it is not the carrier for this (API.md §4.4).
-const (
-	QualitySmooth = "smooth"
-	QualityAuto   = "auto"
-	QualitySharp  = "sharp"
-)
-
-// QualityModes is the ladder, cheapest first. Open enum: a client that meets a value
+// QualityModes is the ladder, cheapest first, in the `quality` ctrl message's own wire
+// values (PROTOCOL.md §5) so the server states a ceiling in the vocabulary the host
+// already applies. Tier is a purchased feature set and says nothing about bandwidth, so
+// it is not the carrier for this (API.md §4.4). Open enum: a client that meets a value
 // it does not know clamps to the highest it does know at or below it, which for an
 // unknown value means QualityAuto — the same fail-closed answer as a stale cache.
 var QualityModes = []string{QualitySmooth, QualityAuto, QualitySharp}

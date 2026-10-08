@@ -807,6 +807,23 @@
       "note": "the host proved the code but its owner declined the connection, or did not answer in 30 s"
     },
     {
+      "name": "bye_host_relay_report",
+      "surface": "signaling",
+      "type": "bye",
+      "frame": {
+        "v": 5,
+        "type": "bye",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "reason": "user_ended",
+          "relayUsed": true,
+          "bytesRelayed": 41377280
+        }
+      },
+      "note": "v5 additive: the host's own measurement of the route it took. Read only from the host's bye, and never priced (PROTOCOL.md §2.14.1). A bye without these two fields is unchanged — every other bye vector here proves it"
+    },
+    {
       "name": "bye_displaced",
       "surface": "signaling",
       "type": "bye",
