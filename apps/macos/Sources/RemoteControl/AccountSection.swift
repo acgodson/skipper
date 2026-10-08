@@ -85,16 +85,15 @@ private struct SignedInRow: View {
             Spacer(minLength: SkipperSpace.s)
 
             if model.account?.entitlement?.value.status == .exhausted {
-                Button("Top Up\u{2026}") { AccountActions.openOnTheWeb(EntitlementPresentation.topUpURL) }
-                    .skipperButton(.primary)
+                Button("Account on the web\u{2026}") {
+                    AccountActions.openOnTheWeb(EntitlementPresentation.accountURL)
+                }
+                .skipperButton(.primary)
             }
 
             Menu {
                 Button("Account on the web\u{2026}") {
                     AccountActions.openOnTheWeb(EntitlementPresentation.accountURL)
-                }
-                Button("Add credit\u{2026}") {
-                    AccountActions.openOnTheWeb(EntitlementPresentation.topUpURL)
                 }
                 Divider()
                 Button("Sign Out\u{2026}") { AccountActions.confirmSignOut(model) }
