@@ -51,6 +51,11 @@ func (s *Server) decide(device *apidb.Device) (policy.Decision, error) {
 			return policy.Decision{}, err
 		}
 		facts.UnconsumedGrant = grant
+		paid, err := s.opt.DB.HeldPaidCredit(device.AccountID)
+		if err != nil {
+			return policy.Decision{}, err
+		}
+		facts.HeldPaidCredit = paid
 		open, err := s.opt.DB.OpenSessionsForAccount(device.AccountID, device.DeviceID)
 		if err != nil {
 			return policy.Decision{}, err

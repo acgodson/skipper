@@ -82,12 +82,12 @@ func TestABalanceNeverGoesBelowZeroAndTheSessionIsClosed(t *testing.T) {
 	if last.AmountCents != -1 || last.BalanceAfterCents != 0 {
 		t.Fatalf("the clamped charge is %+v, want -1 leaving 0", last)
 	}
-	// The account did get starting credits and they ran out, so the reason is
-	// trial_expired rather than no_balance (API.md §4.3). The grant's window is the
-	// account's, so a second device on it reports the window the first one holds.
+	// This account was paid for — the one cent above — so what ran out was its own
+	// credit, and the refusal is no_balance however old its grant window is
+	// (API.md §4.3, §5.2).
 	if status, reason := h.internalEntitlement(host.DeviceID); status != http.StatusPaymentRequired ||
-		reason != protocol.EntitlementTrialExpired {
-		t.Fatalf("after the credit ran out: %d/%s, want 402/trial_expired", status, reason)
+		reason != protocol.EntitlementNoBalance {
+		t.Fatalf("after the credit ran out: %d/%s, want 402/no_balance", status, reason)
 	}
 	if !closedFor(h, host.DeviceID) {
 		t.Fatalf("the session was left running on a balance of zero; closes = %+v", h.closes.calls())
@@ -314,6 +314,39 @@ func TestTheTrialIsCreditThatExpiresWithoutTouchingPaidCredit(t *testing.T) {
 	h.entitlementFor(host.DeviceToken)
 	if got := h.entriesOfType(email, protocol.LedgerTrialExpiry); len(got) != 1 {
 		t.Fatalf("the window was clawed back %d times, want once", len(got))
+	}
+}
+
+// AUDIT.md finding 2: trial_ends_at is written once at the grant and never cleared,
+// so every account that ever held a trial used to be refused trial_expired for ever —
+// and a customer who had paid and spent $5 was told their trial had ended, weeks after
+// they finished it. no_balance was unreachable for anyone but an account whose grant
+// was withheld, against what API.md §5.2 says a clamped session's account is refused.
+//
+// Both accounts here run their balance to zero inside a live grant window, so the
+// window cannot be what tells them apart. The only difference is that one of them paid.
+func TestAPaidAccountAtZeroIsNotToldItsTrialEnded(t *testing.T) {
+	h := newHarness(t)
+	const paid, free = "paid@example.com", "free@example.com"
+	payer := h.link(paid, newDevice(t), "SERIAL-PAID")
+	trialOnly := h.link(free, newDevice(t), "SERIAL-FREE")
+
+	h.topUp(paid, 500)
+	spendDown(h, paid)
+	spendDown(h, free)
+
+	if window := h.entitlementFor(payer.DeviceToken); window.Status != protocol.StatusExhausted {
+		t.Fatalf("the payer reads %s, want exhausted", window.Status)
+	}
+	if status, reason := h.internalEntitlement(payer.DeviceID); status != http.StatusPaymentRequired ||
+		reason != protocol.EntitlementNoBalance {
+		t.Fatalf("a customer who paid and spent it: %d/%s, want 402/no_balance", status, reason)
+	}
+	// And the distinction is not lost in the other direction: an account whose only
+	// money was ever the free hours still hears about the free hours.
+	if status, reason := h.internalEntitlement(trialOnly.DeviceID); status != http.StatusPaymentRequired ||
+		reason != protocol.EntitlementTrialExpired {
+		t.Fatalf("an account that never paid: %d/%s, want 402/trial_expired", status, reason)
 	}
 }
 

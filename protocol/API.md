@@ -464,12 +464,20 @@ The `reason` on a `402 entitlement` here, and on `error{entitlement}` over signa
 | `reason` | Meaning |
 |---|---|
 | `unlinked` | The host device is not linked to any account, or no device with that id exists. |
-| `trial_expired` | The device's starting credits expired or ran out, and no balance remains. |
-| `no_balance` | The device never had starting credits (§3.2) and the balance is zero or below the minimum a session requires. |
+| `trial_expired` | The account's starting credits are gone — spent or expired — and **no paid credit has ever landed on it**. The free hours are the whole of this account's history, and they are over. |
+| `no_balance` | The balance is zero or below the minimum a session requires, and `trial_expired` does not apply: credit the account paid for has been spent, or it never received starting credits (§3.2). |
 | `concurrency` | The account's `maxActivePairs` is already in use by another pair. |
 | `suspended` | The account is administratively suspended. |
 
 A client that meets an unknown reason renders the `message` and treats it as `trial_expired`.
+
+**The two zero-balance reasons are decided from the money, never from `trialEndsAt`.** A device's
+`trial_ends_at` is written once when the grant is given and is never cleared, so an account that
+ever held starting credits holds a past window for ever; a server that read that window as "this is
+a trial account" told customers who had paid and spent their credit that their *trial* had ended,
+and never answered `no_balance` at all. The split mirrors the one §4.1 draws between `trial` and
+`active`: starting credits are the whole of an account's story only until the first paid credit
+lands on it. `server/internal/policy.exhaustedReason` is the one place this is decided.
 
 ---
 
@@ -518,8 +526,9 @@ The charge is one `session_charge` ledger entry (§7.2) per session — and no e
 session and the carry together do not reach a cent — and it may be **less than the seconds were
 worth**: a charge is clamped to the balance available, never taken past zero (§7.2),
 and a clamped charge drops the carry rather than holding a shortfall against a later top-up. A
-session whose charge clamps is closed, and the account's next session is refused `no_balance`
-(§4.3). A session is settled when it ends, so between settlements it can outrun its balance; the
+session whose charge clamps is closed, and the account's next session is refused — `no_balance`
+once the account has ever been paid for, `trial_expired` while starting credits are all it has
+ever had (§4.3). A session is settled when it ends, so between settlements it can outrun its balance; the
 reconciliation sweep (§6.2) closes a live session whose account has nothing left, which bounds the
 overrun to one sweep.
 

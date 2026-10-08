@@ -1251,6 +1251,21 @@ func (d *DB) UnconsumedGrant(accountID string) (cents int64, open bool, err erro
 	return max(0, granted.Int64-charged.Int64), true, nil
 }
 
+// HeldPaidCredit answers whether credit the account did not get for free has ever
+// landed on it: any incoming entry that is not a trial_grant, so a top-up, a received
+// gift, a refund or an operator credit all count and the grant never does.
+//
+// It is history, not balance. Once an account has been paid for it is a paying account
+// for ever, which is what makes it the fact that decides whether a balance of zero is
+// that account's trial ending or its own credit running out (policy.Decide).
+func (d *DB) HeldPaidCredit(accountID string) (bool, error) {
+	var held bool
+	err := d.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM ledger
+ WHERE account_id=? AND type<>? AND amount_cents>0)`,
+		accountID, protocol.LedgerTrialGrant).Scan(&held)
+	return held, err
+}
+
 // TrialGrantsForMailbox counts the grants already written to every account whose
 // address folds to the same mailbox as this account's. The count is server-side
 // fact, which is what makes it a bound where the device inputs are not (review5 H4).
