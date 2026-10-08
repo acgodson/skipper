@@ -344,9 +344,13 @@ The plaintext access code **never leaves the client that owns it**, except insid
 The server stores exactly these fields and nothing else about the code. Verification is
 `argon2id(plaintext, salt, time, memKiB, par, len) == hash`, constant-time compared.
 
-Access codes are generated client-side: **8 characters from a 32-symbol
-Crockford-style alphabet** (`23456789ABCDEFGHJKMNPQRSTVWXYZ` minus look-alikes), from a CSPRNG
-≈ 40 bits of entropy. Server-side rate limiting (§3.3) is what makes that sufficient.
+Access codes are generated client-side by the shared core, so every platform agrees:
+**12 characters from the 32-symbol Crockford base32 alphabet**, from a CSPRNG — **60 bits of
+entropy**. Server-side rate limiting (§3.3) is what makes guessing impractical regardless.
+
+An implementation that produces a shorter code is **not interoperable**: the canonicaliser
+rejects anything that is not 12 symbols after normalisation. (This paragraph said 8 characters
+and ≈40 bits until 2026-10-08; the code has always been 12 and 60.)
 
 ### 2.4 `hello` — client → server
 
