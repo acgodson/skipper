@@ -633,7 +633,7 @@ dropped.
 | Field | Type | Req | Notes |
 |---|---|:--:|---|
 | `sessionId` | string | yes | 32 lowercase hex; any other shape is `bad_request`. |
-| `reason` | string | yes | *v4, a closed set:* exactly one of `user_ended`, `host_ended`, `timeout`, `failed`, `code_refreshed`, `replaced`, `shutdown`, `error`, `peer_auth_failed`, `auth_failed`, `declined`, `displaced`. Any other value — including the empty string — is answered `error{bad_request}`; the session is left as it was and nothing is relayed. `protocol/vectors/vectors.json` lists the set (`byeReasons`) and values that must be refused (`invalidByeReasons`). |
+| `reason` | string | yes | *v4, a closed set:* exactly one of `user_ended`, `host_ended`, `timeout`, `failed`, `code_refreshed`, `replaced`, `shutdown`, `error`, `peer_auth_failed`, `auth_failed`, `declined`, `displaced`; *v5, additive:* `no_balance` (§2.14.2). Any other value — including the empty string — is answered `error{bad_request}`; the session is left as it was and nothing is relayed. `protocol/vectors/vectors.json` lists the set (`byeReasons`) and values that must be refused (`invalidByeReasons`). |
 | `relayUsed` | bool | no | *v5, additive.* The **host's** claim that its own media left through a TURN relay. Measurement only, never billed (§2.14.1). |
 | `bytesRelayed` | int64 | no | *v5, additive.* Bytes the host's selected candidate pair carried, sent plus received. Meaningful only with `relayUsed: true`. Measurement only, never billed (§2.14.1). |
 
@@ -662,6 +662,28 @@ than documented and hoped for:
    no relay price may rest on this field before the two agree.
 
 `API.md` §5.1 and §5.4 say the same about the column these fields land in.
+
+#### 2.14.2 `no_balance` — *v5, additive*
+
+`no_balance` means **the host's account has no credit left**, and nothing else. Like `displaced`
+it is sent only by the server, on its own initiative, to both peers; no client ever sends it.
+
+It exists because the alternative was untrue to both parties at once. The money path —
+`meter` when a charge clamps, and the reconciliation sweep when it finds a live session with
+nothing behind it — closed the session with `host_ended`, the same reason as an unlink. So the
+controller was told the host hung up, and the host was told it had ended the session itself,
+at the one moment the product has to ask for money (`docs/AUDIT.md` finding 3). A reason the
+server already knows and neither peer can otherwise discover is exactly what the field is for.
+
+**A client older than this reason behaves correctly without knowing it.** `bye` is not in §0's
+strict-decode set, so the frame decodes as it always did; the reason is a string, the set is
+validated only on the way *in* from a client, and both peers already treat any `bye` for their
+current session as terminal. An older client therefore ends the session and shows whatever it
+shows for a reason it does not recognise — a generic ending, which is what it would have shown
+for `host_ended` anyway. Nothing regresses; it simply does not get the better sentence.
+
+Every `bye` vector that existed before this reason encodes to the same bytes: `byeReasons` gains
+one entry at the end and `bye_no_balance` is a new case.
 
 `displaced` is *v4* and sent only by the server: the host's `deviceId` was restored to the key
 its certificate names (§2.2), so a session held under another key for that id ended.

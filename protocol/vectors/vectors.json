@@ -12,7 +12,8 @@
     "peer_auth_failed",
     "auth_failed",
     "declined",
-    "displaced"
+    "displaced",
+    "no_balance"
   ],
   "invalidByeReasons": [
     "",
@@ -837,6 +838,21 @@
         }
       },
       "note": "v4: the server ended the session because the device id was restored to its certified key"
+    },
+    {
+      "name": "bye_no_balance",
+      "surface": "signaling",
+      "type": "bye",
+      "frame": {
+        "v": 5,
+        "type": "bye",
+        "ts": 1755600000000,
+        "payload": {
+          "sessionId": "8c7f1a2b3c4d5e6f708192a3b4c5d6e7",
+          "reason": "no_balance"
+        }
+      },
+      "note": "v5 additive: the server ended the session because the host's account has no credit left. Sent only by the server, to both peers, and the one reason neither peer could otherwise learn — the money path used to send host_ended, which told the controller the host hung up"
     },
     {
       "name": "error_bye_reason_rejected",

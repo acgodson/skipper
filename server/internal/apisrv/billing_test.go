@@ -5,6 +5,7 @@
 package apisrv
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -350,6 +351,57 @@ func TestAPaidAccountAtZeroIsNotToldItsTrialEnded(t *testing.T) {
 	}
 }
 
+// AUDIT.md finding 3: both ways the server ends a session over money went through
+// closeDeviceSessions, which hardcoded host_ended — the same reason as an unlink. So
+// the controller was told the host hung up and the host was told it had ended the
+// session itself, neither of which happened. The reason now names the money, and the
+// unlink path still says what is true of it.
+func TestASessionEndedForMoneyDoesNotBlameTheHost(t *testing.T) {
+	h := newHarness(t)
+	const email = "ranout@example.com"
+	h.link(email, newDevice(t), "SERIAL-RANOUT")
+	host := h.link(email, newDevice(t), "SERIAL-RANOUT")
+	spendDown(h, email)
+	h.topUp(email, 1)
+
+	h.runSession(strings.Repeat("7", 32), host.DeviceID, 30*time.Minute)
+
+	if got := closeReasonFor(h, host.DeviceID); got != protocol.ByeNoBalance {
+		t.Fatalf("the charge clamped and the session was closed with %q, want %q",
+			got, protocol.ByeNoBalance)
+	}
+
+	// The sweep's cut-off is the other way in, and it must say the same thing.
+	sweep := newHarness(t)
+	const swept = "swept@example.com"
+	sweep.link(swept, newDevice(t), "SERIAL-SWEPT")
+	live := sweep.link(swept, newDevice(t), "SERIAL-SWEPT")
+	spendDown(sweep, swept)
+	sessionID := strings.Repeat("8", 32)
+	sweep.startSession(sessionID, live.DeviceID, sweep.clock.Now().UnixMilli())
+	if _, err := sweep.api.Reconcile(t.Context(), func(context.Context) (protocol.InternalLiveSessions, error) {
+		return protocol.InternalLiveSessions{SessionIDs: []string{sessionID},
+			ServerTime: sweep.clock.Now().UnixMilli()}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := closeReasonFor(sweep, live.DeviceID); got != protocol.ByeNoBalance {
+		t.Fatalf("the sweep cut off a spent session with %q, want %q", got, protocol.ByeNoBalance)
+	}
+
+	// An unlink really is the host ending it, and still says so.
+	unlinked := newHarness(t)
+	const leaving = "leaving@example.com"
+	device := unlinked.link(leaving, newDevice(t), "SERIAL-LEAVING")
+	if r := unlinked.call("DELETE", "/v1/devices/"+device.DeviceID,
+		"dev:"+leaving, idem(), nil); r.status != http.StatusNoContent {
+		t.Fatalf("unlink: %d %s", r.status, r.body)
+	}
+	if got := closeReasonFor(unlinked, device.DeviceID); got != protocol.ByeHostEnded {
+		t.Fatalf("an unlink closed the session with %q, want %q", got, protocol.ByeHostEnded)
+	}
+}
+
 // With nothing bought, an expired grant leaves exactly zero — never a negative
 // balance that a later top-up would silently pay off.
 func TestAnUntouchedTrialExpiresToExactlyZero(t *testing.T) {
@@ -398,12 +450,19 @@ func TestTheLedgerRefusesADebitThatWouldBreachZero(t *testing.T) {
 
 func closedFor(h *harness, deviceID string) bool {
 	h.t.Helper()
+	return closeReasonFor(h, deviceID) != ""
+}
+
+// closeReasonFor is the reason signaling was asked to end the device's sessions with,
+// or "" if it was never asked.
+func closeReasonFor(h *harness, deviceID string) string {
+	h.t.Helper()
 	for _, c := range h.closes.calls() {
 		if c.DeviceID == deviceID {
-			return true
+			return c.Reason
 		}
 	}
-	return false
+	return ""
 }
 
 // spendDown empties whatever the links granted, so a test can state the balance it

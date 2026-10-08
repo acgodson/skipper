@@ -264,6 +264,10 @@ func main() {
 		"v4: the server ended the session because the device id was restored to its certified key",
 		"", "", ts,
 		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByeDisplaced})
+	add("bye_no_balance", "signaling", p.TypeBye,
+		"v5 additive: the server ended the session because the host's account has no credit left. Sent only by the server, to both peers, and the one reason neither peer could otherwise learn — the money path used to send host_ended, which told the controller the host hung up",
+		"", "", ts,
+		p.Bye{SessionID: "8c7f1a2b3c4d5e6f708192a3b4c5d6e7", Reason: p.ByeNoBalance})
 	add("error_bye_reason_rejected", "signaling", p.TypeError,
 		"v4: a bye whose reason is not in byeReasons is answered with this and never relayed", "", "c-11", ts,
 		p.Error{Code: p.ErrBadRequest, Message: "bye reason is not one of the defined reasons"})

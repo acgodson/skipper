@@ -331,7 +331,7 @@ func (s *Server) cutOffSpentSession(ctx context.Context, session *apidb.Session)
 	}
 	s.opt.Logger.Info("a live session has no balance behind it; closing it",
 		"sessionId", session.SessionID, "deviceId", session.HostDeviceID)
-	return s.closeDeviceSessions(ctx, session.HostDeviceID)
+	return s.closeDeviceSessions(ctx, session.HostDeviceID, protocol.ByeNoBalance)
 }
 
 // meter settles one ended session. Metering is deliberately blind to status: a trial
@@ -358,5 +358,5 @@ func (s *Server) meter(ctx context.Context, session *apidb.Session, endedAt int6
 	}
 	s.opt.Logger.Info("the balance ran out mid-session; closing the host's sessions",
 		"sessionId", session.SessionID, "deviceId", session.HostDeviceID)
-	return s.closeDeviceSessions(ctx, session.HostDeviceID)
+	return s.closeDeviceSessions(ctx, session.HostDeviceID, protocol.ByeNoBalance)
 }
