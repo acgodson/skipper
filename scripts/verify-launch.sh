@@ -15,9 +15,12 @@ if [[ ! -d "$APP" ]]; then
     exit 1
 fi
 
+# Exiting 0 here would let PREFLIGHT PASSED print without the app ever starting — on the
+# machine most likely to have it running, which is the one this check exists for.
 if pgrep -x SkipperDesk >/dev/null 2>&1; then
-    echo "skip  SkipperDesk is already running; not disturbing it"
-    exit 0
+    echo "FAIL  SkipperDesk is already running, so the launch check cannot run."
+    echo "      Quit it and re-run; this gate is here because a crash once got past every test."
+    exit 1
 fi
 
 BEFORE="$(ls -t "$HOME/Library/Logs/DiagnosticReports/" 2>/dev/null | grep -c '^SkipperDesk' || true)"
