@@ -82,6 +82,11 @@ public struct Entitlement: Decodable, Equatable {
     public let limits: Limits
     public let refreshAfterSec: Int
 
+    /// What to assume when a server does not state the field (API.md §4.1 says 60).
+    /// It is the one place the number is written, so the decoder's fallback and the
+    /// refresh loop's first wait cannot drift apart.
+    public static let defaultRefreshAfterSec = 60
+
     private enum CodingKeys: String, CodingKey {
         case status, tier, balanceCents, minutesRemaining, trialEndsAt, concurrency, limits,
              refreshAfterSec
@@ -102,7 +107,8 @@ public struct Entitlement: Decodable, Equatable {
             ?? Concurrency(maxActivePairs: 1)
         limits = try container.decodeIfPresent(Limits.self, forKey: .limits)
             ?? Limits(maxQuality: nil)
-        refreshAfterSec = try container.decodeIfPresent(Int.self, forKey: .refreshAfterSec) ?? 60
+        refreshAfterSec = try container.decodeIfPresent(Int.self, forKey: .refreshAfterSec)
+            ?? Entitlement.defaultRefreshAfterSec
     }
 }
 
