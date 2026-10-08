@@ -45,7 +45,14 @@ A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone 
 | Launch is **email sign-in only** (decided 2026-10-07). Apple and Google come after launch: both need a Services ID, a `.p8`, a Google OAuth client and a custom Cognito domain, and none of it is needed to sell the product. The Terraform and the SSM parameters already exist, inert, behind `enable_social_idp = false` | decided |
 | 5.3 found that **nothing writes `relayUsed` or `bytesRelayed`** — the columns exist, the hub's stop report sets neither, and no wire field carries them, so 5.3's written acceptance cannot be met by any run (`docs/PHASE5.md` §8.2). The client can now *see* the route at all: `ICEPathStatistics` reads the selected candidate pair, `rc-node ice-path` prints it, `scripts/verify-relay.sh` proves relay-only really excludes every other route. Deployed coturn logs no allocations and no bytes, so the relay side corroborates nothing | found |
 | 5.2 remainder + 5.3: `ice_servers` observed on a real production session, media forced over the relay. Both need one owner action apiece — a second linked device for the first, unattended access plus the host's access code for the second (`docs/VERIFY.md`) | blocked on owner |
-| 5.4 fifth review; 5.5 cutover | queued |
+| **5.4 fifth security review done** (`docs/review5/FINDINGS.md`) — the first ever to look at the deployment. One CRITICAL, seven HIGH, **all eight fixed and live**: the meter could be outrun by reconnecting under 60 s; accounts were keyed on an email address rather than the Cognito subject (takeover reproduced against the old code); the trial gate minted five grants from one account; a gift was written before its debit; a dropped start report billed nothing; relay egress had no ceiling, alarm or accounting; the claims database had **never** been backed up while systemd reported success; the admin path was unlogged | done |
+| **End-to-end audit done** (`docs/AUDIT.md`) — the money arithmetic holds and the live ledger matches what was promised; what did not hold was either side of it | done |
+| Quality modes now carry their own bitrate ceiling (sharp 8 / auto 2 / smooth 1 Mbps) and a trial is held to the middle one, server-stated. Before this every mode asked for 8 Mbps and only the width differed, so the 10¢/hour rate was not solvent | done |
+| `bye` carries a host-reported relay figure, documented as unbilled. Server-side byte counting from coturn's new `usage:` lines waits for pricing — a bill must not rest on the paying party's own report | done |
+| The launch gate refuses rather than skipping when the app is running: a skip let `PREFLIGHT PASSED` print without the app ever starting, on the machine most likely to have it running | done |
+| Audit finding: every route out of the app to the web 404s, and no production endpoint can add credit at all | in progress |
+| Audit finding: when credit runs out the host sees a stale balance, the controller is told the host hung up, and a paying customer is told their *trial* ended | in progress |
+| 5.5 cutover, legacy box off | queued |
 
 ## Queued, in order
 
