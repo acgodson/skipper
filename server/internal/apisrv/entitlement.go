@@ -51,6 +51,11 @@ func (s *Server) decide(device *apidb.Device) (policy.Decision, error) {
 			return policy.Decision{}, err
 		}
 		facts.UnconsumedGrant = grant
+		paid, err := s.opt.DB.HeldPaidCredit(device.AccountID)
+		if err != nil {
+			return policy.Decision{}, err
+		}
+		facts.HeldPaidCredit = paid
 		open, err := s.opt.DB.OpenSessionsForAccount(device.AccountID, device.DeviceID)
 		if err != nil {
 			return policy.Decision{}, err
@@ -326,7 +331,7 @@ func (s *Server) cutOffSpentSession(ctx context.Context, session *apidb.Session)
 	}
 	s.opt.Logger.Info("a live session has no balance behind it; closing it",
 		"sessionId", session.SessionID, "deviceId", session.HostDeviceID)
-	return s.closeDeviceSessions(ctx, session.HostDeviceID)
+	return s.closeDeviceSessions(ctx, session.HostDeviceID, protocol.ByeNoBalance)
 }
 
 // meter settles one ended session. Metering is deliberately blind to status: a trial
@@ -353,5 +358,5 @@ func (s *Server) meter(ctx context.Context, session *apidb.Session, endedAt int6
 	}
 	s.opt.Logger.Info("the balance ran out mid-session; closing the host's sessions",
 		"sessionId", session.SessionID, "deviceId", session.HostDeviceID)
-	return s.closeDeviceSessions(ctx, session.HostDeviceID)
+	return s.closeDeviceSessions(ctx, session.HostDeviceID, protocol.ByeNoBalance)
 }

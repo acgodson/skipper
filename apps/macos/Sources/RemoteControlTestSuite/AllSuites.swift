@@ -17,6 +17,7 @@ public let allSuites: [TestSuite] = [
     linkCallbackSuite,
     signOutSuite,
     entitlementPresentationSuite,
+    entitlementRefreshSuite,
     settingsSuite,
     observationSuite,
     cursorSuite,

@@ -19,6 +19,7 @@ final class AppModel: ObservableObject {
 
     @Published var sessionState: SessionState = .idle { didSet { sessionStateChanged() } }
     @Published var connectError: String?
+    @Published var sessionEndedNotice: SessionEndNotice?
     @Published var isConnecting = false
     @Published var signalingReady = false
     @Published var lastRoundTripMs: Int?
@@ -279,12 +280,15 @@ final class AppModel: ObservableObject {
         case .phase:
             sessionState = coordinator.state
             if case .connecting = coordinator.phase {} else { isConnecting = false }
+            if coordinator.phase == .live { sessionEndedNotice = nil }
         case .silentReconnect:
             connectError = nil
         case .consentRequested:
             consentNotifier.post()
         case .consentEnded:
             consentNotifier.withdraw()
+        case .bye(let reason):
+            noteSessionEnded(reason: reason, role: coordinator.role)
         default:
             break
         }
@@ -328,7 +332,10 @@ final class AppModel: ObservableObject {
         URLCallbackBus.shared.handler = { [weak self] url in
             self?.account?.handleCallback(url)
         }
-        Task { await account.restore() }
+        Task {
+            await account.restore()
+            account.startRefreshing()
+        }
         startAutoLinkIfRequested()
     }
 
@@ -482,6 +489,24 @@ final class AppModel: ObservableObject {
 
     func dismissHostKeyNotice() {
         identity?.hostKeyPins.dismissMismatch()
+    }
+
+    /// A `bye` used to reach `default: break`, so a session the server ended simply
+    /// vanished off both Macs with nothing said (AUDIT.md finding 3b). The sentence
+    /// goes to whichever banner this Mac's role reads, and the end of any session is
+    /// also the moment the balance behind it changed, so the account is re-read then
+    /// rather than waiting out the refresh interval.
+    ///
+    /// The role is the coordinator's own — which side of *this* session this Mac was —
+    /// not the role setting, which the person can change while a session runs.
+    private func noteSessionEnded(reason: String, role: Wire.Role) {
+        if let notice = SessionEndPresentation.notice(reason: reason, role: role) {
+            switch role {
+            case .host: sessionEndedNotice = notice
+            case .controller: connectError = notice.title
+            }
+        }
+        Task { await account?.refreshEntitlement(force: true) }
     }
 
     private static func bannerSentence(for failure: ConnectFailure) -> String? {

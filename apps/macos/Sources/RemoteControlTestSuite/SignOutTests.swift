@@ -17,13 +17,34 @@ final class StubbedAPI: URLProtocol {
     private static var recorded: [Call] = []
     private static var accountEmail: String?
     private static var unlinkStatus = 204
+    private static var entitlementBody = trialEntitlement
+
+    static let trialEntitlement = """
+    {"status":"trial","tier":"base","trialEndsAt":1900000000000,
+    "concurrency":{"maxActivePairs":1},"refreshAfterSec":60}
+    """
 
     static func reset(accountEmail: String?) {
         lock.lock()
         defer { lock.unlock() }
         recorded = []
         unlinkStatus = 204
+        entitlementBody = trialEntitlement
         self.accountEmail = accountEmail
+    }
+
+    /// What `GET /v1/entitlement` answers from now on, so a test can let the account
+    /// run out underneath a client that is already signed in.
+    static func answerEntitlement(with body: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        entitlementBody = body
+    }
+
+    static var entitlementReads: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded.filter { $0.path == "/v1/entitlement" }.count
     }
 
     /// What `DELETE /v1/devices/{id}` answers: 503 is rc-api saying it could not
@@ -95,10 +116,10 @@ final class StubbedAPI: URLProtocol {
             "createdAt":1,"linkedAt":1,"lastSeen":1,"trialEndsAt":1900000000000}
             """)
         case ("GET", "/v1/entitlement"):
-            return (200, """
-            {"status":"trial","tier":"base","trialEndsAt":1900000000000,
-            "concurrency":{"maxActivePairs":1},"refreshAfterSec":60}
-            """)
+            lock.lock()
+            let body = entitlementBody
+            lock.unlock()
+            return (200, body)
         default:
             return (404, #"{"error":{"code":"not_found","message":"no such path","requestId":"r"}}"#)
         }
@@ -106,7 +127,7 @@ final class StubbedAPI: URLProtocol {
 }
 
 @MainActor
-private func withSignedInLinker(
+func withSignedInLinker(
     accountEmail: String?,
     openInBrowser: @escaping (URL) -> Void = { _ in },
     _ body: @MainActor (AccountLinker, DeviceTokenStore, PendingUnlinkStore) async throws -> Void
@@ -142,7 +163,7 @@ private func withSignedInLinker(
 /// elapse in well under a millisecond and a test that spins on them is asserting
 /// against whichever side won a footrace. These wait on the clock.
 @MainActor
-private func wait(upTo seconds: Double = 5, until ready: () -> Bool) async {
+func wait(upTo seconds: Double = 5, until ready: () -> Bool) async {
     let deadline = Date().addingTimeInterval(seconds)
     while !ready() && Date() < deadline {
         try? await Task.sleep(nanoseconds: 2_000_000)

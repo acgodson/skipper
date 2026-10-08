@@ -66,6 +66,7 @@ public final class AccountLinker: ObservableObject {
     private var attempt: LinkAttempt?
     private var token: DeviceToken?
     private var signOutBeforeLink: Task<Void, Never>?
+    private var refreshLoop: Task<Void, Never>?
 
     public var hasPendingLink: Bool { attempt != nil }
 
@@ -367,6 +368,39 @@ public final class AccountLinker: ObservableObject {
     }
 
     // MARK: - §3.4 / §4.1 reads
+
+    /// Re-fetch on the cadence the server states, which is the whole of the client's
+    /// side of the bargain in API.md §4.2 and the one part nothing was doing.
+    ///
+    /// `refreshEntitlement` had two callers — the account window appearing, and the
+    /// launch/link load — so the answer on screen was as of whenever that window last
+    /// opened. A host could run a five-hour session and still read "Trial · about 5
+    /// hours left" afterwards, and never reach the `exhausted` state that says
+    /// otherwise, while the server was closing its sessions for want of credit
+    /// (AUDIT.md finding 3a).
+    ///
+    /// The interval is read back off the last answer each time round rather than kept
+    /// here, so a server that changes `refreshAfterSec` moves this loop with it and no
+    /// second copy of the number exists. `refreshEntitlement` declines a fetch while
+    /// the cached answer is still fresh, so this cannot ask more often than the
+    /// contract allows however often it wakes.
+    public func startRefreshing() {
+        guard refreshLoop == nil else { return }
+        refreshLoop = Task { [weak self] in
+            while !Task.isCancelled {
+                let seconds = self?.entitlement?.value.refreshAfterSec
+                    ?? Entitlement.defaultRefreshAfterSec
+                try? await Task.sleep(nanoseconds: UInt64(max(1, seconds)) * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                await self?.refreshEntitlement()
+            }
+        }
+    }
+
+    public func stopRefreshing() {
+        refreshLoop?.cancel()
+        refreshLoop = nil
+    }
 
     public func refreshEntitlement(force: Bool = false) async {
         guard token != nil else { return }

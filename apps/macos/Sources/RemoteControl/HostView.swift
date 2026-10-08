@@ -16,6 +16,8 @@ struct HostView: View {
                 SessionActiveBanner()
             }
 
+            SessionEndedBanner()
+
             UpdateReadyBanner()
 
             PermissionsBanners()
@@ -321,6 +323,24 @@ struct SessionActiveBanner: View {
         ) {
             Button("End Session") { model.endSession() }
                 .skipperButton(.secondary)
+        }
+    }
+}
+
+/// Why the session this Mac was hosting stopped. It carries no action of its own: the
+/// one thing to do about it is in AccountSection, which is where credit lives.
+struct SessionEndedBanner: View {
+
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        if let notice = model.sessionEndedNotice {
+            SkipperBanner(
+                tone: .critical,
+                symbol: "exclamationmark.circle.fill",
+                title: notice.title,
+                message: notice.detail
+            )
         }
     }
 }

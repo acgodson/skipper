@@ -60,6 +60,7 @@ type Facts struct {
 	TrialEndsAt     int64
 	BalanceCents    int64
 	UnconsumedGrant int64
+	HeldPaidCredit  bool
 	ActivePairs     int
 }
 
@@ -151,16 +152,33 @@ func Decide(f Facts, now time.Time) Decision {
 		ent.Status = protocol.StatusActive
 	default:
 		ent.Status = protocol.StatusExhausted
-		reason := protocol.EntitlementTrialExpired
-		if f.HasAccount && f.TrialEndsAt == 0 {
-			reason = protocol.EntitlementNoBalance
-		}
-		return decision(ent, reason)
+		return decision(ent, exhaustedReason(f))
 	}
 	if f.ActivePairs >= MaxActivePairs {
 		return decision(ent, protocol.EntitlementConcurrency)
 	}
 	return decision(ent, "")
+}
+
+// exhaustedReason says why an account at zero may not host, and reads it from the
+// money rather than from a timestamp (API.md §4.3).
+//
+// TrialEndsAt is written once when the grant is given and is never cleared, so an
+// account that ever held starting credits holds a past window for ever. Reading that
+// window as "this is a trial account" told every customer who paid and spent it that
+// their trial had ended, weeks after they finished it (AUDIT.md finding 2) — and made
+// no_balance unreachable for anyone but an account whose grant was withheld, against
+// what API.md §5.2 promises a clamped session's account is refused.
+//
+// The split mirrors the one §4.1 already draws between trial and active: starting
+// credits are the whole of an account's story only until the first paid credit lands.
+// So trial_expired is the account that has only ever had free hours, and no_balance is
+// every other way to reach zero — credit bought and spent, or never granted at all.
+func exhaustedReason(f Facts) string {
+	if f.TrialEndsAt > 0 && !f.HeldPaidCredit {
+		return protocol.EntitlementTrialExpired
+	}
+	return protocol.EntitlementNoBalance
 }
 
 // decision stamps the ceiling the status implies, so no branch of Decide can answer

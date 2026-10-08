@@ -115,9 +115,11 @@ pub mod bye {
     pub const AUTH_FAILED: &str = "auth_failed";
     pub const DECLINED: &str = "declined";
     pub const DISPLACED: &str = "displaced";
+    /// Server-sent, and only because the host's account has no credit left.
+    pub const NO_BALANCE: &str = "no_balance";
 
     /// The closed set; the server answers any other reason with `bad_request` and relays nothing.
-    pub const ALL: [&str; 12] = [
+    pub const ALL: [&str; 13] = [
         USER_ENDED,
         HOST_ENDED,
         TIMEOUT,
@@ -130,6 +132,7 @@ pub mod bye {
         AUTH_FAILED,
         DECLINED,
         DISPLACED,
+        NO_BALANCE,
     ];
 
     pub fn is_valid(reason: &str) -> bool {

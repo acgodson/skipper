@@ -128,12 +128,21 @@ const (
 	ByeAuthFailed     = "auth_failed"
 	ByeDeclined       = "declined"
 	ByeDisplaced      = "displaced"
+
+	// ByeNoBalance is sent only by the server, and only because the host's account has
+	// no credit left. It exists because the alternative was a lie to both parties: the
+	// money path used ByeHostEnded, the same reason as an unlink, so the controller was
+	// told the host hung up and the host was told it had ended the session itself
+	// (AUDIT.md finding 3). It names the one fact neither peer can otherwise learn.
+	ByeNoBalance = "no_balance"
 )
 
 // ByeReasons is the closed §2.14 set; the server refuses any other bye reason and never relays it.
+// ByeNoBalance is appended rather than inserted: the order is the wire-vector order.
 var ByeReasons = []string{
 	ByeUserEnded, ByeHostEnded, ByeTimeout, ByeFailed, ByeCodeRefreshed, ByeReplaced,
 	ByeShutdown, ByeError, ByePeerAuthFailed, ByeAuthFailed, ByeDeclined, ByeDisplaced,
+	ByeNoBalance,
 }
 
 func ValidByeReason(reason string) bool {

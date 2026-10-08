@@ -184,7 +184,7 @@ func (s *Server) unlink(w http.ResponseWriter, r *http.Request, deviceID string)
 		s.internalError(w, r, err)
 		return
 	}
-	if err := s.closeDeviceSessions(r.Context(), deviceID); err != nil {
+	if err := s.closeDeviceSessions(r.Context(), deviceID, protocol.ByeHostEnded); err != nil {
 		s.fail(w, r, http.StatusServiceUnavailable, protocol.APIErrUnavailable,
 			"this device is signed out, but a session it was in may still be running; try again")
 		return
@@ -195,13 +195,20 @@ func (s *Server) unlink(w http.ResponseWriter, r *http.Request, deviceID string)
 // closeDeviceSessions asks signaling to end the device's live sessions and
 // records a pending close when it cannot, so the reconciliation sweep re-issues
 // it until signaling confirms the device holds no session.
-func (s *Server) closeDeviceSessions(ctx context.Context, deviceID string) error {
+//
+// The reason is the caller's because the two callers are telling the peers different
+// things: an unlink really is the host ending it, and a spent account is not. Sending
+// host_ended for both told the controller the host had hung up and told the host it
+// had hung up itself (AUDIT.md finding 3). It is carried into the pending record too,
+// so a close that signaling confirms a sweep later still says what happened.
+func (s *Server) closeDeviceSessions(ctx context.Context, deviceID, reason string) error {
 	if s.opt.CloseSessions == nil {
 		return nil
 	}
-	if err := s.opt.CloseSessions(ctx, deviceID, protocol.ByeHostEnded); err != nil {
-		s.opt.Logger.Warn("live sessions were not closed on unlink", "deviceId", deviceID, "err", err)
-		if recordErr := s.opt.DB.AddPendingClose(deviceID, protocol.ByeHostEnded, s.nowMS()); recordErr != nil {
+	if err := s.opt.CloseSessions(ctx, deviceID, reason); err != nil {
+		s.opt.Logger.Warn("live sessions were not closed", "deviceId", deviceID,
+			"reason", reason, "err", err)
+		if recordErr := s.opt.DB.AddPendingClose(deviceID, reason, s.nowMS()); recordErr != nil {
 			s.opt.Logger.Error("the pending session close was not recorded",
 				"deviceId", deviceID, "err", recordErr)
 		}

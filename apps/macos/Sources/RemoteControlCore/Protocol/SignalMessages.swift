@@ -71,6 +71,8 @@ public enum Wire {
         public static let authFailed = "auth_failed"
         public static let declined = "declined"
         public static let displaced = "displaced"
+        /// Server-sent, and only because the host's account has no credit left.
+        public static let noBalance = "no_balance"
     }
 
     public typealias Role = SessionRole
