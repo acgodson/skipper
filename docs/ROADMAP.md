@@ -50,8 +50,10 @@ A phase is **Done** only when observed working, per `CLAUDE.md` — tests alone 
 | Quality modes now carry their own bitrate ceiling (sharp 8 / auto 2 / smooth 1 Mbps) and a trial is held to the middle one, server-stated. Before this every mode asked for 8 Mbps and only the width differed, so the 10¢/hour rate was not solvent | done |
 | `bye` carries a host-reported relay figure, documented as unbilled. Server-side byte counting from coturn's new `usage:` lines waits for pricing — a bill must not rest on the paying party's own report | done |
 | The launch gate refuses rather than skipping when the app is running: a skip let `PREFLIGHT PASSED` print without the app ever starting, on the machine most likely to have it running | done |
-| Audit finding: every route out of the app to the web 404s, and no production endpoint can add credit at all | in progress |
-| Audit finding: when credit runs out the host sees a stale balance, the controller is told the host hung up, and a paying customer is told their *trial* ended | in progress |
+| Audit finding fixed: `/account` and `/credits` now resolve and state the true beta position; no affordance offers a top-up that does not exist; `/download` was **never deployed** at all, so the live landing page's own Download button was a 404 — fixed in the same sync | done |
+| Audit finding fixed: the refusal at zero is read from whether the account was ever paid for, not from a timestamp that is never cleared; the host refreshes on an interval and at session end; a session ended for money says `no_balance` rather than blaming the other Mac | done |
+| **🖐 Before the link goes to anyone: add the `support@skipperdesk.app` forward at Namecheap.** The account page names it as the one way to reach a human, and the MX records are already live — only the rule is missing. Deployed 2026-10-08 with the owner aware | owner |
+| `bye{error}` still conflates "that account is already in a session" with a brief rc-api outage. A bye reason cannot carry the sentence — the cause has to be threaded through `reports`, `entitlement` and `hub`. Scoped out deliberately rather than guessed at | deferred |
 | 5.5 cutover, legacy box off | queued |
 
 ## Queued, in order
