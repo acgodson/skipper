@@ -13,6 +13,24 @@ for arg in "$@"; do
   esac
 done
 
+# --release says this image is meant for strangers, so a missing identity or notary
+# profile is a failure rather than a quieter build. Skipping them produced a notarised
+# app inside an UNSIGNED image once: Gatekeeper assesses the image first, so it warned
+# on a build that was in fact notarised. Note that `VAR=x ./build.sh && ./package-dmg.sh`
+# sets VAR for build.sh ALONE, which is exactly how that happened.
+if [[ "${RC_RELEASE:-0}" == "1" ]]; then
+  if [[ "${RC_SIGN_IDENTITY:-}" != "Developer ID"* ]]; then
+    echo "FAIL  --release needs RC_SIGN_IDENTITY to be a Developer ID identity; got '${RC_SIGN_IDENTITY:-unset}'"
+    echo "      export it rather than prefixing one command: export RC_SIGN_IDENTITY=... RC_NOTARY_PROFILE=..."
+    exit 1
+  fi
+  if [[ -z "${RC_NOTARY_PROFILE:-}" ]]; then
+    echo "FAIL  --release needs RC_NOTARY_PROFILE; an unnotarised image warns on every Mac that downloads it"
+    exit 1
+  fi
+fi
+
+
 APP="dist/SkipperDesk.app"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist" 2>/dev/null || echo 0.0.0)"
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist" 2>/dev/null || echo 0)"
@@ -101,23 +119,6 @@ hdiutil detach "$MP" >/dev/null
 #
 # This is DIRECT distribution, not the App Store: notarisation is an automated
 # malware scan (typically 1-15 min), with no App Review and no human approval.
-# --release says this image is meant for strangers, so a missing identity or notary
-# profile is a failure rather than a quieter build. Skipping them produced a notarised
-# app inside an UNSIGNED image once: Gatekeeper assesses the image first, so it warned
-# on a build that was in fact notarised. Note that `VAR=x ./build.sh && ./package-dmg.sh`
-# sets VAR for build.sh ALONE, which is exactly how that happened.
-if [[ "${RC_RELEASE:-0}" == "1" ]]; then
-  if [[ "$SIGN_IDENTITY" != "Developer ID"* ]]; then
-    echo "FAIL  --release needs RC_SIGN_IDENTITY to be a Developer ID identity; got '${SIGN_IDENTITY:-unset}'"
-    echo "      export it rather than prefixing one command: export RC_SIGN_IDENTITY=... RC_NOTARY_PROFILE=..."
-    exit 1
-  fi
-  if [[ -z "$NOTARY_PROFILE" ]]; then
-    echo "FAIL  --release needs RC_NOTARY_PROFILE; an unnotarised image warns on every Mac that downloads it"
-    exit 1
-  fi
-fi
-
 if [[ "$SIGN_IDENTITY" == "Developer ID"* ]]; then
   echo "==> Signing the disk image"
   codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
