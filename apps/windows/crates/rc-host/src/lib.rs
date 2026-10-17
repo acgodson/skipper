@@ -20,5 +20,5 @@ pub mod inject_windows;
 pub mod capture_windows;
 
 pub use host::{Host, HostConfig};
-pub use inject::{InputDispatcher, InputOp, Injector, RecordingInjector};
+pub use inject::{InjectError, InputDispatcher, InputOp, InputState, Injector, RecordingInjector};
 pub use media::{FrameSource, H264Encoder, RawFrame, SyntheticSource};
