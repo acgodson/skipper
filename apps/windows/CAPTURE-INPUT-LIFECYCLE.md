@@ -57,6 +57,14 @@ model (`WINDOWS-HOST.md` §3c).
 event (the controller forwards `flagsChanged` that way), and a lost modifier `key_up` is
 healed from the next event's `mods`. Caps Lock and `fn` are never pressed.
 
+**Termination.** Everything held is released on `input_reset`, on suspension, when capture
+stops, on session teardown, when ICE closes or fails, and on Ctrl-C or the console window
+being closed. The last one matters because process exit sends no key-up: `SendInput` injects
+into the system input queue, so a host that dies with Ctrl down leaves Ctrl down. The console
+Ctrl handler is Windows-only, so the Mac product's dependency graph gains nothing
+(`signal-hook-registry` and `errno` appear in `Cargo.lock`, which records every target, but
+are never compiled for macOS).
+
 **Cancellation.** The pump is blocking, so `abort()` cannot stop it. It checks a stop flag
 between frames and inside every sleep, and hands the frame source back on exit so the next
 session can reuse it.

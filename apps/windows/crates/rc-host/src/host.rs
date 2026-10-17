@@ -155,15 +155,26 @@ where
     /// backoff/reconnect loop lives here; per PROTOCOL.md §4 the state machine
     /// decides what each reconnect *means*.
     pub async fn run(mut self, mut pump_rx: mpsc::Receiver<PumpEvent>) -> Result<(), String> {
+        let mut shutdown_rx = spawn_shutdown_watch();
         let mut backoff = Duration::from_millis(500);
         loop {
-            match self.run_one_connection(&mut pump_rx).await {
+            match self.run_one_connection(&mut pump_rx, &mut shutdown_rx).await {
                 Ok(ConnLoopExit::Shutdown) => {
+                    // Releases every held key and button on the way out.
                     self.stop_capture().await;
                     return Ok(());
                 }
                 Ok(ConnLoopExit::Reconnect) | Err(_) => {
-                    tokio::time::sleep(backoff).await;
+                    // The backoff is interruptible: asking the host to stop
+                    // must not wait out a 15-second sleep with a modifier still
+                    // held down on the machine.
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        _ = shutdown_rx.recv() => {
+                            self.stop_capture().await;
+                            return Ok(());
+                        }
+                    }
                     backoff = (backoff * 2).min(Duration::from_secs(15));
                 }
             }
@@ -173,6 +184,7 @@ where
     async fn run_one_connection(
         &mut self,
         pump_rx: &mut mpsc::Receiver<PumpEvent>,
+        shutdown_rx: &mut mpsc::Receiver<()>,
     ) -> Result<ConnLoopExit, String> {
         let cfg = Config::new(&self.config.server_url, self.config.cert_pin.as_deref());
         let (conn, mut pushes) = SignalConnection::connect(&cfg).await.map_err(|e| e.to_string())?;
@@ -242,6 +254,10 @@ where
                     if let Some(event) = event {
                         self.on_pump_event(event, &peer).await;
                     }
+                }
+                _ = shutdown_rx.recv() => {
+                    eprintln!("rc-host: stopping - releasing all remote input");
+                    break ConnLoopExit::Shutdown;
                 }
             }
         };
@@ -640,6 +656,43 @@ where
             }
         }
     }
+}
+
+/// Watches for the ways a user ends this host, so the keys the controller is
+/// holding are released before the process goes.
+///
+/// A host that exits with a modifier still down leaves it down: `SendInput`
+/// injects into the system input queue and process exit sends no key-up, so the
+/// machine is left with a stuck Ctrl until something presses it again. The
+/// console window's close button matters as much as Ctrl-C here, because the
+/// launch banner tells the user that closing the window is how to stop.
+fn spawn_shutdown_watch() -> mpsc::Receiver<()> {
+    let (tx, rx) = mpsc::channel::<()>(1);
+    tokio::spawn(async move {
+        wait_for_shutdown().await;
+        let _ = tx.send(()).await;
+    });
+    rx
+}
+
+#[cfg(windows)]
+async fn wait_for_shutdown() {
+    let Ok(mut close) = tokio::signal::windows::ctrl_close() else {
+        let _ = tokio::signal::ctrl_c().await;
+        return;
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = close.recv() => {}
+    }
+}
+
+/// The non-Windows build is the diagnostic one: its injector records input
+/// rather than applying it, so nothing can be left held and there is no reason
+/// to pull a unix signal backend into the Mac product's dependency graph for it.
+#[cfg(not(windows))]
+async fn wait_for_shutdown() {
+    std::future::pending().await
 }
 
 enum ConnLoopExit {

@@ -28,6 +28,14 @@ base64.workspace = true
 sha2.workspace = true
 openh264.workspace = true
 
+# Console Ctrl-C and window-close handling, so the host releases every held key
+# before it exits. Windows only on purpose: tokio's signal backend there is the
+# OS API, while on unix it adds signal-hook-registry and errno to the graph for
+# a build that only ever records input.
+[target.'cfg(windows)'.dependencies.tokio]
+workspace = true
+features = ["signal"]
+
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.58"
 features = [
