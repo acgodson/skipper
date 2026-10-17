@@ -51,12 +51,12 @@ pub struct PumpConfig {
     pub pacing: Pacing,
 }
 
-/// A running pump. Dropping this does **not** stop the loop; call
-/// [`CapturePump::stop`], which is the only path that recovers the source.
+/// A running pump. [`CapturePump::stop`] is the only path that recovers the
+/// frame source; dropping one instead ends the loop but loses the source.
 pub struct CapturePump<F> {
     stop: Arc<AtomicBool>,
     keyframe: Arc<AtomicBool>,
-    handle: tokio::task::JoinHandle<F>,
+    handle: Option<tokio::task::JoinHandle<F>>,
 }
 
 impl<F: FrameSource + 'static> CapturePump<F> {
@@ -76,7 +76,7 @@ impl<F: FrameSource + 'static> CapturePump<F> {
                 run(source, sink, events, config, encoders, stop, keyframe)
             })
         };
-        Self { stop, keyframe, handle }
+        Self { stop, keyframe, handle: Some(handle) }
     }
 
     /// Ask for an IDR on the next frame. This is what a PLI from the peer means:
@@ -91,12 +91,23 @@ impl<F: FrameSource + 'static> CapturePump<F> {
     /// `None` means the loop did not finish inside `grace` — it is still asked
     /// to stop and will drop the source itself, but the caller must treat the
     /// source as gone and open a new one rather than wait on a hung device.
-    pub async fn stop(self, grace: Duration) -> Option<F> {
+    pub async fn stop(mut self, grace: Duration) -> Option<F> {
         self.stop.store(true, Ordering::Release);
-        match tokio::time::timeout(grace, self.handle).await {
+        let Some(handle) = self.handle.take() else { return None };
+        match tokio::time::timeout(grace, handle).await {
             Ok(Ok(source)) => Some(source),
             Ok(Err(_)) | Err(_) => None,
         }
+    }
+}
+
+impl<F> Drop for CapturePump<F> {
+    /// A pump that is dropped rather than stopped would otherwise hold its
+    /// capture device and keep encoding until the runtime shut down. This cannot
+    /// recover the frame source — only `stop` awaits the thread — but it does
+    /// guarantee that no path leaves the loop running.
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
     }
 }
 

@@ -160,7 +160,6 @@ where
         loop {
             match self.run_one_connection(&mut pump_rx, &mut shutdown_rx).await {
                 Ok(ConnLoopExit::Shutdown) => {
-                    // Releases every held key and button on the way out.
                     self.stop_capture().await;
                     return Ok(());
                 }

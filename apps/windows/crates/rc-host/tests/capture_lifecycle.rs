@@ -206,6 +206,24 @@ async fn nothing_is_encoded_after_the_pump_is_stopped() {
     assert_eq!(sink.samples.load(Ordering::Relaxed), samples_at_stop, "no orphaned encoder");
 }
 
+#[tokio::test]
+async fn dropping_a_pump_without_stopping_it_still_ends_the_loop() {
+    let fakes = fake_encoders(Duration::ZERO, 0);
+    let source = SlowSource::new(Duration::from_millis(1));
+    let frames = source.frames.clone();
+    let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
+    let (tx, _rx) = mpsc::channel(64);
+    drop(CapturePump::start(source, sink, tx, config(60.0, 1920), fakes.factory.clone()));
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let at_drop = frames.load(Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert_eq!(
+        frames.load(Ordering::Relaxed),
+        at_drop,
+        "no path may leave the capture loop running"
+    );
+}
+
 /// A closed track is the session ending. The pump must notice and release the
 /// source rather than encode into nothing for the rest of the process's life.
 #[tokio::test]
