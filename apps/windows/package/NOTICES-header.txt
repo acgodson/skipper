@@ -1,0 +1,13 @@
+SkipperDesk for Windows - private beta
+Copyright (c) SkipperDesk. All rights reserved. This build is provided to invited testers only and
+may not be redistributed.
+
+This program includes third-party software. Each component is used under its own licence.
+Licence names below are as declared by the component's own package metadata.
+
+Bundled runtime DLLs (copied unmodified from the mingw-w64 toolchain):
+  libstdc++-6.dll, libgcc_s_seh-1.dll  GCC Runtime Library, GPL-3.0-or-later WITH GCC-exception-3.1
+  libwinpthread-1.dll                  winpthreads, MIT / ZPL-2.1
+The H.264 encoder is Cisco's OpenH264 (BSD-2-Clause), compiled into the executable.
+
+Rust components compiled into the executable:

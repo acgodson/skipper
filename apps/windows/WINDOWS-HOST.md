@@ -481,3 +481,26 @@ Release build, openh264 + webrtc-rs, server unchanged.
 x86_64-pc-windows-gnu -p rc-host` → a linked `rc-host.exe`. The wire, the session logic, the
 input translation, the crypto and the signaling are all held to the real server and the real
 Mac state machine by executable cross-checks, not by inspection.
+
+---
+
+## 11. Private beta ZIP (unsigned)
+
+A portable x64 ZIP for handing a build to a friend's PC. **It is unsigned and private**: there is
+no installer, no Authenticode certificate, and it must not be linked from the public website.
+Windows will warn about it; `README.txt` inside the ZIP tells the tester how to unblock it.
+
+```
+./scripts/package-windows.sh
+```
+
+Run on the Mac (needs `rustup target add x86_64-pc-windows-gnu` and `brew install mingw-w64`). It
+builds `rc-host` for `x86_64-pc-windows-gnu`, checks the result is an x64 PE, copies the mingw
+runtime DLLs the executable actually imports (found by reading its import table, transitively),
+adds `THIRD-PARTY-NOTICES.txt` and `README.txt` (sources in `apps/windows/package/`), and writes
+`dist/SkipperDesk-win-x64-<version>.zip` with its SHA-256. It fails if the executable or a
+required DLL is missing. The build asks for administrator rights on launch (UAC), as in section 3.
+
+Share the ZIP privately (a direct message or a private link), send the SHA-256 alongside it, and
+tell the tester to unblock the ZIP before extracting. `infra/web/deploy.sh` leaves `*.zip` under
+`assets/` alone, but nothing uploads this ZIP for you. Signing and an installer come later.
