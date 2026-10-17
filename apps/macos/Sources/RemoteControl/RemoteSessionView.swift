@@ -12,6 +12,7 @@ struct RemoteSessionView: View {
     @State private var hoveringToolbar = false
     @State private var revealed = true
     @State private var hideGeneration = 0
+    @State private var localControlRegions: [CGRect] = []
 
     private static let revealBand: CGFloat = 56
 
@@ -29,6 +30,7 @@ struct RemoteSessionView: View {
                 RemoteScreenView(
                     session: coordinator,
                     capturingKeyboard: model.keyboardCaptureActive,
+                    localControlRegions: LocalControlRegions(localControlRegions),
                     onVideoSizeChange: { videoSize = $0 },
                     onPointerSample: { sample, _ in
                         lastPointer = sample
@@ -42,6 +44,7 @@ struct RemoteSessionView: View {
                     title: "Connected \u{2014} waiting for video\u{2026}",
                     message: "The other Mac is starting its screen capture. If this does not clear within a few seconds, check that SkipperDesk has Screen Recording permission on that Mac \u{2014} macOS can revoke it after the app is updated."
                 )
+                .localControlRegion()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
@@ -50,6 +53,7 @@ struct RemoteSessionView: View {
                     title: "Reconnecting\u{2026}",
                     message: "The network wobbled. The session is still open and is recovering by itself."
                 )
+                .localControlRegion()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .transition(.opacity)
             }
@@ -69,6 +73,7 @@ struct RemoteSessionView: View {
             }
 
             SessionToolbar(videoSize: videoSize, pointer: lastPointer)
+                .localControlRegion(revealed)
                 .padding(.top, SkipperSpace.m)
                 .onHover { hoveringToolbar = $0 }
                 .opacity(revealed ? 1 : 0)
@@ -76,6 +81,7 @@ struct RemoteSessionView: View {
                 .allowsHitTesting(revealed)
                 .animation(SkipperMotion.toolbarReveal, value: revealed)
         }
+        .sessionStage { localControlRegions = $0 }
         .frame(minWidth: 640, minHeight: 420)
         .animation(SkipperMotion.standard, value: model.isReconnecting)
         .onChange(of: toolbarPinned) { pinned in
