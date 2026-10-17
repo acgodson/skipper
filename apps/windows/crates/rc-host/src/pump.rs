@@ -169,17 +169,10 @@ fn run<F: FrameSource>(
     let mut failures = 0u32;
 
     while !stop.load(Ordering::Acquire) {
-        let geometry = source.geometry();
-        if last_geometry.as_ref() != Some(&geometry) {
-            last_geometry = Some(geometry);
-            if !publish(&events, &stop, PumpEvent::Geometry(geometry)) {
-                break;
-            }
-            // A resolution or scale change invalidates every reference frame the
-            // peer holds.
-            keyframe.store(true, Ordering::Release);
-        }
-
+        // Status before geometry, and not the other way round. Knowing where the
+        // screen is unsuspends input, so if geometry went first there would be a
+        // window — however short — in which the host would accept clicks before
+        // it had said the desktop was locked.
         let status = source.status();
         if last_status.as_ref() != Some(&status) {
             last_status = Some(status.clone());
@@ -189,6 +182,17 @@ fn run<F: FrameSource>(
             if status.is_live() {
                 keyframe.store(true, Ordering::Release);
             }
+        }
+
+        let geometry = source.geometry();
+        if last_geometry.as_ref() != Some(&geometry) {
+            last_geometry = Some(geometry);
+            if !publish(&events, &stop, PumpEvent::Geometry(geometry)) {
+                break;
+            }
+            // A resolution or scale change invalidates every reference frame the
+            // peer holds.
+            keyframe.store(true, Ordering::Release);
         }
 
         if !status.is_live() {

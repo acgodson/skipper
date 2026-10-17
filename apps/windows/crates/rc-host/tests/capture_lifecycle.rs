@@ -250,6 +250,27 @@ async fn a_protected_desktop_is_reported_and_nothing_is_sent() {
     pump.stop(Duration::from_secs(2)).await.expect("source back");
 }
 
+/// Knowing where the screen is is what unsuspends input, so it must not be
+/// announced before the host has said whether the screen is available. A host
+/// that starts up on a locked desktop would otherwise accept clicks for the
+/// gap between the two events.
+#[tokio::test]
+async fn availability_is_announced_before_the_geometry_that_unsuspends_input() {
+    let fakes = fake_encoders(Duration::ZERO, 0);
+    let source = SlowSource::new(Duration::from_millis(1));
+    *source.status.lock().unwrap() = CaptureStatus::DesktopUnavailable;
+    let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
+    let (tx, mut rx) = mpsc::channel(32);
+    let pump = CapturePump::start(source, sink, tx, config(60.0, 1920), fakes.factory.clone());
+    let events = drain(&mut rx).await;
+    pump.stop(Duration::from_secs(2)).await.expect("source back");
+
+    let status_at = events.iter().position(|e| matches!(e, PumpEvent::Status(_)));
+    let geometry_at = events.iter().position(|e| matches!(e, PumpEvent::Geometry(_)));
+    assert_eq!(status_at, Some(0), "got {events:?}");
+    assert!(geometry_at > status_at, "got {events:?}");
+}
+
 #[tokio::test]
 async fn coming_back_from_unavailable_forces_a_keyframe() {
     let fakes = fake_encoders(Duration::ZERO, 0);
