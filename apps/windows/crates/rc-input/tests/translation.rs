@@ -8,7 +8,7 @@
 use rc_input::keycodes::{kvk, vk, WinKey};
 use rc_input::modifiers::{CommandPolicy, ModifierPolicy};
 use rc_input::*;
-use rc_proto::ctrl::{GestureName, KeyModifiers};
+use rc_proto::ctrl::{GestureName, KeyEvent, KeyModifiers};
 
 // ---------------------------------------------------------------------------
 // Keycodes
@@ -321,18 +321,246 @@ fn only_the_documented_gesture_pair_shares_a_chord() {
 // Coordinates
 // ---------------------------------------------------------------------------
 
+fn one_screen() -> DisplayGeometry {
+    DisplayGeometry::single(1920, 1080, 1.0)
+}
+
 #[test]
 fn normalised_coordinates_span_the_full_absolute_range() {
-    assert_eq!(to_absolute(0.0), 0);
-    assert_eq!(to_absolute(1.0), 65535, "1.0 must reach the last column, not stop short");
-    assert_eq!(to_absolute(0.5), 32768);
+    let g = one_screen();
+    assert_eq!(g.to_absolute(0.0, 0.0), (0, 0));
+    assert_eq!(
+        g.to_absolute(1.0, 1.0),
+        (ABSOLUTE_MAX, ABSOLUTE_MAX),
+        "1.0 must reach the last column, not stop short"
+    );
 }
 
 #[test]
 fn coordinates_are_clamped_and_nan_safe() {
-    assert_eq!(to_absolute(-5.0), 0);
-    assert_eq!(to_absolute(5.0), 65535);
-    assert_eq!(to_absolute(f64::NAN), 0);
-    assert_eq!(to_absolute(f64::INFINITY), 65535);
-    assert_eq!(to_absolute(f64::NEG_INFINITY), 0);
+    let g = one_screen();
+    assert_eq!(g.to_absolute(-5.0, 5.0), (0, ABSOLUTE_MAX));
+    assert_eq!(g.to_absolute(f64::NAN, f64::NAN), (0, 0));
+    assert_eq!(g.to_absolute(f64::INFINITY, f64::NEG_INFINITY), (ABSOLUTE_MAX, 0));
+}
+
+/// The defect this exists to prevent: treating the captured monitor as if it
+/// were the whole virtual desktop. With a second screen attached to the left,
+/// `VIRTUALDESK` coordinate 0 is on *that* screen, so a click at the left edge
+/// of the remote window landed on the wrong monitor entirely.
+#[test]
+fn a_second_monitor_to_the_left_shifts_the_absolute_origin() {
+    let g = DisplayGeometry {
+        monitor: Rect::new(0, 0, 1920, 1080),
+        virtual_desktop: Rect::new(-1920, 0, 1920, 1080),
+        scale: 1.0,
+    };
+    assert!(g.is_usable());
+    let (left, _) = g.to_absolute(0.0, 0.0);
+    let (right, _) = g.to_absolute(1.0, 0.0);
+    assert!(
+        left > ABSOLUTE_MAX / 2 - 100 && left < ABSOLUTE_MAX / 2 + 100,
+        "the captured screen's left edge is halfway across a doubled desktop, got {left}"
+    );
+    assert_eq!(right, ABSOLUTE_MAX, "its right edge is the desktop's right edge");
+}
+
+#[test]
+fn a_captured_monitor_at_a_negative_origin_still_maps_into_range() {
+    let g = DisplayGeometry {
+        monitor: Rect::new(-2560, -400, 0, 1040),
+        virtual_desktop: Rect::new(-2560, -400, 1920, 1080),
+        scale: 1.0,
+    };
+    assert!(g.is_usable());
+    for (u, v) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)] {
+        let (x, y) = g.to_absolute(u, v);
+        assert!((0..=ABSOLUTE_MAX).contains(&x), "x out of range: {x}");
+        assert!((0..=ABSOLUTE_MAX).contains(&y), "y out of range: {y}");
+    }
+    assert_eq!(g.to_absolute(0.0, 0.0), (0, 0), "the top-left of the desktop is the origin");
+}
+
+#[test]
+fn geometry_read_mid_change_is_rejected_rather_than_aimed_with() {
+    let detached = DisplayGeometry {
+        monitor: Rect::new(2000, 0, 3920, 1080),
+        virtual_desktop: Rect::new(0, 0, 1920, 1080),
+        scale: 1.0,
+    };
+    assert!(!detached.is_usable(), "a monitor outside the virtual desktop is not aimable");
+    assert!(!DisplayGeometry::single(0, 0, 1.0).is_usable(), "an empty display is not aimable");
+}
+
+#[test]
+fn display_info_reports_the_captured_monitor_and_names_windows() {
+    let g = DisplayGeometry {
+        monitor: Rect::new(-1920, 0, 0, 1200),
+        virtual_desktop: Rect::new(-1920, 0, 2560, 1440),
+        scale: 1.5,
+    };
+    let info = g.display_info();
+    assert_eq!((info.w, info.h), (1920, 1200), "the captured monitor, not the desktop");
+    assert_eq!(info.scale, 1.5);
+    assert_eq!(info.os, "windows");
+}
+
+// ---------------------------------------------------------------------------
+// The Mac -> Windows key policy
+// ---------------------------------------------------------------------------
+
+fn resolve(keycode: i32, mods: KeyModifiers, chars: &str) -> KeyResolution {
+    KeyPolicy::default().resolve(&KeyEvent { keycode, mods: mods.0, chars: chars.into() })
+}
+
+/// The five shortcuts whose breaking makes the product feel broken. Named as a
+/// set so the policy cannot be changed without this failing.
+#[test]
+fn the_five_command_shortcuts_become_their_ctrl_equivalents() {
+    for (keycode, letter) in
+        [(kvk::C, b'C'), (kvk::V, b'V'), (kvk::X, b'X'), (kvk::A, b'A'), (kvk::Z, b'Z')]
+    {
+        let got = resolve(keycode, KeyModifiers::COMMAND, "");
+        assert_eq!(
+            got,
+            KeyResolution::Keystroke {
+                modifiers: vec![WinKey::new(vk::LCONTROL)],
+                key: Some(WinKey::new(vk::letter(letter))),
+            },
+            "Command+{} must be Ctrl+{}",
+            letter as char,
+            letter as char
+        );
+    }
+}
+
+#[test]
+fn control_is_ctrl_and_option_is_alt_and_the_pair_does_not_merge() {
+    let got = resolve(kvk::T, KeyModifiers::CONTROL | KeyModifiers::OPTION, "");
+    assert_eq!(
+        got,
+        KeyResolution::Keystroke {
+            modifiers: vec![WinKey::new(vk::LCONTROL), WinKey::new(vk::LMENU)],
+            key: Some(WinKey::new(vk::letter(b'T'))),
+        }
+    );
+}
+
+#[test]
+fn overlapping_command_and_control_resolve_to_one_ctrl() {
+    let KeyResolution::Keystroke { modifiers, .. } =
+        resolve(kvk::S, KeyModifiers::COMMAND | KeyModifiers::CONTROL, "")
+    else {
+        panic!("a chord must not be text");
+    };
+    assert_eq!(
+        modifiers,
+        vec![WinKey::new(vk::LCONTROL)],
+        "two Mac modifiers mapping to Ctrl must press it once; twice leaves it stuck"
+    );
+}
+
+#[test]
+fn the_backspace_and_delete_keys_do_not_swap() {
+    assert_eq!(
+        resolve(kvk::DELETE, KeyModifiers(0), ""),
+        KeyResolution::Keystroke { modifiers: vec![], key: Some(WinKey::new(vk::BACK)) },
+        "the Mac's Delete key is Windows Backspace"
+    );
+    assert_eq!(
+        resolve(kvk::FORWARD_DELETE, KeyModifiers(0), ""),
+        KeyResolution::Keystroke { modifiers: vec![], key: Some(WinKey::ext(vk::DELETE)) },
+        "the Mac's Forward Delete is the extended Windows Delete"
+    );
+}
+
+#[test]
+fn navigation_keys_resolve_extended_so_they_do_not_land_on_the_numpad() {
+    for (mac, win) in [
+        (kvk::LEFT_ARROW, vk::LEFT),
+        (kvk::RIGHT_ARROW, vk::RIGHT),
+        (kvk::UP_ARROW, vk::UP),
+        (kvk::DOWN_ARROW, vk::DOWN),
+        (kvk::HOME, vk::HOME),
+        (kvk::END, vk::END),
+        (kvk::PAGE_UP, vk::PRIOR),
+        (kvk::PAGE_DOWN, vk::NEXT),
+    ] {
+        assert_eq!(
+            resolve(mac, KeyModifiers(0), ""),
+            KeyResolution::Keystroke { modifiers: vec![], key: Some(WinKey::ext(win)) },
+            "mac keycode {mac:#x} must be the extended form of {win:#x}"
+        );
+    }
+}
+
+/// The controller sends `flagsChanged` as a `key_down`/`key_up` of the modifier
+/// keycode itself, so a held modifier arrives as its own event and must resolve
+/// to that one key, not to a chord derived from the bitmask.
+#[test]
+fn a_modifier_keycode_resolves_to_that_one_sided_modifier() {
+    for (mac, expected) in [
+        (kvk::COMMAND, WinKey::new(vk::LCONTROL)),
+        (kvk::RIGHT_COMMAND, WinKey::new(vk::LCONTROL)),
+        (kvk::CONTROL, WinKey::new(vk::LCONTROL)),
+        (kvk::RIGHT_CONTROL, WinKey::ext(vk::RCONTROL)),
+        (kvk::OPTION, WinKey::new(vk::LMENU)),
+        (kvk::RIGHT_OPTION, WinKey::ext(vk::RMENU)),
+        (kvk::SHIFT, WinKey::new(vk::LSHIFT)),
+        (kvk::RIGHT_SHIFT, WinKey::new(vk::RSHIFT)),
+    ] {
+        assert_eq!(
+            resolve(mac, KeyModifiers::COMMAND, ""),
+            KeyResolution::Keystroke { modifiers: vec![], key: Some(expected) },
+            "mac modifier keycode {mac:#x}"
+        );
+    }
+}
+
+#[test]
+fn caps_lock_and_fn_are_ignored_rather_than_pressed() {
+    assert_eq!(resolve(kvk::CAPS_LOCK, KeyModifiers(0), ""), KeyResolution::Ignored);
+    assert_eq!(resolve(kvk::FUNCTION, KeyModifiers(0), ""), KeyResolution::Ignored);
+}
+
+#[test]
+fn resolved_text_is_preferred_only_when_no_shortcut_modifier_is_held() {
+    assert_eq!(resolve(kvk::E, KeyModifiers(0), "é"), KeyResolution::Text("é".into()));
+    assert_eq!(resolve(kvk::E, KeyModifiers::SHIFT, "É"), KeyResolution::Text("É".into()));
+    assert!(
+        matches!(resolve(kvk::E, KeyModifiers::COMMAND, "e"), KeyResolution::Keystroke { .. }),
+        "Command+E must stay a chord even when the controller resolved a character"
+    );
+}
+
+/// The shipped Mac controller never populates `chars`, so every keystroke takes
+/// the physical-key path. That path must therefore be complete on its own.
+#[test]
+fn a_key_event_without_chars_still_resolves_through_the_physical_table() {
+    assert_eq!(
+        resolve(kvk::K, KeyModifiers(0), ""),
+        KeyResolution::Keystroke { modifiers: vec![], key: Some(WinKey::new(vk::letter(b'K'))) }
+    );
+}
+
+#[test]
+fn an_unmapped_keycode_keeps_its_modifiers_instead_of_releasing_them() {
+    let got = resolve(kvk::JIS_KANA, KeyModifiers::COMMAND, "");
+    assert_eq!(
+        got,
+        KeyResolution::Keystroke { modifiers: vec![WinKey::new(vk::LCONTROL)], key: None },
+        "an unknown key must not look like Command being let go"
+    );
+    assert_eq!(resolve(kvk::JIS_KANA, KeyModifiers(0), ""), KeyResolution::Ignored);
+}
+
+#[test]
+fn only_the_modifiers_the_policy_holds_count_as_modifier_keys() {
+    for vk_code in [vk::LSHIFT, vk::RSHIFT, vk::LCONTROL, vk::RCONTROL, vk::LMENU, vk::RMENU, vk::LWIN]
+    {
+        assert!(KeyPolicy::is_modifier_vk(vk_code), "{vk_code:#x} is a modifier");
+    }
+    for vk_code in [vk::letter(b'A'), vk::RETURN, vk::CAPITAL, vk::ESCAPE, vk::TAB] {
+        assert!(!KeyPolicy::is_modifier_vk(vk_code), "{vk_code:#x} is not a modifier");
+    }
 }
