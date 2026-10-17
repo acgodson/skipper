@@ -148,10 +148,22 @@ impl PeerSession {
             RTCRtpCodecCapability {
                 mime_type: MIME_TYPE_H264.to_owned(),
                 clock_rate: 90000,
-                // Constrained Baseline 3.1, packetization-mode 1: the honest
-                // capability floor (WINDOWS-HOST.md §4), matched against
-                // whatever the Mac offers.
-                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                // Constrained Baseline, level 5.0, packetization-mode 1.
+                //
+                // The level is 5.0 (`...32`) and not 3.1 (`...1f`) because 3.1
+                // caps at 3600 macroblocks — 1280x720 — and this host sends up
+                // to 2560x1440 (14400). Advertising a level we exceed is the
+                // same dishonesty WINDOWS-HOST.md §4 warns about, pointing the
+                // other way. Level 5.0 allows 22080 macroblocks, which is
+                // exactly what `Pacing`'s cap permits.
+                //
+                // Safe to state: RFC 6184 §8.2.2 excludes the level part of
+                // profile-level-id from symmetric use, and webrtc-rs compares
+                // only profile_idc and profile_iop (`42e0`) when matching an
+                // offer, so the level does not affect negotiation. With
+                // `level-asymmetry-allowed=1` it describes what this host
+                // sends, not what it could decode.
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e032"
                     .to_owned(),
                 ..Default::default()
             },

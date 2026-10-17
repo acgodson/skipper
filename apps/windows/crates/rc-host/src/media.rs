@@ -216,11 +216,24 @@ pub struct Pacing {
 }
 
 impl Pacing {
-    /// 1920 and 30 fps: one scale step below a 4K monitor and the cadence the
-    /// Mac side already runs at. Deliberately conservative — a 3840x2160
-    /// desktop encoded in software at full resolution is the documented
-    /// catastrophe, not a tuning opportunity.
-    pub const DEFAULT_MAX_DIMENSION: u32 = 1920;
+    /// 2560 on the longest edge, chosen from a measurement rather than a guess.
+    ///
+    /// openh264 in a release build on the development Mac (Apple Silicon),
+    /// mean over 30 synthetic desktop-like frames:
+    ///
+    /// | source | encode | with the reduction | fits 30 fps? |
+    /// |---|---|---|---|
+    /// | 3840x2160 | 46.6 ms | — | no, 21 fps ceiling |
+    /// | 2560x1440 | 20.4 ms | — | yes |
+    /// | 1920x1080 | 14.0 ms | 28 ms from 4K | yes / marginal |
+    /// | 1280x720 | 9.9 ms | 16 ms from 1440p | yes |
+    ///
+    /// So 1440p is affordable at native resolution and 4K is not at any
+    /// resolution above this, which is where the cap goes. These numbers are
+    /// macOS/arm64, **not** a claim about any Windows machine — a different CPU
+    /// moves every row. That is precisely why [`Pacing::observe`] measures the
+    /// real cost at runtime instead of trusting this constant.
+    pub const DEFAULT_MAX_DIMENSION: u32 = 2560;
 
     pub fn new(fps: f32, max_dimension: u32) -> Self {
         Self {

@@ -95,8 +95,9 @@ fn config() -> HostConfig {
         force_relay: std::env::var("RC_ICE_POLICY").map(|v| v == "relay").unwrap_or(false),
         bitrate_bps: env_or("RC_BITRATE", "4000000").parse().unwrap_or(4_000_000),
         fps: env_or("RC_FPS", "30").parse().unwrap_or(30.0),
-        max_dimension: env_or("RC_MAX_DIMENSION", "1920")
-            .parse()
+        max_dimension: std::env::var("RC_MAX_DIMENSION")
+            .ok()
+            .and_then(|v| v.parse().ok())
             .unwrap_or(rc_host::Pacing::DEFAULT_MAX_DIMENSION),
     }
 }
