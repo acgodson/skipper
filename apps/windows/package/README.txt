@@ -35,11 +35,13 @@ If you see the blue "Windows protected your PC" screen anyway
 Running it
 ----------
 1. Open the extracted folder and double-click rc-host.exe.
-2. Windows will ask whether to allow the app to make changes. Choose Yes. This is needed so
-   the app can work with every window on your screen.
-3. A window opens showing a Device ID and an Access code. Give both to the person who is
+2. A window opens showing a Device ID and an Access code. Give both to the person who is
    connecting.
-4. Leave that window open. Closing it stops sharing straight away.
+3. Leave that window open. Closing it stops sharing straight away.
+
+One limit worth knowing: SkipperDesk runs as you, not as an administrator, so it cannot
+click inside windows that Windows itself runs with administrator rights. Ordinary apps -
+your browser, File Explorer, Office, Notepad - all work normally.
 
 Removing it
 -----------
