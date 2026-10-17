@@ -102,6 +102,7 @@ pub struct Host<I: Injector + Send + 'static, B: CaptureBackend> {
     pump_tx: mpsc::Sender<PumpEvent>,
     encoders: EncoderFactory,
     identity_path: Option<std::path::PathBuf>,
+    published_cursor: Option<ctrlp::CursorShapeName>,
     _keep_awake: KeepAwake,
 }
 
@@ -141,6 +142,7 @@ where
                 SoftwareEncoder::new(bitrate, fps).map(|e| Box::new(e) as Box<dyn VideoEncoder>)
             }),
             identity_path,
+            published_cursor: None,
             config,
             identity,
             key,
@@ -157,7 +159,7 @@ where
         loop {
             match self.run_one_connection(&mut pump_rx).await {
                 Ok(ConnLoopExit::Shutdown) => {
-                    self.stop_capture(&mut None).await;
+                    self.stop_capture().await;
                     return Ok(());
                 }
                 Ok(ConnLoopExit::Reconnect) | Err(_) => {
@@ -351,7 +353,7 @@ where
                 if closed {
                     // The track is gone. Stop capturing for it rather than
                     // encoding into a closed peer until something else notices.
-                    self.stop_capture(peer).await;
+                    self.stop_capture().await;
                 }
                 self.apply(&actions, conn, peer).await;
             }
@@ -438,18 +440,26 @@ where
     /// is purely additive — so the user sees that the screen is not live at the
     /// one place they are about to click. Making the stale frame itself
     /// unmistakable needs a controller-side change.
-    async fn publish_cursor(&self, peer: &Option<Arc<PeerSession>>) {
+    async fn publish_cursor(&mut self, peer: &Option<Arc<PeerSession>>) {
         let Some(p) = peer else { return };
         let shape = match self.dispatcher.state() {
             InputState::Running => ctrlp::CursorShapeName::Arrow,
             _ => ctrlp::CursorShapeName::NotAllowed,
         };
-        let _ = p
-            .send_ctrl(
-                ctrl_msg::CURSOR_SHAPE,
-                &ctrlp::CursorShape { shape: shape.as_wire().to_string() },
-            )
-            .await;
+        // §5: cursor_shape is sent when the channel opens and then on change
+        // only, so the last published value is remembered rather than resent.
+        if self.published_cursor == Some(shape) {
+            return;
+        }
+        if p.send_ctrl(
+            ctrl_msg::CURSOR_SHAPE,
+            &ctrlp::CursorShape { shape: shape.as_wire().to_string() },
+        )
+        .await
+        .is_ok()
+        {
+            self.published_cursor = Some(shape);
+        }
     }
 
     fn log_injection_failure(&mut self) {
@@ -542,7 +552,8 @@ where
     }
 
     /// Stop the pump and take the source back, so the next session has one.
-    async fn stop_capture(&mut self, peer: &mut Option<Arc<PeerSession>>) {
+    async fn stop_capture(&mut self) {
+        self.published_cursor = None;
         if let Some(pump) = self.pump.take() {
             self.frame_source = pump.stop(PUMP_STOP_GRACE).await;
             if self.frame_source.is_none() {
@@ -551,11 +562,10 @@ where
         }
         self.dispatcher.suspend(InputState::NoPicture, &mut self.injector);
         self.log_injection_failure();
-        let _ = peer;
     }
 
     async fn teardown(&mut self, peer: &mut Option<Arc<PeerSession>>) {
-        self.stop_capture(peer).await;
+        self.stop_capture().await;
         if let Some(p) = peer.take() {
             p.close().await;
         }

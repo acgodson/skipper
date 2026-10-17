@@ -113,6 +113,30 @@ fn nap(stop: &AtomicBool, total: Duration) {
     }
 }
 
+/// Publish one event, waiting for room if the host is momentarily behind but
+/// giving up the moment a stop is asked for.
+///
+/// `blocking_send` would be simpler and wrong: between the host's loop ending
+/// and teardown nobody is draining, so a full channel would park this thread
+/// past the stop grace and the frame source would be given up for lost.
+/// Returns `false` when the pump should end.
+fn publish(events: &mpsc::Sender<PumpEvent>, stop: &AtomicBool, event: PumpEvent) -> bool {
+    let mut event = event;
+    loop {
+        match events.try_send(event) {
+            Ok(()) => return true,
+            Err(mpsc::error::TrySendError::Closed(_)) => return false,
+            Err(mpsc::error::TrySendError::Full(unsent)) => {
+                if stop.load(Ordering::Acquire) {
+                    return false;
+                }
+                event = unsent;
+                std::thread::sleep(Duration::from_millis(4));
+            }
+        }
+    }
+}
+
 /// How many consecutive encoder failures are tolerated before capture is called
 /// unavailable. One is a hiccup; a run of them is a broken encoder, and
 /// pretending otherwise would spin at full speed producing nothing.
@@ -131,9 +155,11 @@ fn run<F: FrameSource>(
     let mut encoder = match encoders(config.bitrate_bps, pacing.fps) {
         Ok(e) => e,
         Err(e) => {
-            let _ = events.blocking_send(PumpEvent::Status(CaptureStatus::Unavailable(format!(
-                "encoder: {e}"
-            ))));
+            publish(
+                &events,
+                &stop,
+                PumpEvent::Status(CaptureStatus::Unavailable(format!("encoder: {e}"))),
+            );
             return source;
         }
     };
@@ -146,7 +172,7 @@ fn run<F: FrameSource>(
         let geometry = source.geometry();
         if last_geometry.as_ref() != Some(&geometry) {
             last_geometry = Some(geometry);
-            if events.blocking_send(PumpEvent::Geometry(geometry)).is_err() {
+            if !publish(&events, &stop, PumpEvent::Geometry(geometry)) {
                 break;
             }
             // A resolution or scale change invalidates every reference frame the
@@ -157,7 +183,7 @@ fn run<F: FrameSource>(
         let status = source.status();
         if last_status.as_ref() != Some(&status) {
             last_status = Some(status.clone());
-            if events.blocking_send(PumpEvent::Status(status.clone())).is_err() {
+            if !publish(&events, &stop, PumpEvent::Status(status.clone())) {
                 break;
             }
             if status.is_live() {
@@ -196,9 +222,13 @@ fn run<F: FrameSource>(
                     keyframe.store(true, Ordering::Release);
                 }
                 if failures >= ENCODER_FAILURE_LIMIT {
-                    let _ = events.blocking_send(PumpEvent::Status(CaptureStatus::Unavailable(
-                        format!("encoder failed {failures} times: {detail}"),
-                    )));
+                    publish(
+                        &events,
+                        &stop,
+                        PumpEvent::Status(CaptureStatus::Unavailable(format!(
+                            "encoder failed {failures} times: {detail}"
+                        ))),
+                    );
                     break;
                 }
                 match encoders(config.bitrate_bps, pacing.fps) {
@@ -217,7 +247,7 @@ fn run<F: FrameSource>(
                 max_dimension: pacing.max_dimension,
                 measured_encode: Some(cost),
             };
-            if events.blocking_send(event).is_err() {
+            if !publish(&events, &stop, event) {
                 break;
             }
             if let Ok(fresh) = encoders(config.bitrate_bps, pacing.fps) {

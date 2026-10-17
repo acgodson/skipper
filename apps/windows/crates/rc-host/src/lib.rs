@@ -27,7 +27,7 @@ pub mod capture_windows;
 pub use host::{Host, HostConfig};
 pub use inject::{InjectError, InputDispatcher, InputOp, InputState, Injector, RecordingInjector};
 pub use media::{
-    fit_for_encode, CaptureBackend, CaptureStatus, FrameSource, H264Encoder, Pacing, RawFrame,
+    fit_for_encode, CaptureBackend, CaptureStatus, FrameSource, Pacing, RawFrame,
     SoftwareEncoder, SyntheticBackend, SyntheticSource, VideoEncoder,
 };
 pub use pump::{CapturePump, EncoderFactory, PumpConfig, PumpEvent, VideoSink};

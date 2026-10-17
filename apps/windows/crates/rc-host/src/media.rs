@@ -196,9 +196,6 @@ impl VideoEncoder for SoftwareEncoder {
     }
 }
 
-/// Kept as the previous name for the software encoder.
-pub type H264Encoder = SoftwareEncoder;
-
 /// The resolution and frame-rate envelope the encoder is held to, and the
 /// measured step-down when it does not fit.
 ///
