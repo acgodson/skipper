@@ -128,6 +128,15 @@ public final class RemoteInputSender {
         send?(.reset)
     }
 
+    /// Lets go of whatever the remote Mac is still holding down. Called whenever the pointer
+    /// stops belonging to the remote screen, so a half-finished drag cannot stick over there.
+    @discardableResult
+    public func releaseHeld() -> Bool {
+        guard !heldButtons.isEmpty || !heldKeycodes.isEmpty else { return false }
+        reset()
+        return true
+    }
+
     public func forgetHeldState() {
         heldButtons.removeAll()
         heldKeycodes.removeAll()

@@ -23,6 +23,7 @@ struct GesturePalette: View {
                         .strokeBorder(SkipperColor.onStage.opacity(0.12))
                 )
                 .skipperElevation(.high)
+                .localControlRegion()
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
 
@@ -38,6 +39,7 @@ struct GesturePalette: View {
             }
             .buttonStyle(.plain)
             .skipperElevation(.high)
+            .localControlRegion()
             .help(isExpanded ? "Hide the gesture palette" : "Gesture palette \u{2014} Mission Control, Spotlight, Launchpad and more, performed on the other Mac")
         }
         .padding(SkipperSpace.l)

@@ -39,6 +39,14 @@ public final class RemoteVideoLayerRenderer: NSObject, RTCVideoRenderer {
 
     // MARK: Internals
 
+    public func resetStatistics() {
+        lock.lock()
+        lastSize = .zero
+        lock.unlock()
+        renderedFrames = 0
+        displayLayer.flush()
+    }
+
     private func report(size: CGSize) {
         guard size.width > 0, size.height > 0 else { return }
         lock.lock()
@@ -184,12 +192,28 @@ public final class RemoteScreenNSView: NSView {
         didSet { if remoteDisplaySize != oldValue { needsLayout = true } }
     }
 
+    public var localControlRegions = LocalControlRegions() {
+        didSet {
+            guard localControlRegions != oldValue else { return }
+            refreshOwnership()
+        }
+    }
+    public var onCaptureOwnerChange: ((CursorOwner) -> Void)?
+
     public let renderer = RemoteVideoLayerRenderer()
     private var trackingArea: NSTrackingArea?
 
     private let cursorLayer = CAShapeLayer()
-    deinit { if cursorHidden { NSCursor.unhide() } }
+    private let ownership = CursorOwnership()
+    private var observers: [NSObjectProtocol] = []
+    private var menuTracking = false
+    private var heldButtons: Set<MouseButton> = []
     private weak var attachedTrack: RTCVideoTrack?
+
+    deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        MainActor.assumeIsolated { ownership.surrender() }
+    }
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -203,7 +227,15 @@ public final class RemoteScreenNSView: NSView {
             self.videoSize = size
             self.needsLayout = true
             self.onVideoSizeChange?(size)
+            self.refreshOwnership()
         }
+        ownership.onChange = { [weak self] owner in
+            guard let self else { return }
+            RCLog.info("pointer ownership is now \(owner.rawValue)")
+            if owner == .local { self.heldButtons.removeAll() }
+            self.onCaptureOwnerChange?(owner)
+        }
+        observeSurroundings()
     }
 
     @available(*, unavailable)
@@ -215,10 +247,11 @@ public final class RemoteScreenNSView: NSView {
         guard track !== attachedTrack else { return }
         attachedTrack?.remove(renderer)
         attachedTrack = track
-        guard let track else {
-            videoSize = .zero
-            return
-        }
+        videoSize = .zero
+        renderer.resetStatistics()
+        needsLayout = true
+        refreshOwnership()
+        guard let track else { return }
         track.add(renderer)
     }
 
@@ -235,6 +268,7 @@ public final class RemoteScreenNSView: NSView {
         renderer.displayLayer.frame = rect.isEmpty ? bounds : rect
         renderer.displayLayer.isHidden = videoSize == .zero
         CATransaction.commit()
+        refreshOwnership()
     }
 
     // MARK: Pointer
@@ -251,7 +285,8 @@ public final class RemoteScreenNSView: NSView {
 
     private func report(_ event: NSEvent, _ kind: PointerEventKind, button: MouseButton = .left) {
         let point = convert(event.locationInWindow, from: nil)
-        moveCursorLayer(to: point)
+        refreshOwnership(at: point)
+        guard forwardsToRemote(at: point) else { return }
         guard let sample = geometry.sample(atView: point, clamp: kind.clampsOutsideVideo) else { return }
         onPointerSample?(sample, kind)
 
@@ -281,16 +316,82 @@ public final class RemoteScreenNSView: NSView {
         return .changed
     }
 
-    public override func mouseMoved(with event: NSEvent) {
-        hideLocalCursor()
-        report(event, .move)
+    public override func mouseMoved(with event: NSEvent) { report(event, .move) }
+
+    public override func mouseDragged(with event: NSEvent) { continueDrag(event, button: .left) }
+    public override func rightMouseDragged(with event: NSEvent) { continueDrag(event, button: .right) }
+    public override func otherMouseDragged(with event: NSEvent) { continueDrag(event, button: .middle) }
+    public override func mouseDown(with event: NSEvent) { beginPress(event, button: .left) }
+    public override func mouseUp(with event: NSEvent) { endPress(event, button: .left) }
+    public override func rightMouseDown(with event: NSEvent) { beginPress(event, button: .right) }
+    public override func rightMouseUp(with event: NSEvent) { endPress(event, button: .right) }
+    public override func otherMouseDown(with event: NSEvent) { beginPress(event, button: .middle) }
+    public override func otherMouseUp(with event: NSEvent) { endPress(event, button: .middle) }
+    public override func scrollWheel(with event: NSEvent) { report(event, .scroll) }
+
+    private func beginPress(_ event: NSEvent, button: MouseButton) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard forwardsToRemote(at: point) else {
+            refreshOwnership(at: point)
+            return
+        }
+        heldButtons.insert(button)
+        report(event, .down, button: button)
     }
 
-    // MARK: Local cursor
+    private func endPress(_ event: NSEvent, button: MouseButton) {
+        guard heldButtons.contains(button) else {
+            refreshOwnership(at: convert(event.locationInWindow, from: nil))
+            return
+        }
+        report(event, .up, button: button)
+        heldButtons.remove(button)
+        refreshOwnership(at: convert(event.locationInWindow, from: nil))
+    }
 
-    private var cursorHidden = false
+    private func continueDrag(_ event: NSEvent, button: MouseButton) {
+        guard !heldButtons.isEmpty else { return }
+        report(event, .drag, button: button)
+    }
 
-    private var isShowingVideo: Bool { renderer.renderedFrames > 0 }
+    // MARK: Pointer ownership
+
+    private var isShowingVideo: Bool { renderer.renderedFrames > 0 && videoSize != .zero }
+
+    private var pointerLocationInView: CGPoint? {
+        guard let window, window.isVisible else { return nil }
+        return convert(window.mouseLocationOutsideOfEventStream, from: nil)
+    }
+
+    private func forwardsToRemote(at point: CGPoint) -> Bool {
+        if !heldButtons.isEmpty { return true }
+        return !menuTracking && !localControlRegions.contains(point)
+    }
+
+    private func refreshOwnership(at point: CGPoint? = nil) {
+        let location = point ?? pointerLocationInView
+        ownership.update { conditions in
+            conditions.attached = window != nil && attachedTrack != nil
+            conditions.windowActive = window?.isKeyWindow == true && NSApplication.shared.isActive
+            conditions.hasPicture = isShowingVideo
+            conditions.menuTracking = menuTracking
+            conditions.remoteDragInProgress = !heldButtons.isEmpty
+            conditions.pointerInsideView = location.map(bounds.contains) ?? false
+            conditions.pointerOverPicture = location.map(geometry.videoRect.contains) ?? false
+            conditions.overLocalControl = location.map(localControlRegions.contains) ?? false
+        }
+        if ownership.owner == .remote, let location {
+            moveCursorLayer(to: location)
+        } else {
+            hideCursorLayer()
+        }
+    }
+
+    public func relinquishPointer() {
+        heldButtons.removeAll()
+        ownership.surrender()
+        hideCursorLayer()
+    }
 
     private func configureCursorLayer() {
         cursorLayer.path = cursorShape.path
@@ -305,10 +406,7 @@ public final class RemoteScreenNSView: NSView {
         layer?.addSublayer(cursorLayer)
     }
 
-    private var canDrawLocalCursor: Bool { cursorLayer.path != nil }
-
     private func moveCursorLayer(to point: CGPoint) {
-        guard isShowingVideo else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         cursorLayer.position = point
@@ -323,49 +421,43 @@ public final class RemoteScreenNSView: NSView {
         CATransaction.commit()
     }
 
-    private func hideLocalCursor() {
-        guard canDrawLocalCursor else { return }
-        guard !cursorHidden, isShowingVideo, window?.isKeyWindow == true else { return }
-        NSCursor.hide()
-        cursorHidden = true
+    public override func mouseEntered(with event: NSEvent) {
+        refreshOwnership(at: convert(event.locationInWindow, from: nil))
     }
 
-    private func showLocalCursor() {
-        guard cursorHidden else { return }
-        NSCursor.unhide()
-        cursorHidden = false
-    }
-
-    public override func mouseEntered(with event: NSEvent) { hideLocalCursor() }
     public override func mouseExited(with event: NSEvent) {
-        showLocalCursor()
-        hideCursorLayer()
+        refreshOwnership()
     }
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil { showLocalCursor() }
-        observeFocusLoss()
+        refreshOwnership()
     }
 
-    private func observeFocusLoss() {
+    private func observeSurroundings() {
         let centre = NotificationCenter.default
-        for name in [NSWindow.didResignKeyNotification, NSApplication.didResignActiveNotification] {
-            centre.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.showLocalCursor() }
-            }
+        let activity: [Notification.Name] = [
+            NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+            NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,
+            NSWindow.didChangeOcclusionStateNotification,
+        ]
+        for name in activity {
+            observers.append(centre.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshOwnership() }
+            })
+        }
+        for (name, tracking) in [(NSMenu.didBeginTrackingNotification, true),
+                                 (NSMenu.didEndTrackingNotification, false)] {
+            observers.append(centre.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.setMenuTracking(tracking) }
+            })
         }
     }
-    public override func mouseDragged(with event: NSEvent) { report(event, .drag, button: .left) }
-    public override func rightMouseDragged(with event: NSEvent) { report(event, .drag, button: .right) }
-    public override func otherMouseDragged(with event: NSEvent) { report(event, .drag, button: .middle) }
-    public override func mouseDown(with event: NSEvent) { report(event, .down, button: .left) }
-    public override func mouseUp(with event: NSEvent) { report(event, .up, button: .left) }
-    public override func rightMouseDown(with event: NSEvent) { report(event, .down, button: .right) }
-    public override func rightMouseUp(with event: NSEvent) { report(event, .up, button: .right) }
-    public override func otherMouseDown(with event: NSEvent) { report(event, .down, button: .middle) }
-    public override func otherMouseUp(with event: NSEvent) { report(event, .up, button: .middle) }
-    public override func scrollWheel(with event: NSEvent) { report(event, .scroll) }
+
+    private func setMenuTracking(_ tracking: Bool) {
+        menuTracking = tracking
+        refreshOwnership()
+    }
 
     public override var acceptsFirstResponder: Bool { true }
     public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -379,38 +471,49 @@ public struct RemoteScreenView: NSViewRepresentable {
     private let onPointerSample: ((RemotePointerSample, PointerEventKind) -> Void)?
     private let onVideoSizeChange: ((CGSize) -> Void)?
     private let capturingKeyboard: Bool
+    private let localControlRegions: LocalControlRegions
 
     public init(session: SessionCoordinator,
                 capturingKeyboard: Bool = false,
+                localControlRegions: LocalControlRegions = LocalControlRegions(),
                 onVideoSizeChange: ((CGSize) -> Void)? = nil,
                 onPointerSample: ((RemotePointerSample, PointerEventKind) -> Void)? = nil) {
         self.session = session
         self.capturingKeyboard = capturingKeyboard
+        self.localControlRegions = localControlRegions
         self.onVideoSizeChange = onVideoSizeChange
         self.onPointerSample = onPointerSample
     }
 
     public func makeNSView(context: Context) -> RemoteScreenNSView {
         let view = RemoteScreenNSView(frame: .zero)
-        view.onPointerSample = onPointerSample
-        view.onVideoSizeChange = onVideoSizeChange
-        view.onPointerEvent = { [weak session] event in session?.sendPointer(event) }
+        bind(view)
         return view
     }
 
     public func updateNSView(_ view: RemoteScreenNSView, context: Context) {
-        view.onPointerSample = onPointerSample
-        view.onVideoSizeChange = onVideoSizeChange
+        bind(view)
         view.isCapturingKeyboard = capturingKeyboard
-        view.onPointerEvent = { [weak session] event in session?.sendPointer(event) }
         if let info = session.remoteDisplay {
             view.remoteDisplaySize = CGSize(width: Double(info.w), height: Double(info.h))
         }
         view.cursorShape = session.remoteCursorShape
+        view.localControlRegions = localControlRegions
         view.attach(track: session.remoteTrack)
     }
 
+    private func bind(_ view: RemoteScreenNSView) {
+        view.onPointerSample = onPointerSample
+        view.onVideoSizeChange = onVideoSizeChange
+        view.onPointerEvent = { [weak session] event in session?.sendPointer(event) }
+        view.onCaptureOwnerChange = { [weak session] owner in
+            guard owner == .local else { return }
+            session?.releaseRemoteInput()
+        }
+    }
+
     public static func dismantleNSView(_ view: RemoteScreenNSView, coordinator: ()) {
+        view.relinquishPointer()
         view.attach(track: nil)
     }
 }

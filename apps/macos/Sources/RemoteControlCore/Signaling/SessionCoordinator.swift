@@ -423,6 +423,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
             cursorObserver.reset()
             remoteCursorShape = .arrow
             applyLocalInputReset()
+            input.releaseHeld()
             input.isEnabled = false
             clipboard?.stop()
             stopCapture()
@@ -852,6 +853,11 @@ public extension SessionCoordinator {
     func sendPointer(_ event: RemotePointerEvent) {
         guard role == .controller else { return }
         input.handle(event)
+    }
+
+    func releaseRemoteInput() {
+        guard role == .controller else { return }
+        input.releaseHeld()
     }
 }
 

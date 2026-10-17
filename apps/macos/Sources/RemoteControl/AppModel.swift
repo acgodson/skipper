@@ -126,8 +126,10 @@ final class AppModel: ObservableObject {
                 return
             }
         }
+        let wasCapturing = keyboardCaptureActive
         keyboardCapture.isCapturing = wanted && appIsActive
         keyboardCaptureActive = keyboardCapture.isCapturing
+        if wasCapturing && !keyboardCaptureActive { coordinator?.releaseRemoteInput() }
         if !wanted { keyboardCapture.uninstall() }
     }
 
