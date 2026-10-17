@@ -60,6 +60,7 @@ pub mod vk {
     pub const DELETE: u16 = 0x2E;
     pub const HELP: u16 = 0x2F;
     pub const LWIN: u16 = 0x5B;
+    pub const RWIN: u16 = 0x5C;
     pub const NUMPAD0: u16 = 0x60;
     pub const MULTIPLY: u16 = 0x6A;
     pub const ADD: u16 = 0x6B;
@@ -68,6 +69,7 @@ pub mod vk {
     pub const DIVIDE: u16 = 0x6F;
     pub const F1: u16 = 0x70;
     pub const LSHIFT: u16 = 0xA0;
+    pub const RSHIFT: u16 = 0xA1;
     pub const LCONTROL: u16 = 0xA2;
     pub const RCONTROL: u16 = 0xA3;
     pub const LMENU: u16 = 0xA4;
@@ -310,7 +312,7 @@ pub fn map_keycode(mac: i32) -> Option<WinKey> {
 
         // Modifiers. Sided where Windows distinguishes.
         k::SHIFT => WinKey::new(LSHIFT),
-        k::RIGHT_SHIFT => WinKey::new(0xA1), // VK_RSHIFT
+        k::RIGHT_SHIFT => WinKey::new(RSHIFT),
         k::CONTROL => WinKey::new(LCONTROL),
         k::RIGHT_CONTROL => WinKey::ext(RCONTROL),
         k::OPTION => WinKey::new(LMENU),

@@ -4,14 +4,19 @@
 //! `SendInput`, and `RecordingInjector` records intent without touching any OS
 //! so the dispatch logic is testable everywhere. All the macOS->Windows
 //! translation lives in `rc-input` and is exercised by both.
+//!
+//! The dispatcher owns the *state* a keyboard has and a stream of messages does
+//! not: which keys and buttons are currently down. Without it a chord is pressed
+//! and released inside one `key_down`, so a held modifier is never actually
+//! held, auto-repeat re-presses modifiers it already holds, and a reset releases
+//! a guessed list rather than what is really down.
 
 use rc_input::{
-    chord_for, map_keycode, modifier_keys, should_inject_as_text, to_absolute, ModifierPolicy,
-    ScrollAccumulator, WinKey,
+    chord_for, DisplayGeometry, KeyPolicy, KeyResolution, ScrollAccumulator, WinKey,
 };
 use rc_proto::ctrl::{
-    Click, DisplayInfo, GestureName, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseMove,
-    Scroll, ScrollPhase,
+    Click, DisplayInfo, GestureName, KeyEvent, MouseButton, MouseEvent, MouseMove, Scroll,
+    ScrollPhase,
 };
 
 /// A single low-level intent, at the granularity `SendInput` consumes. The
@@ -25,72 +30,227 @@ pub enum InputOp {
     UnicodeChar(char),
 }
 
+/// An op the OS refused. `SendInput` returning fewer events than it was given
+/// is the documented signal that something blocked the input — UIPI against an
+/// elevated window is the one that actually happens — and it is a fact about the
+/// host's state, not noise to discard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InjectError {
+    pub op: InputOp,
+    pub detail: String,
+}
+
 pub trait Injector {
-    fn perform(&mut self, op: InputOp);
+    fn perform(&mut self, op: InputOp) -> Result<(), InjectError>;
+}
+
+/// Why remote input is not being applied. Any value but `Running` means the
+/// controller's clicks are dropped rather than aimed at something stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputState {
+    Running,
+    /// Capture is unavailable, or the display geometry is not known, so there
+    /// is nothing trustworthy to aim at.
+    NoPicture,
+    /// The desktop is locked, or a secure/protected desktop is in front.
+    DesktopUnavailable,
 }
 
 /// Turns protocol messages into ordered [`InputOp`]s and feeds them to an
-/// [`Injector`]. Holds the per-axis scroll accumulators and the last-seen `hi`
-/// sequence number, so the ordering and clamping rules live in one tested place.
+/// [`Injector`]. Holds the per-axis scroll accumulators, the last-seen `hi`
+/// sequence number, the display geometry clicks are aimed with, and the set of
+/// keys and buttons currently held — so every ordering and release rule lives in
+/// one tested place.
 pub struct InputDispatcher {
-    policy: ModifierPolicy,
+    policy: KeyPolicy,
     scroll_x: ScrollAccumulator,
     scroll_y: ScrollAccumulator,
     last_move_seq: i64,
+    geometry: Option<DisplayGeometry>,
+    state: InputState,
+    /// In press order, so a reset releases in reverse.
+    held_keys: Vec<WinKey>,
+    held_buttons: Vec<i32>,
+    last_error: Option<InjectError>,
 }
 
 impl Default for InputDispatcher {
     fn default() -> Self {
         Self {
-            policy: ModifierPolicy::default(),
+            policy: KeyPolicy::default(),
             scroll_x: ScrollAccumulator::default(),
             scroll_y: ScrollAccumulator::default(),
             last_move_seq: i64::MIN,
+            geometry: None,
+            state: InputState::NoPicture,
+            held_keys: Vec::new(),
+            held_buttons: Vec::new(),
+            last_error: None,
         }
     }
 }
 
 impl InputDispatcher {
-    pub fn with_policy(policy: ModifierPolicy) -> Self {
+    pub fn with_policy(policy: KeyPolicy) -> Self {
         Self { policy, ..Self::default() }
     }
 
-    fn press_chord(&self, keys: &[WinKey], inj: &mut dyn Injector) {
-        for k in keys {
-            inj.perform(InputOp::Key { vk: k.vk, extended: k.extended, down: true });
-        }
-        for k in keys.iter().rev() {
-            inj.perform(InputOp::Key { vk: k.vk, extended: k.extended, down: false });
+    /// The geometry clicks are translated with. `None` suspends input: a click
+    /// aimed with no idea where the screen is would land somewhere arbitrary.
+    pub fn set_geometry(&mut self, geometry: Option<DisplayGeometry>, inj: &mut dyn Injector) {
+        self.geometry = geometry.filter(DisplayGeometry::is_usable);
+        if self.geometry.is_none() {
+            self.suspend(InputState::NoPicture, inj);
+        } else if self.state == InputState::NoPicture {
+            self.state = InputState::Running;
         }
     }
 
-    fn move_to(&self, x: f64, y: f64, inj: &mut dyn Injector) {
-        inj.perform(InputOp::MouseMoveAbs { x: to_absolute(x), y: to_absolute(y) });
+    pub fn geometry(&self) -> Option<DisplayGeometry> {
+        self.geometry
+    }
+
+    /// Stop applying input, releasing everything currently held first. Leaving
+    /// a key down while input is suspended is how a remote Ctrl gets stuck on
+    /// the host after the picture goes away.
+    pub fn suspend(&mut self, reason: InputState, inj: &mut dyn Injector) {
+        self.state = reason;
+        self.release_all(inj);
+    }
+
+    /// Resume, if there is something to aim at.
+    pub fn resume(&mut self) {
+        if self.geometry.is_some() {
+            self.state = InputState::Running;
+        }
+    }
+
+    pub fn state(&self) -> InputState {
+        self.state
+    }
+
+    /// The most recent op the OS refused, for the host to log once rather than
+    /// per event.
+    pub fn take_last_error(&mut self) -> Option<InjectError> {
+        self.last_error.take()
+    }
+
+    pub fn display_geometry(&self) -> Option<DisplayInfo> {
+        self.geometry.map(|g| g.display_info())
+    }
+
+    fn running(&self) -> bool {
+        self.state == InputState::Running && self.geometry.is_some()
+    }
+
+    fn perform(&mut self, op: InputOp, inj: &mut dyn Injector) -> bool {
+        match inj.perform(op) {
+            Ok(()) => true,
+            Err(e) => {
+                self.last_error = Some(e);
+                false
+            }
+        }
+    }
+
+    /// Press a key and remember it is down. A repeat of a key already held is
+    /// sent again — Windows auto-repeat is a stream of key-downs — without
+    /// duplicating the bookkeeping.
+    fn press(&mut self, key: WinKey, inj: &mut dyn Injector) {
+        let op = InputOp::Key { vk: key.vk, extended: key.extended, down: true };
+        if self.perform(op, inj) && !self.held_keys.contains(&key) {
+            self.held_keys.push(key);
+        }
+    }
+
+    /// Release a key. A refused release keeps the key on the held list so the
+    /// next reset tries again rather than forgetting about it.
+    fn release(&mut self, key: WinKey, inj: &mut dyn Injector) {
+        let op = InputOp::Key { vk: key.vk, extended: key.extended, down: false };
+        if self.perform(op, inj) {
+            self.held_keys.retain(|k| *k != key);
+        }
+    }
+
+    fn button_down(&mut self, button: i32, inj: &mut dyn Injector) {
+        if self.perform(InputOp::MouseButton { button, down: true }, inj)
+            && !self.held_buttons.contains(&button)
+        {
+            self.held_buttons.push(button);
+        }
+    }
+
+    fn button_up(&mut self, button: i32, inj: &mut dyn Injector) {
+        if self.perform(InputOp::MouseButton { button, down: false }, inj) {
+            self.held_buttons.retain(|b| *b != button);
+        }
+    }
+
+    /// Bring the held modifiers in line with what the controller says is down.
+    /// Releasing the ones that disappeared is what heals a lost modifier
+    /// key_up: the next keystroke's `mods` reveals it and the key comes back up.
+    fn reconcile_modifiers(&mut self, wanted: &[WinKey], inj: &mut dyn Injector) {
+        let stale: Vec<WinKey> = self
+            .held_keys
+            .iter()
+            .rev()
+            .copied()
+            .filter(|k| KeyPolicy::is_modifier_vk(k.vk) && !wanted.contains(k))
+            .collect();
+        for key in stale {
+            self.release(key, inj);
+        }
+        for key in wanted {
+            if !self.held_keys.contains(key) {
+                self.press(*key, inj);
+            }
+        }
+    }
+
+    fn press_chord(&mut self, keys: &[WinKey], inj: &mut dyn Injector) {
+        for k in keys {
+            self.press(*k, inj);
+        }
+        for k in keys.iter().rev() {
+            self.release(*k, inj);
+        }
+    }
+
+    fn move_to(&mut self, x: f64, y: f64, inj: &mut dyn Injector) {
+        let Some(geometry) = self.geometry else { return };
+        let (x, y) = geometry.to_absolute(x, y);
+        self.perform(InputOp::MouseMoveAbs { x, y }, inj);
     }
 
     pub fn mouse_down(&mut self, e: &MouseEvent, inj: &mut dyn Injector) {
-        if MouseButton::from_wire(e.button).is_none() {
+        if !self.running() || MouseButton::from_wire(e.button).is_none() {
             return; // §0: unknown button ignored
         }
         self.move_to(e.x, e.y, inj);
-        inj.perform(InputOp::MouseButton { button: e.button, down: true });
+        self.button_down(e.button, inj);
     }
 
     pub fn mouse_up(&mut self, e: &MouseEvent, inj: &mut dyn Injector) {
-        if MouseButton::from_wire(e.button).is_none() {
+        if !self.running() || MouseButton::from_wire(e.button).is_none() {
             return;
         }
         self.move_to(e.x, e.y, inj);
-        inj.perform(InputOp::MouseButton { button: e.button, down: false });
+        self.button_up(e.button, inj);
     }
 
     /// A drag is a move with the button already held — the button state is not
     /// touched here, matching `kCGEventLeftMouseDragged` on the Mac side.
     pub fn mouse_drag(&mut self, e: &MouseEvent, inj: &mut dyn Injector) {
+        if !self.running() {
+            return;
+        }
         self.move_to(e.x, e.y, inj);
     }
 
     pub fn mouse_move(&mut self, m: &MouseMove, inj: &mut dyn Injector) {
+        if !self.running() {
+            return;
+        }
         // §6: drop any packet whose seq is <= the highest already seen.
         if m.seq <= self.last_move_seq {
             return;
@@ -100,93 +260,118 @@ impl InputDispatcher {
     }
 
     pub fn click(&mut self, c: &Click, inj: &mut dyn Injector) {
-        if MouseButton::from_wire(c.button).is_none() {
+        if !self.running() || MouseButton::from_wire(c.button).is_none() {
             return;
         }
         self.move_to(c.x, c.y, inj);
         for _ in 0..c.count.clamp(1, 3) {
-            inj.perform(InputOp::MouseButton { button: c.button, down: true });
-            inj.perform(InputOp::MouseButton { button: c.button, down: false });
+            self.button_down(c.button, inj);
+            self.button_up(c.button, inj);
         }
     }
 
+    /// Press and **hold**. The release comes from `key_up`, which is what makes
+    /// a held modifier actually held and a held key actually repeat.
     pub fn key_down(&mut self, e: &KeyEvent, inj: &mut dyn Injector) {
-        let mods = KeyModifiers::from_wire(e.mods);
-        // Prefer the resolved character for printable input: it sidesteps
-        // keyboard-layout translation entirely (rc-input decides when this is
-        // safe — never for a chord).
-        if should_inject_as_text(&e.chars, mods) {
-            for c in e.chars.chars() {
-                inj.perform(InputOp::UnicodeChar(c));
-            }
+        if !self.running() {
             return;
         }
-        let held = modifier_keys(mods, self.policy);
-        for k in &held {
-            inj.perform(InputOp::Key { vk: k.vk, extended: k.extended, down: true });
-        }
-        if let Some(key) = map_keycode(e.keycode) {
-            inj.perform(InputOp::Key { vk: key.vk, extended: key.extended, down: true });
-            inj.perform(InputOp::Key { vk: key.vk, extended: key.extended, down: false });
-        }
-        for k in held.iter().rev() {
-            inj.perform(InputOp::Key { vk: k.vk, extended: k.extended, down: false });
+        match self.policy.resolve(e) {
+            KeyResolution::Text(text) => {
+                for c in text.chars() {
+                    self.perform(InputOp::UnicodeChar(c), inj);
+                }
+            }
+            KeyResolution::Keystroke { modifiers, key } => {
+                let is_bare_modifier = key.is_some_and(|k| KeyPolicy::is_modifier_vk(k.vk));
+                if !is_bare_modifier {
+                    self.reconcile_modifiers(&modifiers, inj);
+                }
+                if let Some(key) = key {
+                    self.press(key, inj);
+                }
+            }
+            KeyResolution::Ignored => {}
         }
     }
 
-    /// `key_up` for a bare key. Modifiers are released as part of `key_down`'s
-    /// chord, and text injection has no up event, so a `key_up` only matters for
-    /// a held non-text key.
+    /// Release the key this event names, then let go of any modifier the
+    /// controller no longer reports as held. Text injection has no up event —
+    /// the character was already delivered as a down/up pair.
     pub fn key_up(&mut self, e: &KeyEvent, inj: &mut dyn Injector) {
-        if !e.chars.is_empty() {
+        if !self.running() {
             return;
         }
-        if let Some(key) = map_keycode(e.keycode) {
-            inj.perform(InputOp::Key { vk: key.vk, extended: key.extended, down: false });
+        match self.policy.resolve(e) {
+            KeyResolution::Text(_) => {}
+            KeyResolution::Keystroke { modifiers, key } => {
+                if let Some(key) = key {
+                    self.release(key, inj);
+                }
+                let is_bare_modifier = key.is_some_and(|k| KeyPolicy::is_modifier_vk(k.vk));
+                if !is_bare_modifier {
+                    self.reconcile_modifiers(&modifiers, inj);
+                }
+            }
+            KeyResolution::Ignored => {}
         }
     }
 
     pub fn scroll(&mut self, s: &Scroll, inj: &mut dyn Injector) {
-        match ScrollPhase::from_wire(&s.phase) {
+        if !self.running() {
+            return;
+        }
+        if ScrollPhase::from_wire(&s.phase) == ScrollPhase::End {
             // A gesture boundary banks nothing new but must not carry a stale
             // fraction across a fresh scroll.
-            ScrollPhase::End => {
-                self.scroll_x.reset();
-                self.scroll_y.reset();
-                return;
-            }
-            _ => {}
+            self.scroll_x.reset();
+            self.scroll_y.reset();
+            return;
         }
         if let Some(delta) = self.scroll_y.push(s.dy) {
-            inj.perform(InputOp::MouseWheel { delta, horizontal: false });
+            self.perform(InputOp::MouseWheel { delta, horizontal: false }, inj);
         }
         if let Some(delta) = self.scroll_x.push(s.dx) {
-            inj.perform(InputOp::MouseWheel { delta, horizontal: true });
+            self.perform(InputOp::MouseWheel { delta, horizontal: true }, inj);
         }
     }
 
     pub fn gesture(&mut self, name: GestureName, inj: &mut dyn Injector) {
+        if !self.running() {
+            return;
+        }
         self.press_chord(chord_for(name).keys, inj);
     }
 
-    /// §5 `input_reset`: release everything. Idempotent. Modelled as releasing
-    /// the modifier and mouse keys the host could plausibly be holding, plus
-    /// clearing the scroll banks so a reconnect starts clean.
+    /// §5 `input_reset`: release everything. Idempotent, and accepted whatever
+    /// the input state is — a reset is the one message that must still land when
+    /// input is suspended, because that is when something is most likely stuck.
     pub fn input_reset(&mut self, inj: &mut dyn Injector) {
+        self.release_all(inj);
+    }
+
+    /// Release every key and button this dispatcher knows it pressed, newest
+    /// first, and forget the scroll banks and the `hi` sequence gate.
+    fn release_all(&mut self, inj: &mut dyn Injector) {
         self.scroll_x.reset();
         self.scroll_y.reset();
         self.last_move_seq = i64::MIN;
-        use rc_input::keycodes::vk;
-        for vk in [vk::LSHIFT, 0xA1, vk::LCONTROL, vk::RCONTROL, vk::LMENU, vk::RMENU, vk::LWIN] {
-            inj.perform(InputOp::Key { vk, extended: false, down: false });
+        for key in std::mem::take(&mut self.held_keys).into_iter().rev() {
+            let op = InputOp::Key { vk: key.vk, extended: key.extended, down: false };
+            if !self.perform(op, inj) {
+                self.held_keys.push(key);
+            }
         }
-        for button in 0..=2 {
-            inj.perform(InputOp::MouseButton { button, down: false });
+        for button in std::mem::take(&mut self.held_buttons).into_iter().rev() {
+            if !self.perform(InputOp::MouseButton { button, down: false }, inj) {
+                self.held_buttons.push(button);
+            }
         }
     }
 
-    pub fn display_geometry(&self) -> Option<DisplayInfo> {
-        None
+    /// What is held right now, for tests and for the host's logging.
+    pub fn held(&self) -> (&[WinKey], &[i32]) {
+        (&self.held_keys, &self.held_buttons)
     }
 }
 
@@ -195,10 +380,17 @@ impl InputDispatcher {
 #[derive(Default)]
 pub struct RecordingInjector {
     pub ops: Vec<InputOp>,
+    /// Ops matching this predicate are refused, so the failure handling can be
+    /// exercised without a machine that refuses input.
+    pub refuse: Option<fn(&InputOp) -> bool>,
 }
 
 impl Injector for RecordingInjector {
-    fn perform(&mut self, op: InputOp) {
+    fn perform(&mut self, op: InputOp) -> Result<(), InjectError> {
+        if self.refuse.is_some_and(|f| f(&op)) {
+            return Err(InjectError { op, detail: "refused by test".into() });
+        }
         self.ops.push(op);
+        Ok(())
     }
 }

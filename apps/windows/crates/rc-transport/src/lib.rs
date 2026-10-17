@@ -90,6 +90,9 @@ pub enum TransportEvent {
     Hi(Envelope),
     /// Both channels are open; the session is usable for control.
     ChannelsReady,
+    /// The peer's decoder asked for a keyframe (RTCP PLI, or FIR). Until one
+    /// arrives nothing it receives will decode, so this is not advisory.
+    KeyframeRequested,
 }
 
 pub struct PeerConfig {
@@ -145,19 +148,51 @@ impl PeerSession {
             RTCRtpCodecCapability {
                 mime_type: MIME_TYPE_H264.to_owned(),
                 clock_rate: 90000,
-                // Constrained Baseline 3.1, packetization-mode 1: the honest
-                // capability floor (WINDOWS-HOST.md §4), matched against
-                // whatever the Mac offers.
-                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                // Constrained Baseline, level 5.0, packetization-mode 1.
+                //
+                // The level is 5.0 (`...32`) and not 3.1 (`...1f`) because 3.1
+                // caps at 3600 macroblocks — 1280x720 — and this host sends up
+                // to 2560x1440 (14400). Advertising a level we exceed is the
+                // same dishonesty WINDOWS-HOST.md §4 warns about, pointing the
+                // other way. Level 5.0 allows 22080 macroblocks, which is
+                // exactly what `Pacing`'s cap permits.
+                //
+                // Safe to state: RFC 6184 §8.2.2 excludes the level part of
+                // profile-level-id from symmetric use, and webrtc-rs compares
+                // only profile_idc and profile_iop (`42e0`) when matching an
+                // offer, so the level does not affect negotiation. With
+                // `level-asymmetry-allowed=1` it describes what this host
+                // sends, not what it could decode.
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e032"
                     .to_owned(),
                 ..Default::default()
             },
             "screen".to_owned(),
             "rc-media".to_owned(),
         ));
-        pc.add_track(video.clone() as Arc<_>).await?;
+        let sender = pc.add_track(video.clone() as Arc<_>).await?;
 
         let (tx, rx) = mpsc::channel::<TransportEvent>(256);
+
+        // Nothing read this sender's RTCP before, so a PLI was never seen and a
+        // decoder that lost reference frames stayed broken for the rest of the
+        // session. Reading it is also what drives the interceptors' own
+        // bookkeeping; `read_rtcp` returning an error means the sender closed.
+        {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                while let Ok((packets, _)) = sender.read_rtcp().await {
+                    let asked = packets.iter().any(|p| {
+                        let any = p.as_any();
+                        any.downcast_ref::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>().is_some()
+                            || any.downcast_ref::<webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest>().is_some()
+                    });
+                    if asked && tx.send(TransportEvent::KeyframeRequested).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
         let ctrl_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
 
         // ICE connection state -> owner.

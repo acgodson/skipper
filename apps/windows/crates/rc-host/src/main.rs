@@ -1,13 +1,19 @@
 //! `rc-host` entry point.
 //!
-//!   rc-host --synthetic         run with a synthetic screen + recording input
-//!                               (works on any OS; for interop against the Mac)
+//!   rc-host --synthetic         diagnostic mode: a synthetic screen and a
+//!                               recording injector, on any OS
 //!   rc-host                     the real host (Windows: Desktop Duplication +
-//!                               SendInput; elsewhere falls back to synthetic)
+//!                               SendInput)
+//!
+//! The two are never mixed. A synthetic screen with the real injector would put
+//! the controller's clicks onto whatever is actually on the host's desktop while
+//! showing a test pattern, which is worse than showing nothing: when capture
+//! cannot start, the host comes online, says capture is unavailable, and
+//! suspends remote input.
 
 use std::path::PathBuf;
 
-use rc_host::{Host, HostConfig, RecordingInjector, SyntheticSource};
+use rc_host::{Host, HostConfig, RecordingInjector, SyntheticBackend};
 use rc_identity::{access_code, DeviceKey, IdentityRecord};
 
 fn env_or(key: &str, default: &str) -> String {
@@ -77,11 +83,8 @@ fn print_banner(identity: &IdentityRecord) {
     println!("  Keep this window open. Closing it ends the host.\n");
 }
 
-#[tokio::main]
-async fn main() {
-    let synthetic = std::env::args().any(|a| a == "--synthetic");
-
-    let config = HostConfig {
+fn config() -> HostConfig {
+    HostConfig {
         server_url: env_or("RC_SERVER_URL", "wss://54.246.73.81:8443/ws"),
         cert_pin: {
             let pin = env_or("RC_CERT_PIN", "E30xoxEp9t658+TJEVdaGb8Ooi7HGGMWp1kxVpeSpgk=");
@@ -92,33 +95,55 @@ async fn main() {
         force_relay: std::env::var("RC_ICE_POLICY").map(|v| v == "relay").unwrap_or(false),
         bitrate_bps: env_or("RC_BITRATE", "4000000").parse().unwrap_or(4_000_000),
         fps: env_or("RC_FPS", "30").parse().unwrap_or(30.0),
-    };
+        max_dimension: std::env::var("RC_MAX_DIMENSION")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(rc_host::Pacing::DEFAULT_MAX_DIMENSION),
+    }
+}
 
+#[tokio::main]
+async fn main() {
+    let synthetic = std::env::args().any(|a| a == "--synthetic");
     let id_path = identity_path();
     let (identity, key) = load_or_create_identity();
     print_banner(&identity);
 
-    // Capture + injection selection. On Windows the real Desktop Duplication
-    // capture and SendInput injection are used unless --synthetic forces the
-    // portable path; on every other OS only the synthetic path exists (it is
-    // how this binary runs in the interop harness).
-    if let Err(e) = run(config, identity, key, id_path, synthetic).await {
+    if let Err(e) = run(identity, key, id_path, synthetic).await {
         eprintln!("rc-host: exited with error: {e}");
         std::process::exit(1);
     }
 }
 
-#[cfg(windows)]
-async fn run(
-    config: HostConfig,
+/// The diagnostic path: a synthetic screen and an injector that records instead
+/// of acting. Available on every OS, and the only configuration in which a
+/// synthetic screen is ever used.
+async fn run_synthetic(
     identity: IdentityRecord,
     key: DeviceKey,
-    id_path: std::path::PathBuf,
+    id_path: PathBuf,
+) -> Result<(), String> {
+    eprintln!("rc-host: --synthetic mode — test pattern, no input is applied to this machine");
+    let (host, events) = Host::with_identity_path(
+        config(),
+        identity,
+        key,
+        RecordingInjector::default(),
+        SyntheticBackend { width: 1280, height: 720 },
+        Some(id_path),
+    );
+    host.run(events).await
+}
+
+#[cfg(windows)]
+async fn run(
+    identity: IdentityRecord,
+    key: DeviceKey,
+    id_path: PathBuf,
     synthetic: bool,
 ) -> Result<(), String> {
-    use rc_host::capture_windows::DxgiCaptureSource;
+    use rc_host::capture_windows::DxgiBackend;
     use rc_host::inject_windows::WindowsInjector;
-    use rc_host::FrameSource;
 
     // Per-monitor DPI awareness in code, so a build without the manifest (the
     // no-elevation test build) still captures real pixels and maps clicks
@@ -130,62 +155,28 @@ async fn run(
     }
 
     if synthetic {
-        eprintln!("rc-host: --synthetic mode (recording injector, synthetic screen)");
-        return Host::with_identity_path(
-            config,
-            identity,
-            key,
-            RecordingInjector::default(),
-            SyntheticSource::new(1280, 720),
-            Some(id_path),
-        )
-        .run()
-        .await;
+        return run_synthetic(identity, key, id_path).await;
     }
-    // The real host. If capture cannot start (no GPU output, headless session),
-    // fall back to the synthetic screen rather than refusing to come online —
-    // the pairing still works and the failure is visible on the controller.
-    match DxgiCaptureSource::new(0) {
-        Ok(capture) => {
-            let (w, h) = capture.dimensions();
-            eprintln!("rc-host: Desktop Duplication capture started ({w}x{h})");
-            Host::with_identity_path(config, identity, key, WindowsInjector::new(), capture, Some(id_path))
-                .run()
-                .await
-        }
-        Err(e) => {
-            eprintln!("rc-host: capture unavailable ({e}); falling back to a test pattern");
-            Host::with_identity_path(
-                config,
-                identity,
-                key,
-                WindowsInjector::new(),
-                SyntheticSource::new(1280, 720),
-                Some(id_path),
-            )
-            .run()
-            .await
-        }
-    }
+    let (host, events) = Host::with_identity_path(
+        config(),
+        identity,
+        key,
+        WindowsInjector::new(),
+        DxgiBackend::primary_display(),
+        Some(id_path),
+    );
+    host.run(events).await
 }
 
 #[cfg(not(windows))]
 async fn run(
-    config: HostConfig,
     identity: IdentityRecord,
     key: DeviceKey,
-    id_path: std::path::PathBuf,
+    id_path: PathBuf,
     _synthetic: bool,
 ) -> Result<(), String> {
-    eprintln!("rc-host: non-Windows build — synthetic screen, recording injector");
-    Host::with_identity_path(
-        config,
-        identity,
-        key,
-        RecordingInjector::default(),
-        SyntheticSource::new(1280, 720),
-        Some(id_path),
-    )
-    .run()
-    .await
+    // There is no real capture or injection to offer here, so this build is the
+    // diagnostic one whether or not --synthetic was passed.
+    eprintln!("rc-host: non-Windows build — diagnostic mode only");
+    run_synthetic(identity, key, id_path).await
 }
