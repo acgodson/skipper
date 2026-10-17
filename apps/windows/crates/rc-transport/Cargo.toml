@@ -13,3 +13,8 @@ thiserror.workspace = true
 tokio.workspace = true
 webrtc.workspace = true
 bytes.workspace = true
+
+[dev-dependencies]
+# The loopback test re-checks installed fingerprints with the same shared
+# implementation §2.12 is enforced with, rather than parsing SDP again.
+rc-identity = { path = "../../../../core/crates/rc-identity" }

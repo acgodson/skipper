@@ -103,7 +103,16 @@ async fn a_mac_shaped_controller_negotiates_channels_and_media() {
     // ---- SDP + trickle over "signaling" (direct calls here) ----------------
     let offer = controller.create_offer(None).await.unwrap();
     controller.set_local_description(offer.clone()).await.unwrap();
-    let answer_sdp = host.handle_offer(&offer.sdp).await.unwrap();
+    // Two calls, not one: PROTOCOL.md §2.12 puts the installed-fingerprint
+    // re-check between installing the offer and answering it.
+    host.set_remote_offer(&offer.sdp).await.unwrap();
+    let installed = host.installed_remote_sdp().await.expect("a remote description");
+    assert_eq!(
+        rc_identity::sdp::fingerprints(&installed).unwrap(),
+        rc_identity::sdp::fingerprints(&offer.sdp).unwrap(),
+        "the fingerprints the stack installed must be the ones that were offered"
+    );
+    let answer_sdp = host.answer().await.unwrap();
     assert!(
         answer_sdp.contains("H264") || answer_sdp.contains("h264"),
         "the answer must accept H.264:\n{answer_sdp}"

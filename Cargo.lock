@@ -1705,6 +1705,7 @@ name = "rc-transport"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "rc-identity",
  "rc-proto",
  "serde",
  "serde_json",
