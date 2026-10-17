@@ -13,27 +13,30 @@
 
 use std::path::PathBuf;
 
-use rc_host::{Host, HostConfig, RecordingInjector, SyntheticBackend};
+use rc_host::{Backend, Host, HostConfig, RecordingInjector, SecretStore, SyntheticBackend};
 use rc_identity::{access_code, DeviceKey, IdentityRecord};
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-fn identity_path() -> PathBuf {
+fn identity_directory() -> PathBuf {
     if let Ok(dir) = std::env::var("RC_IDENTITY_DIR") {
-        return PathBuf::from(dir).join("identity.json");
+        return PathBuf::from(dir);
     }
-    let base = dirs_config_dir();
-    base.join("RemoteControl").join("identity.json")
+    dirs_config_dir().join("SkipperDesk")
 }
 
-/// Minimal per-OS config dir without pulling the `dirs` crate.
+/// Minimal per-OS config dir without pulling the `dirs` crate. `LOCALAPPDATA`
+/// is preferred over `APPDATA`: a roaming profile would copy this PC's device
+/// key to another machine, and two machines with one key fight over the id.
 fn dirs_config_dir() -> PathBuf {
     #[cfg(windows)]
     {
-        if let Ok(app) = std::env::var("APPDATA") {
-            return PathBuf::from(app);
+        for key in ["LOCALAPPDATA", "APPDATA"] {
+            if let Ok(dir) = std::env::var(key) {
+                return PathBuf::from(dir);
+            }
         }
     }
     if let Ok(home) = std::env::var("HOME") {
@@ -42,19 +45,59 @@ fn dirs_config_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
-fn load_or_create_identity() -> (IdentityRecord, DeviceKey) {
-    let path = identity_path();
-    if let Ok(rec) = IdentityRecord::load(&path) {
-        if let Ok(key) = rec.device_key() {
-            return (rec, key);
+/// Everything the host needs that comes off disk, loaded once.
+struct Startup {
+    identity: IdentityRecord,
+    key: DeviceKey,
+    identity_path: PathBuf,
+    secrets: SecretStore,
+    backend: Backend,
+}
+
+/// Loads this PC's identity, or creates one on a first run.
+///
+/// A file that exists but cannot be read is an **error**, never a reason to
+/// generate a new key: a new key means a new Device ID and a new access code,
+/// and every computer that saved them stops connecting. The user is told to
+/// restore it or to reset deliberately.
+fn startup() -> Result<Startup, String> {
+    let backend = Backend::from_environment().map_err(|e| e.to_string())?;
+    let directory = identity_directory();
+    let identity_path = directory.join("identity.json");
+    let secrets = SecretStore::open(directory.join("secrets")).map_err(|e| e.to_string())?;
+
+    let loaded = match std::fs::metadata(&identity_path) {
+        Ok(_) => Some(IdentityRecord::load(&identity_path).map_err(|e| {
+            format!(
+                "{e}\nIt has NOT been replaced: that would change this PC's Device ID and access \
+                 code. Restore it from a backup, or delete it to start over deliberately."
+            )
+        })?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("{} could not be read: {e}", identity_path.display())),
+    };
+    let (identity, key) = match loaded {
+        Some(record) => {
+            let key = record.device_key().map_err(|e| e.to_string())?;
+            (record, key)
         }
-    }
-    let key = DeviceKey::generate();
-    let code = access_code::generate();
-    let created = format!("{}", now_iso8601());
-    let rec = IdentityRecord::new_unregistered(&key, code, created);
-    let _ = rec.save(&path);
-    (rec, key)
+        None => {
+            let key = DeviceKey::generate();
+            let record =
+                IdentityRecord::new_unregistered(&key, access_code::generate(), now_iso8601());
+            record
+                .save(&identity_path)
+                .map_err(|e| format!("a new identity could not be saved: {e}"))?;
+            (record, key)
+        }
+    };
+    Ok(Startup {
+        identity,
+        key,
+        identity_path,
+        secrets,
+        backend,
+    })
 }
 
 fn now_iso8601() -> String {
@@ -83,15 +126,14 @@ fn print_banner(identity: &IdentityRecord) {
     println!("  Keep this window open. Closing it ends the host.\n");
 }
 
-fn config() -> HostConfig {
+fn config(backend: &Backend) -> HostConfig {
     HostConfig {
-        server_url: env_or("RC_SERVER_URL", "wss://54.246.73.81:8443/ws"),
-        cert_pin: {
-            let pin = env_or("RC_CERT_PIN", "E30xoxEp9t658+TJEVdaGb8Ooi7HGGMWp1kxVpeSpgk=");
-            if pin == "off" { None } else { Some(pin) }
-        },
+        signaling_url: backend.api.signaling_url(),
         label: env_or("RC_DEVICE_LABEL", "Windows Host"),
-        unattended: env_or("RC_UNATTENDED", "1") == "1",
+        // §2.17 Consent: off on a new install. The access code says a
+        // controller *may* connect; whoever is at this PC says whether it
+        // connects now.
+        unattended: env_or("RC_UNATTENDED", "0") == "1",
         force_relay: std::env::var("RC_ICE_POLICY").map(|v| v == "relay").unwrap_or(false),
         bitrate_bps: env_or("RC_BITRATE", "4000000").parse().unwrap_or(4_000_000),
         fps: env_or("RC_FPS", "30").parse().unwrap_or(30.0),
@@ -105,11 +147,16 @@ fn config() -> HostConfig {
 #[tokio::main]
 async fn main() {
     let synthetic = std::env::args().any(|a| a == "--synthetic");
-    let id_path = identity_path();
-    let (identity, key) = load_or_create_identity();
-    print_banner(&identity);
+    let startup = match startup() {
+        Ok(startup) => startup,
+        Err(e) => {
+            eprintln!("rc-host: {e}");
+            std::process::exit(1);
+        }
+    };
+    print_banner(&startup.identity);
 
-    if let Err(e) = run(identity, key, id_path, synthetic).await {
+    if let Err(e) = run(startup, synthetic).await {
         eprintln!("rc-host: exited with error: {e}");
         std::process::exit(1);
     }
@@ -118,30 +165,22 @@ async fn main() {
 /// The diagnostic path: a synthetic screen and an injector that records instead
 /// of acting. Available on every OS, and the only configuration in which a
 /// synthetic screen is ever used.
-async fn run_synthetic(
-    identity: IdentityRecord,
-    key: DeviceKey,
-    id_path: PathBuf,
-) -> Result<(), String> {
+async fn run_synthetic(startup: Startup) -> Result<(), String> {
     eprintln!("rc-host: --synthetic mode — test pattern, no input is applied to this machine");
     let (host, events) = Host::with_identity_path(
-        config(),
-        identity,
-        key,
+        config(&startup.backend),
+        startup.identity,
+        startup.key,
         RecordingInjector::default(),
         SyntheticBackend { width: 1280, height: 720 },
-        Some(id_path),
+        startup.secrets,
+        Some(startup.identity_path),
     );
     host.run(events).await
 }
 
 #[cfg(windows)]
-async fn run(
-    identity: IdentityRecord,
-    key: DeviceKey,
-    id_path: PathBuf,
-    synthetic: bool,
-) -> Result<(), String> {
+async fn run(startup: Startup, synthetic: bool) -> Result<(), String> {
     use rc_host::capture_windows::DxgiBackend;
     use rc_host::inject_windows::WindowsInjector;
 
@@ -155,28 +194,24 @@ async fn run(
     }
 
     if synthetic {
-        return run_synthetic(identity, key, id_path).await;
+        return run_synthetic(startup).await;
     }
     let (host, events) = Host::with_identity_path(
-        config(),
-        identity,
-        key,
+        config(&startup.backend),
+        startup.identity,
+        startup.key,
         WindowsInjector::new(),
         DxgiBackend::primary_display(),
-        Some(id_path),
+        startup.secrets,
+        Some(startup.identity_path),
     );
     host.run(events).await
 }
 
 #[cfg(not(windows))]
-async fn run(
-    identity: IdentityRecord,
-    key: DeviceKey,
-    id_path: PathBuf,
-    _synthetic: bool,
-) -> Result<(), String> {
+async fn run(startup: Startup, _synthetic: bool) -> Result<(), String> {
     // There is no real capture or injection to offer here, so this build is the
     // diagnostic one whether or not --synthetic was passed.
     eprintln!("rc-host: non-Windows build — diagnostic mode only");
-    run_synthetic(identity, key, id_path).await
+    run_synthetic(startup).await
 }

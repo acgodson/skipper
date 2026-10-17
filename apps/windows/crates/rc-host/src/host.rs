@@ -20,20 +20,24 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rc_identity::pake::PakeMessage;
 use rc_identity::{DeviceKey, IdentityRecord};
-use rc_proto::consts::{ctrl as ctrl_msg, msg, role};
+use rc_proto::consts::{bye, ctrl as ctrl_msg, err, msg, role};
 use rc_proto::{ctrl as ctrlp, signaling as sig};
 use rc_session::{
-    IceLinkState, ResumeOk, Role, SessionAction, SessionGrant, SessionStateMachine,
+    ConsentOutcome, IceLinkState, ResumeOk, Role, SessionAction, SessionGrant, SessionStateMachine,
 };
 use rc_signal_client::{Config, Push, SignalConnection};
 use rc_transport::{IceState, PeerConfig, PeerSession, TransportEvent};
 use tokio::sync::mpsc;
 
+use crate::consent::{ConsentAnswer, ConsentPrompt};
 use crate::inject::{InputDispatcher, InputState, Injector};
 use crate::keepawake::KeepAwake;
 use crate::media::{CaptureBackend, CaptureStatus, Pacing, SoftwareEncoder, VideoEncoder};
+use crate::pake::{GuessStore, HostExchange};
 use crate::pump::{CapturePump, EncoderFactory, PumpConfig, PumpEvent, VideoSink};
+use crate::secrets::{SecretAccount, SecretStore};
 
 /// How long teardown waits for the blocking pump to notice the stop flag. Two
 /// frame budgets plus slack: the loop checks the flag every few milliseconds and
@@ -41,9 +45,12 @@ use crate::pump::{CapturePump, EncoderFactory, PumpConfig, PumpEvent, VideoSink}
 const PUMP_STOP_GRACE: Duration = Duration::from_secs(2);
 
 pub struct HostConfig {
-    pub server_url: String,
-    pub cert_pin: Option<String>,
+    /// `wss://<api base domain>/ws`, derived from the one configured domain by
+    /// [`crate::backend`]. No compiled-in address, no certificate pin.
+    pub signaling_url: String,
     pub label: String,
+    /// §2.17 Consent. **Off** by default: the code proves a controller *may*
+    /// connect, and whoever is at this PC decides whether it connects now.
     pub unattended: bool,
     pub force_relay: bool,
     pub bitrate_bps: u32,
@@ -51,6 +58,11 @@ pub struct HostConfig {
     /// Longest edge the encoder is allowed. See [`Pacing`].
     pub max_dimension: u32,
 }
+
+/// §2.17 Consent 3: while the owner is being asked the host has no peer
+/// connection, so the controller's offer and its candidates are kept and
+/// applied on Allow. The cap is the Mac's `maxHeldCandidates`.
+const MAX_HELD_CANDIDATES: usize = 64;
 
 fn ice_from_transport(s: IceState) -> IceLinkState {
     match s {
@@ -103,6 +115,20 @@ pub struct Host<I: Injector + Send + 'static, B: CaptureBackend> {
     encoders: EncoderFactory,
     identity_path: Option<std::path::PathBuf>,
     published_cursor: Option<ctrlp::CursorShapeName>,
+    secrets: SecretStore,
+    /// The §2.17 exchange for the current session. Nothing is applied and no
+    /// `sdp` is sent or accepted until this one is complete.
+    exchange: Option<HostExchange>,
+    /// The controller key the exchange bound, and the only acceptable signer of
+    /// this session's `sdp` (§2.12 step 5).
+    expected_peer: Option<String>,
+    /// `hello_ok.iceServers` — STUN only, v5.
+    base_ice_servers: Vec<sig::IceServer>,
+    /// The §2.18 list for the live session, dropped when it ends.
+    session_ice_servers: Vec<sig::IceServer>,
+    held_sdp: Option<sig::Sdp>,
+    held_ice: Vec<sig::Ice>,
+    prompt: Option<ConsentPrompt>,
     _keep_awake: KeepAwake,
 }
 
@@ -116,8 +142,9 @@ where
         key: DeviceKey,
         injector: I,
         backend: B,
+        secrets: SecretStore,
     ) -> (Self, mpsc::Receiver<PumpEvent>) {
-        Self::with_identity_path(config, identity, key, injector, backend, None)
+        Self::with_identity_path(config, identity, key, injector, backend, secrets, None)
     }
 
     pub fn with_identity_path(
@@ -126,12 +153,15 @@ where
         key: DeviceKey,
         injector: I,
         backend: B,
+        secrets: SecretStore,
         identity_path: Option<std::path::PathBuf>,
     ) -> (Self, mpsc::Receiver<PumpEvent>) {
         let keep = KeepAwake::enabled(config.unattended);
         let (pump_tx, pump_rx) = mpsc::channel::<PumpEvent>(32);
+        let mut machine = SessionStateMachine::new(Role::Host);
+        machine.consent_required = !config.unattended;
         let host = Self {
-            machine: SessionStateMachine::new(Role::Host),
+            machine,
             dispatcher: InputDispatcher::default(),
             injector,
             backend,
@@ -143,6 +173,14 @@ where
             }),
             identity_path,
             published_cursor: None,
+            secrets,
+            exchange: None,
+            expected_peer: None,
+            base_ice_servers: Vec::new(),
+            session_ice_servers: Vec::new(),
+            held_sdp: None,
+            held_ice: Vec::new(),
+            prompt: None,
             config,
             identity,
             key,
@@ -156,9 +194,13 @@ where
     /// decides what each reconnect *means*.
     pub async fn run(mut self, mut pump_rx: mpsc::Receiver<PumpEvent>) -> Result<(), String> {
         let mut shutdown_rx = spawn_shutdown_watch();
+        let mut answers = crate::consent::spawn_console_reader();
         let mut backoff = Duration::from_millis(500);
         loop {
-            match self.run_one_connection(&mut pump_rx, &mut shutdown_rx).await {
+            match self
+                .run_one_connection(&mut pump_rx, &mut shutdown_rx, &mut answers)
+                .await
+            {
                 Ok(ConnLoopExit::Shutdown) => {
                     self.stop_capture().await;
                     return Ok(());
@@ -184,42 +226,27 @@ where
         &mut self,
         pump_rx: &mut mpsc::Receiver<PumpEvent>,
         shutdown_rx: &mut mpsc::Receiver<()>,
+        answers: &mut mpsc::Receiver<ConsentAnswer>,
     ) -> Result<ConnLoopExit, String> {
-        let cfg = Config::new(&self.config.server_url, self.config.cert_pin.as_deref());
+        let cfg = Config::new(&self.config.signaling_url);
         let (conn, mut pushes) = SignalConnection::connect(&cfg).await.map_err(|e| e.to_string())?;
         let conn = Arc::new(conn);
+        self.authenticate(&conn).await?;
 
-        // First run registers; afterwards hello authenticates.
-        if self.identity.device_id.is_empty() || !self.identity.server_registered {
-            let verifier = rc_identity::build_verifier(&self.identity.access_code);
-            let reg = conn
-                .register(&self.key, &self.config.label, &verifier)
-                .await
-                .map_err(|e| e.to_string())?;
-            self.identity.device_id = reg.device_id;
-            self.identity.server_registered = true;
-            if let Some(path) = &self.identity_path {
-                let _ = self.identity.save(path);
-            }
-            eprintln!("rc-host: registered as device {}", self.identity.device_id);
-        }
-        let hello = conn
-            .hello(&self.identity.device_id, &self.key, role::HOST)
-            .await
-            .map_err(|e| e.to_string())?;
+        let hello = self.hello(&conn).await?;
         eprintln!(
             "rc-host: authenticated as {} — online and waiting for a controller",
             self.identity.device_id
         );
+        self.base_ice_servers = hello.ice_servers.clone();
 
         let actions = self.machine.signaling_authenticated(
             (!hello.active_session_id.is_empty()).then_some(hello.active_session_id.as_str()),
         );
-        self.apply(&actions, &conn, &None).await;
-
-        let ice_servers = hello.ice_servers.clone();
         let mut peer: Option<Arc<PeerSession>> = None;
         let (te_tx, mut te_rx) = mpsc::channel::<TransportEvent>(256);
+        self.apply(&actions, &conn, &mut peer, &te_tx).await;
+
         let mut heartbeat = tokio::time::interval(Duration::from_secs(hello.heartbeat_sec.max(1) as u64));
         let mut ticker = tokio::time::interval(Duration::from_millis(500));
 
@@ -230,23 +257,39 @@ where
                         conn.request(msg::HEARTBEAT, &(), msg::HEARTBEAT_OK).await;
                 }
                 _ = ticker.tick() => {
-                    let actions = self.machine.tick(now_ms());
-                    self.apply(&actions, &conn, &peer).await;
+                    let now = now_ms();
+                    // The 10-second exchange timer is the host's, not the
+                    // state machine's: an exchange that stalls must end the
+                    // session rather than sit there holding the 1:1 slot.
+                    if self.exchange.as_ref().is_some_and(|e| e.timed_out(now)) {
+                        self.end_exchange(crate::pake::ExchangeError::TimedOut, &conn, &mut peer, &te_tx)
+                            .await;
+                    }
+                    let actions = self.machine.tick(now);
+                    self.apply(&actions, &conn, &mut peer, &te_tx).await;
                 }
                 push = pushes.0.recv() => {
                     let Some(push) = push else {
                         // Socket died: tell the machine, then reconnect.
                         let actions = self.machine.signaling_lost();
-                        self.apply(&actions, &conn, &peer).await;
+                        self.apply(&actions, &conn, &mut peer, &te_tx).await;
                         break ConnLoopExit::Reconnect;
                     };
-                    if let Some(exit) = self.on_push(push, &conn, &mut peer, &ice_servers, &te_tx).await {
+                    if let Some(exit) = self.on_push(push, &conn, &mut peer, &te_tx).await {
                         break exit;
+                    }
+                }
+                answer = answers.recv() => {
+                    match answer {
+                        Some(answer) => self.on_consent_answer(answer, &conn, &mut peer, &te_tx).await,
+                        // The console closed. A host that cannot be asked must
+                        // not fall through to answering for its owner.
+                        None => {}
                     }
                 }
                 event = te_rx.recv() => {
                     if let Some(event) = event {
-                        self.on_transport(event, &conn, &mut peer).await;
+                        self.on_transport(event, &conn, &mut peer, &te_tx).await;
                     }
                 }
                 event = pump_rx.recv() => {
@@ -268,91 +311,610 @@ where
         Ok(exit)
     }
 
+    /// §2.2: register on first run, and again — once, with the same key — when
+    /// `hello` says `unknown_device`. A stored certificate is what makes the
+    /// second case keep this PC's Device ID; without one the registry mints a
+    /// fresh id, which the host adopts and records rather than asking anyone.
+    async fn authenticate(&mut self, conn: &Arc<SignalConnection>) -> Result<(), String> {
+        if !self.identity.device_id.is_empty() && self.identity.server_registered {
+            return Ok(());
+        }
+        self.register(conn).await
+    }
+
+    async fn register(&mut self, conn: &Arc<SignalConnection>) -> Result<(), String> {
+        let certificates = self.id_certificates();
+        let certificate = certificates
+            .get(&self.identity.device_id)
+            .cloned()
+            .unwrap_or_default();
+        let registered = conn
+            .register(
+                &self.key,
+                &self.config.label,
+                &self.identity.device_id,
+                &certificate,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        if !self.identity.device_id.is_empty() && registered.device_id != self.identity.device_id {
+            eprintln!(
+                "rc-host: this PC's Device ID changed from {} to {}; any computer that saved the \
+                 old one must be given the new one",
+                self.identity.device_id, registered.device_id
+            );
+        }
+        self.identity.device_id = registered.device_id;
+        self.identity.server_registered = true;
+        self.store_id_certificate(&registered.id_cert);
+        if let Some(path) = &self.identity_path {
+            if let Err(e) = self.identity.save(path) {
+                // A registration that is not written is one that happens again
+                // on the next launch, with a different id each time.
+                return Err(format!("the identity could not be saved: {e}"));
+            }
+        }
+        eprintln!("rc-host: registered as device {}", self.identity.device_id);
+        Ok(())
+    }
+
+    async fn hello(&mut self, conn: &Arc<SignalConnection>) -> Result<sig::HelloOk, String> {
+        let first = conn
+            .hello(&self.identity.device_id, &self.key, role::HOST)
+            .await;
+        let hello = match first {
+            Ok(hello) => hello,
+            Err(e) if e.code() == Some(err::UNKNOWN_DEVICE) => {
+                eprintln!("rc-host: the backend does not know this device; re-registering");
+                self.register(conn).await?;
+                conn.hello(&self.identity.device_id, &self.key, role::HOST)
+                    .await
+                    .map_err(|e| e.to_string())?
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        self.store_id_certificate(&hello.id_cert);
+        Ok(hello)
+    }
+
+    fn id_certificates(&self) -> std::collections::BTreeMap<String, String> {
+        match self.secrets.map(SecretAccount::DeviceIdCertificates) {
+            Ok(book) => book,
+            Err(e) => {
+                eprintln!("rc-host: {e}");
+                std::collections::BTreeMap::new()
+            }
+        }
+    }
+
+    /// The certificate is opaque: it is stored and presented, never parsed.
+    /// Keyed by `deviceId` so a changed id does not overwrite the proof that
+    /// would have reclaimed the old one.
+    fn store_id_certificate(&mut self, certificate: &str) {
+        if certificate.is_empty() || self.identity.device_id.is_empty() {
+            return;
+        }
+        let mut book = self.id_certificates();
+        if book.get(&self.identity.device_id).is_some_and(|held| held == certificate) {
+            return;
+        }
+        book.insert(self.identity.device_id.clone(), certificate.to_string());
+        if let Err(e) = self
+            .secrets
+            .save(SecretAccount::DeviceIdCertificates, &book)
+        {
+            eprintln!("rc-host: {e}; this PC may not keep its Device ID across a backend reset");
+        }
+    }
+
     async fn on_push(
         &mut self,
         push: Push,
         conn: &Arc<SignalConnection>,
         peer: &mut Option<Arc<PeerSession>>,
-        ice_servers: &[sig::IceServer],
         te_tx: &mpsc::Sender<TransportEvent>,
     ) -> Option<ConnLoopExit> {
         match push {
             Push::SessionStart(grant) => {
-                let actions = self.machine.session_granted(
-                    &SessionGrant {
-                        session_id: grant.session.session_id,
-                        session_token: grant.session.session_token,
-                        host_device_id: grant.session.host_device_id,
-                        controller_device_id: grant.session.controller_device_id,
-                    },
-                    now_ms(),
-                );
-                // A previous session's peer and pump must be gone before a new
-                // one starts; this is what makes a second and third session
-                // work rather than silently reuse a dead track.
-                self.teardown(peer).await;
-
-                let (new_peer, mut events) = PeerSession::new(PeerConfig {
-                    ice_servers: ice_servers.to_vec(),
-                    force_relay: self.config.force_relay,
-                })
-                .await
-                .ok()?;
-                let new_peer = Arc::new(new_peer);
-                *peer = Some(new_peer.clone());
-                let fwd = te_tx.clone();
-                tokio::spawn(async move {
-                    while let Some(ev) = events.recv().await {
-                        if fwd.send(ev).await.is_err() {
-                            break;
-                        }
-                    }
-                });
-                self.start_capture(new_peer).await;
-                self.apply(&actions, conn, peer).await;
+                self.on_session_start(grant, conn, peer, te_tx).await;
+            }
+            Push::Pake(frame) => {
+                self.on_pake(frame, conn, peer, te_tx).await;
+            }
+            Push::IceServers(servers) => {
+                if self.machine.session_id() != Some(servers.session_id.as_str()) {
+                    return None;
+                }
+                let relays = servers
+                    .ice_servers
+                    .iter()
+                    .filter(|s| !s.credential.is_empty())
+                    .count();
+                self.session_ice_servers = servers.ice_servers;
+                if relays > 0 && peer.as_ref().is_some_and(|p| !p.gathers_relay_candidates()) {
+                    // §2.18 arrives *after* this host's first `sdp`, so its own
+                    // connection was already built and gathering. webrtc-rs
+                    // 0.11 has no `set_configuration`, so these credentials
+                    // reach the next connection in this session (a resume or an
+                    // ICE restart) and the media path meanwhile relies on the
+                    // controller's relay candidate.
+                    eprintln!(
+                        "rc-host: this session's relay credentials arrived after the connection \
+                         was built; they apply from the next ICE generation"
+                    );
+                }
+                let actions = self.machine.ice_servers_arrived(&servers.session_id);
+                self.apply(&actions, conn, peer, te_tx).await;
             }
             Push::Sdp(sdp) => {
-                if let Some(p) = peer {
-                    if let Ok(answer) = p.handle_offer(&sdp.sdp).await {
-                        let _ = conn
-                            .send(
-                                msg::SDP,
-                                // TODO: sign the fingerprints (PROTOCOL.md §2.12)
-                                // when the parked Windows host resumes; a peer
-                                // that enforces §2.12 refuses this unsigned answer.
-                                &sig::Sdp {
-                                    session_id: sdp.session_id,
-                                    sdp_type: "answer".into(),
-                                    sdp: answer,
-                                    restart: false,
-                                    fp: String::new(),
-                                    pubkey: String::new(),
-                                    sig: String::new(),
-                                    mac: String::new(),
-                                },
-                            )
-                            .await;
-                    }
-                }
+                self.on_remote_sdp(sdp, conn, peer, te_tx).await;
             }
             Push::Ice(ice) => {
-                if let Some(p) = peer {
-                    let _ = p.add_remote_candidate(&ice).await;
-                }
+                self.on_remote_ice(ice, peer).await;
             }
-            Push::Bye(bye) => {
-                let actions = self.machine.close_locally(&bye.reason);
+            Push::Bye(ended) => {
+                let actions = self.machine.close_locally(&ended.reason);
+                self.clear_session();
                 self.teardown(peer).await;
-                self.apply(&actions, conn, peer).await;
+                self.apply(&actions, conn, peer, te_tx).await;
             }
-            Push::ServerError(e) if e.code == rc_proto::consts::err::DISPLACED => {
+            Push::ServerError(e) if e.code == err::DISPLACED => {
                 // Another socket authenticated as this device. Terminal for
                 // this process's connection; do not fight it in a loop.
                 return Some(ConnLoopExit::Shutdown);
             }
+            Push::ServerError(e) if e.code == err::ENTITLEMENT => {
+                eprintln!(
+                    "rc-host: the backend refused a session for this PC's account ({}): {}",
+                    e.reason, e.message
+                );
+            }
             _ => {}
         }
         None
+    }
+
+    /// §2.9/§2.17: a grant is a *signalling* session. Nothing starts here —
+    /// no peer connection, no capture — because the controller has not yet
+    /// proved the access code. All this does is tear the last session down and
+    /// arm the exchange.
+    async fn on_session_start(
+        &mut self,
+        grant: sig::SessionStart,
+        conn: &Arc<SignalConnection>,
+        peer: &mut Option<Arc<PeerSession>>,
+        te_tx: &mpsc::Sender<TransportEvent>,
+    ) {
+        let now = now_ms();
+        let actions = self.machine.session_granted(
+            &SessionGrant {
+                session_id: grant.session.session_id.clone(),
+                session_token: grant.session.session_token,
+                host_device_id: grant.session.host_device_id.clone(),
+                controller_device_id: grant.session.controller_device_id,
+            },
+            now,
+        );
+        if self.machine.take_rejection().is_some() {
+            return;
+        }
+        // A previous session's peer and pump must be gone before a new one
+        // starts; this is what makes a second and third session work rather
+        // than silently reuse a dead track.
+        self.clear_session();
+        self.teardown(peer).await;
+        self.apply(&actions, conn, peer, te_tx).await;
+
+        let armed = HostExchange::arm(
+            &GuessStore::new(&self.secrets),
+            &self.identity.access_code,
+            &grant.session.host_device_id,
+            &grant.session.session_id,
+            &self.key.public_key_spki_base64(),
+            &grant.controller_pubkey,
+            now,
+        );
+        match armed {
+            Ok(exchange) => self.exchange = Some(exchange),
+            Err(e) => self.end_exchange(e, conn, peer, te_tx).await,
+        }
+    }
+
+    /// One relayed `pake` frame. Everything that decides whether the exchange
+    /// may continue is in [`HostExchange`]; what is here is routing, the reply,
+    /// and what completion means.
+    async fn on_pake(
+        &mut self,
+        frame: sig::Pake,
+        conn: &Arc<SignalConnection>,
+        peer: &mut Option<Arc<PeerSession>>,
+        te_tx: &mpsc::Sender<TransportEvent>,
+    ) {
+        let Some(exchange) = &mut self.exchange else { return };
+        if exchange.session_id() != frame.session_id || exchange.is_complete() {
+            return;
+        }
+        // v5: a step outside 1..3 is refused at decode, before any handling.
+        let step = match u32::try_from(frame.step) {
+            Ok(step) if (1..=3).contains(&step) => step,
+            _ => {
+                self.end_exchange(
+                    rc_identity::pake::PakeError::UnexpectedStep {
+                        got: 0,
+                        expected: rc_identity::pake::STEP_CONTROLLER_START,
+                    }
+                    .into(),
+                    conn,
+                    peer,
+                    te_tx,
+                )
+                .await;
+                return;
+            }
+        };
+        let message = match PakeMessage::from_base64(step, &frame.payload) {
+            Ok(message) => message,
+            Err(e) => {
+                self.end_exchange(e.into(), conn, peer, te_tx).await;
+                return;
+            }
+        };
+
+        let now = now_ms();
+        let session_id = frame.session_id.clone();
+        let stepped = {
+            let guesses = GuessStore::new(&self.secrets);
+            let exchange = self.exchange.as_mut().expect("checked above");
+            exchange.step(&guesses, &message, now)
+        };
+        let reply = match stepped {
+            Ok(reply) => reply,
+            Err(e) => {
+                self.end_exchange(e, conn, peer, te_tx).await;
+                return;
+            }
+        };
+        if let Some(reply) = reply {
+            if let Err(e) = conn.send_pake(&session_id, &reply).await {
+                eprintln!("rc-host: the access-code exchange could not be sent: {e}");
+            }
+        }
+        if self.exchange.as_ref().is_some_and(|e| e.is_complete()) {
+            self.exchange_completed(conn, peer, te_tx).await;
+        }
+    }
+
+    /// The code is proved. The controller key the transcript bound becomes the
+    /// only acceptable signer of this session's `sdp`, and — with unattended
+    /// access off — the owner is asked before anything starts.
+    async fn exchange_completed(
+        &mut self,
+        conn: &Arc<SignalConnection>,
+        peer: &mut Option<Arc<PeerSession>>,
+        te_tx: &mpsc::Sender<TransportEvent>,
+    ) {
+        let Some(exchange) = &self.exchange else { return };
+        let controller = exchange.controller_pubkey().to_string();
+        self.expected_peer = Some(controller.clone());
+        self.record_trusted_controller(&controller);
+
+        let now = now_ms();
+        if self.machine.consent_required {
+            let ledger = GuessStore::new(&self.secrets).ledger(&controller);
+            let admitted = ledger
+                .as_ref()
+                .map(|ledger| rc_identity::consent::admit(ledger, now));
+            if !admitted.as_ref().is_ok_and(|d| d.should_prompt()) {
+                eprintln!(
+                    "rc-host: declined without asking — the consent budget for this controller \
+                     or this PC is spent"
+                );
+                let actions = self.machine.user_ended(bye::DECLINED);
+                self.clear_session();
+                self.teardown(peer).await;
+                self.apply(&actions, conn, peer, te_tx).await;
+                return;
+            }
+        }
+        let actions = self.machine.pake_succeeded(now);
+        self.apply(&actions, conn, peer, te_tx).await;
+    }
+
+    /// Ends the session the way §2.14 says: `auth_failed` when it was about the
+    /// code, `failed` when the exchange merely broke.
+    async fn end_exchange(
+        &mut self,
+        error: crate::pake::ExchangeError,
+        conn: &Arc<SignalConnection>,
+        peer: &mut Option<Arc<PeerSession>>,
+        te_tx: &mpsc::Sender<TransportEvent>,
+    ) {
+        eprintln!("rc-host: access-code exchange failed: {error}");
+        let actions = self.machine.user_ended(error.bye_reason());
+        self.clear_session();
+        self.teardown(peer).await;
+        self.apply(&actions, conn, peer, te_tx).await;
+    }
+
+    /// §4.5: the list does not gate anything. It exists so the owner can see
+    /// who has connected and so Refresh Code has something to revoke.
+    fn record_trusted_controller(&self, pubkey: &str) {
+        let Ok(key) = rc_identity::canonical_public_key(pubkey) else { return };
+        let mut known: std::collections::BTreeMap<String, TrustedController> =
+            match self.secrets.map(SecretAccount::TrustedControllers) {
+                Ok(known) => known,
+                Err(e) => {
+                    eprintln!("rc-host: {e}");
+                    return;
+                }
+            };
+        let now = now_ms();
+        let label = self
+            .machine
+            .peer_device_id()
+            .map(rc_identity::access_code::formatted_device_id)
+            .unwrap_or_default();
+        let entry = known.entry(key).or_insert(TrustedController {
+            label: label.clone(),
+            first_seen_ms: now,
+            last_seen_ms: now,
+        });
+        entry.label = label;
+        entry.last_seen_ms = now;
+        if let Err(e) = self
+            .secrets
+            .save(SecretAccount::TrustedControllers, &known)
+        {
+            eprintln!("rc-host: {e}");
+        }
+    }
+
+    async fn on_consent_answer(
+        &mut self,
+        answer: ConsentAnswer,
+        conn: &Arc<SignalConnection>,
+        peer: &mut Option<Arc<PeerSession>>,
+        te_tx: &mpsc::Sender<TransportEvent>,
+    ) {
+        let Some(prompt) = &self.prompt else { return };
+        let prompt_id = prompt.prompt_id.clone();
+        let actions =
+            self.machine
+                .consent_answered(answer == ConsentAnswer::Allow, Some(&prompt_id), now_ms());
+        if actions.is_empty() && answer == ConsentAnswer::Allow {
+            // §2.17 Consent 4: Allow inside the first 1.5 s is refused, not
+            // queued. Saying so is the difference between a guard and a bug.
+            println!("  Not yet — please answer again.");
+            return;
+        }
+        self.apply(&actions, conn, peer, te_tx).await;
+    }
+
+    /// §2.17 Consent 3 and §4.2: a signal for another session is dropped, one
+    /// for this session waits until the state machine itself started the peer,
+    /// and nothing touches a peer connection while the owner is being asked.
+    fn disposition(&self, session_id: &str, peer: &Option<Arc<PeerSession>>) -> Disposition {
+        if self.machine.session_id() != Some(session_id) {
+            return Disposition::Drop;
+        }
+        let started = self.machine.peer_started()
+            && *self.machine.phase() != rc_session::SessionPhase::AwaitingConsent;
+        match started && peer.is_some() {
+            true => Disposition::Apply,
+            false => Disposition::Hold,
+        }
+    }
+
+    /// Everything §2.12 requires of a receiver, in its order, before anything
+    /// is installed — and the post-install fingerprint re-check afterwards.
+    ///
+    /// The host answers; it never offers. An ICE-restart offer takes the same
+    /// path, signed again over its own fingerprints.
+    async fn on_remote_sdp(
+        &mut self,
+        sdp: sig::Sdp,
+        conn: &Arc<SignalConnection>,
+        peer: &mut Option<Arc<PeerSession>>,
+        te_tx: &mpsc::Sender<TransportEvent>,
+    ) {
+        if self.disposition(&sdp.session_id, peer) == Disposition::Drop {
+            return;
+        }
+        // "A peer neither sends nor accepts an `sdp` until its §2.17 exchange
+        // for this `sessionId` has completed": an earlier one is dropped, not
+        // refused, because it proves nothing either way.
+        let (Some(exchange), Some(expected)) = (&self.exchange, self.expected_peer.clone()) else {
+            eprintln!("rc-host: dropped an sdp that arrived before the access code was proved");
+            return;
+        };
+        if !exchange.is_complete() || exchange.session_id() != sdp.session_id {
+            eprintln!("rc-host: dropped an sdp that arrived before the access code was proved");
+            return;
+        }
+        let Ok(mac_key) = exchange.sdp_mac_key() else {
+            eprintln!("rc-host: dropped an sdp that arrived before the access code was proved");
+            return;
+        };
+
+        let presented = rc_identity::sdp::Presented {
+            fingerprints: &sdp.fp,
+            pubkey: &sdp.pubkey,
+            sig: &sdp.sig,
+            mac: &sdp.mac,
+        };
+        if let Err(e) = rc_identity::sdp::verify(
+            &mac_key,
+            &sdp.session_id,
+            &sdp.sdp_type,
+            &sdp.sdp,
+            &presented,
+            &expected,
+        ) {
+            self.refuse_peer(&e.to_string(), conn, peer, te_tx).await;
+            return;
+        }
+
+        if self.disposition(&sdp.session_id, peer) != Disposition::Apply {
+            self.held_sdp = Some(sdp);
+            return;
+        }
+        self.install_offer(sdp, &mac_key, conn, peer, te_tx).await;
+    }
+
+    /// The verified offer, installed and answered. Candidates are stripped
+    /// first: they only ever arrive as `ice`, so "before any remote candidate"
+    /// is literally true of the post-install check.
+    async fn install_offer(
+        &mut self,
+        sdp: sig::Sdp,
+        mac_key: &[u8; rc_identity::sdp::MAC_KEY_LEN],
+        conn: &Arc<SignalConnection>,
+        peer: &mut Option<Arc<PeerSession>>,
+        te_tx: &mpsc::Sender<TransportEvent>,
+    ) {
+        let Some(p) = peer.clone() else { return };
+        let body = match rc_identity::sdp::without_candidates(&sdp.sdp) {
+            Ok(body) => body,
+            Err(e) => {
+                self.refuse_peer(&e.to_string(), conn, peer, te_tx).await;
+                return;
+            }
+        };
+        if let Err(e) = p.set_remote_offer(&body).await {
+            eprintln!("rc-host: remote {} failed: {e}", sdp.sdp_type);
+            return;
+        }
+
+        // §2.12: the fingerprints the WebRTC stack reports as installed must
+        // equal the verified ones. This closes any gap between the verifier's
+        // SDP parser and the stack's.
+        let installed = p.installed_remote_sdp().await.unwrap_or_default();
+        match rc_identity::sdp::fingerprints(&installed) {
+            Ok(found) if found == sdp.fp => {}
+            Ok(_) => {
+                self.refuse_peer(
+                    "the fingerprints the WebRTC stack installed are not the verified ones",
+                    conn,
+                    peer,
+                    te_tx,
+                )
+                .await;
+                return;
+            }
+            Err(e) => {
+                self.refuse_peer(&e.to_string(), conn, peer, te_tx).await;
+                return;
+            }
+        }
+
+        let answer = match p.answer().await {
+            Ok(answer) => answer,
+            Err(e) => {
+                eprintln!("rc-host: answer failed: {e}");
+                return;
+            }
+        };
+        if let Err(e) = self
+            .send_signed_sdp(&sdp.session_id, "answer", &answer, sdp.restart, mac_key, conn)
+            .await
+        {
+            eprintln!("rc-host: the answer could not be sent: {e}");
+            return;
+        }
+        self.release_held_candidates(peer).await;
+    }
+
+    /// §2.12: `fp`, `pubkey`, `sig` and `mac`. The signature proves *which
+    /// device* sent the fingerprints; the MAC proves it was the device that
+    /// just proved the access code in this session. Neither is optional — a
+    /// peer that enforces §2.12 refuses an answer missing either.
+    async fn send_signed_sdp(
+        &self,
+        session_id: &str,
+        sdp_type: &str,
+        body: &str,
+        restart: bool,
+        mac_key: &[u8; rc_identity::sdp::MAC_KEY_LEN],
+        conn: &Arc<SignalConnection>,
+    ) -> Result<(), String> {
+        let signable = rc_identity::sdp::signable(mac_key, session_id, sdp_type, body)
+            .map_err(|e| e.to_string())?;
+        let signature = self
+            .key
+            .sign(
+                rc_identity::SigningPurpose::Sdp,
+                &rc_identity::sdp::payload(session_id, sdp_type, &signable.fingerprints)
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        conn.send(
+            msg::SDP,
+            &sig::Sdp {
+                session_id: session_id.to_string(),
+                sdp_type: sdp_type.to_string(),
+                sdp: body.to_string(),
+                restart,
+                fp: signable.fingerprints,
+                pubkey: self.key.public_key_spki_base64(),
+                sig: signature,
+                mac: signable.mac,
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    async fn on_remote_ice(&mut self, ice: sig::Ice, peer: &Option<Arc<PeerSession>>) {
+        match self.disposition(&ice.session_id, peer) {
+            Disposition::Drop => {}
+            Disposition::Hold => {
+                if self.held_ice.len() < MAX_HELD_CANDIDATES {
+                    self.held_ice.push(ice);
+                }
+            }
+            Disposition::Apply => {
+                if let Some(p) = peer {
+                    let _ = p.add_remote_candidate(&ice).await;
+                }
+            }
+        }
+    }
+
+    async fn release_held_candidates(&mut self, peer: &Option<Arc<PeerSession>>) {
+        for ice in std::mem::take(&mut self.held_ice) {
+            if let Some(p) = peer {
+                let _ = p.add_remote_candidate(&ice).await;
+            }
+        }
+    }
+
+    /// §2.14: a §2.12 failure is terminal and must never be retried. It is a
+    /// device-key failure, which is `peer_auth_failed` — not `auth_failed`,
+    /// which is about the code.
+    async fn refuse_peer(
+        &mut self,
+        reason: &str,
+        conn: &Arc<SignalConnection>,
+        peer: &mut Option<Arc<PeerSession>>,
+        te_tx: &mpsc::Sender<TransportEvent>,
+    ) {
+        eprintln!("rc-host: the other computer could not be verified: {reason}");
+        let actions = self.machine.user_ended(bye::PEER_AUTH_FAILED);
+        self.clear_session();
+        self.teardown(peer).await;
+        self.apply(&actions, conn, peer, te_tx).await;
+    }
+
+    /// Everything that belongs to one session and must not outlive it: the
+    /// exchange and its key, the pinned peer key, the held signals, the prompt,
+    /// and — §2.5 — this session's TURN credentials.
+    fn clear_session(&mut self) {
+        self.exchange = None;
+        self.expected_peer = None;
+        self.held_sdp = None;
+        self.held_ice.clear();
+        self.prompt = None;
+        self.session_ice_servers.clear();
     }
 
     async fn on_transport(
@@ -360,6 +922,7 @@ where
         event: TransportEvent,
         conn: &Arc<SignalConnection>,
         peer: &mut Option<Arc<PeerSession>>,
+        te_tx: &mpsc::Sender<TransportEvent>,
     ) {
         match event {
             TransportEvent::IceState(s) => {
@@ -370,7 +933,7 @@ where
                     // encoding into a closed peer until something else notices.
                     self.stop_capture().await;
                 }
-                self.apply(&actions, conn, peer).await;
+                self.apply(&actions, conn, peer, te_tx).await;
             }
             TransportEvent::LocalCandidate(init) => {
                 if let Some(id) = self.machine.session_id() {
@@ -586,16 +1149,92 @@ where
         }
     }
 
-    /// Perform the effects the state machine asked for. SDP/ICE relay and peer
-    /// lifecycle are handled at the call sites above; here we handle the rest.
+    /// Starts this session's peer connection — the one thing a verified
+    /// exchange, and only a verified exchange, is allowed to cause.
+    async fn start_peer(
+        &mut self,
+        peer: &mut Option<Arc<PeerSession>>,
+        te_tx: &mpsc::Sender<TransportEvent>,
+    ) {
+        if !self.exchange.as_ref().is_some_and(|e| e.is_complete()) {
+            eprintln!("rc-host: refused to start a peer before the access code was proved");
+            return;
+        }
+        self.teardown(peer).await;
+        let servers = match self.session_ice_servers.is_empty() {
+            true => self.base_ice_servers.clone(),
+            false => self.session_ice_servers.clone(),
+        };
+        let started = PeerSession::new(PeerConfig {
+            ice_servers: servers,
+            force_relay: self.config.force_relay,
+        })
+        .await;
+        let (new_peer, mut events) = match started {
+            Ok(started) => started,
+            Err(e) => {
+                eprintln!("rc-host: the peer connection could not be created: {e}");
+                return;
+            }
+        };
+        let new_peer = Arc::new(new_peer);
+        *peer = Some(new_peer.clone());
+        let fwd = te_tx.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = events.recv().await {
+                if fwd.send(ev).await.is_err() {
+                    break;
+                }
+            }
+        });
+        self.start_capture(new_peer).await;
+    }
+
+    /// Perform the effects the state machine asked for.
     async fn apply(
         &mut self,
         actions: &[SessionAction],
         conn: &Arc<SignalConnection>,
-        peer: &Option<Arc<PeerSession>>,
+        peer: &mut Option<Arc<PeerSession>>,
+        te_tx: &mpsc::Sender<TransportEvent>,
     ) {
         for action in actions {
             match action {
+                SessionAction::StartPeerConnection { .. } => {
+                    self.start_peer(peer, te_tx).await;
+                    // The controller offered while the owner was deciding;
+                    // §2.17 Consent 3 says that offer is applied now, after the
+                    // usual §2.12 checks, and not before.
+                    if let (Some(held), Some(exchange)) =
+                        (self.held_sdp.take(), self.exchange.as_ref())
+                    {
+                        if let Ok(mac_key) = exchange.sdp_mac_key() {
+                            Box::pin(self.install_offer(held, &mac_key, conn, peer, te_tx)).await;
+                        }
+                    }
+                }
+                SessionAction::TeardownPeerConnection => {
+                    self.teardown(peer).await;
+                }
+                SessionAction::ClearStoredSession => {
+                    self.clear_session();
+                }
+                SessionAction::PromptForConsent {
+                    prompt_id,
+                    replaces_previous,
+                    ..
+                } => {
+                    self.present_consent(prompt_id, *replaces_previous);
+                }
+                SessionAction::DismissConsentPrompt { outcome } => {
+                    self.dismiss_consent(*outcome);
+                }
+                SessionAction::RestartIce { .. } => {
+                    // The controller is the offerer for the initial
+                    // negotiation and restarts by default (§2.9, §4.3 step 4).
+                    // A host that offered here would be renegotiating against
+                    // a peer that is already doing it.
+                }
                 SessionAction::SendBye { session_id, reason } => {
                     let _ = conn
                         .send(msg::BYE, &sig::Bye { session_id: session_id.clone(), reason: reason.clone(), relay_used: None, bytes_relayed: None })
@@ -622,7 +1261,7 @@ where
                             self.machine.resume_failed(e.code().unwrap_or("internal"), retry)
                         }
                     };
-                    Box::pin(self.apply(&follow_up, conn, peer)).await;
+                    Box::pin(self.apply(&follow_up, conn, peer, te_tx)).await;
                 }
                 SessionAction::SendRenew { session_id, session_token } => {
                     if let Ok(ok) = conn
@@ -636,6 +1275,14 @@ where
                         )
                         .await
                     {
+                        // §2.11: `iceServers` is present only while the session
+                        // is metered, and is then a fresh list with new
+                        // 10-minute credentials. Absent means keep what we have.
+                        if !ok.ice_servers.is_empty()
+                            && self.machine.session_id() == Some(ok.session_id.as_str())
+                        {
+                            self.session_ice_servers = ok.ice_servers.clone();
+                        }
                         self.machine.renew_succeeded(
                             &ResumeOk { session_id: ok.session_id, session_token: ok.session_token },
                             now_ms(),
@@ -649,12 +1296,83 @@ where
                         let _ = p.send_ctrl(ctrl_msg::INPUT_RESET, &serde_json::json!({})).await;
                     }
                 }
-                // Peer lifecycle and prompts are handled by the host UI /
-                // call sites; the host binary logs the rest.
-                _ => {}
+                // A host never sends `connect_req`, is never asked for an
+                // access code, has no watches of its own, and schedules its
+                // resumes on the 500 ms tick.
+                SessionAction::SendConnectReq { .. }
+                | SessionAction::PromptForAccessCode { .. }
+                | SessionAction::ReissueWatches
+                | SessionAction::ScheduleResume { .. } => {}
             }
         }
     }
+
+    /// §2.17 Consent: the prompt is named by the core's own random id, never
+    /// by the server-chosen `sessionId`, and the budget is charged the moment
+    /// it opens — a hang-up while it is up costs the controller as much as a
+    /// Decline.
+    fn present_consent(&mut self, prompt_id: &str, replaces_previous: bool) {
+        let Some(pubkey) = self.expected_peer.clone() else { return };
+        let Ok(fingerprint) = rc_identity::public_key_fingerprint(&pubkey) else { return };
+        let guesses = GuessStore::new(&self.secrets);
+        if let Ok(ledger) = guesses.ledger(&pubkey) {
+            let charged = rc_identity::consent::prompted(&ledger, now_ms());
+            if let Err(e) = guesses.save(&charged, &pubkey, now_ms()) {
+                eprintln!("rc-host: {e}");
+            }
+        }
+        let prompt = ConsentPrompt {
+            prompt_id: prompt_id.to_string(),
+            controller_device_id: self
+                .machine
+                .peer_device_id()
+                .unwrap_or_default()
+                .to_string(),
+            controller_fingerprint: fingerprint,
+            replaces_previous,
+        };
+        prompt.render();
+        self.prompt = Some(prompt);
+    }
+
+    fn dismiss_consent(&mut self, outcome: ConsentOutcome) {
+        self.prompt = None;
+        ConsentPrompt::dismissed(outcome);
+        if outcome == ConsentOutcome::Allowed {
+            if let Some(pubkey) = self.expected_peer.clone() {
+                let guesses = GuessStore::new(&self.secrets);
+                if let Ok(ledger) = guesses.ledger(&pubkey) {
+                    let refunded = rc_identity::consent::allowed(&ledger, now_ms());
+                    if let Err(e) = guesses.save(&refunded, &pubkey, now_ms()) {
+                        eprintln!("rc-host: {e}");
+                    }
+                }
+            }
+            return;
+        }
+        // Nothing held for a request that was not allowed is ever applied.
+        self.held_sdp = None;
+        self.held_ice.clear();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Disposition {
+    Drop,
+    Hold,
+    Apply,
+}
+
+/// §4.5: who has connected before, for the owner to look at and for Refresh
+/// Code to revoke. It gates nothing.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct TrustedController {
+    #[serde(default)]
+    label: String,
+    #[serde(default, rename = "firstSeenMs")]
+    first_seen_ms: i64,
+    #[serde(default, rename = "lastSeenMs")]
+    last_seen_ms: i64,
 }
 
 /// Watches for the ways a user ends this host, so the keys the controller is

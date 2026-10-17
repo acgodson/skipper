@@ -13,8 +13,6 @@
 
 #![forbid(unsafe_code)]
 
-pub mod pinning;
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -27,7 +25,6 @@ use rc_proto::signaling as sig;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::Connector;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SignalError {
@@ -41,8 +38,6 @@ pub enum SignalError {
     Timeout(&'static str),
     #[error("connection closed")]
     Closed,
-    #[error("tls: {0}")]
-    Tls(String),
 }
 
 impl SignalError {
@@ -70,6 +65,10 @@ pub enum Push {
     PeerState(sig::PeerState),
     Sdp(sig::Sdp),
     Ice(sig::Ice),
+    /// One frame of the §2.17 access-code exchange, relayed opaquely.
+    Pake(sig::Pake),
+    /// *v5* §2.18: this session's TURN credentials, pushed once metering starts.
+    IceServers(sig::IceServers),
     Bye(sig::Bye),
     /// An `error` with no `re` — e.g. `displaced` when another socket
     /// authenticates as this device.
@@ -79,19 +78,17 @@ pub enum Push {
 }
 
 pub struct Config {
-    /// `wss://host:8443/ws` or `ws://127.0.0.1:8443/ws` (local testing only).
+    /// `wss://<api base domain>/ws`, derived from the one configured domain.
+    /// `ws://127.0.0.1:<port>/ws` is local development only.
     pub url: String,
-    /// Required for `wss`. `None` is only legal for `ws://`.
-    pub cert_pin_base64: Option<String>,
     pub request_timeout: Duration,
     pub handshake_timeout: Duration,
 }
 
 impl Config {
-    pub fn new(url: &str, pin: Option<&str>) -> Self {
+    pub fn new(url: &str) -> Self {
         Self {
             url: url.to_string(),
-            cert_pin_base64: pin.map(str::to_string),
             request_timeout: Duration::from_secs(15),
             handshake_timeout: Duration::from_secs(20),
         }
@@ -116,19 +113,6 @@ impl SignalConnection {
     /// Open the socket. The first `challenge` is awaited here so callers can
     /// immediately authenticate; later challenges also refresh the stored nonce.
     pub async fn connect(config: &Config) -> Result<(Self, PushReceiver), SignalError> {
-        let is_tls = config.url.starts_with("wss:");
-        let connector = if is_tls {
-            let pin = config
-                .cert_pin_base64
-                .as_deref()
-                .ok_or_else(|| SignalError::Tls("wss requires a certificate pin".into()))?;
-            Some(Connector::Rustls(Arc::new(
-                pinning::pinned_tls_config(pin).map_err(SignalError::Tls)?,
-            )))
-        } else {
-            None
-        };
-
         let request = config
             .url
             .as_str()
@@ -136,7 +120,7 @@ impl SignalConnection {
             .map_err(|e| SignalError::WebSocket(e.to_string()))?;
         let (ws, _) = tokio::time::timeout(
             config.handshake_timeout,
-            tokio_tungstenite::connect_async_tls_with_config(request, None, true, connector),
+            tokio_tungstenite::connect_async_tls_with_config(request, None, true, None),
         )
         .await
         .map_err(|_| SignalError::Timeout("websocket handshake"))?
@@ -234,6 +218,16 @@ impl SignalConnection {
                         msg::ICE => {
                             if let Ok(p) = env.payload_as() {
                                 forward(Push::Ice(p)).await;
+                            }
+                        }
+                        msg::PAKE => {
+                            if let Ok(p) = env.payload_as() {
+                                forward(Push::Pake(p)).await;
+                            }
+                        }
+                        msg::ICE_SERVERS => {
+                            if let Ok(p) = env.payload_as() {
+                                forward(Push::IceServers(p)).await;
                             }
                         }
                         msg::BYE => {
@@ -362,29 +356,63 @@ impl SignalConnection {
 
     // ---------------- authentication flows (§2.2, §2.4) ----------------
 
-    /// First run: mint a device id. Consumes the pending challenge; the server
-    /// pushes a fresh one after `register_ok` for the follow-up `hello`.
+    /// Mint a device id, or reclaim the one this key already holds. Consumes
+    /// the pending challenge; the server pushes a fresh one after
+    /// `register_ok` for the follow-up `hello`.
+    ///
+    /// `preferred_device_id` and `id_cert` are the §2.2 re-registration pair:
+    /// the id this key last held and the certificate the registry issued for
+    /// it. Without a certificate the registry mints a fresh id whatever is
+    /// asked for, so either both are sent or neither is.
+    ///
+    /// No access-code verifier is sent. A v5 server answers `bad_request` to a
+    /// `register` that carries one: it stores nothing about any access code,
+    /// which is proved peer to peer instead (§2.3, §2.17).
     pub async fn register(
         &self,
         key: &rc_identity::DeviceKey,
         label: &str,
-        code: &sig::CodeVerifier,
+        preferred_device_id: &str,
+        id_cert: &str,
     ) -> Result<sig::RegisterOk, SignalError> {
         let nonce = self
             .take_challenge_nonce()
             .await
             .ok_or(SignalError::Timeout("challenge before register"))?;
+        let restoring = !preferred_device_id.is_empty() && !id_cert.is_empty();
+        let borrow = |value: &str| match restoring {
+            true => value.to_string(),
+            false => String::new(),
+        };
         let payload = sig::Register {
             pubkey: key.public_key_spki_base64(),
             sig: key
                 .sign(rc_identity::SigningPurpose::Register, &nonce)
                 .map_err(|e| SignalError::Protocol(e.to_string()))?,
             label: label.to_string(),
-            preferred_device_id: String::new(),
-            id_cert: String::new(),
-            code: code.clone(),
+            preferred_device_id: borrow(preferred_device_id),
+            id_cert: borrow(id_cert),
+            code: sig::CodeVerifier::default(),
         };
         self.request(msg::REGISTER, &payload, msg::REGISTER_OK).await
+    }
+
+    /// One `pake` frame (§2.17). Fire-and-forget: the reply is the peer's next
+    /// step, which arrives as a push.
+    pub async fn send_pake(
+        &self,
+        session_id: &str,
+        message: &rc_identity::pake::PakeMessage,
+    ) -> Result<(), SignalError> {
+        self.send(
+            msg::PAKE,
+            &sig::Pake {
+                session_id: session_id.to_string(),
+                step: message.step as i32,
+                payload: message.to_base64(),
+            },
+        )
+        .await
     }
 
     /// Authenticate an existing device. On success the socket is this device's

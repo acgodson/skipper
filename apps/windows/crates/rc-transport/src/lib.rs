@@ -95,6 +95,25 @@ pub enum TransportEvent {
     KeyframeRequested,
 }
 
+fn ice_servers(servers: &[sig::IceServer]) -> Vec<RTCIceServer> {
+    servers
+        .iter()
+        .map(|s| RTCIceServer {
+            urls: s.urls.clone(),
+            username: s.username.clone(),
+            credential: s.credential.clone(),
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn transport_policy(force_relay: bool) -> RTCIceTransportPolicy {
+    match force_relay {
+        true => RTCIceTransportPolicy::Relay,
+        false => RTCIceTransportPolicy::All,
+    }
+}
+
 pub struct PeerConfig {
     pub ice_servers: Vec<sig::IceServer>,
     /// `RC_ICE_POLICY=relay` — force TURN, the switch that proved the relay on
@@ -106,6 +125,7 @@ pub struct PeerSession {
     pc: Arc<RTCPeerConnection>,
     ctrl: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     video: Arc<TrackLocalStaticSample>,
+    has_turn: bool,
 }
 
 impl PeerSession {
@@ -122,21 +142,8 @@ impl PeerSession {
             .build();
 
         let rtc_config = RTCConfiguration {
-            ice_servers: config
-                .ice_servers
-                .iter()
-                .map(|s| RTCIceServer {
-                    urls: s.urls.clone(),
-                    username: s.username.clone(),
-                    credential: s.credential.clone(),
-                    ..Default::default()
-                })
-                .collect(),
-            ice_transport_policy: if config.force_relay {
-                RTCIceTransportPolicy::Relay
-            } else {
-                RTCIceTransportPolicy::All
-            },
+            ice_servers: ice_servers(&config.ice_servers),
+            ice_transport_policy: transport_policy(config.force_relay),
             ..Default::default()
         };
         let pc = Arc::new(api.new_peer_connection(rtc_config).await?);
@@ -284,14 +291,32 @@ impl PeerSession {
             }));
         }
 
-        Ok((Self { pc, ctrl: ctrl_slot, video }, rx))
+        let has_turn = config
+            .ice_servers
+            .iter()
+            .any(|s| !s.credential.is_empty() || !s.username.is_empty());
+        Ok((Self { pc, ctrl: ctrl_slot, video, has_turn }, rx))
     }
 
-    /// Apply the controller's offer and produce this host's answer. Also the
-    /// path for ICE-restart offers — same call, new offer in, new answer out.
-    pub async fn handle_offer(&self, sdp: &str) -> Result<String, TransportError> {
+    /// Install the controller's offer. Also the path for ICE-restart offers.
+    ///
+    /// Separate from [`Self::answer`] because §2.12 puts a check between the
+    /// two: after `setRemoteDescription` and before any remote candidate, the
+    /// fingerprints the stack actually installed must equal the verified ones.
+    /// [`Self::installed_remote_sdp`] is how that check reads them.
+    pub async fn set_remote_offer(&self, sdp: &str) -> Result<(), TransportError> {
         let offer = RTCSessionDescription::offer(sdp.to_string())?;
         self.pc.set_remote_description(offer).await?;
+        Ok(())
+    }
+
+    /// The remote description as the stack reports it, which is what §2.12's
+    /// post-install check reads rather than the bytes that arrived.
+    pub async fn installed_remote_sdp(&self) -> Option<String> {
+        self.pc.remote_description().await.map(|d| d.sdp)
+    }
+
+    pub async fn answer(&self) -> Result<String, TransportError> {
         let answer = self.pc.create_answer(None).await?;
         self.pc.set_local_description(answer).await?;
         let local = self
@@ -300,6 +325,15 @@ impl PeerSession {
             .await
             .ok_or_else(|| TransportError::WebRtc("no local description".into()))?;
         Ok(local.sdp)
+    }
+
+    /// Whether this connection was built with any TURN credentials, which is
+    /// the only moment ICE servers can be chosen: `set_configuration` is not
+    /// implemented in webrtc-rs 0.11 (it is commented out in
+    /// `peer_connection/mod.rs`), and the gatherer is built with the
+    /// connection, so a list that arrives later reaches the *next* one.
+    pub fn gathers_relay_candidates(&self) -> bool {
+        self.has_turn
     }
 
     pub async fn add_remote_candidate(&self, ice: &sig::Ice) -> Result<(), TransportError> {
