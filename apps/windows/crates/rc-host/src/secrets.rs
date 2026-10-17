@@ -30,6 +30,10 @@ pub enum SecretAccount {
     DeviceToken,
     PendingUnlink,
     HostSettings,
+    /// The `skipperdesk://link` URL the shell handed to a second process, for
+    /// the one that is waiting for it. It carries the one-time sign-in code, so
+    /// it is sealed like every other secret and removed as soon as it is read.
+    LinkCallback,
 }
 
 impl SecretAccount {
@@ -42,6 +46,7 @@ impl SecretAccount {
             Self::DeviceToken => "device-token",
             Self::PendingUnlink => "pending-unlink",
             Self::HostSettings => "host-settings",
+            Self::LinkCallback => "link-callback",
         }
     }
 }
@@ -162,6 +167,7 @@ impl SecretStore {
             SecretAccount::GuessCounters,
             SecretAccount::DeviceToken,
             SecretAccount::PendingUnlink,
+            SecretAccount::LinkCallback,
         ] {
             self.remove(account)?;
         }

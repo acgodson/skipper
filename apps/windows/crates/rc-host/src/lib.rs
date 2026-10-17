@@ -13,6 +13,8 @@
 
 #![cfg_attr(not(windows), allow(dead_code))]
 
+pub mod account;
+pub mod api;
 pub mod backend;
 pub mod consent;
 pub mod host;
@@ -22,6 +24,7 @@ pub mod media;
 pub mod pake;
 pub mod pump;
 pub mod secrets;
+pub mod urlhandler;
 
 #[cfg(windows)]
 pub mod inject_windows;

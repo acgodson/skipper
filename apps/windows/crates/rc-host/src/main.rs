@@ -13,6 +13,8 @@
 
 use std::path::PathBuf;
 
+use rc_host::account::{Account, AccountState};
+use rc_host::api::ApiClient;
 use rc_host::{Backend, Host, HostConfig, RecordingInjector, SecretStore, SyntheticBackend};
 use rc_identity::{access_code, DeviceKey, IdentityRecord};
 
@@ -144,9 +146,48 @@ fn config(backend: &Backend) -> HostConfig {
     }
 }
 
+/// How long `--sign-in` waits for the browser. The attempt itself expires at
+/// `ATTEMPT_LIFETIME_MS`; this is just how long the console stays blocked.
+const SIGN_IN_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+
+enum Command {
+    Run { synthetic: bool },
+    SignIn,
+    SignOut,
+    /// The shell handing this process a `skipperdesk://link` URL.
+    LinkCallback(String),
+}
+
+fn command() -> Command {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(index) = args.iter().position(|a| a == "--link-callback") {
+        return match args.get(index + 1) {
+            Some(url) => Command::LinkCallback(url.clone()),
+            None => Command::Run { synthetic: false },
+        };
+    }
+    // The shell may also pass the URL on its own, depending on how the handler
+    // was registered by an earlier build.
+    if let Some(url) = args
+        .iter()
+        .find(|a| a.starts_with(&format!("{}://", rc_host::account::CALLBACK_SCHEME)))
+    {
+        return Command::LinkCallback(url.clone());
+    }
+    if args.iter().any(|a| a == "--sign-in") {
+        return Command::SignIn;
+    }
+    if args.iter().any(|a| a == "--sign-out") {
+        return Command::SignOut;
+    }
+    Command::Run {
+        synthetic: args.iter().any(|a| a == "--synthetic"),
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    let synthetic = std::env::args().any(|a| a == "--synthetic");
+    let command = command();
     let startup = match startup() {
         Ok(startup) => startup,
         Err(e) => {
@@ -154,12 +195,136 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    print_banner(&startup.identity);
 
-    if let Err(e) = run(startup, synthetic).await {
-        eprintln!("rc-host: exited with error: {e}");
+    let outcome = match command {
+        Command::LinkCallback(url) => rc_host::urlhandler::deliver(&startup.secrets, &url),
+        Command::SignIn => sign_in(&startup).await,
+        Command::SignOut => sign_out(&startup).await,
+        Command::Run { synthetic } => {
+            print_banner(&startup.identity);
+            run(startup, synthetic).await
+        }
+    };
+    if let Err(e) = outcome {
+        eprintln!("rc-host: {e}");
         std::process::exit(1);
     }
+}
+
+fn account<'a>(startup: &'a Startup) -> Result<Account<'a>, String> {
+    let api = ApiClient::new(startup.backend.api.clone(), env!("CARGO_PKG_VERSION"))
+        .map_err(|e| e.to_string())?;
+    Ok(Account::new(
+        api,
+        &startup.secrets,
+        &startup.key,
+        env_or("RC_DEVICE_LABEL", "Windows Host"),
+        hardware_id(),
+    ))
+}
+
+/// Sent once, to `/v1/auth/device/token`, and never again: the server keeps
+/// only an HMAC of it. `MachineGuid` is per-installation, which is what the
+/// field is for; its absence is not fatal.
+fn hardware_id() -> String {
+    #[cfg(windows)]
+    {
+        let read = std::process::Command::new("reg")
+            .args([
+                "query",
+                r"HKLM\SOFTWARE\Microsoft\Cryptography",
+                "/v",
+                "MachineGuid",
+            ])
+            .output();
+        if let Ok(output) = read {
+            let text = String::from_utf8_lossy(&output.stdout);
+            if let Some(guid) = text.split_whitespace().last() {
+                if guid.len() >= 32 {
+                    return guid.to_string();
+                }
+            }
+        }
+    }
+    // A stable fallback that is still this machine rather than this run.
+    format!(
+        "{}-{}",
+        std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .unwrap_or_else(|_| "unknown".into()),
+        std::env::consts::OS
+    )
+}
+
+/// The browser leg. Registration comes first: `/v1/auth/device/token` refuses a
+/// key the device registry does not know, with the sign-in code left unspent.
+async fn sign_in(startup: &Startup) -> Result<(), String> {
+    if let Ok(executable) = std::env::current_exe() {
+        if let Err(e) = rc_host::urlhandler::register(&executable) {
+            eprintln!("rc-host: the sign-in return handler could not be registered ({e})");
+        }
+    }
+    if startup.identity.device_id.is_empty() || !startup.identity.server_registered {
+        return Err(
+            "this PC has no Device ID yet. Start the host once so it can register, then sign in."
+                .into(),
+        );
+    }
+    // A URL left over from an abandoned attempt must not be read as this one's.
+    let _ = rc_host::urlhandler::take(&startup.secrets);
+
+    let mut account = account(startup)?;
+    let url = account
+        .begin_sign_in(&startup.backend.web, now_ms())
+        .await?;
+    println!("\n  Opening your browser to sign in.");
+    println!("  If it does not open, paste this address into it:\n\n  {url}\n");
+    if let Err(e) = rc_host::urlhandler::open_in_browser(&url) {
+        eprintln!("rc-host: {e}");
+    }
+
+    let deadline = std::time::Instant::now() + SIGN_IN_WAIT;
+    let callback = loop {
+        if let Some(url) = rc_host::urlhandler::take(&startup.secrets) {
+            break url;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("no answer came back from the browser; choose Sign in again".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    };
+
+    let record = account.complete_sign_in(&callback, now_ms()).await?;
+    let who = match record.account_email.is_empty() {
+        true => "your account".to_string(),
+        false => record.account_email.clone(),
+    };
+    println!("  Signed in as {who}.");
+    if let Some(entitlement) = account.entitlement(now_ms(), true).await {
+        println!("  Plan status: {}", entitlement.status);
+    }
+    Ok(())
+}
+
+async fn sign_out(startup: &Startup) -> Result<(), String> {
+    let mut account = account(startup)?;
+    match account.state() {
+        AccountState::Linked { .. } => {}
+        _ => {
+            println!("  This PC is not signed in.");
+            return Ok(());
+        }
+    }
+    account.sign_out().await?;
+    println!("  Signed out. This PC can no longer be connected to until it signs in again.");
+    Ok(())
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// The diagnostic path: a synthetic screen and an injector that records instead
