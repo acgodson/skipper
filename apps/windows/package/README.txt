@@ -38,6 +38,23 @@ Running it
 2. A window opens showing a Device ID and an Access code. Give both to the person who is
    connecting.
 3. Leave that window open. Closing it stops sharing straight away.
+4. When they connect, that window asks you "Allow this computer to be controlled?" and
+   shows who is asking. Type y and press Enter to let them in, or n to refuse. If you do
+   not answer within 30 seconds the connection is declined, so keep the window where you
+   can see it.
+
+Signing in (once, before the first connection)
+----------------------------------------------
+This PC has to be signed in to the SkipperDesk account that is paying for the session, or
+the connection is refused before it starts.
+
+1. Run the host once (step 1 above) so it can get its Device ID, then close it.
+2. Open the extracted folder, hold Shift and right-click an empty part of it, choose
+   "Open PowerShell window here", and run:  .\rc-host.exe --sign-in
+3. Your browser opens. Sign in. The page hands you back to the app automatically.
+4. It prints "Signed in as <your email>". You can close that window and go back to step 1.
+
+To sign this PC out again:  .\rc-host.exe --sign-out
 
 One limit worth knowing: SkipperDesk runs as you, not as an administrator, so it cannot
 click inside windows that Windows itself runs with administrator rights. Ordinary apps -
