@@ -21,6 +21,7 @@ public let allSuites: [TestSuite] = [
     settingsSuite,
     observationSuite,
     cursorSuite,
+    cursorOwnershipSuite,
     stayAwakeSuite,
     backoffSuite,
     configSuite,
