@@ -154,13 +154,14 @@ SYNC=(aws s3 sync --profile "$PROFILE" --region "$REGION" --only-show-errors --d
 # object's own Cache-Control is what the browser obeys. Pages revalidate every time; an
 # asset is immutable for a year and is busted by the ?v= the pages ask for.
 echo
-# --exclude keeps --delete away from the release images: they live under /assets/ for the
+# --exclude keeps --delete away from the release images (*.dmg, and the Windows beta *.zip): they live under /assets/ for the
 # immutable cache policy, they are uploaded by --dmg above, and they are not in the
 # repository -- so without this the next copy change would delete the app download.
 echo "== uploading /assets/ as immutable (release images untouched)"
 "${SYNC[@]}" \
   "$SITE/assets/" "s3://$BUCKET/assets/" \
   --exclude "*.dmg" \
+  --exclude "*.zip" \
   --exclude ".DS_Store" \
   --cache-control "public, max-age=31536000, immutable"
 
