@@ -1,11 +1,54 @@
-# Windows host — capture, input and session lifecycle
+# Windows host — capture, input, session lifecycle and connecting
 
-What the Windows host's capture, injection and session lifecycle actually do now, and what is
-still waiting on a Windows machine. `WINDOWS-HOST.md` is the historical feasibility study;
-where the two disagree, this file is the later one. `protocol/PROTOCOL.md` and
-`protocol/API.md` remain the contract.
+What the Windows host actually does now, and what is still waiting on a Windows machine.
+`WINDOWS-HOST.md` is the historical feasibility study; where the two disagree, this file is the
+later one. `protocol/PROTOCOL.md` and `protocol/API.md` remain the contract.
 
-Written 2026-10-17, from macOS. Nothing Windows-only in here has been *run*.
+Written 2026-10-17 and extended 2026-10-18, from macOS. Nothing Windows-only in here has been
+*run*. §0 and §6 are the signalling, authentication and account work; the rest is capture,
+input and injection.
+
+---
+
+## 0. Connecting to the shipping Mac app
+
+The host could not connect at all. `host.rs` ran no §2.17 exchange and built SDP answers with an
+empty `fp`, `pubkey`, `sig` and `mac`; the Mac controller verifies all four, so every session
+died at `bye{peer_auth_failed}`. Two more blockers were behind it: `register` carried a v1
+access-code verifier, which a v5 server answers `bad_request`, and the shipping path reached a
+compiled-in IP behind a certificate pin.
+
+**The rules this layer holds to**
+
+1. **The Mac's verification is never weakened.** `rc_identity::sdp::verify` is the function the
+   Mac's own `SdpAuth.verify` reaches through `rc-ffi`, and it is the function
+   `tests/signed_answer.rs` checks this host's answers against. Nothing here has its own idea
+   of §2.12.
+2. **No picture and no clicks until the code is proved *and* the owner agrees.** A
+   `session_start` starts nothing: no peer connection, no capture. Only a verified exchange and,
+   with unattended access off, an Allow does.
+3. **A guess is paid for when the confirmation leaves, not when it fails.** Step 2 lets whoever
+   sent step 1 check one guess offline, so both budgets are charged before it is sent and
+   withdrawn only when step 3 verifies. A charge that cannot be *stored* refuses the exchange.
+4. **Unattended access is off on a new install.** The access code says a controller *may*
+   connect; whoever is at the PC says whether it connects now.
+5. **One configured value.** The API base domain, with `wss://<domain>/ws` and the sign-in site
+   derived from it. No address, no pin: ordinary public-CA validation, like the Mac.
+
+**Where it lives**
+
+| Concern | Crate / file | Tested here? |
+|---|---|---|
+| The one config value and everything derived from it | `rc-host/backend.rs` | yes |
+| §2.17 exchange, both guess budgets, `bye` reasons | `rc-host/pake.rs` | yes |
+| §2.12 signing, verification, candidate stripping | `rc-identity/sdp.rs` (shared) | yes |
+| Whether a signed answer the Mac would accept comes out | `rc-host/tests/signed_answer.rs` | yes |
+| A whole v5 session against the real Go server | `rc-host/tests/live_server.rs` | yes, needs `go` |
+| §2.17 Consent at the console | `rc-host/consent.rs` | partly (the parsing) |
+| Session wiring: holds, dispositions, teardown, reconnect | `rc-host/host.rs` | no |
+| Account API, nonce binding, device token | `rc-host/{api,account}.rs` | the pure parts only |
+| DPAPI, the user-only DACL, atomic writes | `rc-host/secrets.rs` | logic yes, DPAPI no |
+| `skipperdesk://` registration | `rc-host/urlhandler.rs` | the hand-off only |
 
 ---
 
@@ -114,4 +157,54 @@ with real Windows was a crash. The measured cap and step-down are what keep the 
 from being the catastrophe in the meantime.
 
 **Bitrate adaptation.** The encoder's target bitrate is fixed from config. Nothing feeds a
-bandwidth estimate back into it, and the `quality` ctrl message (§5) is not handled.
+bandwidth estimate back into it, and the `quality` ctrl message (§5) is not handled. The
+entitlement's `limits.maxQuality` is therefore read and cached but not yet *enforced*: API.md
+§4.4 makes the host the enforcement point, and that lands with `quality` handling.
+
+---
+
+## 6. Connecting: what a real session still needs
+
+**A mid-session TURN adoption this host cannot do.** §2.18 pushes the session's relay
+credentials when metering starts — which is the host's own first `sdp`, so its peer connection
+already exists and has already gathered. libwebrtc lets the Mac adopt them with
+`setConfiguration`; webrtc-rs 0.11 does not have it at all (`set_configuration` is commented
+out in `peer_connection/mod.rs`, and it would only update a stored field anyway, since the
+gatherer is built with the connection). So:
+
+- The credentials are kept for the session and used by the *next* connection in it — a resume,
+  or a rebuilt peer — and dropped when the session ends, as §2.5 requires.
+- Meanwhile the media path relies on the **controller's** relay candidate. One side's relay is
+  enough for the ordinary NAT cases, including symmetric NAT on this side, because this host
+  sends to the relay's public address and the relay forwards.
+- It is **not** enough when UDP is blocked outbound on the Windows side, which is what TURN/TCP
+  from the host would cover. `RC_ICE_POLICY=relay` cannot help on a first attempt either: it
+  needs credentials at construction time.
+
+Fixing it properly means either a webrtc-rs version with `set_configuration` and a rebuildable
+gatherer, or holding the peer connection somewhere it can be handed out mutably. Neither is a
+protocol change.
+
+**Still unexercised, and needs a real Windows machine:** DPAPI (`CryptProtectData`), the
+user-only DACL (`SetNamedSecurityInfoW`), the `HKCU` `skipperdesk://` registration and the
+two-process hand-off through it, `MachineGuid` as the `hardwareId`, and `cmd /C start` opening
+the browser.
+
+**Still unexercised, and needs a real backend:** every HTTP call in `api.rs`. The whole account
+leg — challenge, token, refresh, entitlement, sign-out — is compile-checked and unit-tested on
+its pure parts (nonce shape, URL building, callback validation, response decoding) and has
+never spoken to rc-api.
+
+**`platform=windows` needs no change.** The production page reads the parameter, validates it
+against `/^[a-z][a-z0-9]{1,15}$/`, and defaults to `macos` only when it is absent — so
+`windows` is accepted today. The value the device record actually gets comes from the token
+request body, which also says `windows`. Two things worth knowing and not changed here: the
+page's copy is Mac-worded throughout ("That Mac is signed in to another account"), and
+`GET /v1/app/releases/latest` still allowlists `macos` only
+(`server/internal/apisrv/releases.go`), so a Windows updater cannot use the release feed until
+that slice gains `protocol.PlatformWindows`. Both are the owner's to deploy.
+
+**The consent prompt is a console prompt.** It reads `y`/`n` from stdin; a bare Enter is not an
+answer. That is the right shape for a console host but it is not a notification, so an owner
+who has minimised the window will not see it and the request will time out after 30 s. A tray
+icon or a toast is the real answer and is not built.
