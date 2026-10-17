@@ -7,6 +7,10 @@ control).
 > **PARKED (2026-09-16).** The user ran the bundle on a Windows PC and it kept crashing. It has never
 > been debugged on real Windows, and Windows is not the current goal. Everything below is the
 > state as of 2026-09-03. Resume only with a Windows machine to test on.
+>
+> **Partly superseded (2026-10-17).** Capture, input and the session lifecycle were reworked;
+> see `CAPTURE-INPUT-LIFECYCLE.md`, which is the later document where the two disagree. The
+> analysis below still stands as analysis.
 
 **Status (historical): in progress.** See §10 for the phase log. The design below is now the plan of
 record, not a survey; where building it has already contradicted the analysis, §10 says so.
