@@ -195,14 +195,29 @@ where
     pub async fn run(mut self, mut pump_rx: mpsc::Receiver<PumpEvent>) -> Result<(), String> {
         let mut shutdown_rx = spawn_shutdown_watch();
         let mut answers = crate::consent::spawn_console_reader();
+        // §4.3 step 1: losing the signalling socket is a *control-plane*
+        // outage. Media over an already-established WebRTC path is unaffected,
+        // so the peer connection, its event stream and the capture pump outlive
+        // any one connection attempt. Tearing them down here is how a session
+        // used to die of a moment's network flutter: the controller restarts
+        // ICE after its resume, and the host has to still be there to answer.
+        let (te_tx, mut te_rx) = mpsc::channel::<TransportEvent>(256);
+        let mut peer: Option<Arc<PeerSession>> = None;
         let mut backoff = Duration::from_millis(500);
         loop {
-            match self
-                .run_one_connection(&mut pump_rx, &mut shutdown_rx, &mut answers)
-                .await
-            {
+            let attempt = self
+                .run_one_connection(
+                    &mut pump_rx,
+                    &mut shutdown_rx,
+                    &mut answers,
+                    &mut peer,
+                    &te_tx,
+                    &mut te_rx,
+                )
+                .await;
+            match attempt {
                 Ok(ConnLoopExit::Shutdown) => {
-                    self.stop_capture().await;
+                    self.teardown(&mut peer).await;
                     return Ok(());
                 }
                 Ok(ConnLoopExit::Reconnect) | Err(_) => {
@@ -212,7 +227,7 @@ where
                     tokio::select! {
                         _ = tokio::time::sleep(backoff) => {}
                         _ = shutdown_rx.recv() => {
-                            self.stop_capture().await;
+                            self.teardown(&mut peer).await;
                             return Ok(());
                         }
                     }
@@ -227,13 +242,15 @@ where
         pump_rx: &mut mpsc::Receiver<PumpEvent>,
         shutdown_rx: &mut mpsc::Receiver<()>,
         answers: &mut mpsc::Receiver<ConsentAnswer>,
+        peer: &mut Option<Arc<PeerSession>>,
+        te_tx: &mpsc::Sender<TransportEvent>,
+        te_rx: &mut mpsc::Receiver<TransportEvent>,
     ) -> Result<ConnLoopExit, String> {
         let cfg = Config::new(&self.config.signaling_url);
         let (conn, mut pushes) = SignalConnection::connect(&cfg).await.map_err(|e| e.to_string())?;
         let conn = Arc::new(conn);
-        self.authenticate(&conn).await?;
-
-        let hello = self.hello(&conn).await?;
+        let registered = self.authenticate(&conn).await?;
+        let hello = self.hello(&conn, registered).await?;
         eprintln!(
             "rc-host: authenticated as {} — online and waiting for a controller",
             self.identity.device_id
@@ -243,9 +260,7 @@ where
         let actions = self.machine.signaling_authenticated(
             (!hello.active_session_id.is_empty()).then_some(hello.active_session_id.as_str()),
         );
-        let mut peer: Option<Arc<PeerSession>> = None;
-        let (te_tx, mut te_rx) = mpsc::channel::<TransportEvent>(256);
-        self.apply(&actions, &conn, &mut peer, &te_tx).await;
+        self.apply(&actions, &conn, peer, te_tx).await;
 
         let mut heartbeat = tokio::time::interval(Duration::from_secs(hello.heartbeat_sec.max(1) as u64));
         let mut ticker = tokio::time::interval(Duration::from_millis(500));
@@ -262,26 +277,26 @@ where
                     // state machine's: an exchange that stalls must end the
                     // session rather than sit there holding the 1:1 slot.
                     if self.exchange.as_ref().is_some_and(|e| e.timed_out(now)) {
-                        self.end_exchange(crate::pake::ExchangeError::TimedOut, &conn, &mut peer, &te_tx)
+                        self.end_exchange(crate::pake::ExchangeError::TimedOut, &conn, peer, te_tx)
                             .await;
                     }
                     let actions = self.machine.tick(now);
-                    self.apply(&actions, &conn, &mut peer, &te_tx).await;
+                    self.apply(&actions, &conn, peer, te_tx).await;
                 }
                 push = pushes.0.recv() => {
                     let Some(push) = push else {
                         // Socket died: tell the machine, then reconnect.
                         let actions = self.machine.signaling_lost();
-                        self.apply(&actions, &conn, &mut peer, &te_tx).await;
+                        self.apply(&actions, &conn, peer, te_tx).await;
                         break ConnLoopExit::Reconnect;
                     };
-                    if let Some(exit) = self.on_push(push, &conn, &mut peer, &te_tx).await {
+                    if let Some(exit) = self.on_push(push, &conn, peer, te_tx).await {
                         break exit;
                     }
                 }
                 answer = answers.recv() => {
                     match answer {
-                        Some(answer) => self.on_consent_answer(answer, &conn, &mut peer, &te_tx).await,
+                        Some(answer) => self.on_consent_answer(answer, &conn, peer, te_tx).await,
                         // The console closed. A host that cannot be asked must
                         // not fall through to answering for its owner.
                         None => {}
@@ -289,12 +304,12 @@ where
                 }
                 event = te_rx.recv() => {
                     if let Some(event) = event {
-                        self.on_transport(event, &conn, &mut peer, &te_tx).await;
+                        self.on_transport(event, &conn, peer, te_tx).await;
                     }
                 }
                 event = pump_rx.recv() => {
                     if let Some(event) = event {
-                        self.on_pump_event(event, &peer).await;
+                        self.on_pump_event(event, peer).await;
                     }
                 }
                 _ = shutdown_rx.recv() => {
@@ -304,10 +319,8 @@ where
             }
         };
 
-        // A connection that ends takes its session's capture with it. Leaving
-        // the pump running would hold the capture device against the next
-        // session and keep encoding for a peer that is gone.
-        self.teardown(&mut peer).await;
+        // Nothing is torn down here: see §4.3 in `run`. A session that has
+        // genuinely ended has already been cleared by whatever ended it.
         Ok(exit)
     }
 
@@ -315,11 +328,12 @@ where
     /// `hello` says `unknown_device`. A stored certificate is what makes the
     /// second case keep this PC's Device ID; without one the registry mints a
     /// fresh id, which the host adopts and records rather than asking anyone.
-    async fn authenticate(&mut self, conn: &Arc<SignalConnection>) -> Result<(), String> {
+    /// Answers whether this connection has already spent its one `register`.
+    async fn authenticate(&mut self, conn: &Arc<SignalConnection>) -> Result<bool, String> {
         if !self.identity.device_id.is_empty() && self.identity.server_registered {
-            return Ok(());
+            return Ok(false);
         }
-        self.register(conn).await
+        self.register(conn).await.map(|()| true)
     }
 
     async fn register(&mut self, conn: &Arc<SignalConnection>) -> Result<(), String> {
@@ -358,13 +372,22 @@ where
         Ok(())
     }
 
-    async fn hello(&mut self, conn: &Arc<SignalConnection>) -> Result<sig::HelloOk, String> {
+    /// §2.2 "Re-registering": `unknown_device` means the registry no longer
+    /// knows this key, so the stored certificate is presented once to reclaim
+    /// the id. `register` is one per connection, so a connection that already
+    /// spent its one gives up and lets the backoff loop reconnect rather than
+    /// earning a `bad_request`.
+    async fn hello(
+        &mut self,
+        conn: &Arc<SignalConnection>,
+        already_registered: bool,
+    ) -> Result<sig::HelloOk, String> {
         let first = conn
             .hello(&self.identity.device_id, &self.key, role::HOST)
             .await;
         let hello = match first {
             Ok(hello) => hello,
-            Err(e) if e.code() == Some(err::UNKNOWN_DEVICE) => {
+            Err(e) if e.code() == Some(err::UNKNOWN_DEVICE) && !already_registered => {
                 eprintln!("rc-host: the backend does not know this device; re-registering");
                 self.register(conn).await?;
                 conn.hello(&self.identity.device_id, &self.key, role::HOST)
