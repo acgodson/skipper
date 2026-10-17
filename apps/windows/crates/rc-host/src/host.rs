@@ -295,11 +295,11 @@ where
                     }
                 }
                 answer = answers.recv() => {
-                    match answer {
-                        Some(answer) => self.on_consent_answer(answer, &conn, peer, te_tx).await,
-                        // The console closed. A host that cannot be asked must
-                        // not fall through to answering for its owner.
-                        None => {}
+                    // `None` is the console closing. A host that can no longer
+                    // be asked must not fall through to answering for its
+                    // owner, so there is nothing to do with it.
+                    if let Some(answer) = answer {
+                        self.on_consent_answer(answer, &conn, peer, te_tx).await;
                     }
                 }
                 event = te_rx.recv() => {

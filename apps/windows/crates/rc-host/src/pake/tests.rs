@@ -85,8 +85,7 @@ fn exchange(
         .expect("the host answers step 1 with step 2");
     let step3 = peers
         .controller
-        .step(Some(&step2))
-        .map_err(PakeError::from)?
+        .step(Some(&step2))?
         .expect("the controller answers step 2 with step 3");
     assert!(peers.host.step(guesses, &step3, now_ms)?.is_none());
     assert!(peers.host.is_complete());

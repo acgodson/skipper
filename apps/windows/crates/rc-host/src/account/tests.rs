@@ -199,15 +199,14 @@ fn an_entitlement_from_a_newer_backend_is_read_conservatively() {
     );
     assert_eq!(unknown.max_quality(), "auto");
 
-    assert_eq!(decode(r#"{"status":"unlinked"}"#).may_connect(), false);
-    assert_eq!(decode(r#"{"status":"exhausted"}"#).may_connect(), false);
+    assert!(!decode(r#"{"status":"unlinked"}"#).may_connect());
+    assert!(!decode(r#"{"status":"exhausted"}"#).may_connect());
     assert_eq!(
         decode(r#"{"status":"active","limits":{"maxQuality":"sharp"}}"#).max_quality(),
         "sharp"
     );
-    assert_eq!(
+    assert!(
         decode(r#"{"status":"active","aFieldFromTheFuture":7}"#).may_connect(),
-        true,
         "unknown response fields are ignored"
     );
 }
