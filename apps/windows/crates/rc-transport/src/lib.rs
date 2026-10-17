@@ -90,6 +90,9 @@ pub enum TransportEvent {
     Hi(Envelope),
     /// Both channels are open; the session is usable for control.
     ChannelsReady,
+    /// The peer's decoder asked for a keyframe (RTCP PLI, or FIR). Until one
+    /// arrives nothing it receives will decode, so this is not advisory.
+    KeyframeRequested,
 }
 
 pub struct PeerConfig {
@@ -155,9 +158,29 @@ impl PeerSession {
             "screen".to_owned(),
             "rc-media".to_owned(),
         ));
-        pc.add_track(video.clone() as Arc<_>).await?;
+        let sender = pc.add_track(video.clone() as Arc<_>).await?;
 
         let (tx, rx) = mpsc::channel::<TransportEvent>(256);
+
+        // Nothing read this sender's RTCP before, so a PLI was never seen and a
+        // decoder that lost reference frames stayed broken for the rest of the
+        // session. Reading it is also what drives the interceptors' own
+        // bookkeeping; `read_rtcp` returning an error means the sender closed.
+        {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                while let Ok((packets, _)) = sender.read_rtcp().await {
+                    let asked = packets.iter().any(|p| {
+                        let any = p.as_any();
+                        any.downcast_ref::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>().is_some()
+                            || any.downcast_ref::<webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest>().is_some()
+                    });
+                    if asked && tx.send(TransportEvent::KeyframeRequested).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
         let ctrl_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
 
         // ICE connection state -> owner.

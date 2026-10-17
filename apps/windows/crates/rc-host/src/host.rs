@@ -4,10 +4,18 @@
 //! Wiring, in one place so the data flow is legible:
 //!   signaling pushes  ─▶ SessionStateMachine ─▶ SessionActions ─▶ effects
 //!   transport events  ─▶ SessionStateMachine (ICE) + input injection
-//!   frame pump        ─▶ encoder ─▶ transport video track
+//!   capture backend   ─▶ CapturePump ─▶ encoder ─▶ transport video track
+//!   pump events       ─▶ input suspension + display_info
 //!
 //! The state machine owns every decision about resume/flutter/teardown; this
 //! file only performs the effects it returns and relays SDP/ICE.
+//!
+//! Capture is owned here as a *backend*, not as a single source taken once: a
+//! session takes a source, hands it back when it ends, and the next session
+//! reuses it or opens a fresh one. When no source can be opened the host still
+//! comes online — pairing works, the failure is visible — but remote input is
+//! suspended, because a click aimed at a screen nobody can see is the one
+//! failure that can damage the host's machine.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,9 +30,15 @@ use rc_signal_client::{Config, Push, SignalConnection};
 use rc_transport::{IceState, PeerConfig, PeerSession, TransportEvent};
 use tokio::sync::mpsc;
 
-use crate::inject::{InputDispatcher, Injector};
+use crate::inject::{InputDispatcher, InputState, Injector};
 use crate::keepawake::KeepAwake;
-use crate::media::{FrameSource, H264Encoder};
+use crate::media::{CaptureBackend, CaptureStatus, Pacing, SoftwareEncoder, VideoEncoder};
+use crate::pump::{CapturePump, EncoderFactory, PumpConfig, PumpEvent, VideoSink};
+
+/// How long teardown waits for the blocking pump to notice the stop flag. Two
+/// frame budgets plus slack: the loop checks the flag every few milliseconds and
+/// the longest single blocking call in it is one `AcquireNextFrame` timeout.
+const PUMP_STOP_GRACE: Duration = Duration::from_secs(2);
 
 pub struct HostConfig {
     pub server_url: String,
@@ -34,6 +48,8 @@ pub struct HostConfig {
     pub force_relay: bool,
     pub bitrate_bps: u32,
     pub fps: f32,
+    /// Longest edge the encoder is allowed. See [`Pacing`].
+    pub max_dimension: u32,
 }
 
 fn ice_from_transport(s: IceState) -> IceLinkState {
@@ -55,30 +71,52 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// The running host. Generic over the [`Injector`] and [`FrameSource`] so the
-/// interop harness can drive the real runtime with a recording injector and a
-/// synthetic screen, while Windows plugs in `SendInput` and Desktop Duplication.
-pub struct Host<I: Injector + Send + 'static, F: FrameSource + 'static> {
+/// Feeds encoded samples to the peer's video track from the blocking pump.
+struct PeerVideoSink {
+    peer: Arc<PeerSession>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl VideoSink for PeerVideoSink {
+    fn write(&self, sample: bytes::Bytes, duration: Duration) -> Result<(), String> {
+        self.runtime
+            .block_on(self.peer.write_video_sample(sample, duration))
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// The running host. Generic over the [`Injector`] and the [`CaptureBackend`] so
+/// the interop harness can drive the real runtime with a recording injector and
+/// a synthetic screen, while Windows plugs in `SendInput` and Desktop
+/// Duplication.
+pub struct Host<I: Injector + Send + 'static, B: CaptureBackend> {
     config: HostConfig,
     identity: IdentityRecord,
     key: DeviceKey,
     machine: SessionStateMachine,
     dispatcher: InputDispatcher,
     injector: I,
-    frame_source: Option<F>,
+    backend: B,
+    frame_source: Option<B::Source>,
+    pump: Option<CapturePump<B::Source>>,
+    pump_tx: mpsc::Sender<PumpEvent>,
+    encoders: EncoderFactory,
     identity_path: Option<std::path::PathBuf>,
     _keep_awake: KeepAwake,
 }
 
-impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
+impl<I: Injector + Send, B: CaptureBackend> Host<I, B>
+where
+    B::Source: Send,
+{
     pub fn new(
         config: HostConfig,
         identity: IdentityRecord,
         key: DeviceKey,
         injector: I,
-        frame_source: F,
-    ) -> Self {
-        Self::with_identity_path(config, identity, key, injector, frame_source, None)
+        backend: B,
+    ) -> (Self, mpsc::Receiver<PumpEvent>) {
+        Self::with_identity_path(config, identity, key, injector, backend, None)
     }
 
     pub fn with_identity_path(
@@ -86,31 +124,42 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
         identity: IdentityRecord,
         key: DeviceKey,
         injector: I,
-        frame_source: F,
+        backend: B,
         identity_path: Option<std::path::PathBuf>,
-    ) -> Self {
+    ) -> (Self, mpsc::Receiver<PumpEvent>) {
         let keep = KeepAwake::enabled(config.unattended);
-        Self {
+        let (pump_tx, pump_rx) = mpsc::channel::<PumpEvent>(32);
+        let host = Self {
             machine: SessionStateMachine::new(Role::Host),
             dispatcher: InputDispatcher::default(),
             injector,
-            frame_source: Some(frame_source),
+            backend,
+            frame_source: None,
+            pump: None,
+            pump_tx,
+            encoders: Arc::new(|bitrate, fps| {
+                SoftwareEncoder::new(bitrate, fps).map(|e| Box::new(e) as Box<dyn VideoEncoder>)
+            }),
             identity_path,
             config,
             identity,
             key,
             _keep_awake: keep,
-        }
+        };
+        (host, pump_rx)
     }
 
     /// Connect, authenticate, and run until the process is told to stop. The
     /// backoff/reconnect loop lives here; per PROTOCOL.md §4 the state machine
     /// decides what each reconnect *means*.
-    pub async fn run(mut self) -> Result<(), String> {
+    pub async fn run(mut self, mut pump_rx: mpsc::Receiver<PumpEvent>) -> Result<(), String> {
         let mut backoff = Duration::from_millis(500);
         loop {
-            match self.run_one_connection().await {
-                Ok(ConnLoopExit::Shutdown) => return Ok(()),
+            match self.run_one_connection(&mut pump_rx).await {
+                Ok(ConnLoopExit::Shutdown) => {
+                    self.stop_capture(&mut None).await;
+                    return Ok(());
+                }
                 Ok(ConnLoopExit::Reconnect) | Err(_) => {
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_secs(15));
@@ -119,7 +168,10 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
         }
     }
 
-    async fn run_one_connection(&mut self) -> Result<ConnLoopExit, String> {
+    async fn run_one_connection(
+        &mut self,
+        pump_rx: &mut mpsc::Receiver<PumpEvent>,
+    ) -> Result<ConnLoopExit, String> {
         let cfg = Config::new(&self.config.server_url, self.config.cert_pin.as_deref());
         let (conn, mut pushes) = SignalConnection::connect(&cfg).await.map_err(|e| e.to_string())?;
         let conn = Arc::new(conn);
@@ -155,11 +207,10 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
         let ice_servers = hello.ice_servers.clone();
         let mut peer: Option<Arc<PeerSession>> = None;
         let (te_tx, mut te_rx) = mpsc::channel::<TransportEvent>(256);
-        let mut frame_pump: Option<tokio::task::JoinHandle<()>> = None;
         let mut heartbeat = tokio::time::interval(Duration::from_secs(hello.heartbeat_sec.max(1) as u64));
         let mut ticker = tokio::time::interval(Duration::from_millis(500));
 
-        loop {
+        let exit = loop {
             tokio::select! {
                 _ = heartbeat.tick() => {
                     let _: Result<sig::HeartbeatOk, _> =
@@ -174,22 +225,30 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
                         // Socket died: tell the machine, then reconnect.
                         let actions = self.machine.signaling_lost();
                         self.apply(&actions, &conn, &peer).await;
-                        return Ok(ConnLoopExit::Reconnect);
+                        break ConnLoopExit::Reconnect;
                     };
-                    if let Some(exit) = self
-                        .on_push(push, &conn, &mut peer, &ice_servers, &te_tx, &mut frame_pump)
-                        .await
-                    {
-                        return Ok(exit);
+                    if let Some(exit) = self.on_push(push, &conn, &mut peer, &ice_servers, &te_tx).await {
+                        break exit;
                     }
                 }
                 event = te_rx.recv() => {
                     if let Some(event) = event {
-                        self.on_transport(event, &conn, &peer).await;
+                        self.on_transport(event, &conn, &mut peer).await;
+                    }
+                }
+                event = pump_rx.recv() => {
+                    if let Some(event) = event {
+                        self.on_pump_event(event, &peer).await;
                     }
                 }
             }
-        }
+        };
+
+        // A connection that ends takes its session's capture with it. Leaving
+        // the pump running would hold the capture device against the next
+        // session and keep encoding for a peer that is gone.
+        self.teardown(&mut peer).await;
+        Ok(exit)
     }
 
     async fn on_push(
@@ -199,7 +258,6 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
         peer: &mut Option<Arc<PeerSession>>,
         ice_servers: &[sig::IceServer],
         te_tx: &mpsc::Sender<TransportEvent>,
-        frame_pump: &mut Option<tokio::task::JoinHandle<()>>,
     ) -> Option<ConnLoopExit> {
         match push {
             Push::SessionStart(grant) => {
@@ -212,7 +270,11 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
                     },
                     now_ms(),
                 );
-                // Stand up a fresh peer for this session (host answers).
+                // A previous session's peer and pump must be gone before a new
+                // one starts; this is what makes a second and third session
+                // work rather than silently reuse a dead track.
+                self.teardown(peer).await;
+
                 let (new_peer, mut events) = PeerSession::new(PeerConfig {
                     ice_servers: ice_servers.to_vec(),
                     force_relay: self.config.force_relay,
@@ -229,10 +291,7 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
                         }
                     }
                 });
-                // Start pushing frames.
-                if let Some(src) = self.frame_source.take() {
-                    *frame_pump = Some(self.spawn_frame_pump(new_peer.clone(), src));
-                }
+                self.start_capture(new_peer).await;
                 self.apply(&actions, conn, peer).await;
             }
             Push::Sdp(sdp) => {
@@ -266,7 +325,7 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
             }
             Push::Bye(bye) => {
                 let actions = self.machine.close_locally(&bye.reason);
-                self.teardown(peer, frame_pump).await;
+                self.teardown(peer).await;
                 self.apply(&actions, conn, peer).await;
             }
             Push::ServerError(e) if e.code == rc_proto::consts::err::DISPLACED => {
@@ -283,11 +342,17 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
         &mut self,
         event: TransportEvent,
         conn: &Arc<SignalConnection>,
-        peer: &Option<Arc<PeerSession>>,
+        peer: &mut Option<Arc<PeerSession>>,
     ) {
         match event {
             TransportEvent::IceState(s) => {
+                let closed = matches!(s, IceState::Closed | IceState::Failed);
                 let actions = self.machine.ice_state_changed(ice_from_transport(s), now_ms());
+                if closed {
+                    // The track is gone. Stop capturing for it rather than
+                    // encoding into a closed peer until something else notices.
+                    self.stop_capture(peer).await;
+                }
                 self.apply(&actions, conn, peer).await;
             }
             TransportEvent::LocalCandidate(init) => {
@@ -311,15 +376,85 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
             }
             TransportEvent::ChannelsReady => {
                 // Announce our display so the controller sizes its window and
-                // labels its gesture palette in Windows terms.
-                if let Some(p) = peer {
-                    if let Some(src_dims) = self.dispatcher.display_geometry() {
-                        let _ = p.send_ctrl(ctrl_msg::DISPLAY_INFO, &src_dims).await;
-                    }
+                // labels its gesture palette in Windows terms, and tell it
+                // straight away if it must not click.
+                self.publish_display(peer).await;
+                self.publish_cursor(peer).await;
+            }
+            TransportEvent::KeyframeRequested => {
+                if let Some(pump) = &self.pump {
+                    pump.request_keyframe();
                 }
             }
             TransportEvent::Ctrl(env) => self.on_ctrl(env),
             TransportEvent::Hi(env) => self.on_hi(env),
+        }
+    }
+
+    /// Capture state changes drive two things: whether remote input is applied,
+    /// and what the controller is told about the screen.
+    async fn on_pump_event(&mut self, event: PumpEvent, peer: &Option<Arc<PeerSession>>) {
+        match event {
+            PumpEvent::Status(CaptureStatus::Live) => {
+                self.dispatcher.resume();
+            }
+            PumpEvent::Status(CaptureStatus::DesktopUnavailable) => {
+                eprintln!("rc-host: the desktop is locked or protected — remote input suspended");
+                self.dispatcher.suspend(InputState::DesktopUnavailable, &mut self.injector);
+            }
+            PumpEvent::Status(CaptureStatus::Unavailable(detail)) => {
+                eprintln!("rc-host: capture unavailable ({detail}) — remote input suspended");
+                self.dispatcher.suspend(InputState::NoPicture, &mut self.injector);
+            }
+            PumpEvent::Geometry(geometry) => {
+                self.dispatcher.set_geometry(geometry, &mut self.injector);
+                self.publish_display(peer).await;
+            }
+            PumpEvent::SteppedDown { fps, max_dimension, measured_encode } => {
+                let measured = measured_encode
+                    .map(|d| format!("{:.1} ms/frame", d.as_secs_f64() * 1000.0))
+                    .unwrap_or_else(|| "unmeasured".into());
+                eprintln!(
+                    "rc-host: encode cost {measured} did not fit the budget — now {fps} fps, \
+                     longest edge {max_dimension}"
+                );
+            }
+        }
+        self.publish_cursor(peer).await;
+        self.log_injection_failure();
+    }
+
+    async fn publish_display(&self, peer: &Option<Arc<PeerSession>>) {
+        if let (Some(p), Some(info)) = (peer, self.dispatcher.display_geometry()) {
+            let _ = p.send_ctrl(ctrl_msg::DISPLAY_INFO, &info).await;
+        }
+    }
+
+    /// The only in-contract way to tell the controller "do not click here".
+    ///
+    /// A suspended host keeps whatever frame the controller last decoded, and
+    /// nothing in §5 says "the picture is stale". `cursor_shape` does say the
+    /// pointer is `not_allowed`, the controller already draws it locally, and it
+    /// is purely additive — so the user sees that the screen is not live at the
+    /// one place they are about to click. Making the stale frame itself
+    /// unmistakable needs a controller-side change.
+    async fn publish_cursor(&self, peer: &Option<Arc<PeerSession>>) {
+        let Some(p) = peer else { return };
+        let shape = match self.dispatcher.state() {
+            InputState::Running => ctrlp::CursorShapeName::Arrow,
+            _ => ctrlp::CursorShapeName::NotAllowed,
+        };
+        let _ = p
+            .send_ctrl(
+                ctrl_msg::CURSOR_SHAPE,
+                &ctrlp::CursorShape { shape: shape.as_wire().to_string() },
+            )
+            .await;
+    }
+
+    fn log_injection_failure(&mut self) {
+        if let Some(err) = self.dispatcher.take_last_error() {
+            eprintln!("rc-host: input not applied — {}", err.detail);
         }
     }
 
@@ -359,6 +494,7 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
             // clipboard, quality, ping handled elsewhere / later.
             _ => {}
         }
+        self.log_injection_failure();
     }
 
     fn on_hi(&mut self, env: rc_proto::envelope::Envelope) {
@@ -369,42 +505,57 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
         }
     }
 
-    fn spawn_frame_pump(&self, peer: Arc<PeerSession>, mut src: F) -> tokio::task::JoinHandle<()>
-    where
-        F: Send + 'static,
-    {
-        let (bitrate, fps) = (self.config.bitrate_bps, self.config.fps);
-        tokio::task::spawn_blocking(move || {
-            let rt = tokio::runtime::Handle::current();
-            let mut encoder = match H264Encoder::new(bitrate, fps) {
-                Ok(e) => e,
-                Err(_) => return,
-            };
-            let frame_time = Duration::from_secs_f32(1.0 / fps.max(1.0));
-            loop {
-                let Some(frame) = src.next_frame() else {
-                    std::thread::sleep(frame_time);
-                    continue;
-                };
-                if let Ok(sample) = encoder.encode(&frame) {
-                    if !sample.is_empty() {
-                        let peer = peer.clone();
-                        let _ = rt.block_on(peer.write_video_sample(sample, frame_time));
-                    }
+    /// Start capturing for one session: reuse the source the last session gave
+    /// back, or open a new one. A failure here is reported as *unavailable* and
+    /// suspends input; it never substitutes a picture that is not the screen.
+    async fn start_capture(&mut self, peer: Arc<PeerSession>) {
+        let source = match self.frame_source.take() {
+            Some(source) => Some(source),
+            None => match self.backend.open() {
+                Ok(source) => {
+                    eprintln!("rc-host: capture started ({})", self.backend.describe());
+                    Some(source)
                 }
-                std::thread::sleep(frame_time);
-            }
-        })
+                Err(e) => {
+                    eprintln!("rc-host: capture unavailable ({e}) — remote input suspended");
+                    None
+                }
+            },
+        };
+        let Some(source) = source else {
+            self.dispatcher.suspend(InputState::NoPicture, &mut self.injector);
+            self.publish_cursor(&Some(peer)).await;
+            return;
+        };
+
+        let sink = Arc::new(PeerVideoSink { peer, runtime: tokio::runtime::Handle::current() });
+        self.pump = Some(CapturePump::start(
+            source,
+            sink,
+            self.pump_tx.clone(),
+            PumpConfig {
+                bitrate_bps: self.config.bitrate_bps,
+                pacing: Pacing::new(self.config.fps, self.config.max_dimension),
+            },
+            self.encoders.clone(),
+        ));
     }
 
-    async fn teardown(
-        &mut self,
-        peer: &mut Option<Arc<PeerSession>>,
-        frame_pump: &mut Option<tokio::task::JoinHandle<()>>,
-    ) {
-        if let Some(p) = frame_pump.take() {
-            p.abort();
+    /// Stop the pump and take the source back, so the next session has one.
+    async fn stop_capture(&mut self, peer: &mut Option<Arc<PeerSession>>) {
+        if let Some(pump) = self.pump.take() {
+            self.frame_source = pump.stop(PUMP_STOP_GRACE).await;
+            if self.frame_source.is_none() {
+                eprintln!("rc-host: capture did not stop in time; a fresh source will be opened");
+            }
         }
+        self.dispatcher.suspend(InputState::NoPicture, &mut self.injector);
+        self.log_injection_failure();
+        let _ = peer;
+    }
+
+    async fn teardown(&mut self, peer: &mut Option<Arc<PeerSession>>) {
+        self.stop_capture(peer).await;
         if let Some(p) = peer.take() {
             p.close().await;
         }
@@ -468,8 +619,9 @@ impl<I: Injector + Send, F: FrameSource + Send> Host<I, F> {
                 }
                 SessionAction::SendInputReset => {
                     self.dispatcher.input_reset(&mut self.injector);
+                    self.log_injection_failure();
                     if let Some(p) = peer {
-                        let _ = p.send_ctrl(ctrl_msg::INPUT_RESET, &ctrlp::DisplayInfo::default()).await;
+                        let _ = p.send_ctrl(ctrl_msg::INPUT_RESET, &serde_json::json!({})).await;
                     }
                 }
                 // Peer lifecycle and prompts are handled by the host UI /
