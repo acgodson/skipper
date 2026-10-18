@@ -60,6 +60,14 @@ One limit worth knowing: SkipperDesk runs as you, not as an administrator, so it
 click inside windows that Windows itself runs with administrator rights. Ordinary apps -
 your browser, File Explorer, Office, Notepad - all work normally.
 
+Windows will ask about the network
+----------------------------------
+The first time you start sharing, Windows shows a box saying it has blocked some
+features of the app. Choose "Allow access", and leave "Private networks" ticked.
+
+SkipperDesk needs this to carry the picture to the other computer. If you choose
+Cancel, sharing will start but the other person will never see your screen.
+
 Removing it
 -----------
 Nothing is installed. Close the window and delete the folder. That is all.
