@@ -251,6 +251,28 @@ func (h *Hub) closeSessionLocked(s *Session, reason string) {
 	h.log.Info("session closed", "sessionId", s.ID, "reason", reason, "metered", s.metered)
 }
 
+// A controller whose process died cannot resume: its session token lived in memory. Its own
+// session, with its side detached, would otherwise hold the host's slot as busy until the token
+// TTL ran out (§4.2, up to ten minutes). A fresh connect_req from that same controller for that
+// same host replaces the dead session instead (§2.9 step 6). A controller that is still attached
+// is never displaced this way; one socket per device is enforced at hello.
+func (h *Hub) supersedeOwnDetachedSessionLocked(c *Client, hostID string) {
+	sid, ok := h.devSess[c.deviceID]
+	if !ok {
+		return
+	}
+	s := h.sessions[sid]
+	if s == nil || s.State == protocol.SessionClosed {
+		return
+	}
+	if s.Ctrl.deviceID != c.deviceID || s.Ctrl.conn != nil || s.Host.deviceID != hostID {
+		return
+	}
+	h.log.Info("session replaced by a fresh connect_req from its own detached controller",
+		"sessionId", s.ID, "controller", c.deviceID, "host", hostID)
+	h.closeSessionLocked(s, protocol.ByeReplaced)
+}
+
 func (h *Hub) closeSessionsForDeviceLocked(deviceID, reason string) int {
 	closed := 0
 	for _, s := range h.sessions {

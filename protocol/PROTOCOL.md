@@ -448,7 +448,11 @@ offline edge is reported within `offlineAfterSec + 5 s`. A socket close reports 
 5. The target exists and is connected **as a host**. Otherwise: `unknown_device` / `offline` (a
    device connected as `controller` is `offline` as a target and never receives
    `session_start`).
-6. The host has no session in any state but `closed`. Otherwise: `error{busy}`.
+6. The host has no session in any state but `closed`. Otherwise: `error{busy}` — with one
+   exception: if that session's **controller is this same device and is detached** (its socket
+   is gone, as after a crash or force-quit, so it cannot `resume`: the token lived in memory),
+   the server closes that session with `bye{replaced}` to the host and proceeds. A controller
+   that is still attached is never displaced this way.
 7. The **host's** entitlement allows a session — `status` is `trial` or `active` and the account's
    `maxActivePairs` is not already in use (API.md §4). Otherwise:
    `error{entitlement}` with a `reason` from §7.
@@ -1183,7 +1187,9 @@ does, and while in it the host applies no remote `sdp` or `ice` (§2.17 Consent 
 - A client **must not** send `connect_req` for a session it believes is alive. Doing so is how
   you end up with `busy` against your own orphaned session.
 - If a controller does get `busy` and believes the session is its own, the correct recovery is
-  `resume`, not retrying `connect_req`.
+  `resume`, not retrying `connect_req`. A controller that has *lost* the token (its process was
+  restarted) simply sends `connect_req`: the server recognises its own detached session and
+  replaces it (§2.9 step 6).
 - The host frees its 1:1 slot only on `closed`. `half_open` and `orphaned` still hold the slot.
 - Both sides send `input_reset` on the `ctrl` channel after every resume and after every
   detected disconnect, so no modifier or mouse button is left logically held down.

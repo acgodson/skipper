@@ -449,6 +449,7 @@ func (h *Hub) handleConnectReq(c *Client, e protocol.Envelope) {
 		h.mu.Unlock()
 		return
 	}
+	h.supersedeOwnDetachedSessionLocked(c, p.DeviceID)
 	if h.hasLiveSessionLocked(p.DeviceID) {
 		h.sendErrLocked(c, e.ID, protocol.ErrBusy, "host already has an active session", 0)
 		h.mu.Unlock()

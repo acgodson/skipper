@@ -312,6 +312,69 @@ func (hn *harness) newPeerAt(ip string) *peer {
 	return p
 }
 
+// The same device on a brand-new socket, as a process that was killed and started again: same
+// key and id, nothing in memory.
+func (hn *harness) restarted(old *peer) *peer {
+	hn.t.Helper()
+	p := &peer{t: hn.t, h: hn.hub, ip: old.ip, priv: old.priv, pubB64: old.pubB64,
+		deviceID: old.deviceID, idCert: old.idCert}
+	p.c = hn.hub.AddClient(p.ip, p.recv, func(code int, msg string) {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.closed, p.closeMsg = true, msg
+	})
+	return p
+}
+
+func TestARestartedControllerReplacesItsOwnDetachedSession(t *testing.T) {
+	hn := newHarness(t)
+	host, ctrl := hn.pair(t)
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
+	first := unmarshal[protocol.ConnectOK](t, ctrl.last(protocol.TypeConnectOK))
+
+	hn.hub.RemoveClient(ctrl.c)
+	if got := hn.hub.SessionState(first.SessionID); got != protocol.SessionHalfOpen {
+		t.Fatalf("session state after the controller died = %q, want half_open", got)
+	}
+
+	again := hn.restarted(ctrl)
+	again.hello(protocol.RoleController)
+	host.reset()
+	again.reset()
+	again.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
+
+	second := unmarshal[protocol.ConnectOK](t, again.last(protocol.TypeConnectOK))
+	if second.SessionID == first.SessionID {
+		t.Fatal("the dead session was handed back instead of a fresh one")
+	}
+	if got := hn.hub.SessionState(first.SessionID); got != "" && got != protocol.SessionClosed {
+		t.Fatalf("dead session state = %q, want closed and gone", got)
+	}
+	bye := unmarshal[protocol.Bye](t, host.last(protocol.TypeBye))
+	if bye.SessionID != first.SessionID || bye.Reason != protocol.ByeReplaced {
+		t.Fatalf("host bye = %+v, want %s for the dead session", bye, protocol.ByeReplaced)
+	}
+	if !host.has(protocol.TypeSessionStart) {
+		t.Fatal("host never received session_start for the fresh session")
+	}
+}
+
+func TestAnAttachedControllerIsNotDisplacedByConnectReq(t *testing.T) {
+	hn := newHarness(t)
+	host, ctrl := hn.pair(t)
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
+	first := unmarshal[protocol.ConnectOK](t, ctrl.last(protocol.TypeConnectOK))
+
+	ctrl.reset()
+	ctrl.send(protocol.TypeConnectReq, protocol.ConnectReq{DeviceID: host.deviceID})
+	if got := ctrl.lastErr().Code; got != protocol.ErrBusy {
+		t.Fatalf("a live controller re-sending connect_req got %q, want busy", got)
+	}
+	if got := hn.hub.SessionState(first.SessionID); got != protocol.SessionOpen {
+		t.Fatalf("live session state = %q, want open", got)
+	}
+}
+
 func (hn *harness) reconnect(p *peer) {
 	hn.t.Helper()
 	hn.hub.RemoveClient(p.c)
