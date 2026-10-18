@@ -125,9 +125,12 @@ frame replaces one the encoder has not reached, so a slow encoder drops frames r
 queueing them. A frame openh264's rate control skips is offered again until it goes out or a
 newer one replaces it, so the screen's last state is never lost to a skip. RTP timestamps
 follow capture time (`RtpClock`), not a fixed per-frame duration. `RC_MEDIA_STATS=1` logs, each
-second: frames sent, skipped and dropped, encode time, and frame age at encode and at send.
+second: which encoder is live, frames sent, skipped and dropped, encode time, and frame age at
+encode and at send.
 
-**Encode envelope.** openh264 configured for screen content with bitrate rate control. When
+**Encode envelope.** Media Foundation hardware encode where the PC has it (WINDOWS-HOST.md,
+*Media Foundation hardware encode*), otherwise openh264 configured for screen content with
+bitrate rate control; `RC_ENCODER=software` forces openh264. When
 the mean encode time over 30 frames exceeds the 33 ms budget, the encode size steps down one
 ladder rung (sharp → auto → smooth size, bitrate unchanged); it steps back up after three
 windows in which the measured cost scaled to the rung above would fit 80% of the budget.

@@ -35,7 +35,10 @@ use tokio::sync::mpsc;
 use crate::consent::{ConsentAnswer, ConsentPrompt};
 use crate::inject::{InputDispatcher, InputState, Injector};
 use crate::keepawake::{KeepAwake, StayAwake};
-use crate::media::{CaptureBackend, CaptureStatus, SoftwareEncoder, VideoEncoder};
+use crate::media::{
+    hardware_encoder, hardware_or_software, software_encoder, CaptureBackend, CaptureStatus,
+    EncoderRequest, HAS_HARDWARE_ENCODER,
+};
 use crate::pake::{GuessStore, HostExchange};
 use crate::pump::{CapturePump, EncoderFactory, PumpConfig, PumpEvent, VideoSink};
 use crate::quality::QualityCeiling;
@@ -62,6 +65,9 @@ pub struct HostConfig {
     pub quality_ceiling: QualityCeiling,
     /// The diagnostic `RC_MEDIA_STATS` line: encode time, skips and drops.
     pub media_stats: bool,
+    /// The diagnostic `RC_ENCODER=software`: openh264 even where a hardware
+    /// encoder is available.
+    pub software_encoder: bool,
 }
 
 /// §2.17 Consent 3: while the owner is being asked the host has no peer
@@ -86,6 +92,16 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Media Foundation hardware encode first where the build has it, openh264
+/// when it is unavailable, forced off, or has already failed this session.
+fn platform_encoders(software_only: bool) -> EncoderFactory {
+    let hardware_allowed = HAS_HARDWARE_ENCODER && !software_only;
+    Arc::new(move |request: EncoderRequest| {
+        let request = EncoderRequest { hardware: request.hardware && hardware_allowed, ..request };
+        hardware_or_software(request, hardware_encoder, software_encoder)
+    })
 }
 
 /// Feeds encoded samples to the peer's video track from the blocking pump.
@@ -179,9 +195,7 @@ where
             frame_source: None,
             pump: None,
             pump_tx,
-            encoders: Arc::new(|bitrate, fps| {
-                SoftwareEncoder::new(bitrate, fps).map(|e| Box::new(e) as Box<dyn VideoEncoder>)
-            }),
+            encoders: platform_encoders(config.software_encoder),
             identity_path,
             published_cursor: None,
             requested_quality: QualityMode::Auto,
@@ -1075,14 +1089,21 @@ where
                     size_mode.as_wire()
                 );
             }
+            PumpEvent::EncoderFallback { from, detail } => {
+                eprintln!(
+                    "rc-host: {from} failed ({detail}) — encoding with openh264 for the rest of \
+                     this session"
+                );
+            }
             PumpEvent::Stats(stats) => {
                 eprintln!(
-                    "rc-host: media {}x{} ({}) over {:.1}s: {} sent, {} skipped by rate control, \
+                    "rc-host: media {}x{} ({}) via {} over {:.1}s: {} sent, {} skipped by the encoder, \
                      {} dropped unencoded, encode mean {:.1} ms max {:.1} ms, frame age at \
                      encode p50 {:.0} ms max {:.0} ms, at send p50 {:.0} ms max {:.0} ms",
                     stats.width,
                     stats.height,
                     stats.size_mode.as_wire(),
+                    stats.encoder,
                     stats.interval.as_secs_f64(),
                     stats.encoded,
                     stats.skipped,

@@ -388,9 +388,10 @@ its prebuilt import libraries, so the whole Win32 surface is available.
 The other revision: **openh264** (software H.264, builds and cross-compiles cleanly, real
 Annex-B verified) is the baseline encoder rather than a Media-Foundation-first design. It
 works on every platform this binary targets, which is what lets the interop harness run on
-macOS. Media Foundation hardware encode remains the Windows-only optimisation behind the
-same `FrameSource`/encoder seam — and the openh264 path is exactly why the CPU trap from
-§4 must be watched: it is software encode.
+macOS. Media Foundation hardware encode is the Windows-only optimisation behind the same
+`VideoEncoder` seam; its phase 1 is built (see *Media Foundation hardware encode* below),
+and openh264 stays as the fallback, which is exactly why the CPU trap from §4 must still be
+watched: on a PC without a usable hardware encoder, encode is software.
 
 ### W4 — signaling client · **done**
 
@@ -462,6 +463,52 @@ written against the cross-compiler and packaged:
 **Bundle:** `apps/windows/dist/RemoteControl-WindowsHost.zip` — a stripped 16 MB `RemoteControl-Host.exe`
 plus a `READ ME FIRST.txt` (SmartScreen "Run anyway", the UAC yes, where the code shows).
 Release build, openh264 + webrtc-rs, server unchanged.
+
+### Media Foundation hardware encode · **phase 1 built (blind; needs a Windows run)**
+
+The first real Mac→Windows session worked, and showed what software encode costs: 15–100+ ms
+a frame on real laptops, and a softer picture than the Mac's VideoToolbox at the same
+bitrate. `media_windows.rs` puts the GPU's H.264 block behind the same `VideoEncoder` trait:
+
+- **Choice.** The host's encoder factory tries Media Foundation first and builds openh264
+  when it fails (no hardware MFT, Media Foundation missing, `RC_ENCODER=software`). The
+  encoder is the first MFT that `MFTEnumEx(MFT_ENUM_FLAG_HARDWARE | SORTANDFILTER)` offers
+  for H.264 output; its friendly name is the encoder's name, so the `RC_MEDIA_STATS=1` line
+  reads `via mediafoundation:<vendor MFT>` or `via openh264 (software)`, followed by any
+  setting the MFT refused.
+- **Driving it.** Hardware MFTs are asynchronous: the transform is unlocked
+  (`MF_TRANSFORM_ASYNC_UNLOCK`) and driven by its own event queue, input only against
+  `METransformNeedInput`, output only against `METransformHaveOutput`. The queue is polled
+  with deadlines rather than blocked on, so a driver that stops answering becomes an error
+  instead of a hung encode thread. One frame in, everything ready out, one Annex-B buffer.
+- **Configuration.** Codec settings go in through `ICodecAPI` before the output type
+  (low-latency mode, CBR with peak-constrained VBR as the fallback, mean bitrate, a 65535
+  frame GOP so IDRs come only on request, no B-frames); each refusal is recorded, not fatal.
+  Output type first (H.264 Constrained Baseline level 5.0, the `42e032` the transport
+  advertises, stepping down to Baseline or the MFT's own level only if refused), then NV12
+  input at the same size and rate. Sample times are 100 ns ticks from a monotonic clock.
+- **Keyframes.** A PLI forces an IDR with `CODECAPI_AVEncVideoForceKeyFrame`; an MFT without
+  it is reopened instead, since a fresh stream starts with one. Every IDR leaves with SPS/PPS
+  in front (`annexb.rs`): they are cached from the sequence header and earlier output and
+  prepended when an MFT emits them only once. Output that is not Annex-B is an error.
+- **Failure.** If the hardware encoder fails mid-session (a driver reset, a lost device),
+  the pump rebuilds with openh264 once, logs `… failed (…) — encoding with openh264 for the
+  rest of this session`, and the session carries on. A software encoder that then fails
+  ends it as before.
+
+Phase 1 feeds the MFT from system memory: DXGI's BGRA is mapped, converted to RGB, sized for
+the ladder, then converted to NV12 on the CPU (`nv12.rs`, BT.601 limited range like
+openh264's own input) and copied into an MF buffer. **Phase 2 is zero-copy**, and its seam is
+`MediaFoundationEncoder::encode_sample`, which takes any `IMFSample`: hand the MFT the
+capture's D3D11 device (`MFT_MESSAGE_SET_D3D_MANAGER`), convert BGRA to NV12 on the GPU
+(the video processor), wrap the texture with `MFCreateDXGISurfaceBuffer`, and the staging
+copy, both CPU conversions and the upload all disappear. Nothing past that call changes.
+
+What only a Windows PC can confirm, in order: which MFT enumerates (and whether one does); that
+it accepts system-memory NV12 at the ladder sizes; that it runs under the polled async
+model; that its output is Annex-B with parameter sets the Mac decodes; which `ICodecAPI`
+settings it refuses (they are in the stats line); that a PLI from the Mac yields a decodable
+IDR; and the encode time against openh264's on the same machine (`RC_ENCODER=software`).
 
 ### Remaining (needs a Windows machine, or is packaging)
 

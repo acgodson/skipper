@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use rc_host::pump::{CapturePump, CapturedFrame, EncoderFactory, FrameSlot, PumpConfig, PumpEvent, VideoSink};
 use rc_host::{
-    fit_for_encode, resample, CaptureStatus, FrameSource, LoadResponse, RawFrame, SoftwareEncoder,
-    VideoEncoder,
+    fit_for_encode, hardware_or_software, resample, CaptureStatus, EncoderRequest, EncoderResult,
+    FrameSource, LoadResponse, RawFrame, SoftwareEncoder, VideoEncoder,
 };
 use rc_proto::ctrl::QualityMode;
 use rc_input::DisplayGeometry;
@@ -93,7 +93,7 @@ impl VideoEncoder for FakeEncoder {
         Ok(Bytes::from_static(b"au"))
     }
 
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "fake"
     }
 }
@@ -109,7 +109,7 @@ fn fake_encoders(cost: Duration, failures: u32) -> Fakes {
     let builds = Arc::new(AtomicU32::new(0));
     let fail_first = Arc::new(AtomicU32::new(failures));
     let (k, b, f) = (keyframes.clone(), builds.clone(), fail_first.clone());
-    let factory: EncoderFactory = Arc::new(move |_bitrate, _fps| {
+    let factory: EncoderFactory = Arc::new(move |_request| {
         b.fetch_add(1, Ordering::Relaxed);
         Ok(Box::new(FakeEncoder { cost, keyframes: k.clone(), fail_first: f.clone() })
             as Box<dyn VideoEncoder>)
@@ -351,7 +351,7 @@ async fn a_run_of_encoder_failures_becomes_unavailable_rather_than_a_hot_loop() 
 
 #[tokio::test]
 async fn an_encoder_that_cannot_be_built_is_unavailable_not_a_panic() {
-    let factory: EncoderFactory = Arc::new(|_, _| Err("no encoder here".into()));
+    let factory: EncoderFactory = Arc::new(|_| Err("no encoder here".into()));
     let source = SlowSource::new(Duration::from_millis(1));
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, mut rx) = mpsc::channel(32);
@@ -476,7 +476,7 @@ impl VideoEncoder for LabelEncoder {
         Ok(Bytes::from(label_of(frame).to_le_bytes().to_vec()))
     }
 
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "label"
     }
 }
@@ -484,7 +484,7 @@ impl VideoEncoder for LabelEncoder {
 fn label_encoders(cost: Duration, skips: u32) -> (EncoderFactory, Arc<Mutex<Vec<u32>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let recorded = seen.clone();
-    let factory: EncoderFactory = Arc::new(move |_, _| {
+    let factory: EncoderFactory = Arc::new(move |_| {
         Ok(Box::new(LabelEncoder { cost, skips, seen: recorded.clone() }) as Box<dyn VideoEncoder>)
     });
     (factory, seen)
@@ -545,8 +545,8 @@ async fn a_frame_the_rate_controller_skipped_is_sent_once_it_can_be() {
 async fn a_quality_change_rebuilds_the_encoder_at_the_new_bitrate_mid_session() {
     let bitrates = Arc::new(Mutex::new(Vec::new()));
     let recorded = bitrates.clone();
-    let factory: EncoderFactory = Arc::new(move |bitrate, fps| {
-        recorded.lock().unwrap().push((bitrate, fps));
+    let factory: EncoderFactory = Arc::new(move |request: EncoderRequest| {
+        recorded.lock().unwrap().push((request.bitrate_bps, request.fps));
         Ok(Box::new(LabelEncoder { cost: Duration::ZERO, skips: 0, seen: Default::default() })
             as Box<dyn VideoEncoder>)
     });
@@ -674,4 +674,147 @@ fn the_software_encoder_produces_an_annex_b_keyframe() {
     let sample = encoder.encode(&frame, true).expect("encodes");
     assert!(sample.len() > 4, "an IDR is not empty");
     assert_eq!(&sample[..4], &[0, 0, 0, 1], "Annex-B start code");
+}
+
+/// Stands in for Media Foundation: a hardware encoder that works for
+/// `good_frames` frames and then fails, the way a driver reset looks mid-session.
+struct PretendHardware {
+    good_frames: u32,
+}
+
+impl VideoEncoder for PretendHardware {
+    fn encode(&mut self, _frame: &RawFrame, _keyframe: bool) -> Result<Bytes, String> {
+        if self.good_frames == 0 {
+            return Err("device removed".into());
+        }
+        self.good_frames -= 1;
+        Ok(Bytes::from_static(b"hw"))
+    }
+
+    fn name(&self) -> &str {
+        "pretend-hardware"
+    }
+
+    fn is_hardware(&self) -> bool {
+        true
+    }
+}
+
+/// Stands in for openh264, failing every frame when `broken`.
+struct PretendSoftware {
+    broken: bool,
+}
+
+impl VideoEncoder for PretendSoftware {
+    fn encode(&mut self, _frame: &RawFrame, _keyframe: bool) -> Result<Bytes, String> {
+        if self.broken {
+            return Err("software failed too".into());
+        }
+        Ok(Bytes::from_static(b"sw"))
+    }
+
+    fn name(&self) -> &str {
+        "pretend-software"
+    }
+}
+
+fn request(hardware: bool) -> EncoderRequest {
+    EncoderRequest { bitrate_bps: 2_000_000, fps: 30.0, hardware }
+}
+
+fn chosen(result: EncoderResult) -> String {
+    result.expect("an encoder is built").name().to_owned()
+}
+
+#[test]
+fn the_factory_prefers_hardware_and_falls_back_to_software_when_it_cannot_be_built() {
+    let hardware =
+        |_: &EncoderRequest| -> EncoderResult { Ok(Box::new(PretendHardware { good_frames: 1 })) };
+    let missing = |_: &EncoderRequest| -> EncoderResult { Err("no hardware H.264 encoder".into()) };
+    let software =
+        |_: &EncoderRequest| -> EncoderResult { Ok(Box::new(PretendSoftware { broken: false })) };
+    let untried = |_: &EncoderRequest| -> EncoderResult { panic!("hardware must not be tried") };
+
+    assert_eq!(chosen(hardware_or_software(request(true), hardware, software)), "pretend-hardware");
+    assert_eq!(chosen(hardware_or_software(request(true), missing, software)), "pretend-software");
+    assert_eq!(chosen(hardware_or_software(request(false), untried, software)), "pretend-software");
+}
+
+/// A factory that builds the pretend hardware encoder whenever it is allowed
+/// to, and records whether each build allowed it.
+fn hardware_first(
+    good_frames: u32,
+    software_broken: bool,
+) -> (EncoderFactory, Arc<Mutex<Vec<bool>>>) {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let recorded = requests.clone();
+    let factory: EncoderFactory = Arc::new(move |request: EncoderRequest| {
+        recorded.lock().unwrap().push(request.hardware);
+        hardware_or_software(
+            request,
+            |_| Ok(Box::new(PretendHardware { good_frames })),
+            |_| Ok(Box::new(PretendSoftware { broken: software_broken })),
+        )
+    });
+    (factory, requests)
+}
+
+fn fallbacks(events: &[PumpEvent]) -> Vec<(String, String)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            PumpEvent::EncoderFallback { from, detail } => Some((from.clone(), detail.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_hardware_encoder_that_fails_mid_session_is_swapped_for_software_once() {
+    let (factory, requests) = hardware_first(1, false);
+    let source = SlowSource::new(Duration::from_millis(1));
+    let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
+    let (tx, mut rx) = mpsc::channel(256);
+    let pump = CapturePump::start(source, sink.clone(), tx, config(), factory);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    pump.set_quality(QualityMode::Sharp);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let events = drain(&mut rx).await;
+    assert!(pump.stop(Duration::from_secs(2)).await.is_some());
+
+    assert_eq!(
+        fallbacks(&events),
+        vec![("pretend-hardware".to_owned(), "device removed".to_owned())],
+        "one fallback, naming the encoder that failed and why"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, PumpEvent::Status(CaptureStatus::Unavailable(_)))),
+        "the session survives the hardware failure, got {events:?}"
+    );
+    assert!(sink.samples.load(Ordering::Relaxed) >= 3, "frames keep flowing after the swap");
+    assert_eq!(
+        *requests.lock().unwrap(),
+        vec![true, false, false],
+        "after the fallback every rebuild, a quality change included, stays in software"
+    );
+}
+
+#[tokio::test]
+async fn software_that_fails_after_the_fallback_ends_the_session_without_a_second_hop() {
+    let (factory, requests) = hardware_first(0, true);
+    let source = SlowSource::new(Duration::from_millis(1));
+    let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
+    let (tx, mut rx) = mpsc::channel(256);
+    let pump = CapturePump::start(source, sink.clone(), tx, config(), factory);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let events = drain(&mut rx).await;
+    assert!(pump.stop(Duration::from_secs(2)).await.is_some());
+
+    assert_eq!(fallbacks(&events).len(), 1, "the hop happens once per session");
+    assert!(
+        events.iter().any(|e| matches!(e, PumpEvent::Status(CaptureStatus::Unavailable(_)))),
+        "a software encoder that keeps failing is still a broken session, got {events:?}"
+    );
+    assert!(requests.lock().unwrap().iter().skip(1).all(|hardware| !hardware));
+    assert_eq!(sink.samples.load(Ordering::Relaxed), 0);
 }

@@ -4,7 +4,7 @@ use std::time::Instant;
 use super::*;
 use crate::api::Entitlement;
 use crate::inject::RecordingInjector;
-use crate::media::{SyntheticBackend, SyntheticSource};
+use crate::media::{SyntheticBackend, SyntheticSource, VideoEncoder};
 
 struct Scratch(std::path::PathBuf);
 
@@ -37,7 +37,7 @@ impl VideoEncoder for NullEncoder {
         Ok(bytes::Bytes::from_static(b"au"))
     }
 
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "null"
     }
 }
@@ -56,6 +56,7 @@ fn host(scratch: &Scratch, ceiling: QualityCeiling) -> Host<RecordingInjector, S
         force_relay: false,
         quality_ceiling: ceiling,
         media_stats: false,
+        software_encoder: false,
     };
     let (host, _events) = Host::new(
         config,
@@ -93,8 +94,8 @@ fn start_pump(
 ) -> (Arc<StdMutex<Vec<u32>>>, mpsc::Receiver<PumpEvent>) {
     let bitrates = Arc::new(StdMutex::new(Vec::new()));
     let recorded = bitrates.clone();
-    let factory: EncoderFactory = Arc::new(move |bitrate, _fps| {
-        recorded.lock().unwrap().push(bitrate);
+    let factory: EncoderFactory = Arc::new(move |request: EncoderRequest| {
+        recorded.lock().unwrap().push(request.bitrate_bps);
         Ok(Box::new(NullEncoder) as Box<dyn VideoEncoder>)
     });
     let (tx, events) = mpsc::channel(1024);

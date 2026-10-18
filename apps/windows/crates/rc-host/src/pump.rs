@@ -23,7 +23,8 @@ use rc_proto::ctrl::QualityMode;
 use tokio::sync::mpsc;
 
 use crate::media::{
-    fit_for_encode, frame_budget, CaptureStatus, FrameSource, LoadResponse, RawFrame, VideoEncoder,
+    fit_for_encode, frame_budget, CaptureStatus, EncoderRequest, EncoderResult, FrameSource,
+    LoadResponse, RawFrame, VideoEncoder,
 };
 use crate::quality::QualityProfile;
 
@@ -42,7 +43,8 @@ pub trait VideoSink: Send + Sync + 'static {
 pub struct MediaStats {
     pub interval: Duration,
     pub encoded: u32,
-    /// Frames openh264's rate control declined; each is offered again.
+    /// Frames the encoder returned empty (openh264's rate control, or a hardware
+    /// encoder still holding the frame); each is offered again.
     pub skipped: u32,
     /// Frames replaced in the slot before the encoder reached them.
     pub superseded: u64,
@@ -55,6 +57,8 @@ pub struct MediaStats {
     pub width: usize,
     pub height: usize,
     pub size_mode: QualityMode,
+    /// The live encoder's [`VideoEncoder::name`].
+    pub encoder: String,
 }
 
 /// What the pump tells the host about, so the host can suspend input, publish
@@ -65,13 +69,16 @@ pub enum PumpEvent {
     Geometry(Option<DisplayGeometry>),
     /// The encode size moved a rung because of the measured encode cost.
     LoadStep { size_mode: QualityMode, mean_encode: Duration },
+    /// The hardware encoder failed mid-session and the rest of the session is
+    /// encoded in software.
+    EncoderFallback { from: String, detail: String },
     Stats(MediaStats),
 }
 
 /// Builds an encoder for a given bitrate and frame rate. Called again when the
-/// quality changes, so the rate controller always budgets for the live profile.
-pub type EncoderFactory =
-    Arc<dyn Fn(u32, f32) -> Result<Box<dyn VideoEncoder>, String> + Send + Sync>;
+/// quality changes, so the rate controller always budgets for the live profile,
+/// and once more without hardware if the hardware encoder fails.
+pub type EncoderFactory = Arc<dyn Fn(EncoderRequest) -> EncoderResult + Send + Sync>;
 
 pub struct PumpConfig {
     /// The mode the host gate permitted; the pump never sees a request.
@@ -292,8 +299,12 @@ fn publish(events: &mpsc::Sender<PumpEvent>, stop: &AtomicBool, event: PumpEvent
 /// pretending otherwise would spin at full speed producing nothing.
 const ENCODER_FAILURE_LIMIT: u32 = 3;
 
-fn build(encoders: &EncoderFactory, profile: &QualityProfile) -> Result<Box<dyn VideoEncoder>, String> {
-    encoders(profile.max_bitrate_bps, profile.max_framerate as f32)
+fn build(encoders: &EncoderFactory, profile: &QualityProfile, hardware: bool) -> EncoderResult {
+    encoders(EncoderRequest {
+        bitrate_bps: profile.max_bitrate_bps,
+        fps: profile.max_framerate as f32,
+        hardware,
+    })
 }
 
 /// The capture thread. The encoder is built here, before anything is
@@ -308,7 +319,7 @@ fn run<F: FrameSource>(
     shared: Arc<Shared>,
 ) -> F {
     let profile = QualityProfile::for_mode(config.quality);
-    let encoder = match build(&encoders, &profile) {
+    let encoder = match build(&encoders, &profile, true) {
         Ok(e) => e,
         Err(e) => {
             publish(
@@ -400,6 +411,9 @@ struct EncodeLoop {
     encoder: Box<dyn VideoEncoder>,
     profile: QualityProfile,
     load: LoadResponse,
+    /// Whether the factory may still offer a hardware encoder. One hardware
+    /// failure turns it off for the rest of the session.
+    hardware: bool,
     diagnostics: bool,
     tally: Tally,
 }
@@ -422,6 +436,7 @@ impl EncodeLoop {
             encoders,
             encoder,
             profile,
+            hardware: true,
             diagnostics,
             tally: Tally::default(),
         }
@@ -486,10 +501,18 @@ impl EncodeLoop {
                     }
                 }
                 Err(detail) => {
-                    failures += 1;
                     if wants_keyframe {
                         self.shared.keyframe.store(true, Ordering::Release);
                     }
+                    if self.hardware && self.encoder.is_hardware() {
+                        if !self.fall_back_to_software(detail) {
+                            break;
+                        }
+                        failures = 0;
+                        held = Some(next);
+                        continue;
+                    }
+                    failures += 1;
                     if failures >= ENCODER_FAILURE_LIMIT {
                         publish(
                             &self.events,
@@ -531,8 +554,19 @@ impl EncodeLoop {
         true
     }
 
+    /// The one fallback hop a session gets: a hardware encoder that fails (a
+    /// driver reset, a lost device) is replaced by the software one for the
+    /// rest of the session, instead of counting towards the failures that end
+    /// it. Returns `false` when the pump should end.
+    fn fall_back_to_software(&mut self, detail: String) -> bool {
+        self.hardware = false;
+        let from = self.encoder.name().to_owned();
+        self.rebuild();
+        publish(&self.events, &self.shared.stop, PumpEvent::EncoderFallback { from, detail })
+    }
+
     fn rebuild(&mut self) {
-        if let Ok(fresh) = build(&self.encoders, &self.profile) {
+        if let Ok(fresh) = build(&self.encoders, &self.profile, self.hardware) {
             self.encoder = fresh;
             self.shared.keyframe.store(true, Ordering::Release);
         }
@@ -574,6 +608,7 @@ impl EncodeLoop {
             width: tally.size.0,
             height: tally.size.1,
             size_mode: self.shared.size_mode(),
+            encoder: self.encoder.name().to_owned(),
         };
         publish(&self.events, &self.shared.stop, PumpEvent::Stats(stats));
     }

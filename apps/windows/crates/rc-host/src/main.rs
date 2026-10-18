@@ -216,6 +216,7 @@ fn config(backend: &Backend) -> HostConfig {
         force_relay: std::env::var("RC_ICE_POLICY").map(|v| v == "relay").unwrap_or(false),
         quality_ceiling: QualityCeiling::default(),
         media_stats: env_or("RC_MEDIA_STATS", "0") == "1",
+        software_encoder: env_or("RC_ENCODER", "auto") == "software",
     }
 }
 

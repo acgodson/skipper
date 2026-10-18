@@ -6,8 +6,10 @@
 //! cannot see the screen must say so rather than send something.
 //!
 //! `VideoEncoder` is the second seam. `SoftwareEncoder` (openh264) is the
-//! baseline that works on every platform this binary compiles for; a Media
-//! Foundation hardware encoder slots in behind the same trait on Windows.
+//! baseline that works on every platform this binary compiles for; on Windows
+//! the Media Foundation hardware encoder (`media_windows.rs`) sits behind the
+//! same trait and is tried first, with openh264 as the fallback
+//! ([`hardware_or_software`]).
 //! The encode size comes from the quality ladder ([`crate::quality`]), and
 //! [`LoadResponse`] steps it down a rung when the software encoder's measured
 //! cost does not fit the frame budget, so a slow machine gets a smaller picture
@@ -150,7 +152,60 @@ pub trait VideoEncoder: Send {
     fn encode(&mut self, frame: &RawFrame, keyframe: bool) -> Result<Bytes, String>;
 
     /// For logging which path is live, since it is not otherwise observable.
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
+
+    /// A hardware encoder that fails mid-session is replaced by openh264 rather
+    /// than ending the session; a software one has nothing to fall back to.
+    fn is_hardware(&self) -> bool {
+        false
+    }
+}
+
+/// What the pump asks the encoder factory for. `hardware` turns `false` once a
+/// hardware encoder has failed in this session.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EncoderRequest {
+    pub bitrate_bps: u32,
+    pub fps: f32,
+    pub hardware: bool,
+}
+
+pub type EncoderResult = Result<Box<dyn VideoEncoder>, String>;
+
+/// Whether this build has a hardware encoder to try at all.
+pub const HAS_HARDWARE_ENCODER: bool = cfg!(windows);
+
+/// The hardware encoder when the request allows it and one can be built, else
+/// the software one. A hardware encoder that cannot be built is logged with its
+/// reason, because which path is live is otherwise invisible.
+pub fn hardware_or_software(
+    request: EncoderRequest,
+    hardware: impl FnOnce(&EncoderRequest) -> EncoderResult,
+    software: impl FnOnce(&EncoderRequest) -> EncoderResult,
+) -> EncoderResult {
+    if request.hardware {
+        match hardware(&request) {
+            Ok(encoder) => return Ok(encoder),
+            Err(reason) => eprintln!("rc-host: no hardware encoder ({reason}) — using openh264"),
+        }
+    }
+    software(&request)
+}
+
+pub fn software_encoder(request: &EncoderRequest) -> EncoderResult {
+    SoftwareEncoder::new(request.bitrate_bps, request.fps)
+        .map(|e| Box::new(e) as Box<dyn VideoEncoder>)
+}
+
+#[cfg(windows)]
+pub fn hardware_encoder(request: &EncoderRequest) -> EncoderResult {
+    crate::media_windows::MediaFoundationEncoder::new(request.bitrate_bps, request.fps)
+        .map(|e| Box::new(e) as Box<dyn VideoEncoder>)
+}
+
+#[cfg(not(windows))]
+pub fn hardware_encoder(_request: &EncoderRequest) -> EncoderResult {
+    Err("no hardware encoder on this platform".into())
 }
 
 /// openh264, the software baseline.
@@ -201,7 +256,7 @@ impl VideoEncoder for SoftwareEncoder {
         Ok(Bytes::from(bitstream.to_vec()))
     }
 
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "openh264 (software)"
     }
 }
