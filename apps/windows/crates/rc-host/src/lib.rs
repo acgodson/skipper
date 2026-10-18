@@ -13,21 +13,31 @@
 
 #![cfg_attr(not(windows), allow(dead_code))]
 
+pub mod account;
+pub mod api;
+pub mod backend;
+pub mod consent;
 pub mod host;
 pub mod inject;
 pub mod keepawake;
 pub mod media;
+pub mod pake;
 pub mod pump;
+pub mod secrets;
+pub mod urlhandler;
 
 #[cfg(windows)]
 pub mod inject_windows;
 #[cfg(windows)]
 pub mod capture_windows;
 
+pub use backend::{Backend, BackendUrlError, BaseUrl};
 pub use host::{Host, HostConfig};
 pub use inject::{InjectError, InputDispatcher, InputOp, InputState, Injector, RecordingInjector};
 pub use media::{
     fit_for_encode, CaptureBackend, CaptureStatus, FrameSource, Pacing, RawFrame,
     SoftwareEncoder, SyntheticBackend, SyntheticSource, VideoEncoder,
 };
+pub use pake::{ExchangeError, GuessStore, HostExchange};
 pub use pump::{CapturePump, EncoderFactory, PumpConfig, PumpEvent, VideoSink};
+pub use secrets::{SecretAccount, SecretError, SecretStore};

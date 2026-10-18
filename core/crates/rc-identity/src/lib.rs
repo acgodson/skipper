@@ -17,8 +17,8 @@ pub mod sdp;
 pub mod signing;
 
 pub use signing::{
-    canonical_public_key, require_canonical_public_key, signing_message, SigningError,
-    SigningPurpose,
+    canonical_public_key, public_key_fingerprint, require_canonical_public_key, same_public_key,
+    signing_message, SigningError, SigningPurpose,
 };
 
 /// Crockford base32 alphabet.

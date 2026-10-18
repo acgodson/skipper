@@ -131,6 +131,16 @@ pub fn public_key_fingerprint(pubkey_base64: &str) -> Result<String, VerifyError
     Ok(groups.join(" "))
 }
 
+/// Whether two spellings name the same device key. One key has exactly one
+/// canonical spelling, so this is byte equality once both are canonicalised;
+/// a key that will not parse is never equal to anything, including itself.
+pub fn same_public_key(a: &str, b: &str) -> bool {
+    match (canonical_public_key(a), canonical_public_key(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Refuses any spelling of a key other than its canonical one.
 pub fn require_canonical_public_key(pubkey_base64: &str) -> Result<(), VerifyError> {
     match canonical_public_key(pubkey_base64)? == pubkey_base64 {

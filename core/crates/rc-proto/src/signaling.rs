@@ -10,7 +10,7 @@ pub struct Challenge {
     pub server_time: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CodeVerifier {
     pub alg: String,
     /// base64, >= 16 bytes.
@@ -88,7 +88,15 @@ pub struct Register {
     /// The registry's certificate for `preferred_device_id` and this key, as last received; opaque.
     #[serde(rename = "idCert", default, skip_serializing_if = "String::is_empty")]
     pub id_cert: String,
+    /// *v1 only.* A v5 server answers `bad_request` to a `register` that
+    /// carries a verifier, so an empty one is omitted rather than sent as a
+    /// zeroed object (§2.3).
+    #[serde(default, skip_serializing_if = "is_default_verifier")]
     pub code: CodeVerifier,
+}
+
+fn is_default_verifier(v: &CodeVerifier) -> bool {
+    *v == CodeVerifier::default()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
