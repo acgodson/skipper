@@ -44,7 +44,7 @@ struct RemoteSessionView: View {
             if !hasPicture {
                 StageOverlayCard(
                     title: "Connected \u{2014} waiting for video\u{2026}",
-                    message: "The other Mac is starting its screen capture. If this does not clear within a few seconds, check that SkipperDesk has Screen Recording permission on that Mac \u{2014} macOS can revoke it after the app is updated."
+                    message: "The other computer is starting its screen capture. If this does not clear within a few seconds and it is a Mac, check that SkipperDesk has Screen Recording permission there \u{2014} macOS can revoke it after the app is updated."
                 )
                 .localControlRegion()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -117,7 +117,7 @@ private struct SessionToolbar: View {
     var body: some View {
         SessionToolbarBar {
             VStack(alignment: .leading, spacing: 0) {
-                Text(model.otherMacLabel)
+                Text(model.otherComputerLabel)
                     .font(SkipperFont.bodyEmphasis)
                     .foregroundStyle(SkipperColor.textPrimary)
                     .fixedSize()
@@ -206,7 +206,7 @@ private struct QualityMenu: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("Changes how sharply the other Mac sends its screen.")
+        .help("Changes how sharply the other computer sends its screen.")
     }
 }
 
@@ -216,7 +216,7 @@ private struct KeyboardCaptureToggle: View {
 
     var body: some View {
         SessionToolbarButton(
-            title: "Send shortcuts to \(model.otherMacLabel)",
+            title: "Send shortcuts to \(model.otherComputerLabel)",
             symbol: "keyboard",
             isActive: model.keyboardCaptureActive,
             help: helpText
@@ -229,8 +229,8 @@ private struct KeyboardCaptureToggle: View {
     private var helpText: String {
         if let problem = model.keyboardCaptureProblem { return problem }
         if model.keyboardCaptureActive {
-            return "\u{2318}Space, \u{2318}Tab and other shortcuts go to the remote Mac. Press \u{2303}\u{2325}\u{2318}K to stop."
+            return "\u{2318}Space, \u{2318}Tab and other shortcuts go to the remote computer. Press \u{2303}\u{2325}\u{2318}K to stop."
         }
-        return "Send shortcuts like \u{2318}Space and \u{2318}Tab to \(model.otherMacLabel) instead of this Mac. \u{2303}\u{2325}\u{2318}K turns this on and off."
+        return "Send shortcuts like \u{2318}Space and \u{2318}Tab to \(model.otherComputerLabel) instead of this Mac. \u{2303}\u{2325}\u{2318}K turns this on and off."
     }
 }

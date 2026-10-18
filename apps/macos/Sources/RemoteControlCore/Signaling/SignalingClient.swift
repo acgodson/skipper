@@ -144,7 +144,7 @@ public final class SignalingClient {
                 delegate?.signaling(self, didDisconnect: error)
 
                 if (error as? WireError)?.serverCode == Wire.ErrorCode.displaced {
-                    state = .stopped("SkipperDesk is open on another Mac using this Device ID. Only one can be reachable at a time.")
+                    state = .stopped("SkipperDesk is open on another computer using this Device ID. Only one can be reachable at a time.")
                     return
                 }
 

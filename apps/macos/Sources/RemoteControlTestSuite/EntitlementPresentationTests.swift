@@ -21,19 +21,19 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
     TestCase("each closed-set reason renders its own sentence, never the fallback") {
         try expectEqual(
             EntitlementPresentation.entitlementSentence(reason: "unlinked", fallback: "fallback"),
-            "That Mac isn't signed in to SkipperDesk yet.")
+            "That computer isn't signed in to SkipperDesk yet.")
         try expectEqual(
             EntitlementPresentation.entitlementSentence(reason: "trial_expired", fallback: "fallback"),
-            "That Mac's trial has ended.")
+            "That computer's trial has ended.")
         try expectEqual(
             EntitlementPresentation.entitlementSentence(reason: "no_balance", fallback: "fallback"),
-            "That Mac has no credit left.")
+            "That computer has no credit left.")
         try expectEqual(
             EntitlementPresentation.entitlementSentence(reason: "concurrency", fallback: "fallback"),
-            "That account is already in a session on another Mac.")
+            "That account is already in a session on another computer.")
         try expectEqual(
             EntitlementPresentation.entitlementSentence(reason: "suspended", fallback: "fallback"),
-            "That Mac's account is suspended.")
+            "That computer's account is suspended.")
     },
 
     TestCase("an unknown or missing reason falls back to the server's own message") {
@@ -90,7 +90,7 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
         try expectEqual(
             EntitlementPresentation.connectFailureSentence(
                 code: "entitlement", reason: "no_balance", retryAfterSec: nil, fallback: "old wording"),
-            "That Mac has no credit left.")
+            "That computer has no credit left.")
         try expectEqual(
             EntitlementPresentation.connectFailureSentence(
                 code: "entitlement", reason: nil, retryAfterSec: nil, fallback: "old wording"),
@@ -100,8 +100,8 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
     TestCase("offline and any other code keep the existing generic wording") {
         try expectEqual(
             EntitlementPresentation.connectFailureSentence(
-                code: "offline", reason: nil, retryAfterSec: nil, fallback: "That Mac is offline."),
-            "That Mac is offline.")
+                code: "offline", reason: nil, retryAfterSec: nil, fallback: "That computer is offline."),
+            "That computer is offline.")
         try expectEqual(
             EntitlementPresentation.connectFailureSentence(
                 code: "auth_failed", reason: nil, retryAfterSec: nil, fallback: "ignored"),
@@ -121,7 +121,7 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
             ConnectFailure.offline.errorDescription ?? "")
         try expectEqual(
             EntitlementPresentation.sentence(for: .entitlement(reason: "trial_expired", message: "m")),
-            "That Mac's trial has ended.")
+            "That computer's trial has ended.")
         try expectEqual(
             EntitlementPresentation.sentence(for: .entitlement(reason: "brand_new", message: "trial has ended")),
             "trial has ended")
@@ -136,9 +136,9 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
         try expectEqual(
             EntitlementPresentation.connectFailureSentence(
                 code: Wire.ByeReason.declined, reason: nil, retryAfterSec: nil, fallback: "declined"),
-            "The other Mac declined the connection.")
+            "The other computer declined the connection.")
         try expectEqual(EntitlementPresentation.sentence(for: .declined),
-                        "The other Mac declined the connection.")
+                        "The other computer declined the connection.")
         try expectEqual(EntitlementPresentation.sentence(for: .noAnswer),
                         EntitlementPresentation.noAnswerSentence)
         try expectFalse(EntitlementPresentation.noAnswerSentence.contains("timeout"))
@@ -210,7 +210,7 @@ public let entitlementPresentationSuite = TestSuite("Entitlement presentation (A
                                         minutesRemaining: 0)
         try expectEqual(
             EntitlementPresentation.statusLine(for: exhausted),
-            "No hosting time left. This Mac can still connect to other Macs.",
+            "No hosting time left. This Mac can still connect to other computers.",
             "it promises nothing the product cannot do: paid top-ups are not open, so the line "
                 + "states the position and the one thing that still works")
 

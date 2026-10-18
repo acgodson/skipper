@@ -42,10 +42,10 @@ struct ControllerView: View {
     private var connectCard: some View {
         SkipperHero {
             VStack(alignment: .leading, spacing: SkipperSpace.xxs) {
-                Text("Connect to a Mac")
+                Text("Connect to a computer")
                     .font(SkipperFont.title)
                     .foregroundStyle(SkipperColor.textPrimary)
-                Text("Enter the Device ID and access code shown on the other Mac.")
+                Text("Enter the Device ID and access code shown on the other computer.")
                     .font(SkipperFont.caption)
                     .foregroundStyle(SkipperColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -133,7 +133,7 @@ struct ControllerView: View {
                     HStack(spacing: SkipperSpace.s) {
                         Button("Cancel") { model.dismissHostKeyNotice() }
                             .skipperButton(.primary)
-                        Button("Trust the new Mac") {
+                        Button("Trust the new computer") {
                             model.trustNewMac()
                             accessCodeField = ""
                         }

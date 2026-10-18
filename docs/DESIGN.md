@@ -40,7 +40,7 @@ A **tone** is a (foreground, soft background) pair: `neutral` (textSecondary/neu
 | Token | Size / weight | Use |
 |---|---|---|
 | `display` | 28 semibold | Reserved (onboarding) |
-| `title` | 20 semibold | Screen hero title ("This Mac", "Connect to a Mac") |
+| `title` | 20 semibold | Screen hero title ("This Mac", "Connect to a computer") |
 | `heading` | 15 semibold | Menu panel title, overlay title |
 | `body` / `bodyEmphasis` | 13 regular / medium | Everything else; row titles, buttons |
 | `callout` | 12 regular | Presence label, palette items |
@@ -73,7 +73,7 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
 ## 2. Components
 
 - **Window shell** — one window. Unified toolbar, no title; its centre holds the role switch (a
-  two-segment control: "Share this Mac" / "Connect to a Mac"). Hidden during a session or an
+  two-segment control: "Share this Mac" / "Connect to a computer"). Hidden during a session or an
   identity failure. Body: `canvas`, a scrolling centred column of cards.
 - **Hero** — `surface` card with a 35 %-accent stroke, `xl` padding. Title + one-line caption at
   top-left, the screen's single status pill top-right.
@@ -158,7 +158,7 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
 | Error | Controller connect banner; account, capture, identity banners | critical banner, one plain sentence |
 | Missing permission | Host only, only when missing | attention banner per permission: Open Settings + Ask macOS |
 | Asking to connect | Host window overlay + menu panel (+ notification when in the background) | consent prompt with a 30 s countdown; no answer declines |
-| Waiting to be accepted | Controller hero | attention note "Waiting for the other Mac to accept…", pill "Waiting…"; after a decline the critical banner "The other Mac declined the connection." |
+| Waiting to be accepted | Controller hero | attention note "Waiting for the other computer to accept…", pill "Waiting…"; after a decline the critical banner "The other computer declined the connection." |
 
 **Unattended access** is a toggle row whose detail follows its state — on: "Anyone with the code
 can connect without being asked here."; off: "You will be asked to allow each connection." It is
@@ -179,7 +179,7 @@ confirmation), and "Remove All…" forgets them all after a confirmation (Refres
 1. **State, not telemetry.** "Sharing", "Reconnecting…", "Offline" — never bitrates, fps, RTT,
    pointer coordinates or resolutions. Those appear only when `RC_DEBUG=1`.
 2. **Sentences, no jargon.** Say what happened and what to do: "Wrong access code. Check it on the
-   other Mac." Not "auth_failed", "PAKE", "signaling", "TURN" in primary copy.
+   other computer." Not "auth_failed", "PAKE", "signaling", "TURN" in primary copy.
 3. **No fluctuating numbers** unless `RC_DEBUG=1`. Static facts (Device ID, a balance, a trial end
    date) are fine.
 4. **Sentence case** for titles, toggles and rows; Title Case only for button verbs. Ellipsis (…)
@@ -189,7 +189,7 @@ confirmation), and "Remove All…" forgets them all after a confirmation (Refres
    "device key" in user-facing text. The app never says "create account" or offers a sign-up
    action of its own — signing in always goes to the website, which decides whether the person
    is new.
-7. The product name is always "SkipperDesk"; the other computer is "the other Mac" / "this Mac".
+7. The product name is always "SkipperDesk"; the other computer is "the other computer" / "this Mac".
 8. **No security or networking internals in normal view.** A fingerprint, key, keychain, token,
    certificate, handshake, session id, "Secure Enclave", "entitlement", ICE/TURN/SDP/PAKE or any
    hex/base64 blob never appears on a screen the owner reads in normal use: it is jargon, and it

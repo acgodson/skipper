@@ -3,7 +3,7 @@ import SkipperCore
 
 // Host keys pinned per Device ID on the controller (PROTOCOL.md v4 changes).
 // A key becomes a pin only after a session with it proved the access code;
-// "Trust the new Mac" stores the presented key as pending, and it replaces the
+// "Trust the new computer" stores the presented key as pending, and it replaces the
 // pin only once a later exchange with that host succeeds.
 
 public enum HostKeyPinDecision: Equatable {
@@ -27,8 +27,8 @@ public struct HostKeyMismatch: Equatable {
 public final class HostKeyPins: ObservableObject {
 
     public static let changedCode = "host_key_changed"
-    public static let changedSentence = "This Device ID now belongs to a different Mac. If you reinstalled or "
-        + "replaced that Mac, choose Trust the new Mac; otherwise don't connect."
+    public static let changedSentence = "This Device ID now belongs to a different computer. If you reinstalled or "
+        + "replaced that computer, choose Trust the new computer; otherwise don't connect."
 
     @Published public private(set) var mismatch: HostKeyMismatch?
 
@@ -116,7 +116,7 @@ public final class HostKeyPins: ObservableObject {
         pending[mismatch.deviceID] = presented
         try secrets.savePendingHostKeys(pending)
         try secrets.forgetPeerCode(forHost: mismatch.deviceID)
-        RCLog.info("the host key for \(mismatch.deviceID) will be replaced once the new Mac proves its code")
+        RCLog.info("the host key for \(mismatch.deviceID) will be replaced once the new computer proves its code")
         self.mismatch = nil
     }
 

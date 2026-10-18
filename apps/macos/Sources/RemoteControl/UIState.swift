@@ -96,11 +96,11 @@ extension AppModel {
         permissions.missing
     }
 
-    var otherMacLabel: String {
+    var otherComputerLabel: String {
         let label = settings.savedPeerLabel
         if !label.isEmpty { return label }
         let id = settings.savedPeerDeviceID
-        return id.isEmpty ? "the other Mac" : DeviceID.formatted(id)
+        return id.isEmpty ? "the other computer" : DeviceID.formatted(id)
     }
 
     /// The ceiling this Mac's own account states (`API.md` §4.4). Greying the picker from

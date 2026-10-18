@@ -43,7 +43,7 @@ public enum PeerSessionError: Swift.Error, LocalizedError {
         case .channelNotOpen(let label):
             return RCLog.enabled
                 ? "The '\(label)' data channel is not open."
-                : "The connection to the other Mac is not ready yet."
+                : "The connection to the other computer is not ready yet."
         case .installedFingerprintsRejected(let why): return why
         case .invalidRemoteSignal(let why): return why
         }

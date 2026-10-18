@@ -387,7 +387,7 @@ public let protocolV5Suite = TestSuite("Protocol v5 client", [
         }
     },
 
-    TestCase("review C3b: Trust the new Mac replaces the pin only after the new key proves the code") {
+    TestCase("review C3b: Trust the new computer replaces the pin only after the new key proves the code") {
         try await withStore { store, secrets, _ in
             let pins = store.hostKeyPins
             let original = try freshKey()

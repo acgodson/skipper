@@ -55,27 +55,27 @@ public enum ConnectFailure: Swift.Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .authFailed:
-            return "That access code was not accepted. Check it on the other Mac — codes are case-insensitive but every character counts."
+            return "That access code was not accepted. Check it on the other computer — codes are case-insensitive but every character counts."
         case .entitlement(_, let message):
             return message
         case .offline:
-            return "That Mac is offline. It has to be awake, running SkipperDesk and connected to the internet."
+            return "That computer is offline. It has to be awake, running SkipperDesk and connected to the internet."
         case .busy:
-            return "That Mac already has a remote session. Only one at a time is allowed \u{2014} end the other session first."
+            return "That computer already has a remote session. Only one at a time is allowed \u{2014} end the other session first."
         case .rateLimited(let seconds):
             let minutes = seconds / 60
             let wait = minutes >= 1 ? "\(minutes) minute\(minutes == 1 ? "" : "s")" : "\(seconds) seconds"
             return "Too many incorrect access codes. Wait \(wait) before trying again."
         case .unknownDevice:
-            return "No Mac has that Device ID. Check it on the other Mac."
+            return "No computer has that Device ID. Check it on the other computer."
         case .selfConnect:
             return "That is this Mac's own Device ID."
         case .notConnectedToServer:
             return "Not connected to SkipperDesk yet. Try again in a moment."
         case .declined:
-            return "The other Mac declined the connection."
+            return "The other computer declined the connection."
         case .noAnswer:
-            return "The other Mac did not answer in time."
+            return "The other computer did not answer in time."
         case .other(let code, let message):
             return RCLog.enabled ? "\(message) (\(code))" : message
         }
@@ -559,7 +559,7 @@ public final class SessionCoordinator: ObservableObject, SessionTransport {
         await perform(machine.userEnded(reason: Wire.ByeReason.peerAuthFailed))
     }
 
-    public static let peerAuthFailureMessage = "This is not the Mac you connected to, so the session was stopped."
+    public static let peerAuthFailureMessage = "This is not the computer you connected to, so the session was stopped."
 }
 
 // MARK: - SignalingClientDelegate

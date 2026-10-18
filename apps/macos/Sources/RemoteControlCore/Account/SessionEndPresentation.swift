@@ -20,7 +20,7 @@ public enum SessionEndPresentation {
         detail: "The session ended. Add credit to host from this Mac again.")
 
     public static let creditRanOutController = SessionEndNotice(
-        title: "The session ended because that Mac has no credit left.")
+        title: "The session ended because that computer has no credit left.")
 
     /// nil for every reason that needs no notice of its own, which is most of them:
     /// both peers already show the session ending, and the only reason worth a banner

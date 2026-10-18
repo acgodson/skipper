@@ -38,7 +38,7 @@ public final class KeyboardCaptureTap {
     public func install() -> Bool {
         guard !isInstalled else { return true }
         guard hasAccessibilityPermission else {
-            onProblem?("SkipperDesk needs Accessibility permission before it can send your keystrokes to the other Mac.")
+            onProblem?("SkipperDesk needs Accessibility permission before it can send your keystrokes to the other computer.")
             return false
         }
         let mask = (1 << CGEventType.keyDown.rawValue)
@@ -51,7 +51,7 @@ public final class KeyboardCaptureTap {
                                           eventsOfInterest: CGEventMask(mask),
                                           callback: keyboardCaptureCallback,
                                           userInfo: context) else {
-            onProblem?("Shortcuts cannot be sent to the other Mac right now.")
+            onProblem?("Shortcuts cannot be sent to the other computer right now.")
             return false
         }
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)

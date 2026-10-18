@@ -75,13 +75,13 @@ private struct RoleSwitch: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(width: 340)
-        .help("Share this Mac lets another Mac connect to it. Connect to a Mac drives another one.")
+        .help("Share this Mac lets another Mac connect to it. Connect to a computer drives another one.")
     }
 
     private func segmentLabel(for role: AppRole) -> String {
         switch role {
         case .host: return "Share this Mac"
-        case .controller: return "Connect to a Mac"
+        case .controller: return "Connect to a computer"
         }
     }
 }

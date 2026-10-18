@@ -33,7 +33,7 @@ public enum AppRole: String, CaseIterable, Identifiable, Codable {
     public var displayName: String {
         switch self {
         case .host: return "This Mac (Host)"
-        case .controller: return "Control Another Mac"
+        case .controller: return "Control Another Computer"
         }
     }
 }

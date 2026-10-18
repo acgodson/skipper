@@ -16,7 +16,7 @@ public enum EntitlementPresentation {
             }
             return "\(moneyString(cents: cents)) left \u{00B7} \(hostingTime(minutes: minutes))"
         case .exhausted:
-            return "No hosting time left. This Mac can still connect to other Macs."
+            return "No hosting time left. This Mac can still connect to other computers."
         case .unlinked:
             return "Not signed in"
         }
@@ -64,23 +64,23 @@ public enum EntitlementPresentation {
 
     // MARK: - PROTOCOL.md §7 / API.md §4.3 connect-failure sentences
 
-    public static let busySentence = "That Mac already has a controller connected."
+    public static let busySentence = "That computer already has a controller connected."
 
-    public static let wrongCodeSentence = "Wrong access code. Check it on the other Mac."
+    public static let wrongCodeSentence = "Wrong access code. Check it on the other computer."
 
-    public static let declinedSentence = "The other Mac declined the connection."
+    public static let declinedSentence = "The other computer declined the connection."
 
-    public static let noAnswerSentence = "The other Mac did not answer in time. Ask someone there to allow the connection, or turn on unattended access on that Mac."
+    public static let noAnswerSentence = "The other computer did not answer in time. Ask someone there to allow the connection, or turn on unattended access on that computer."
 
-    public static let awaitingAcceptanceSentence = "Waiting for the other Mac to accept\u{2026}"
+    public static let awaitingAcceptanceSentence = "Waiting for the other computer to accept\u{2026}"
 
     public static func entitlementSentence(reason: String?, fallback: String) -> String {
         switch reason {
-        case "unlinked": return "That Mac isn't signed in to SkipperDesk yet."
-        case "trial_expired": return "That Mac's trial has ended."
-        case "no_balance": return "That Mac has no credit left."
-        case "concurrency": return "That account is already in a session on another Mac."
-        case "suspended": return "That Mac's account is suspended."
+        case "unlinked": return "That computer isn't signed in to SkipperDesk yet."
+        case "trial_expired": return "That computer's trial has ended."
+        case "no_balance": return "That computer has no credit left."
+        case "concurrency": return "That account is already in a session on another computer."
+        case "suspended": return "That computer's account is suspended."
         default: return fallback
         }
     }
