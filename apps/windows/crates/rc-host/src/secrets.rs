@@ -203,9 +203,11 @@ mod platform {
     use windows::Win32::Security::Cryptography::{
         CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
+    use windows::Win32::Foundation::BOOL;
     use windows::Win32::Security::{
-        GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER,
+        GetSecurityDescriptorDacl, GetTokenInformation, TokenUser, ACL,
+        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        TOKEN_QUERY, TOKEN_USER,
     };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -296,6 +298,14 @@ mod platform {
     /// A protected DACL with exactly two entries — this user and SYSTEM — and
     /// inheritance from the parent switched off, so a secret cannot be read by
     /// another account that happens to be able to reach the path.
+    ///
+    /// `SetNamedSecurityInfoW` takes an `ACL`, not the `SECURITY_DESCRIPTOR`
+    /// that SDDL parses into. Handing it the descriptor is accepted — its
+    /// header reads as a well-formed ACL carrying zero entries — and a
+    /// protected, empty DACL locks every account out of the directory, so each
+    /// save afterwards fails with `Access is denied`. The DACL is extracted
+    /// first, and a run that finds a directory already in that state repairs it
+    /// here, because the owner keeps `WRITE_DAC` no matter what the DACL says.
     pub fn restrict_to_current_user(directory: &Path) -> Result<(), String> {
         let sid = current_user_sid()?;
         let sddl: Vec<u16> = format!("D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)")
@@ -311,20 +321,33 @@ mod platform {
                 None,
             )
             .map_err(|e| e.message())?;
-            let mut path = wide(directory);
-            let result = SetNamedSecurityInfoW(
-                PWSTR(path.as_mut_ptr()),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                None,
-                None,
-                Some(descriptor.0 as *const _),
-                None,
-            );
+            let outcome = apply_dacl(directory, descriptor);
             let _ = LocalFree(HLOCAL(descriptor.0));
-            if result.is_err() {
-                return Err(format!("SetNamedSecurityInfoW failed: {result:?}"));
-            }
+            outcome
+        }
+    }
+
+    unsafe fn apply_dacl(directory: &Path, descriptor: PSECURITY_DESCRIPTOR) -> Result<(), String> {
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut present = BOOL(0);
+        let mut defaulted = BOOL(0);
+        GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted)
+            .map_err(|e| e.message())?;
+        if !present.as_bool() || dacl.is_null() {
+            return Err("the security descriptor carried no DACL".to_string());
+        }
+        let mut path = wide(directory);
+        let result = SetNamedSecurityInfoW(
+            PWSTR(path.as_mut_ptr()),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(dacl),
+            None,
+        );
+        if result.is_err() {
+            return Err(format!("SetNamedSecurityInfoW failed: {result:?}"));
         }
         Ok(())
     }
