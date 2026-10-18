@@ -18,6 +18,7 @@ pub mod annexb;
 pub mod api;
 pub mod backend;
 pub mod consent;
+pub mod console;
 pub mod host;
 pub mod inject;
 pub mod keepawake;

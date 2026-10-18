@@ -288,6 +288,7 @@ fn command() -> Command {
 /// A double-clicked program's window closes with it and would take the only explanation along, so a failure waits for Enter.
 #[tokio::main]
 async fn main() {
+    rc_host::console::disable_quick_edit();
     let command = command();
     let startup = match startup() {
         Ok(startup) => startup,

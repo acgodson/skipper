@@ -334,6 +334,8 @@ where
                 }
                 _ = shutdown_rx.recv() => {
                     eprintln!("rc-host: stopping - releasing all remote input");
+                    let actions = self.machine.user_ended(bye::SHUTDOWN);
+                    self.apply(&actions, &conn, peer, te_tx).await;
                     break ConnLoopExit::Shutdown;
                 }
             }
@@ -533,6 +535,7 @@ where
                 self.on_remote_ice(ice, peer).await;
             }
             Push::Bye(ended) => {
+                eprintln!("rc-host: session ended ({})", ended.reason);
                 let actions = self.machine.close_locally(&ended.reason);
                 self.clear_session();
                 self.teardown(peer).await;
@@ -571,13 +574,17 @@ where
                 session_id: grant.session.session_id.clone(),
                 session_token: grant.session.session_token,
                 host_device_id: grant.session.host_device_id.clone(),
-                controller_device_id: grant.session.controller_device_id,
+                controller_device_id: grant.session.controller_device_id.clone(),
             },
             now,
         );
         if self.machine.take_rejection().is_some() {
             return;
         }
+        eprintln!(
+            "rc-host: connection request from {}",
+            rc_identity::access_code::formatted_device_id(&grant.session.controller_device_id)
+        );
         self.clear_session();
         self.teardown(peer).await;
         self.apply(&actions, conn, peer, te_tx).await;
@@ -672,6 +679,7 @@ where
         te_tx: &mpsc::Sender<TransportEvent>,
     ) {
         let Some(exchange) = &self.exchange else { return };
+        eprintln!("rc-host: access code verified");
         let controller = exchange.controller_pubkey().to_string();
         self.expected_peer = Some(controller.clone());
         self.record_trusted_controller(&controller);
@@ -918,6 +926,7 @@ where
             eprintln!("rc-host: the answer could not be sent: {e}");
             return;
         }
+        eprintln!("rc-host: answering the controller");
         self.release_held_candidates(peer).await;
     }
 
@@ -1023,6 +1032,9 @@ where
     ) {
         match event {
             TransportEvent::IceState(s) => {
+                if s == IceState::Connected {
+                    eprintln!("rc-host: link up");
+                }
                 let closed = matches!(s, IceState::Closed | IceState::Failed);
                 let actions = self.machine.ice_state_changed(ice_from_transport(s), now_ms());
                 if closed {

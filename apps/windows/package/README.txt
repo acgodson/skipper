@@ -22,7 +22,7 @@ Do this BEFORE you extract the ZIP:
 
 If you prefer PowerShell, this does the same thing (change the path to match yours):
 
-    Unblock-File "$env:USERPROFILE\Downloads\SkipperDesk-win-x64-0.1.7.zip"
+    Unblock-File "$env:USERPROFILE\Downloads\SkipperDesk-win-x64-0.1.8.zip"
 
 You are only telling Windows that you trust this one file that you chose to download.
 You do not need to change any Windows or antivirus settings.
@@ -41,6 +41,8 @@ Running it
    that pays for the session. Sign in there; the page hands you back on its own, and the
    window says "Signed in as <your email>". Every later launch skips this.
 4. Leave that window open. Closing it stops sharing straight away.
+   Do not click inside the window: a click starts a text selection that pauses the
+   whole program. If the title bar ever says "Select", press Esc.
 5. When they connect, that window asks you "Allow this computer to be controlled?" and
    shows who is asking. Type one letter and press Enter:
      y   let them in, this time only
