@@ -111,8 +111,8 @@ fn startup() -> Result<Startup, String> {
     })
 }
 
+/// Good enough for a createdAt stamp without a date crate.
 fn now_iso8601() -> String {
-    // Good enough for a createdAt stamp without a date crate.
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -255,6 +255,7 @@ enum Command {
     LinkCallback(String),
 }
 
+/// The shell may also pass the URL on its own, depending on how the handler was registered by an earlier build.
 fn command() -> Command {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(index) = args.iter().position(|a| a == "--link-callback") {
@@ -263,8 +264,6 @@ fn command() -> Command {
             None => Command::Run { synthetic: false },
         };
     }
-    // The shell may also pass the URL on its own, depending on how the handler
-    // was registered by an earlier build.
     if let Some(url) = args
         .iter()
         .find(|a| a.starts_with(&format!("{}://", rc_host::account::CALLBACK_SCHEME)))
@@ -285,6 +284,7 @@ fn command() -> Command {
     }
 }
 
+/// A double-clicked program's window closes with it and would take the only explanation along, so a failure waits for Enter.
 #[tokio::main]
 async fn main() {
     let command = command();
@@ -306,8 +306,6 @@ async fn main() {
         Command::Run { synthetic } => run(startup, synthetic).await,
     };
     if let Err(e) = outcome {
-        // A double-clicked program's window closes with it, and would take the
-        // only explanation along.
         eprintln!("rc-host: {e}");
         eprintln!("  Press Enter to close this window.");
         let _ = std::io::stdin().read_line(&mut String::new());
@@ -334,6 +332,8 @@ fn account<'a>(
 /// Sent once, to `/v1/auth/device/token`, and never again: the server keeps
 /// only an HMAC of it. `MachineGuid` is per-installation, which is what the
 /// field is for; its absence is not fatal.
+///
+/// The fallback is stable and still identifies this machine rather than this run.
 fn hardware_id() -> String {
     #[cfg(windows)]
     {
@@ -354,7 +354,6 @@ fn hardware_id() -> String {
             }
         }
     }
-    // A stable fallback that is still this machine rather than this run.
     format!(
         "{}-{}",
         std::env::var("COMPUTERNAME")
@@ -366,6 +365,8 @@ fn hardware_id() -> String {
 
 /// The browser leg. Registration comes first: `/v1/auth/device/token` refuses a
 /// key the device registry does not know, with the sign-in code left unspent.
+///
+/// A URL left over from an abandoned attempt is discarded so it is not read as this one's.
 async fn sign_in(
     backend: &Backend,
     secrets: &SecretStore,
@@ -383,7 +384,6 @@ async fn sign_in(
                 .into(),
         );
     }
-    // A URL left over from an abandoned attempt must not be read as this one's.
     let _ = rc_host::urlhandler::take(secrets);
 
     let mut account = account(backend, secrets, key)?;
@@ -466,15 +466,12 @@ async fn run_synthetic(startup: Startup) -> Result<(), String> {
     host_online(host, events, &startup.backend).await
 }
 
+/// Sets per-monitor DPI awareness in code, so a build without the manifest (the no-elevation test build) still captures real pixels and maps clicks correctly on a scaled display. The result is ignored: it fails harmlessly if a manifest already set it.
 #[cfg(windows)]
 async fn run(startup: Startup, synthetic: bool) -> Result<(), String> {
     use rc_host::capture_windows::DxgiBackend;
     use rc_host::inject_windows::WindowsInjector;
 
-    // Per-monitor DPI awareness in code, so a build without the manifest (the
-    // no-elevation test build) still captures real pixels and maps clicks
-    // correctly on a scaled display. Safe to call once at startup; ignore the
-    // result (it fails harmlessly if already set by a manifest).
     unsafe {
         use windows::Win32::UI::HiDpi::*;
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -495,10 +492,9 @@ async fn run(startup: Startup, synthetic: bool) -> Result<(), String> {
     host_online(host, events, &startup.backend).await
 }
 
+/// There is no real capture or injection here, so this build is the diagnostic one whether or not `--synthetic` was passed.
 #[cfg(not(windows))]
 async fn run(startup: Startup, _synthetic: bool) -> Result<(), String> {
-    // There is no real capture or injection to offer here, so this build is the
-    // diagnostic one whether or not --synthetic was passed.
     eprintln!("rc-host: non-Windows build — diagnostic mode only");
     run_synthetic(startup).await
 }

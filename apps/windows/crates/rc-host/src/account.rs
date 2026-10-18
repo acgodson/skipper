@@ -127,6 +127,7 @@ pub enum Verdict {
     Accepted { code: String },
 }
 
+/// The nonce comparison is constant time and length-checked first, so the comparison itself cannot leak the length.
 pub fn callback_verdict(url: &str, attempt: Option<&LinkAttempt>, now_ms: i64) -> Verdict {
     let Some(rest) = url.strip_prefix(&format!("{CALLBACK_SCHEME}://")) else {
         return Verdict::NotOurs;
@@ -155,8 +156,6 @@ pub fn callback_verdict(url: &str, attempt: Option<&LinkAttempt>, now_ms: i64) -
             _ => {}
         }
     }
-    // Constant time, and length-checked first so the comparison itself cannot
-    // leak the length.
     let matches = nonce.len() == attempt.nonce.len()
         && bool::from(nonce.as_bytes().ct_eq(attempt.nonce.as_bytes()));
     if !matches {
@@ -431,9 +430,8 @@ impl<'a> Account<'a> {
         Ok(())
     }
 
+    /// A grant that is not written is one the user has to repeat in the browser, so the failure is reported rather than swallowed.
     fn store(&mut self, record: TokenRecord) -> Result<TokenRecord, String> {
-        // A grant that is not written is one the user has to repeat in the
-        // browser, so the failure is reported rather than swallowed.
         self.secrets
             .save(SecretAccount::DeviceToken, &record)
             .map_err(|e| e.to_string())?;

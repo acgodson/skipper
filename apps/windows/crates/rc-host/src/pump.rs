@@ -336,16 +336,13 @@ fn run<F: FrameSource>(
     source
 }
 
+/// Status goes before geometry, not the other way round. Knowing where the screen is unsuspends input, so geometry first would open a window in which the host accepts clicks before it has said the desktop is locked.
 fn capture<F: FrameSource>(source: &mut F, events: &mpsc::Sender<PumpEvent>, shared: &Shared) {
     let mut last_status: Option<CaptureStatus> = None;
     let mut last_geometry: Option<Option<DisplayGeometry>> = None;
     let budget = frame_budget();
 
     while !shared.stopped() {
-        // Status before geometry, and not the other way round. Knowing where the
-        // screen is unsuspends input, so if geometry went first there would be a
-        // window in which the host would accept clicks before it had said the
-        // desktop was locked.
         let status = source.status();
         if last_status.as_ref() != Some(&status) {
             last_status = Some(status.clone());

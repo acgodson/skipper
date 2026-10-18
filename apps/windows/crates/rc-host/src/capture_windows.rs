@@ -96,6 +96,8 @@ impl DxgiCaptureSource {
     ///
     /// The device must be created on the adapter that owns the chosen output:
     /// `IDXGIOutput1::DuplicateOutput` fails otherwise.
+    ///
+    /// If no monitor claims to be primary, any attached one is taken rather than refusing to capture; this is a fallback, not the plan.
     pub fn primary() -> Result<Self, String> {
         unsafe {
             let factory: IDXGIFactory1 =
@@ -126,8 +128,6 @@ impl DxgiCaptureSource {
                 adapter_index += 1;
             }
 
-            // No monitor claimed to be primary. Rather than refuse to capture,
-            // take any attached one — but this is a fallback, not the plan.
             match first_attached {
                 Some((adapter, output_index, monitor)) => {
                     eprintln!(
@@ -141,6 +141,7 @@ impl DxgiCaptureSource {
         }
     }
 
+    /// `D3D11CreateDevice` requires `D3D_DRIVER_TYPE_UNKNOWN` whenever `pAdapter` is non-null: passing an adapter *and* `D3D_DRIVER_TYPE_HARDWARE` is an invalid combination documented to fail with `E_INVALIDARG`. The adapter already determines that this is the hardware device.
     fn with_output(
         adapter: IDXGIAdapter1,
         output_index: u32,
@@ -151,11 +152,6 @@ impl DxgiCaptureSource {
             let mut context: Option<ID3D11DeviceContext> = None;
             D3D11CreateDevice(
                 &adapter,
-                // `D3D11CreateDevice` requires `D3D_DRIVER_TYPE_UNKNOWN`
-                // whenever `pAdapter` is non-null — passing an adapter *and*
-                // `D3D_DRIVER_TYPE_HARDWARE` is an invalid combination and the
-                // call is documented to fail with E_INVALIDARG. The adapter
-                // already determines that this is the hardware device.
                 D3D_DRIVER_TYPE_UNKNOWN,
                 None,
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT,
@@ -195,6 +191,7 @@ impl DxgiCaptureSource {
         HMONITOR(self.monitor as *mut core::ffi::c_void)
     }
 
+    /// A geometry that does not hang together was read mid-change; the last good one is kept rather than aiming clicks with it.
     fn refresh_geometry(&mut self) {
         self.geometry_read_at = Instant::now();
         let Some(monitor) = read_monitor_rect(self.monitor()) else {
@@ -204,14 +201,14 @@ impl DxgiCaptureSource {
         let virtual_desktop = read_virtual_desktop();
         let scale = read_scale(self.monitor());
         let geometry = DisplayGeometry { monitor, virtual_desktop, scale };
-        // A geometry that does not hang together was read mid-change; keep the
-        // last good one rather than aiming clicks with it.
         if geometry.is_usable() {
             self.geometry = Some(geometry);
         }
     }
 
     /// (Re)create the duplication object — first time, and after ACCESS_LOST.
+    ///
+    /// Duplicating the secure desktop is refused, not broken.
     fn reinit_duplication(&mut self) -> Result<(), String> {
         unsafe {
             let output: IDXGIOutput = self
@@ -226,7 +223,6 @@ impl DxgiCaptureSource {
                     self.status = CaptureStatus::Live;
                     Ok(())
                 }
-                // Duplicating the secure desktop is refused, not broken.
                 Err(e) if e.code() == E_ACCESSDENIED => {
                     self.status = CaptureStatus::DesktopUnavailable;
                     Ok(())
@@ -268,6 +264,12 @@ impl DxgiCaptureSource {
 
     /// Acquire one frame. `Ok(None)` = nothing new this frame; `Err` = a hard
     /// failure the caller surfaces.
+    ///
+    /// `AcquireNextFrame` waits 15 ms: long enough to coalesce, short enough to keep the pump at ~30 fps when the screen is busy, and short enough that a stop is noticed promptly.
+    ///
+    /// A resolution change or a desktop switch (UAC, lock) rebuilds the duplication and lets the next tick try again, re-reading the geometry because a resolution change is one of the causes.
+    ///
+    /// A zero `LastPresentTime` means the desktop image did not change and the wake-up was a cursor move. Encoding the whole screen for a moved pointer is pure waste: the controller draws the cursor itself (PROTOCOL.md §5 `cursor_shape`).
     fn acquire(&mut self) -> Result<Option<RawFrame>, String> {
         let dup = match &self.duplication {
             Some(d) => d.clone(),
@@ -275,7 +277,6 @@ impl DxgiCaptureSource {
                 self.reinit_duplication()?;
                 match &self.duplication {
                     Some(d) => d.clone(),
-                    // Refused (secure desktop); status already says so.
                     None => return Ok(None),
                 }
             }
@@ -284,16 +285,10 @@ impl DxgiCaptureSource {
         unsafe {
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource: Option<IDXGIResource> = None;
-            // 15 ms: long enough to coalesce, short enough to keep the pump at
-            // ~30 fps when the screen is busy, and short enough that a stop is
-            // noticed promptly.
             match dup.AcquireNextFrame(15, &mut info, &mut resource) {
                 Ok(()) => {}
                 Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
                 Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => {
-                    // Resolution change, or a desktop switch (UAC/lock). Rebuild
-                    // and let the next tick try again; re-read the geometry
-                    // because a resolution change is one of the causes.
                     self.duplication = None;
                     self.refresh_geometry();
                     return Ok(None);
@@ -301,13 +296,8 @@ impl DxgiCaptureSource {
                 Err(e) => return Err(format!("AcquireNextFrame: {e}")),
             }
 
-            // Ensure the frame is released even on an early return below.
             let _guard = FrameGuard { dup: &dup };
 
-            // A zero `LastPresentTime` means the desktop image did not change
-            // and this wake-up was a cursor move. Encoding the whole screen for
-            // a moved pointer is pure waste: the controller draws the cursor
-            // itself (PROTOCOL.md §5 `cursor_shape`).
             if info.LastPresentTime == 0 {
                 return Ok(None);
             }
@@ -330,7 +320,6 @@ impl DxgiCaptureSource {
                 .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
                 .map_err(|e| format!("Map(staging): {e}"))?;
 
-            // BGRA rows (row_pitch may exceed w*4) -> tightly packed RGB.
             let src = mapped.pData as *const u8;
             let pitch = mapped.RowPitch as usize;
             let (w, h) = (w as usize, h as usize);
@@ -340,7 +329,6 @@ impl DxgiCaptureSource {
                 let dst_row = y * w * 3;
                 for x in 0..w {
                     let px = row.add(x * 4);
-                    // BGRA -> RGB
                     rgb[dst_row + x * 3] = *px.add(2);
                     rgb[dst_row + x * 3 + 1] = *px.add(1);
                     rgb[dst_row + x * 3 + 2] = *px;
@@ -367,14 +355,14 @@ impl Drop for FrameGuard<'_> {
 }
 
 impl FrameSource for DxgiCaptureSource {
+    /// The secure-desktop check comes before capturing, not after: there is no frame to tell us from there, and the point is to stop input before the next click lands somewhere invisible.
+    ///
+    /// A hard error is reported, not fatal: the pump idles, the host suspends input, and the next tick rebuilds. A wobble is not a dead session, but it is also not a live screen.
     fn next_frame(&mut self) -> Option<RawFrame> {
         if self.geometry_read_at.elapsed() >= GEOMETRY_POLL {
             self.refresh_geometry();
         }
 
-        // Checked before capturing, not after: on the secure desktop there is
-        // no frame to tell us from, and the point is to stop input before the
-        // next click lands somewhere invisible.
         if is_secure_desktop() {
             self.status = CaptureStatus::DesktopUnavailable;
             self.duplication = None;
@@ -389,9 +377,6 @@ impl FrameSource for DxgiCaptureSource {
                 frame
             }
             Err(msg) => {
-                // A hard error is reported, not fatal: the pump idles, the host
-                // suspends input, and the next tick rebuilds. A wobble is not a
-                // dead session, but it is also not a live screen.
                 self.duplication = None;
                 self.status = CaptureStatus::Unavailable(msg);
                 None
@@ -420,6 +405,7 @@ fn is_primary(monitor: HMONITOR) -> bool {
     read && (info.dwFlags & MONITORINFOF_PRIMARY) != 0
 }
 
+/// Uses `rcMonitor`, not `rcWork`: the captured image is the whole display, taskbar included, so a click's coordinate space has to be the whole display too.
 fn read_monitor_rect(monitor: HMONITOR) -> Option<Rect> {
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -428,8 +414,6 @@ fn read_monitor_rect(monitor: HMONITOR) -> Option<Rect> {
     if !unsafe { GetMonitorInfoW(monitor, &mut info).as_bool() } {
         return None;
     }
-    // rcMonitor, not rcWork: the captured image is the whole display, taskbar
-    // included, so a click's coordinate space has to be the whole display too.
     Some(Rect::new(
         info.rcMonitor.left,
         info.rcMonitor.top,

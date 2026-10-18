@@ -204,15 +204,13 @@ where
     /// Connect, authenticate, and run until the process is told to stop. The
     /// backoff/reconnect loop lives here; per PROTOCOL.md §4 the state machine
     /// decides what each reconnect *means*.
+    ///
+    /// §4.3 step 1: losing the signalling socket is a *control-plane* outage. Media over an already-established WebRTC path is unaffected, so the peer connection, its event stream and the capture pump outlive any one connection attempt. Tearing them down on a reconnect is how a session used to die of a moment's network flutter: the controller restarts ICE after its resume, and the host has to still be there to answer.
+    ///
+    /// The reconnect backoff is interruptible: asking the host to stop must not wait out a 15-second sleep with a modifier still held down on the machine.
     pub async fn run(mut self, mut pump_rx: mpsc::Receiver<PumpEvent>) -> Result<(), String> {
         let mut shutdown_rx = spawn_shutdown_watch();
         let mut answers = crate::consent::spawn_console_reader();
-        // §4.3 step 1: losing the signalling socket is a *control-plane*
-        // outage. Media over an already-established WebRTC path is unaffected,
-        // so the peer connection, its event stream and the capture pump outlive
-        // any one connection attempt. Tearing them down here is how a session
-        // used to die of a moment's network flutter: the controller restarts
-        // ICE after its resume, and the host has to still be there to answer.
         let (te_tx, mut te_rx) = mpsc::channel::<TransportEvent>(256);
         let mut peer: Option<Arc<PeerSession>> = None;
         let mut backoff = Duration::from_millis(500);
@@ -233,9 +231,6 @@ where
                     return Ok(());
                 }
                 Ok(ConnLoopExit::Reconnect) | Err(_) => {
-                    // The backoff is interruptible: asking the host to stop
-                    // must not wait out a 15-second sleep with a modifier still
-                    // held down on the machine.
                     tokio::select! {
                         _ = tokio::time::sleep(backoff) => {}
                         _ = shutdown_rx.recv() => {
@@ -249,6 +244,11 @@ where
         }
     }
 
+    /// The 10-second exchange timer is the host's, not the state machine's: an exchange that stalls must end the session rather than sit there holding the 1:1 slot.
+    ///
+    /// A `None` answer is the console closing. A host that can no longer be asked must not fall through to answering for its owner.
+    ///
+    /// Nothing is torn down on exit: see §4.3 in `run`. A session that has genuinely ended has already been cleared by whatever ended it.
     async fn run_one_connection(
         &mut self,
         pump_rx: &mut mpsc::Receiver<PumpEvent>,
@@ -286,9 +286,6 @@ where
                 }
                 _ = ticker.tick() => {
                     let now = now_ms();
-                    // The 10-second exchange timer is the host's, not the
-                    // state machine's: an exchange that stalls must end the
-                    // session rather than sit there holding the 1:1 slot.
                     if self.exchange.as_ref().is_some_and(|e| e.timed_out(now)) {
                         self.end_exchange(crate::pake::ExchangeError::TimedOut, &conn, peer, te_tx)
                             .await;
@@ -298,7 +295,6 @@ where
                 }
                 push = pushes.0.recv() => {
                     let Some(push) = push else {
-                        // Socket died: tell the machine, then reconnect.
                         let actions = self.machine.signaling_lost();
                         self.apply(&actions, &conn, peer, te_tx).await;
                         break ConnLoopExit::Reconnect;
@@ -308,9 +304,6 @@ where
                     }
                 }
                 answer = answers.recv() => {
-                    // `None` is the console closing. A host that can no longer
-                    // be asked must not fall through to answering for its
-                    // owner, so there is nothing to do with it.
                     if let Some(answer) = answer {
                         self.on_consent_answer(answer, &conn, peer, te_tx).await;
                     }
@@ -334,8 +327,6 @@ where
         };
         self.stay_awake(false);
 
-        // Nothing is torn down here: see §4.3 in `run`. A session that has
-        // genuinely ended has already been cleared by whatever ended it.
         Ok(exit)
     }
 
@@ -392,6 +383,7 @@ where
         self.register(conn).await.map(|()| true)
     }
 
+    /// A registration that is not written is one that happens again on the next launch, with a different id each time.
     async fn register(&mut self, conn: &Arc<SignalConnection>) -> Result<(), String> {
         let certificates = self.id_certificates();
         let certificate = certificates
@@ -419,8 +411,6 @@ where
         self.store_id_certificate(&registered.id_cert);
         if let Some(path) = &self.identity_path {
             if let Err(e) = self.identity.save(path) {
-                // A registration that is not written is one that happens again
-                // on the next launch, with a different id each time.
                 return Err(format!("the identity could not be saved: {e}"));
             }
         }
@@ -486,6 +476,9 @@ where
         }
     }
 
+    /// §2.18 arrives *after* this host's first `sdp`, so its own connection was already built and gathering. webrtc-rs 0.11 has no `set_configuration`, so these credentials reach the next connection in this session (a resume or an ICE restart) and the media path meanwhile relies on the controller's relay candidate.
+    ///
+    /// Another socket authenticating as this device is terminal for this process's connection; the host does not fight it in a loop.
     async fn on_push(
         &mut self,
         push: Push,
@@ -511,12 +504,6 @@ where
                     .count();
                 self.session_ice_servers = servers.ice_servers;
                 if relays > 0 && peer.as_ref().is_some_and(|p| !p.gathers_relay_candidates()) {
-                    // §2.18 arrives *after* this host's first `sdp`, so its own
-                    // connection was already built and gathering. webrtc-rs
-                    // 0.11 has no `set_configuration`, so these credentials
-                    // reach the next connection in this session (a resume or an
-                    // ICE restart) and the media path meanwhile relies on the
-                    // controller's relay candidate.
                     eprintln!(
                         "rc-host: this session's relay credentials arrived after the connection \
                          was built; they apply from the next ICE generation"
@@ -538,8 +525,6 @@ where
                 self.apply(&actions, conn, peer, te_tx).await;
             }
             Push::ServerError(e) if e.code == err::DISPLACED => {
-                // Another socket authenticated as this device. Terminal for
-                // this process's connection; do not fight it in a loop.
                 return Some(ConnLoopExit::Shutdown);
             }
             Push::ServerError(e) if e.code == err::ENTITLEMENT => {
@@ -557,6 +542,8 @@ where
     /// no peer connection, no capture — because the controller has not yet
     /// proved the access code. All this does is tear the last session down and
     /// arm the exchange.
+    ///
+    /// A previous session's peer and pump must be gone before a new one starts; this is what makes a second and third session work rather than silently reuse a dead track.
     async fn on_session_start(
         &mut self,
         grant: sig::SessionStart,
@@ -577,9 +564,6 @@ where
         if self.machine.take_rejection().is_some() {
             return;
         }
-        // A previous session's peer and pump must be gone before a new one
-        // starts; this is what makes a second and third session work rather
-        // than silently reuse a dead track.
         self.clear_session();
         self.teardown(peer).await;
         self.apply(&actions, conn, peer, te_tx).await;
@@ -602,6 +586,8 @@ where
     /// One relayed `pake` frame. Everything that decides whether the exchange
     /// may continue is in [`HostExchange`]; what is here is routing, the reply,
     /// and what completion means.
+    ///
+    /// v5: a step outside 1..3 is refused at decode, before any handling.
     async fn on_pake(
         &mut self,
         frame: sig::Pake,
@@ -613,7 +599,6 @@ where
         if exchange.session_id() != frame.session_id || exchange.is_complete() {
             return;
         }
-        // v5: a step outside 1..3 is refused at decode, before any handling.
         let step = match u32::try_from(frame.step) {
             Ok(step) if (1..=3).contains(&step) => step,
             _ => {
@@ -748,6 +733,7 @@ where
         }
     }
 
+    /// §2.17 Consent 4: Allow inside the first 1.5 s is refused, not queued. Saying so is the difference between a guard and a bug.
     async fn on_consent_answer(
         &mut self,
         answer: ConsentAnswer,
@@ -761,8 +747,6 @@ where
             .machine
             .consent_answered(answer.allows(), Some(&prompt_id), now_ms());
         if actions.is_empty() && answer.allows() {
-            // §2.17 Consent 4: Allow inside the first 1.5 s is refused, not
-            // queued. Saying so is the difference between a guard and a bug.
             println!("  Not yet — please answer again.");
             return;
         }
@@ -811,6 +795,8 @@ where
     ///
     /// The host answers; it never offers. An ICE-restart offer takes the same
     /// path, signed again over its own fingerprints.
+    ///
+    /// A peer neither sends nor accepts an `sdp` until its §2.17 exchange for this `sessionId` has completed: an earlier one is dropped, not refused, because it proves nothing either way.
     async fn on_remote_sdp(
         &mut self,
         sdp: sig::Sdp,
@@ -821,9 +807,6 @@ where
         if self.disposition(&sdp.session_id, peer) == Disposition::Drop {
             return;
         }
-        // "A peer neither sends nor accepts an `sdp` until its §2.17 exchange
-        // for this `sessionId` has completed": an earlier one is dropped, not
-        // refused, because it proves nothing either way.
         let (Some(exchange), Some(expected)) = (&self.exchange, self.expected_peer.clone()) else {
             eprintln!("rc-host: dropped an sdp that arrived before the access code was proved");
             return;
@@ -865,6 +848,8 @@ where
     /// The verified offer, installed and answered. Candidates are stripped
     /// first: they only ever arrive as `ice`, so "before any remote candidate"
     /// is literally true of the post-install check.
+    ///
+    /// §2.12: the fingerprints the WebRTC stack reports as installed must equal the verified ones. This closes any gap between the verifier's SDP parser and the stack's.
     async fn install_offer(
         &mut self,
         sdp: sig::Sdp,
@@ -886,9 +871,6 @@ where
             return;
         }
 
-        // §2.12: the fingerprints the WebRTC stack reports as installed must
-        // equal the verified ones. This closes any gap between the verifier's
-        // SDP parser and the stack's.
         let installed = p.installed_remote_sdp().await.unwrap_or_default();
         match rc_identity::sdp::fingerprints(&installed) {
             Ok(found) if found == sdp.fp => {}
@@ -1030,8 +1012,6 @@ where
                 let closed = matches!(s, IceState::Closed | IceState::Failed);
                 let actions = self.machine.ice_state_changed(ice_from_transport(s), now_ms());
                 if closed {
-                    // The track is gone. Stop capturing for it rather than
-                    // encoding into a closed peer until something else notices.
                     self.stop_capture().await;
                 }
                 self.apply(&actions, conn, peer, te_tx).await;
@@ -1056,9 +1036,6 @@ where
                 }
             }
             TransportEvent::ChannelsReady => {
-                // Announce our display so the controller sizes its window and
-                // labels its gesture palette in Windows terms, and tell it
-                // straight away if it must not click.
                 self.publish_display(peer).await;
                 self.publish_cursor(peer).await;
             }
@@ -1137,14 +1114,14 @@ where
     /// is purely additive — so the user sees that the screen is not live at the
     /// one place they are about to click. Making the stale frame itself
     /// unmistakable needs a controller-side change.
+    ///
+    /// §5: `cursor_shape` is sent when the channel opens and then on change only, so the last published value is remembered rather than resent.
     async fn publish_cursor(&mut self, peer: &Option<Arc<PeerSession>>) {
         let Some(p) = peer else { return };
         let shape = match self.dispatcher.state() {
             InputState::Running => ctrlp::CursorShapeName::Arrow,
             _ => ctrlp::CursorShapeName::NotAllowed,
         };
-        // §5: cursor_shape is sent when the channel opens and then on change
-        // only, so the last published value is remembered rather than resent.
         if self.published_cursor == Some(shape) {
             return;
         }
@@ -1334,6 +1311,14 @@ where
     }
 
     /// Perform the effects the state machine asked for.
+    ///
+    /// The controller may have offered while the owner was deciding; §2.17 Consent 3 says that offer is applied after the usual §2.12 checks, and not before.
+    ///
+    /// The controller is the offerer for the initial negotiation and restarts by default (§2.9, §4.3 step 4). A host that offered would be renegotiating against a peer that is already doing it.
+    ///
+    /// §2.11: `iceServers` is present only while the session is metered, and is then a fresh list with new 10-minute credentials. Absent means keep what we have.
+    ///
+    /// A host never sends `connect_req`, is never asked for an access code, has no watches of its own, and schedules its resumes on the 500 ms tick.
     async fn apply(
         &mut self,
         actions: &[SessionAction],
@@ -1345,9 +1330,6 @@ where
             match action {
                 SessionAction::StartPeerConnection { .. } => {
                     self.start_peer(peer, te_tx).await;
-                    // The controller offered while the owner was deciding;
-                    // §2.17 Consent 3 says that offer is applied now, after the
-                    // usual §2.12 checks, and not before.
                     if let (Some(held), Some(exchange)) =
                         (self.held_sdp.take(), self.exchange.as_ref())
                     {
@@ -1373,10 +1355,6 @@ where
                     self.dismiss_consent(*outcome);
                 }
                 SessionAction::RestartIce { .. } => {
-                    // The controller is the offerer for the initial
-                    // negotiation and restarts by default (§2.9, §4.3 step 4).
-                    // A host that offered here would be renegotiating against
-                    // a peer that is already doing it.
                 }
                 SessionAction::SendBye { session_id, reason } => {
                     let _ = conn
@@ -1418,9 +1396,6 @@ where
                         )
                         .await
                     {
-                        // §2.11: `iceServers` is present only while the session
-                        // is metered, and is then a fresh list with new
-                        // 10-minute credentials. Absent means keep what we have.
                         if !ok.ice_servers.is_empty()
                             && self.machine.session_id() == Some(ok.session_id.as_str())
                         {
@@ -1439,9 +1414,6 @@ where
                         let _ = p.send_ctrl(ctrl_msg::INPUT_RESET, &serde_json::json!({})).await;
                     }
                 }
-                // A host never sends `connect_req`, is never asked for an
-                // access code, has no watches of its own, and schedules its
-                // resumes on the 500 ms tick.
                 SessionAction::SendConnectReq { .. }
                 | SessionAction::PromptForAccessCode { .. }
                 | SessionAction::ReissueWatches
@@ -1493,7 +1465,6 @@ where
             }
             return;
         }
-        // Nothing held for a request that was not allowed is ever applied.
         self.held_sdp = None;
         self.held_ice.clear();
     }

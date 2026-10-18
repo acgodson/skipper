@@ -10,24 +10,22 @@ use rc_input::modifiers::{CommandPolicy, ModifierPolicy};
 use rc_input::*;
 use rc_proto::ctrl::{GestureName, KeyEvent, KeyModifiers};
 
-// ---------------------------------------------------------------------------
-// Keycodes
-// ---------------------------------------------------------------------------
-
 /// The macOS keycodes in 0x00..=0x7E that this host deliberately does not map.
 /// Anything else in that range must translate; anything added here must be a
+///
+/// The unassigned codes are 0x34, 0x42, 0x44, 0x46, 0x4D, 0x6C, 0x6E and 0x70.
 /// decision, not an oversight.
 const INTENTIONALLY_UNMAPPED: &[i32] = &[
-    0x34, // unassigned
+    0x34,
     kvk::FUNCTION,
-    0x42, 0x44, 0x46, 0x4D, // unassigned
+    0x42, 0x44, 0x46, 0x4D,
     kvk::KEYPAD_EQUALS,
     kvk::JIS_YEN,
     kvk::JIS_UNDERSCORE,
     kvk::JIS_KEYPAD_COMMA,
     kvk::JIS_EISU,
     kvk::JIS_KANA,
-    0x6C, 0x6E, 0x70, // unassigned
+    0x6C, 0x6E, 0x70,
 ];
 
 #[test]
@@ -55,18 +53,16 @@ fn out_of_range_keycodes_are_dropped_not_panicked() {
     }
 }
 
+/// The single most confusable pair in the table: macOS labels Backspace "Delete", and its Forward Delete is what Windows calls Delete.
 #[test]
 fn macos_delete_is_windows_backspace() {
-    // The single most confusable pair in the table: macOS labels Backspace
-    // "Delete", and its Forward Delete is what Windows calls Delete.
     assert_eq!(map_keycode(kvk::DELETE), Some(WinKey::new(vk::BACK)));
     assert_eq!(map_keycode(kvk::FORWARD_DELETE), Some(WinKey::ext(vk::DELETE)));
 }
 
+/// Without `KEYEVENTF_EXTENDEDKEY` the arrow cluster collides with the numpad when Num Lock is off, and Right-Alt behaves as Left-Alt. The ordinary keys must not be extended, or they become the wrong key.
 #[test]
 fn navigation_and_right_hand_modifiers_are_extended() {
-    // Without KEYEVENTF_EXTENDEDKEY the arrow cluster collides with the numpad
-    // when Num Lock is off, and Right-Alt behaves as Left-Alt.
     for k in [
         kvk::LEFT_ARROW, kvk::RIGHT_ARROW, kvk::UP_ARROW, kvk::DOWN_ARROW,
         kvk::HOME, kvk::END, kvk::PAGE_UP, kvk::PAGE_DOWN, kvk::FORWARD_DELETE,
@@ -75,20 +71,18 @@ fn navigation_and_right_hand_modifiers_are_extended() {
         let m = map_keycode(k).unwrap_or_else(|| panic!("0x{k:02X} unmapped"));
         assert!(m.extended, "0x{k:02X} -> VK 0x{:02X} must be extended", m.vk);
     }
-    // ...and the ordinary keys must NOT be, or they become the wrong key.
     for k in [kvk::A, kvk::RETURN, kvk::SPACE, kvk::TAB, kvk::KEYPAD0, kvk::F1] {
         assert!(!map_keycode(k).unwrap().extended, "0x{k:02X} must not be extended");
     }
 }
 
+/// The macOS digit row is not in numeric order: 6 sits at 0x16, before 5. A table built by counting upward instead of by name gets these two wrong.
 #[test]
 fn letters_and_digits_land_on_their_ascii_virtual_keys() {
     assert_eq!(map_keycode(kvk::A).unwrap().vk, u16::from(b'A'));
     assert_eq!(map_keycode(kvk::Z).unwrap().vk, u16::from(b'Z'));
     assert_eq!(map_keycode(kvk::N0).unwrap().vk, u16::from(b'0'));
     assert_eq!(map_keycode(kvk::N9).unwrap().vk, u16::from(b'9'));
-    // The macOS digit row is not in numeric order -- 6 sits at 0x16, before 5.
-    // A table built by counting upward instead of by name gets these two wrong.
     assert_eq!(map_keycode(0x16).unwrap().vk, u16::from(b'6'));
     assert_eq!(map_keycode(0x17).unwrap().vk, u16::from(b'5'));
 }
@@ -114,10 +108,6 @@ fn keypad_digits_are_distinct_from_the_digit_row() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Modifiers
-// ---------------------------------------------------------------------------
-
 fn keys(mods: KeyModifiers) -> Vec<WinKey> {
     modifier_keys(mods, ModifierPolicy::default())
 }
@@ -127,18 +117,16 @@ fn command_becomes_control_so_that_cmd_c_copies() {
     assert_eq!(keys(KeyModifiers::COMMAND), vec![WinKey::new(vk::LCONTROL)]);
 }
 
+/// Emitting Control twice would leave a stuck key: the chord is pressed in order and released in reverse, so a duplicate press is released once.
 #[test]
 fn command_plus_control_collapses_to_a_single_control() {
-    // Emitting Control twice would leave a stuck key: the chord is pressed in
-    // order and released in reverse, so a duplicate press is released once.
     let k = keys(KeyModifiers::COMMAND | KeyModifiers::CONTROL);
     assert_eq!(k, vec![WinKey::new(vk::LCONTROL)], "got {k:?}");
 }
 
+/// macOS reports Caps Lock as a state; Windows treats `VK_CAPITAL` as a toggle. Pressing it would flip the host's caps state on every keystroke.
 #[test]
 fn caps_lock_is_never_pressed() {
-    // macOS reports Caps Lock as a state; Windows treats VK_CAPITAL as a toggle.
-    // Pressing it would flip the host's caps state on every keystroke.
     let k = keys(KeyModifiers::CAPS_LOCK | KeyModifiers::SHIFT);
     assert_eq!(k, vec![WinKey::new(vk::LSHIFT)]);
 }
@@ -148,10 +136,9 @@ fn the_fn_bit_is_dropped() {
     assert!(keys(KeyModifiers::FUNCTION).is_empty());
 }
 
+/// A peer on a newer protocol must not be able to make this host press a key it does not understand.
 #[test]
 fn undefined_modifier_bits_from_a_future_peer_are_masked_off() {
-    // A peer on a newer protocol must not be able to make this host press a key
-    // it does not understand.
     assert!(keys(KeyModifiers(1 << 20)).is_empty());
     assert_eq!(keys(KeyModifiers(KeyModifiers::SHIFT.0 | (1 << 20))),
                vec![WinKey::new(vk::LSHIFT)]);
@@ -163,36 +150,27 @@ fn command_as_windows_policy_presses_the_win_key_instead() {
     assert_eq!(modifier_keys(KeyModifiers::COMMAND, policy), vec![WinKey::ext(vk::LWIN)]);
 }
 
+/// Any chord modifier means this is a shortcut, not typing. Injecting "c" instead of Ctrl+C is the bug this guard exists to prevent.
 #[test]
 fn text_injection_is_preferred_only_when_it_cannot_break_a_shortcut() {
-    // Plain and shifted text: inject the character the controller resolved.
     assert!(should_inject_as_text("a", KeyModifiers::default()));
     assert!(should_inject_as_text("A", KeyModifiers::SHIFT));
     assert!(should_inject_as_text("é", KeyModifiers::default()));
     assert!(should_inject_as_text("中", KeyModifiers::default()));
 
-    // Any chord modifier means this is a shortcut, not typing. Injecting "c"
-    // here instead of Ctrl+C is the bug this guard exists to prevent.
     assert!(!should_inject_as_text("c", KeyModifiers::COMMAND));
     assert!(!should_inject_as_text("c", KeyModifiers::CONTROL));
     assert!(!should_inject_as_text("c", KeyModifiers::OPTION));
 
-    // Control characters must arrive as real keystrokes.
     assert!(!should_inject_as_text("\r", KeyModifiers::default()));
     assert!(!should_inject_as_text("\t", KeyModifiers::default()));
     assert!(!should_inject_as_text("\u{1b}", KeyModifiers::default()));
     assert!(!should_inject_as_text("", KeyModifiers::default()));
 }
 
-// ---------------------------------------------------------------------------
-// Scroll
-// ---------------------------------------------------------------------------
-
+/// PROTOCOL.md §5: positive dy = content moves up. A positive Windows wheel delta moves content down. Getting this backwards is invisible in code review and instantly obvious to a user.
 #[test]
 fn scroll_direction_is_inverted_relative_to_the_protocol() {
-    // PROTOCOL.md §5: positive dy = content moves up. A positive Windows wheel
-    // delta moves content down. Getting this backwards is invisible in code
-    // review and instantly obvious to a user.
     let mut acc = ScrollAccumulator::default();
     assert!(acc.push(120.0).unwrap() < 0, "positive protocol dy must give a negative wheel delta");
     let mut acc = ScrollAccumulator::default();
@@ -205,10 +183,9 @@ fn one_notch_of_pixels_is_one_wheel_delta() {
     assert_eq!(acc.push(-120.0), Some(120));
 }
 
+/// The real failure this prevents: 60 events of half a pixel each, every one of which truncates to zero, so a slow trackpad drag scrolls nothing at all.
 #[test]
 fn slow_scrolling_accumulates_instead_of_rounding_away_to_nothing() {
-    // The real failure this prevents: 60 events of half a pixel each, every one
-    // of which truncates to zero, so a slow trackpad drag scrolls nothing at all.
     let mut acc = ScrollAccumulator::default();
     let mut emitted = 0i64;
     let mut any = false;
@@ -222,10 +199,9 @@ fn slow_scrolling_accumulates_instead_of_rounding_away_to_nothing() {
     assert_eq!(emitted, 30, "30 pixels of travel should yield 30 wheel units");
 }
 
+/// Property: emitted units plus the banked remainder always equals the exact conversion of everything pushed. Any leak shows up as drift.
 #[test]
 fn no_scroll_travel_is_lost_across_many_events() {
-    // Property: emitted units plus the banked remainder always equals the exact
-    // conversion of everything pushed. Any leak shows up as drift.
     let mut acc = ScrollAccumulator::default();
     let mut total_in = 0.0;
     let mut total_out = 0i64;
@@ -252,25 +228,18 @@ fn a_malformed_peer_cannot_poison_the_scroll_bank() {
     assert_eq!(acc.push(f64::NAN), None);
     assert_eq!(acc.push(f64::INFINITY), None);
     assert_eq!(acc.banked(), banked, "bank must survive a NaN unchanged");
-    // ...and still work afterwards. 60 pixels is 60 units at the default 1:1
-    // ratio; the earlier push already emitted its own 60.
     assert_eq!(acc.push(-60.0), Some(60));
 }
 
+/// Uses a fractional pixel delta, since whole pixels bank nothing at the default 1:1 pixels-per-unit ratio.
 #[test]
 fn reset_drops_the_banked_fraction() {
     let mut acc = ScrollAccumulator::default();
-    // A fractional pixel delta, since whole pixels bank nothing at the default
-    // 1:1 pixels-per-unit ratio.
     acc.push(-119.5);
     assert!(acc.banked() > 0.0, "expected a banked fraction, got {}", acc.banked());
     acc.reset();
     assert_eq!(acc.banked(), 0.0);
 }
-
-// ---------------------------------------------------------------------------
-// Gestures
-// ---------------------------------------------------------------------------
 
 #[test]
 fn every_gesture_resolves_to_a_real_chord() {
@@ -297,10 +266,9 @@ fn gestures_map_to_the_documented_windows_shortcuts() {
     assert_eq!(chord_for(GestureName::Launchpad).keys, &[WinKey::ext(win)]);
 }
 
+/// Mission Control and App Exposé deliberately collide, because Windows has no per-application exposé. Any other collision is a copy-paste error.
 #[test]
 fn only_the_documented_gesture_pair_shares_a_chord() {
-    // Mission Control and App Exposé deliberately collide -- Windows has no
-    // per-application exposé. Any *other* collision is a copy-paste error.
     let mut seen: Vec<(&str, Vec<WinKey>)> = Vec::new();
     for g in GestureName::ALL {
         let keys = chord_for(g).keys.to_vec();
@@ -316,10 +284,6 @@ fn only_the_documented_gesture_pair_shares_a_chord() {
         seen.push((g.as_wire(), keys));
     }
 }
-
-// ---------------------------------------------------------------------------
-// Coordinates
-// ---------------------------------------------------------------------------
 
 fn one_screen() -> DisplayGeometry {
     DisplayGeometry::single(1920, 1080, 1.0)
@@ -404,10 +368,6 @@ fn display_info_reports_the_captured_monitor_and_names_windows() {
     assert_eq!(info.scale, 1.5);
     assert_eq!(info.os, "windows");
 }
-
-// ---------------------------------------------------------------------------
-// The Mac -> Windows key policy
-// ---------------------------------------------------------------------------
 
 fn resolve(keycode: i32, mods: KeyModifiers, chars: &str) -> KeyResolution {
     KeyPolicy::default().resolve(&KeyEvent { keycode, mods: mods.0, chars: chars.into() })

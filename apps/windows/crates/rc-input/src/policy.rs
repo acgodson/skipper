@@ -111,18 +111,19 @@ impl KeyPolicy {
     }
 
     /// The whole decision for one key event.
+    ///
+    /// A bare modifier event names its key outright: its own `mods` bit may or may not be set yet depending on which edge this is, so it is not consulted.
+    ///
+    /// Caps Lock and fn are reported by macOS as *state*. Honouring them would flip a Windows toggle on every keystroke and leave it stuck.
+    ///
+    /// A keycode with no Windows key still reports its modifiers, which are real and still held; dropping them would silently release Command when an unmapped key is pressed under it.
     pub fn resolve(&self, event: &KeyEvent) -> KeyResolution {
         let mods = KeyModifiers::from_wire(event.mods);
 
         if let Some(modifier) = self.modifier_at(event.keycode) {
-            // A bare modifier event. Its own `mods` bit may or may not be set
-            // yet depending on which edge this is, so it is not consulted: the
-            // key being named is the whole message.
             return KeyResolution::Keystroke { modifiers: Vec::new(), key: Some(modifier) };
         }
 
-        // Caps Lock and fn are reported by macOS as *state*. Honouring them
-        // would flip a Windows toggle on every keystroke and leave it stuck.
         if matches!(event.keycode, kvk::CAPS_LOCK | kvk::FUNCTION) {
             return KeyResolution::Ignored;
         }
@@ -134,10 +135,6 @@ impl KeyPolicy {
         let held = self.chord_modifiers(mods);
         match Self::physical(event.keycode) {
             Some(key) => KeyResolution::Keystroke { modifiers: held, key: Some(key) },
-            // No Windows key at this position, but the modifiers in the event
-            // are still real and still held, so they are reported rather than
-            // dropped - otherwise holding Command and pressing an unmapped key
-            // would silently release Command.
             None if !held.is_empty() => KeyResolution::Keystroke { modifiers: held, key: None },
             None => KeyResolution::Ignored,
         }

@@ -141,8 +141,6 @@ fn the_guess_is_charged_when_step_two_leaves_the_host_not_when_it_fails() {
     );
     assert_eq!(charged.host.failure_times_ms, vec![1_000]);
 
-    // The exchange is abandoned here, exactly as a hang-up would. Nothing
-    // withdraws the charge.
     drop(peers.host);
     assert_eq!(
         guesses.ledger(&peers.controller_pubkey).unwrap().controller.failures,
@@ -305,6 +303,8 @@ fn an_out_of_order_step_or_the_timeout_ends_the_exchange_as_failed() {
 
 /// The counters are per *key*, not per base64 spelling, so one controller
 /// cannot collect a fresh budget by re-encoding its own key.
+///
+/// §0: canonical padded standard base64 is the only accepted spelling, so a re-encoded key gets no counter at all rather than a fresh one.
 #[test]
 fn the_budget_is_keyed_on_the_canonical_device_key() {
     let scratch = Scratch::new("canonical");
@@ -324,8 +324,6 @@ fn the_budget_is_keyed_on_the_canonical_device_key() {
         1,
         "the canonical spelling finds the counter it wrote"
     );
-    // §0: canonical padded standard base64 is the *only* accepted spelling, so
-    // a re-encoded key does not get a counter at all rather than a fresh one.
     assert!(
         matches!(
             guesses.ledger(pubkey.trim_end_matches('=')),
@@ -350,8 +348,6 @@ fn an_unstorable_charge_refuses_the_exchange_rather_than_running_it_uncounted() 
     let mut peers = arm_peers(&guesses, CODE, CODE, 1_000).unwrap();
     let step1 = peers.controller.step(None).unwrap().unwrap();
 
-    // A counter file that is not readable is not writable either: the whole
-    // read-modify-write of the charge fails.
     let path = scratch.0.join("guess-counters.bin");
     std::fs::write(&path, b"wreckage").unwrap();
     let error = peers

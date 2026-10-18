@@ -40,6 +40,8 @@ pub struct ModifierPolicy {
 ///
 /// The macOS `fn` bit is dropped for the same reason as in the keycode table:
 /// Windows has nothing it means.
+///
+/// Duplicates are dropped by `push`: ⌃⌘ collapses to a single Control, which is what makes the chord land instead of double-pressing Control.
 pub fn modifier_keys(mods: KeyModifiers, policy: ModifierPolicy) -> Vec<WinKey> {
     let mods = KeyModifiers::from_wire(mods.0);
     let mut keys = Vec::with_capacity(4);
@@ -60,8 +62,6 @@ pub fn modifier_keys(mods: KeyModifiers, policy: ModifierPolicy) -> Vec<WinKey> 
     }
     if mods.contains(KeyModifiers::COMMAND) {
         push(match policy.command {
-            // Deduplicated by `push`: ⌃⌘ collapses to a single Control, which is
-            // what makes the chord land instead of double-pressing Control.
             CommandPolicy::AsControl => WinKey::new(vk::LCONTROL),
             CommandPolicy::AsWindows => WinKey::ext(vk::LWIN),
         });
@@ -80,6 +80,8 @@ pub fn modifier_keys(mods: KeyModifiers, policy: ModifierPolicy) -> Vec<WinKey> 
 /// It must **not** be used when a non-shift modifier is held: ⌘C must arrive as
 /// Ctrl+C, not as the letter "c". Shift is the exception because it is already
 /// baked into `chars` — the controller sent "C", not "c".
+///
+/// Control characters (Return, Tab, Escape, Backspace) arrive in `chars` on macOS but must be injected as real keys, so applications see the keystroke rather than a stray control character.
 pub fn should_inject_as_text(chars: &str, mods: KeyModifiers) -> bool {
     if chars.is_empty() {
         return false;
@@ -89,8 +91,5 @@ pub fn should_inject_as_text(chars: &str, mods: KeyModifiers) -> bool {
     if mods.0 & non_text.0 != 0 {
         return false;
     }
-    // Control characters (Return, Tab, Escape, Backspace) arrive in `chars` on
-    // macOS but must be injected as real keys so that applications see the
-    // keystroke rather than a stray control character.
     !chars.chars().any(|c| c.is_control())
 }

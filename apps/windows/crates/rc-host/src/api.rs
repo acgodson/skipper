@@ -273,6 +273,7 @@ impl ApiClient {
         }
     }
 
+    /// An empty body is a 204 with a unit return type.
     async fn once<T: serde::de::DeserializeOwned>(
         &self,
         request: reqwest::RequestBuilder,
@@ -311,7 +312,6 @@ impl ApiClient {
             return Err(ApiFailure::Refused(refused));
         }
         if body.is_empty() {
-            // A 204 with a unit return type.
             return serde_json::from_slice(b"null")
                 .map_err(|e| ApiFailure::Malformed(e.to_string()));
         }

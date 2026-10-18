@@ -30,12 +30,12 @@ const KEY_L: WinKey = WinKey { vk: vk::letter(b'L'), extended: false };
 /// gesture that silently did nothing would look like a broken connection, and
 /// the exhaustive `match` means adding a tenth gesture to the protocol fails to
 /// compile until it is given a Windows meaning.
+///
+/// Windows has no per-application window exposé; Task View is the closest thing that is not simply nothing.
 pub fn chord_for(gesture: GestureName) -> GestureChord {
     use GestureName::*;
     match gesture {
         MissionControl => GestureChord { keys: &[LWIN, TAB], label: "Task View" },
-        // Windows has no per-application window exposé. Task View is the closest
-        // thing that is not simply nothing.
         AppExpose => GestureChord { keys: &[LWIN, TAB], label: "Task View" },
         ShowDesktop => GestureChord { keys: &[LWIN, KEY_D], label: "Show Desktop" },
         Launchpad => GestureChord { keys: &[LWIN], label: "Start Menu" },

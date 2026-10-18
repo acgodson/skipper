@@ -69,10 +69,10 @@ fn go_available() -> bool {
 /// `-insecure-http` with no `-entitlement` is rc-signal's stand-alone mode:
 /// `connect_req` is authorised without an account, which is what lets the
 /// signalling and authentication path be tested without rc-api.
+///
+/// The server gets a TURN secret and URL so §2.18 and §2.11 have credentials to mint; the relay is never contacted, only the issuing path is exercised.
 async fn start_server(tag: &str, port: u16) -> ServerGuard {
     let scratch = Scratch::new(tag);
-    // A TURN secret and URL so §2.18 and §2.11 have credentials to mint; the
-    // relay is never contacted, only the issuing path is exercised.
     let turn_secret = scratch.0.join("turn.secret");
     std::fs::write(&turn_secret, b"a-local-turn-secret").unwrap();
     let child = Command::new("go")
@@ -156,6 +156,13 @@ async fn bring_up(config: &Config, label: &str, dev_role: &str) -> Device {
     }
 }
 
+/// §2.9: `connect_req` carries only the deviceId; the code is not the server's business any more.
+///
+/// §2.17: the key the transcript bound is the one `session_start` named, and the controller's is the one `connect_ok` named.
+///
+/// §3.4/§2.18: the host's first relayed `sdp` starts metering, and `ice_servers` is pushed to both peers *before* that `sdp` reaches the controller, so the controller sees `ice_servers` first.
+///
+/// The server relays fp, pubkey, sig and mac unchanged and never checks them; the controller does, using the Mac's own verifier.
 #[tokio::test]
 async fn the_host_completes_a_v5_session_the_mac_controller_would_accept() {
     if !go_available() {
@@ -183,7 +190,6 @@ async fn the_host_completes_a_v5_session_the_mac_controller_would_accept() {
     let scratch = Scratch::new("secrets");
     let secrets = SecretStore::open(scratch.0.join("secrets")).unwrap();
 
-    // Presence.
     let _: sig::WatchOk = controller
         .conn
         .request(
@@ -201,8 +207,6 @@ async fn the_host_completes_a_v5_session_the_mac_controller_would_accept() {
         other => panic!("expected presence, got {other:?}"),
     }
 
-    // §2.9: connect_req carries only the deviceId; the code is not the
-    // server's business any more.
     let granted: sig::ConnectOk = controller
         .conn
         .request(
@@ -242,7 +246,6 @@ async fn the_host_completes_a_v5_session_the_mac_controller_would_accept() {
     );
     let session = granted.session_id.clone();
 
-    // ---- §2.17, relayed by the real server ----
     let guesses = GuessStore::new(&secrets);
     let mut host_exchange = HostExchange::arm(
         &guesses,
@@ -283,15 +286,12 @@ async fn the_host_completes_a_v5_session_the_mac_controller_would_accept() {
         .expect("step 3 verifies");
     assert!(host_exchange.is_complete());
 
-    // §2.17: the key the transcript bound is the one session_start named, and
-    // the controller's is the one connect_ok named.
     assert_eq!(
         controller_exchange.peer_public_key_base64(),
         granted.host_pubkey
     );
     assert_eq!(host_exchange.controller_pubkey(), start.controller_pubkey);
 
-    // ---- §2.12: the host's first sdp ----
     let mac_key = host_exchange.sdp_mac_key().unwrap();
     let body = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n\
 m=video 9 UDP/TLS/RTP/SAVPF 96\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\n\
@@ -316,9 +316,6 @@ a=setup:active\r\n";
         .await
         .unwrap();
 
-    // §3.4/§2.18: the host's first relayed sdp starts metering, and
-    // ice_servers is pushed to both peers *before* that sdp reaches the
-    // controller. So the controller sees ice_servers first.
     let mut answer = None;
     let mut saw_ice_servers = false;
     for _ in 0..4 {
@@ -350,8 +347,6 @@ a=setup:active\r\n";
         "v5 §2.18: metering pushes this session's ICE servers before the sdp"
     );
 
-    // The server relays fp, pubkey, sig and mac unchanged and never checks
-    // them; the controller does. This is the Mac's own verifier.
     let controller_mac_key = controller_exchange.sdp_mac_key().unwrap();
     sdp::verify(
         &controller_mac_key,
@@ -368,7 +363,6 @@ a=setup:active\r\n";
     )
     .expect("the answer that came back through the real server must verify");
 
-    // ---- ICE, renew, bye ----
     let candidate = sig::Ice {
         session_id: session.clone(),
         candidate: "candidate:1 1 udp 2130706431 192.0.2.7 50000 typ host".into(),
@@ -420,6 +414,8 @@ a=setup:active\r\n";
 /// §2.2: the certificate from `register_ok` is what makes this PC keep its
 /// Device ID when the registry no longer knows the key — and `preferredDeviceId`
 /// without one is ignored, so the certificate is the load-bearing half.
+///
+/// A different key asking for that id without a certificate for it gets a fresh one, which is why a host that loses its certificate loses its id.
 #[tokio::test]
 async fn the_stored_certificate_is_what_reclaims_this_pcs_device_id() {
     if !go_available() {
@@ -436,14 +432,11 @@ async fn the_stored_certificate_is_what_reclaims_this_pcs_device_id() {
     assert!(!original.existing);
     assert!(!original.id_cert.is_empty());
 
-    // Same key again: registration is idempotent per key, id unchanged.
     let (again, _rx) = SignalConnection::connect(&config).await.unwrap();
     let repeat = again.register(&key, "Windows Host", "", "").await.unwrap();
     assert_eq!(repeat.device_id, original.device_id);
     assert!(repeat.existing);
 
-    // A different key asking for that id *without* a certificate for it gets a
-    // fresh one — which is why a host that loses its certificate loses its id.
     let stranger = DeviceKey::generate();
     let (third, _rx) = SignalConnection::connect(&config).await.unwrap();
     let refused = third

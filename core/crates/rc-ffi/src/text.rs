@@ -19,7 +19,9 @@ unsafe fn raw_bytes<'a>(
     Ok(Some(unsafe { std::slice::from_raw_parts(pointer, len) }))
 }
 
-// SAFETY: `pointer` is null (with `len` 0) or valid for `len` bytes that outlive the call.
+/// # Safety
+///
+/// `pointer` is null (with `len` 0) or valid for `len` bytes that outlive the call.
 pub(crate) unsafe fn optional_text<'a>(
     pointer: *const u8,
     len: usize,

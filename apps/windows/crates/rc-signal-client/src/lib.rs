@@ -112,6 +112,14 @@ pub struct PushReceiver(pub mpsc::Receiver<Push>);
 impl SignalConnection {
     /// Open the socket. The first `challenge` is awaited here so callers can
     /// immediately authenticate; later challenges also refresh the stored nonce.
+    ///
+    /// §0: binary frames are a protocol error. The server never sends them, so one is treated as a dead socket.
+    ///
+    /// §0: unknown pushes are ignored.
+    ///
+    /// When the socket ends, every in-flight request fails so callers see `Closed`, not a hang.
+    ///
+    /// The server pushes `challenge` immediately on connect (§2.1); `connect` waits for it so `authenticate` has a nonce to sign.
     pub async fn connect(config: &Config) -> Result<(Self, PushReceiver), SignalError> {
         let request = config
             .url
@@ -132,7 +140,6 @@ impl SignalConnection {
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let challenge = Arc::new(Mutex::new(None::<Vec<u8>>));
 
-        // Writer task.
         tokio::spawn(async move {
             while let Some(frame) = out_rx.recv().await {
                 if sink.send(frame).await.is_err() {
@@ -142,7 +149,6 @@ impl SignalConnection {
             let _ = sink.close().await;
         });
 
-        // Reader task: correlate replies, forward pushes, capture challenges.
         {
             let pending = pending.clone();
             let challenge = challenge.clone();
@@ -160,8 +166,6 @@ impl SignalConnection {
                         Message::Close(c) => {
                             break c.map(|c| c.to_string()).unwrap_or_else(|| "close".into())
                         }
-                        // §0: binary frames are a protocol error; the server
-                        // never sends them, so treat one as a dead socket.
                         _ => break "unexpected non-text frame".to_string(),
                     };
                     let env = match Envelope::decode(text.as_bytes()) {
@@ -169,7 +173,6 @@ impl SignalConnection {
                         Err(e) => break format!("bad frame: {e}"),
                     };
 
-                    // A correlated reply?
                     if !env.re.is_empty() {
                         if let Some(tx) = pending.lock().await.remove(&env.re) {
                             let _ = tx.send(env);
@@ -240,18 +243,14 @@ impl SignalConnection {
                                 forward(Push::ServerError(p)).await;
                             }
                         }
-                        // §0: unknown pushes are ignored.
                         _ => {}
                     }
                 };
-                // Fail every in-flight request so callers see Closed, not a hang.
                 pending.lock().await.clear();
                 let _ = push_tx.send(Push::Disconnected(reason)).await;
             });
         }
 
-        // The server pushes `challenge` immediately on connect (§2.1). Wait for
-        // it here so `authenticate` has a nonce to sign.
         let conn = Self {
             outgoing: out_tx,
             pending,
@@ -354,8 +353,6 @@ impl SignalConnection {
             .map_err(|e| SignalError::Protocol(e.to_string()))
     }
 
-    // ---------------- authentication flows (§2.2, §2.4) ----------------
-
     /// Mint a device id, or reclaim the one this key already holds. Consumes
     /// the pending challenge; the server pushes a fresh one after
     /// `register_ok` for the follow-up `hello`.
@@ -417,14 +414,14 @@ impl SignalConnection {
 
     /// Authenticate an existing device. On success the socket is this device's
     /// presence connection until it dies.
+    ///
+    /// The register flow consumes the connect-time challenge and the server pushes another, so this waits briefly for one to be present.
     pub async fn hello(
         &self,
         device_id: &str,
         key: &rc_identity::DeviceKey,
         role: &str,
     ) -> Result<sig::HelloOk, SignalError> {
-        // The register flow consumes the connect-time challenge and the server
-        // pushes another; wait briefly for one to be present.
         let deadline = tokio::time::Instant::now() + self.request_timeout;
         let nonce = loop {
             if let Some(nonce) = self.take_challenge_nonce().await {

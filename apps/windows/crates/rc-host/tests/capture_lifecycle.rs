@@ -19,10 +19,6 @@ use rc_proto::ctrl::QualityMode;
 use rc_input::DisplayGeometry;
 use tokio::sync::mpsc;
 
-// ---------------------------------------------------------------------------
-// Doubles
-// ---------------------------------------------------------------------------
-
 /// A source that blocks for `block` on every frame, counts its frames, and can
 /// be told to report a status. Blocking is the point: it is what makes
 /// cancellation a real question.
@@ -133,10 +129,6 @@ async fn drain(rx: &mut mpsc::Receiver<PumpEvent>) -> Vec<PumpEvent> {
     out
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
-
 /// The defect: the frame source was `take()`n once and the pump `abort()`ed, so
 /// a second session found no source and the first pump's encoder outlived it.
 #[tokio::test]
@@ -233,16 +225,11 @@ async fn a_closed_video_track_ends_the_pump() {
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(false)), ..Default::default() });
     let (tx, _rx) = mpsc::channel(32);
     let pump = CapturePump::start(source, sink, tx, config(), fakes.factory.clone());
-    // No stop flag is set: the pump has to end itself.
     let returned = tokio::time::timeout(Duration::from_secs(2), pump.stop(Duration::from_secs(2)))
         .await
         .expect("must not hang");
     assert!(returned.is_some());
 }
-
-// ---------------------------------------------------------------------------
-// Capture availability
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn a_protected_desktop_is_reported_and_nothing_is_sent() {
@@ -374,10 +361,6 @@ async fn an_encoder_that_cannot_be_built_is_unavailable_not_a_panic() {
     assert!(events.iter().any(|e| matches!(e, PumpEvent::Status(CaptureStatus::Unavailable(_)))));
 }
 
-// ---------------------------------------------------------------------------
-// Keyframes
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn the_first_frame_of_a_session_is_a_keyframe() {
     let fakes = fake_encoders(Duration::ZERO, 0);
@@ -412,10 +395,9 @@ async fn a_keyframe_request_is_honoured_on_the_next_frame() {
     assert_eq!(keyframes.first(), Some(&true), "the request applies to the very next frame");
 }
 
+/// The first encode fails, and it was the session's opening keyframe. If the request were consumed by the failed call the peer would never get an IDR.
 #[tokio::test]
 async fn a_keyframe_lost_to_an_encode_failure_is_asked_for_again() {
-    // The first encode fails, and it was the session's opening keyframe. If the
-    // request were consumed by the failed call the peer would never get an IDR.
     let fakes = fake_encoders(Duration::ZERO, 1);
     let source = SlowSource::new(Duration::from_millis(1));
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
@@ -428,10 +410,6 @@ async fn a_keyframe_lost_to_an_encode_failure_is_asked_for_again() {
     assert!(keyframes.len() >= 2, "the pump recovered and kept encoding");
     assert!(keyframes[1], "the keyframe the failed encode swallowed is requested again");
 }
-
-// ---------------------------------------------------------------------------
-// Latency: the newest frame wins, a slow encoder drops rather than delays
-// ---------------------------------------------------------------------------
 
 fn labelled(label: u32) -> RawFrame {
     let mut rgb = vec![0u8; 16 * 16 * 3];
@@ -590,11 +568,6 @@ async fn a_quality_change_rebuilds_the_encoder_at_the_new_bitrate_mid_session() 
     assert!(sink.sent.lock().unwrap().len() > 3, "frames kept flowing across the changes");
 }
 
-// ---------------------------------------------------------------------------
-// Load response: a rung down when the encoder cannot keep up, a rung back up
-// when the rung above would fit
-// ---------------------------------------------------------------------------
-
 fn window(load: &mut LoadResponse, cost: Duration) -> Option<rc_host::LoadStep> {
     let mut step = None;
     for _ in 0..LoadResponse::WINDOW {
@@ -655,10 +628,6 @@ fn it_steps_back_up_only_when_the_rung_above_is_predicted_to_fit() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Sizing for the encoder
-// ---------------------------------------------------------------------------
-
 #[test]
 fn a_frame_wider_than_the_rung_is_resampled_to_the_ladder_size() {
     let frame = RawFrame { width: 3840, height: 2160, rgb: vec![0u8; 3840 * 2160 * 3] };
@@ -696,7 +665,6 @@ fn reduction_averages_rather_than_dropping_pixels() {
     assert_eq!(fitted.rgb, vec![30, 30, 30, 150, 150, 150], "a 1.5:1 reduction weighs by coverage");
 }
 
-// ---------------------------------------------------------------------------
 /// The real encoder, on the real frames, producing a real Annex-B start code —
 /// so the seam is not only exercised by the fake.
 #[test]

@@ -130,6 +130,19 @@ pub struct PeerSession {
 }
 
 impl PeerSession {
+    /// The screen track is H.264: the encoder (Media Foundation on Windows, a synthetic source in the macOS interop harness) hands over Annex-B access units and webrtc-rs packetises.
+    ///
+    /// The advertised codec is Constrained Baseline, level 5.0, packetization-mode 1. The level is 5.0 (`...32`) and not 3.1 (`...1f`) because 3.1 caps at 3600 macroblocks (1280x720) and this host sends up to 2560x1440 (14400). Advertising a level we exceed is the same dishonesty WINDOWS-HOST.md §4 warns about, pointing the other way. Level 5.0 allows 22080 macroblocks, comfortably more than the sharp rung's widest frame (2560 wide).
+    ///
+    /// Stating it is safe: RFC 6184 §8.2.2 excludes the level part of profile-level-id from symmetric use, and webrtc-rs compares only profile_idc and profile_iop (`42e0`) when matching an offer, so the level does not affect negotiation. With `level-asymmetry-allowed=1` it describes what this host sends, not what it could decode.
+    ///
+    /// The video sender's RTCP is read continuously. Nothing read it before, so a PLI was never seen and a decoder that lost reference frames stayed broken for the rest of the session. Reading it is also what drives the interceptors' own bookkeeping; `read_rtcp` returning an error means the sender closed.
+    ///
+    /// §6: nothing else may exist. An unexpected channel is ignored rather than killing the session.
+    ///
+    /// `hi` opening is the later of the two in practice, so readiness is announced when ctrl is known and this channel opened. A false early signal is impossible because sends on an unopened channel error and the owner retries nothing before `ChannelsReady`.
+    ///
+    /// §5/§6 frames are text JSON envelopes; unknown or broken frames are ignored (§0).
     pub async fn new(
         config: PeerConfig,
     ) -> Result<(Self, mpsc::Receiver<TransportEvent>), TransportError> {
@@ -149,28 +162,10 @@ impl PeerSession {
         };
         let pc = Arc::new(api.new_peer_connection(rtc_config).await?);
 
-        // The screen track. H.264 — the encoder (Media Foundation on Windows,
-        // a synthetic source in the macOS interop harness) hands us Annex-B
-        // access units; webrtc-rs packetises.
         let video = Arc::new(TrackLocalStaticSample::new(
             RTCRtpCodecCapability {
                 mime_type: MIME_TYPE_H264.to_owned(),
                 clock_rate: 90000,
-                // Constrained Baseline, level 5.0, packetization-mode 1.
-                //
-                // The level is 5.0 (`...32`) and not 3.1 (`...1f`) because 3.1
-                // caps at 3600 macroblocks — 1280x720 — and this host sends up
-                // to 2560x1440 (14400). Advertising a level we exceed is the
-                // same dishonesty WINDOWS-HOST.md §4 warns about, pointing the
-                // other way. Level 5.0 allows 22080 macroblocks, which is
-                // comfortably more than the sharp rung's widest frame (2560 wide).
-                //
-                // Safe to state: RFC 6184 §8.2.2 excludes the level part of
-                // profile-level-id from symmetric use, and webrtc-rs compares
-                // only profile_idc and profile_iop (`42e0`) when matching an
-                // offer, so the level does not affect negotiation. With
-                // `level-asymmetry-allowed=1` it describes what this host
-                // sends, not what it could decode.
                 sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e032"
                     .to_owned(),
                 ..Default::default()
@@ -182,10 +177,6 @@ impl PeerSession {
 
         let (tx, rx) = mpsc::channel::<TransportEvent>(256);
 
-        // Nothing read this sender's RTCP before, so a PLI was never seen and a
-        // decoder that lost reference frames stayed broken for the rest of the
-        // session. Reading it is also what drives the interceptors' own
-        // bookkeeping; `read_rtcp` returning an error means the sender closed.
         {
             let tx = tx.clone();
             tokio::spawn(async move {
@@ -203,7 +194,6 @@ impl PeerSession {
         }
         let ctrl_slot: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
 
-        // ICE connection state -> owner.
         {
             let tx = tx.clone();
             pc.on_ice_connection_state_change(Box::new(move |state| {
@@ -214,7 +204,6 @@ impl PeerSession {
             }));
         }
 
-        // Trickle candidates -> owner -> signaling.
         {
             let tx = tx.clone();
             pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
@@ -229,7 +218,6 @@ impl PeerSession {
             }));
         }
 
-        // The offerer's in-band channels arrive here.
         {
             let tx = tx.clone();
             let ctrl_slot = ctrl_slot.clone();
@@ -241,14 +229,12 @@ impl PeerSession {
                     let is_ctrl = label == "ctrl";
                     let is_hi = label == "hi";
                     if !is_ctrl && !is_hi {
-                        // §6: nothing else may exist. Ignore, don't kill the session.
                         return;
                     }
                     if is_ctrl {
                         *ctrl_slot.lock().await = Some(channel.clone());
                     }
 
-                    // Track readiness: ChannelsReady once both are open.
                     {
                         let tx = tx.clone();
                         let ctrl_slot = ctrl_slot.clone();
@@ -257,12 +243,6 @@ impl PeerSession {
                             let tx = tx.clone();
                             let ctrl_slot = ctrl_slot.clone();
                             Box::pin(async move {
-                                // `hi` opening is the later of the two in
-                                // practice; announce readiness when ctrl is
-                                // known and this channel opened. A false early
-                                // signal is impossible because sends on an
-                                // unopened channel error and the owner retries
-                                // nothing before ChannelsReady.
                                 let ctrl_known = ctrl_slot.lock().await.is_some();
                                 if ctrl_known && this.label() == "hi" {
                                     let _ = tx.send(TransportEvent::ChannelsReady).await;
@@ -276,9 +256,8 @@ impl PeerSession {
                         let tx = tx2.clone();
                         let is_ctrl = is_ctrl;
                         Box::pin(async move {
-                            // §5/§6 frames are text JSON envelopes.
                             let Ok(env) = Envelope::decode(&msg.data) else {
-                                return; // unknown/broken frames are ignored (§0)
+                                return;
                             };
                             let event = if is_ctrl {
                                 TransportEvent::Ctrl(env)
@@ -340,9 +319,10 @@ impl PeerSession {
         self.has_turn
     }
 
+    /// An empty candidate is end-of-candidates, which webrtc-rs needs no explicit signal for.
     pub async fn add_remote_candidate(&self, ice: &sig::Ice) -> Result<(), TransportError> {
         if ice.candidate.is_empty() {
-            return Ok(()); // end-of-candidates; webrtc-rs needs no explicit signal
+            return Ok(());
         }
         self.pc
             .add_ice_candidate(RTCIceCandidateInit {

@@ -44,9 +44,11 @@ async fn next_event(
     }
 }
 
+/// PROTOCOL.md §2.12 puts the installed-fingerprint re-check between installing the offer and answering it, so the host takes the offer in two calls, not one.
+///
+/// Media is Annex-B-shaped samples written until the controller reads RTP. The bytes need not decode; RTP delivery through SRTP is what is asserted.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_mac_shaped_controller_negotiates_channels_and_media() {
-    // ---- the fake controller, shaped like PeerSession.swift's offerer ------
     let mut media = MediaEngine::default();
     media.register_default_codecs().unwrap();
     let mut registry = Registry::new();
@@ -83,28 +85,22 @@ async fn a_mac_shaped_controller_negotiates_channels_and_media() {
         .await
         .unwrap();
 
-    // The controller must see RTP arrive on its recvonly transceiver.
     let (track_tx, mut track_rx) = mpsc::channel::<String>(4);
     controller.on_track(Box::new(move |track, _, _| {
         let track_tx = track_tx.clone();
         Box::pin(async move {
             let codec = track.codec().capability.mime_type.clone();
-            // Reading one packet proves SRTP actually delivered payload.
             if track.read_rtp().await.is_ok() {
                 let _ = track_tx.send(codec).await;
             }
         })
     }));
 
-    // ---- the host under test ----------------------------------------------
     let (host, mut host_events) =
         PeerSession::new(PeerConfig { ice_servers: vec![], force_relay: false }).await.unwrap();
 
-    // ---- SDP + trickle over "signaling" (direct calls here) ----------------
     let offer = controller.create_offer(None).await.unwrap();
     controller.set_local_description(offer.clone()).await.unwrap();
-    // Two calls, not one: PROTOCOL.md §2.12 puts the installed-fingerprint
-    // re-check between installing the offer and answering it.
     host.set_remote_offer(&offer.sdp).await.unwrap();
     let installed = host.installed_remote_sdp().await.expect("a remote description");
     assert_eq!(
@@ -127,7 +123,6 @@ async fn a_mac_shaped_controller_negotiates_channels_and_media() {
         .await
         .unwrap();
 
-    // Controller candidates -> host.
     let (cand_tx, mut cand_rx) = mpsc::channel::<RTCIceCandidateInit>(16);
     controller.on_ice_candidate(Box::new(move |c| {
         let cand_tx = cand_tx.clone();
@@ -152,9 +147,7 @@ async fn a_mac_shaped_controller_negotiates_channels_and_media() {
         }
     };
     tokio::spawn(async move {});
-    // Host candidates -> controller, driven off the host event stream below.
 
-    // ---- assertions --------------------------------------------------------
     let controller2 = controller.clone();
     let drive = async {
         loop {
@@ -173,7 +166,6 @@ async fn a_mac_shaped_controller_negotiates_channels_and_media() {
         _ = tokio::time::sleep(Duration::from_secs(15)) => panic!("channels never became ready"),
     }
 
-    // ctrl: host -> controller (display_info, as the real host sends on start).
     let (ctrl_seen_tx, mut ctrl_seen_rx) = mpsc::channel::<String>(4);
     ctrl_ch.on_message(Box::new(move |msg| {
         let tx = ctrl_seen_tx.clone();
@@ -193,7 +185,6 @@ async fn a_mac_shaped_controller_negotiates_channels_and_media() {
         .unwrap();
     assert!(seen.contains("\"display_info\"") && seen.contains("\"windows\""), "got {seen}");
 
-    // ctrl: controller -> host (a key_down, §5).
     let env = rc_proto::envelope::Envelope::new(
         ctrl_msg::KEY_DOWN,
         "",
@@ -212,7 +203,6 @@ async fn a_mac_shaped_controller_negotiates_channels_and_media() {
         _ => unreachable!(),
     }
 
-    // hi: controller -> host (mouse_move with a seq).
     let env = rc_proto::envelope::Envelope::new(
         rc_proto::consts::hi::MOUSE_MOVE,
         "",
@@ -230,8 +220,6 @@ async fn a_mac_shaped_controller_negotiates_channels_and_media() {
         _ => unreachable!(),
     }
 
-    // Media: write Annex-B-shaped samples until the controller reads RTP. The
-    // bytes need not decode; RTP delivery through SRTP is what is asserted.
     let fake_idr: Vec<u8> = {
         let mut v = vec![0, 0, 0, 1, 0x65];
         v.extend(std::iter::repeat(0xAB).take(400));
@@ -244,7 +232,7 @@ async fn a_mac_shaped_controller_negotiates_channels_and_media() {
         match tokio::time::timeout(Duration::from_millis(200), track_rx.recv()).await {
             Ok(Some(codec)) => break codec,
             Ok(None) => panic!("track channel closed"),
-            Err(_) => continue, // keep feeding until the track pipeline spins up
+            Err(_) => continue,
         }
     };
     assert!(

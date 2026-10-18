@@ -52,11 +52,14 @@ impl ScrollAccumulator {
     /// `None` when the movement so far is under one unit and has been banked.
     ///
     /// The returned value is in Windows wheel units and already sign-corrected.
+    ///
+    /// A non-finite delta from a malformed peer is dropped so it cannot poison the bank.
+    ///
+    /// The sign is negated once here: this is the macOS-natural to Windows-wheel flip.
     pub fn push(&mut self, delta_pixels: f64) -> Option<i32> {
         if !delta_pixels.is_finite() {
-            return None; // a NaN from a malformed peer must not poison the bank
+            return None;
         }
-        // Negate here, once: this is the macOS-natural -> Windows-wheel flip.
         let units = -delta_pixels * (WHEEL_DELTA / self.pixels_per_notch);
         self.remainder += units;
 

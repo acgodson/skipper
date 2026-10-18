@@ -224,7 +224,7 @@ impl InputDispatcher {
 
     pub fn mouse_down(&mut self, e: &MouseEvent, inj: &mut dyn Injector) {
         if !self.running() || MouseButton::from_wire(e.button).is_none() {
-            return; // §0: unknown button ignored
+            return;
         }
         self.move_to(e.x, e.y, inj);
         self.button_down(e.button, inj);
@@ -247,11 +247,11 @@ impl InputDispatcher {
         self.move_to(e.x, e.y, inj);
     }
 
+    /// §6: drops any packet whose seq is not above the highest already seen.
     pub fn mouse_move(&mut self, m: &MouseMove, inj: &mut dyn Injector) {
         if !self.running() {
             return;
         }
-        // §6: drop any packet whose seq is <= the highest already seen.
         if m.seq <= self.last_move_seq {
             return;
         }
@@ -317,13 +317,12 @@ impl InputDispatcher {
         }
     }
 
+    /// A gesture boundary banks nothing new, but must not carry a stale fraction across a fresh scroll.
     pub fn scroll(&mut self, s: &Scroll, inj: &mut dyn Injector) {
         if !self.running() {
             return;
         }
         if ScrollPhase::from_wire(&s.phase) == ScrollPhase::End {
-            // A gesture boundary banks nothing new but must not carry a stale
-            // fraction across a fresh scroll.
             self.scroll_x.reset();
             self.scroll_y.reset();
             return;

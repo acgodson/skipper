@@ -45,10 +45,6 @@ const CTRL: WinKey = WinKey { vk: vk::LCONTROL, extended: false };
 const SHIFT: WinKey = WinKey { vk: vk::LSHIFT, extended: false };
 const C: WinKey = WinKey { vk: b'C' as u16, extended: false };
 
-// ---------------------------------------------------------------------------
-// Held keys and modifiers
-// ---------------------------------------------------------------------------
-
 /// The defect: `key_down` pressed *and released* the whole chord, so Command was
 /// never actually held. A chord's release belongs to `key_up`.
 #[test]
@@ -140,10 +136,6 @@ fn a_reset_with_nothing_held_is_a_no_op_and_stays_idempotent() {
     assert!(inj.ops.is_empty(), "releasing nothing must not fabricate key-ups");
 }
 
-// ---------------------------------------------------------------------------
-// Pointer
-// ---------------------------------------------------------------------------
-
 #[test]
 fn clicks_are_aimed_through_the_display_geometry() {
     let mut d = InputDispatcher::default();
@@ -234,17 +226,16 @@ fn a_click_count_outside_one_to_three_is_clamped() {
 fn the_hi_channel_sequence_gate_drops_stale_and_duplicate_moves() {
     let (mut d, mut inj) = ready();
     d.mouse_move(&MouseMove { x: 0.1, y: 0.1, seq: 5 }, &mut inj);
-    d.mouse_move(&MouseMove { x: 0.9, y: 0.9, seq: 3 }, &mut inj); // stale
-    d.mouse_move(&MouseMove { x: 0.2, y: 0.2, seq: 5 }, &mut inj); // duplicate
-    d.mouse_move(&MouseMove { x: 0.3, y: 0.3, seq: 6 }, &mut inj); // newer: applied
+    d.mouse_move(&MouseMove { x: 0.9, y: 0.9, seq: 3 }, &mut inj);
+    d.mouse_move(&MouseMove { x: 0.2, y: 0.2, seq: 5 }, &mut inj);
+    d.mouse_move(&MouseMove { x: 0.3, y: 0.3, seq: 6 }, &mut inj);
     let moves = inj.ops.iter().filter(|o| matches!(o, InputOp::MouseMoveAbs { .. })).count();
     assert_eq!(moves, 2, "only seq 5 and 6 should move the pointer");
 }
 
+/// After a reconnect the controller's seq counter may restart; a reset must stop the gate from swallowing every post-reconnect move.
 #[test]
 fn input_reset_reopens_the_sequence_gate() {
-    // After a reconnect the controller's seq counter may restart; a reset must
-    // stop the gate from swallowing every post-reconnect move.
     let (mut d, mut inj) = ready();
     d.mouse_move(&MouseMove { x: 0.5, y: 0.5, seq: 1000 }, &mut inj);
     d.input_reset(&mut inj);
@@ -265,10 +256,6 @@ fn an_unknown_mouse_button_is_ignored_not_injected() {
     assert!(ops.is_empty(), "an out-of-range button must produce nothing");
 }
 
-// ---------------------------------------------------------------------------
-// Text, scroll, gestures
-// ---------------------------------------------------------------------------
-
 #[test]
 fn plain_typing_goes_through_unicode_not_the_keycode_table() {
     let ops = run(|d, i| {
@@ -282,8 +269,6 @@ fn a_supplementary_plane_char_still_arrives_as_one_unicode_char_op() {
     let ops = run(|d, i| {
         d.key_down(&KeyEvent { keycode: 0, mods: 0, chars: "😀".into() }, i);
     });
-    // Dispatch emits one char op; the Windows injector splits it into two
-    // UTF-16 units in a single SendInput call.
     assert_eq!(ops, vec![InputOp::UnicodeChar('😀')]);
 }
 
@@ -358,10 +343,6 @@ fn every_gesture_from_the_wire_dispatches_to_a_chord() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Suspension: no picture, no clicks
-// ---------------------------------------------------------------------------
-
 /// The defect this closes: a dispatcher with no geometry still aimed clicks,
 /// and a host whose capture had failed still injected them.
 #[test]
@@ -411,8 +392,6 @@ fn a_reset_is_honoured_even_while_input_is_suspended() {
     let (mut d, mut inj) = ready();
     d.key_down(&key(kvk::A, KeyModifiers(0)), &mut inj);
 
-    // Suspend while the host cannot release — the key is genuinely still down
-    // and input is now off, which is exactly the stuck-key situation.
     inj.refuse = Some(|op| matches!(op, InputOp::Key { down: false, .. }));
     d.suspend(InputState::DesktopUnavailable, &mut inj);
     assert_eq!(d.held().0.len(), 1);
@@ -427,10 +406,6 @@ fn a_reset_is_honoured_even_while_input_is_suspended() {
     );
     assert!(d.held().0.is_empty());
 }
-
-// ---------------------------------------------------------------------------
-// When the OS refuses
-// ---------------------------------------------------------------------------
 
 /// A refused key-down is not down. Recording it as held would make the next
 /// reset send a key-up for a key that was never pressed.

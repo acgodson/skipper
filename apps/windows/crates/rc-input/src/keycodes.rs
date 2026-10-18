@@ -49,8 +49,10 @@ pub mod vk {
     pub const CAPITAL: u16 = 0x14;
     pub const ESCAPE: u16 = 0x1B;
     pub const SPACE: u16 = 0x20;
-    pub const PRIOR: u16 = 0x21; // Page Up
-    pub const NEXT: u16 = 0x22; // Page Down
+    /// Page Up.
+    pub const PRIOR: u16 = 0x21;
+    /// Page Down.
+    pub const NEXT: u16 = 0x22;
     pub const END: u16 = 0x23;
     pub const HOME: u16 = 0x24;
     pub const LEFT: u16 = 0x25;
@@ -77,18 +79,30 @@ pub mod vk {
     pub const VOLUME_MUTE: u16 = 0xAD;
     pub const VOLUME_DOWN: u16 = 0xAE;
     pub const VOLUME_UP: u16 = 0xAF;
-    pub const OEM_1: u16 = 0xBA; // ; :
-    pub const OEM_PLUS: u16 = 0xBB; // = +
-    pub const OEM_COMMA: u16 = 0xBC; // , <
-    pub const OEM_MINUS: u16 = 0xBD; // - _
-    pub const OEM_PERIOD: u16 = 0xBE; // . >
-    pub const OEM_2: u16 = 0xBF; // / ?
-    pub const OEM_3: u16 = 0xC0; // ` ~
-    pub const OEM_4: u16 = 0xDB; // [ {
-    pub const OEM_5: u16 = 0xDC; // \ |
-    pub const OEM_6: u16 = 0xDD; // ] }
-    pub const OEM_7: u16 = 0xDE; // ' "
-    pub const OEM_102: u16 = 0xE2; // ISO < > / backslash
+    /// The `;` and `:` key.
+    pub const OEM_1: u16 = 0xBA;
+    /// The `=` and `+` key.
+    pub const OEM_PLUS: u16 = 0xBB;
+    /// The `,` and `<` key.
+    pub const OEM_COMMA: u16 = 0xBC;
+    /// The `-` and `_` key.
+    pub const OEM_MINUS: u16 = 0xBD;
+    /// The `.` and `>` key.
+    pub const OEM_PERIOD: u16 = 0xBE;
+    /// The `/` and `?` key.
+    pub const OEM_2: u16 = 0xBF;
+    /// The backtick and `~` key.
+    pub const OEM_3: u16 = 0xC0;
+    /// The `[` and `{` key.
+    pub const OEM_4: u16 = 0xDB;
+    /// The `\` and `|` key.
+    pub const OEM_5: u16 = 0xDC;
+    /// The `]` and `}` key.
+    pub const OEM_6: u16 = 0xDD;
+    /// The `'` and `"` key.
+    pub const OEM_7: u16 = 0xDE;
+    /// The ISO key carrying `<`, `>`, `/` and backslash.
+    pub const OEM_102: u16 = 0xE2;
     /// `VK_0`..`VK_9` are the ASCII digits; `VK_A`..`VK_Z` the ASCII capitals.
     pub const fn digit(d: u8) -> u16 {
         (b'0' + d) as u16
@@ -233,11 +247,18 @@ pub mod kvk {
 /// `None` means "no sensible Windows key", which the injector treats as a key to
 /// drop rather than an error — §0's rule that a receiver ignores what it does
 /// not recognise applies to keycodes too.
+///
+/// Command maps to Control, not the Windows key: see `modifiers.rs`. macOS Delete maps to Backspace, and Forward Delete to Windows Delete.
+///
+/// Deliberately unmapped, each for a stated reason:
+///
+/// - `KEYPAD_EQUALS`: Windows has no numpad `=` virtual key.
+/// - `FUNCTION`: the macOS fn key has no Windows analogue.
+/// - `JIS_*`: Japanese-layout keys with no US-Windows equivalent.
 pub fn map_keycode(mac: i32) -> Option<WinKey> {
     use kvk as k;
     use vk::*;
     Some(match mac {
-        // Letters. Physical positions; see the layout note above.
         k::A => WinKey::new(letter(b'A')),
         k::B => WinKey::new(letter(b'B')),
         k::C => WinKey::new(letter(b'C')),
@@ -265,7 +286,6 @@ pub fn map_keycode(mac: i32) -> Option<WinKey> {
         k::Y => WinKey::new(letter(b'Y')),
         k::Z => WinKey::new(letter(b'Z')),
 
-        // Digit row.
         k::N0 => WinKey::new(digit(0)),
         k::N1 => WinKey::new(digit(1)),
         k::N2 => WinKey::new(digit(2)),
@@ -277,7 +297,6 @@ pub fn map_keycode(mac: i32) -> Option<WinKey> {
         k::N8 => WinKey::new(digit(8)),
         k::N9 => WinKey::new(digit(9)),
 
-        // Punctuation.
         k::EQUAL => WinKey::new(OEM_PLUS),
         k::MINUS => WinKey::new(OEM_MINUS),
         k::LEFT_BRACKET => WinKey::new(OEM_4),
@@ -291,16 +310,14 @@ pub fn map_keycode(mac: i32) -> Option<WinKey> {
         k::GRAVE => WinKey::new(OEM_3),
         k::ISO_SECTION => WinKey::new(OEM_102),
 
-        // Editing and whitespace.
         k::RETURN => WinKey::new(RETURN),
         k::TAB => WinKey::new(TAB),
         k::SPACE => WinKey::new(SPACE),
-        k::DELETE => WinKey::new(BACK), // macOS Delete == Backspace
+        k::DELETE => WinKey::new(BACK),
         k::FORWARD_DELETE => WinKey::ext(DELETE),
         k::ESCAPE => WinKey::new(ESCAPE),
         k::HELP => WinKey::ext(HELP),
 
-        // Navigation. All extended.
         k::HOME => WinKey::ext(HOME),
         k::END => WinKey::ext(END),
         k::PAGE_UP => WinKey::ext(PRIOR),
@@ -310,18 +327,15 @@ pub fn map_keycode(mac: i32) -> Option<WinKey> {
         k::UP_ARROW => WinKey::ext(UP),
         k::DOWN_ARROW => WinKey::ext(DOWN),
 
-        // Modifiers. Sided where Windows distinguishes.
         k::SHIFT => WinKey::new(LSHIFT),
         k::RIGHT_SHIFT => WinKey::new(RSHIFT),
         k::CONTROL => WinKey::new(LCONTROL),
         k::RIGHT_CONTROL => WinKey::ext(RCONTROL),
         k::OPTION => WinKey::new(LMENU),
         k::RIGHT_OPTION => WinKey::ext(RMENU),
-        // Command maps to Control, not the Windows key -- see `modifiers.rs`.
         k::COMMAND | k::RIGHT_COMMAND => WinKey::new(LCONTROL),
         k::CAPS_LOCK => WinKey::new(CAPITAL),
 
-        // Function row.
         k::F1 => WinKey::new(f(1)),
         k::F2 => WinKey::new(f(2)),
         k::F3 => WinKey::new(f(3)),
@@ -343,7 +357,6 @@ pub fn map_keycode(mac: i32) -> Option<WinKey> {
         k::F19 => WinKey::new(f(19)),
         k::F20 => WinKey::new(f(20)),
 
-        // Numeric keypad.
         k::KEYPAD0 => WinKey::new(numpad(0)),
         k::KEYPAD1 => WinKey::new(numpad(1)),
         k::KEYPAD2 => WinKey::new(numpad(2)),
@@ -362,15 +375,10 @@ pub fn map_keycode(mac: i32) -> Option<WinKey> {
         k::KEYPAD_ENTER => WinKey::ext(RETURN),
         k::KEYPAD_CLEAR => WinKey::new(CLEAR),
 
-        // Media.
         k::VOLUME_UP => WinKey::new(VOLUME_UP),
         k::VOLUME_DOWN => WinKey::new(VOLUME_DOWN),
         k::MUTE => WinKey::new(VOLUME_MUTE),
 
-        // Deliberately unmapped, each for a stated reason:
-        //   KEYPAD_EQUALS   - Windows has no numpad '=' virtual key.
-        //   FUNCTION        - the macOS fn key has no Windows analogue.
-        //   JIS_*           - Japanese-layout keys with no US-Windows equivalent.
         _ => return None,
     })
 }

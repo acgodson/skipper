@@ -47,6 +47,9 @@ impl Default for WindowsInjector {
 }
 
 impl Injector for WindowsInjector {
+    /// Wheel deltas are signed but `mouseData` is unsigned: the bit pattern is what matters, and a negative delta scrolls the other way.
+    ///
+    /// A char outside the BMP is two UTF-16 units, and both go in **one** `SendInput` call. Splitting them lets another thread's input interleave between the halves, and the target then sees two broken characters.
     fn perform(&mut self, op: InputOp) -> Result<(), InjectError> {
         match op {
             InputOp::MouseMoveAbs { x, y } => {
@@ -78,9 +81,6 @@ impl Injector for WindowsInjector {
             InputOp::MouseWheel { delta, horizontal } => {
                 let mut input = INPUT { r#type: INPUT_MOUSE, ..Default::default() };
                 input.Anonymous.mi = MOUSEINPUT {
-                    // Windows takes a signed wheel delta in an unsigned field;
-                    // the bit pattern is what matters (a negative delta scrolls
-                    // the other way).
                     mouseData: delta as u32,
                     dwFlags: if horizontal { MOUSEEVENTF_HWHEEL } else { MOUSEEVENTF_WHEEL },
                     ..Default::default()
@@ -106,10 +106,6 @@ impl Injector for WindowsInjector {
                 Self::send(&op, &[input])
             }
             InputOp::UnicodeChar(c) => {
-                // A char outside the BMP is two UTF-16 units. Both units of a
-                // surrogate pair go in **one** `SendInput` call: splitting them
-                // lets another thread's input interleave between the halves and
-                // the target application then sees two broken characters.
                 let mut buf = [0u16; 2];
                 let units = c.encode_utf16(&mut buf);
                 let mut inputs: Vec<INPUT> = Vec::with_capacity(units.len() * 2);
