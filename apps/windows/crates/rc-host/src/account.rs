@@ -302,7 +302,11 @@ impl<'a> Account<'a> {
             }
             Verdict::MissingCode => return Err("that sign-in link carried no code".into()),
         };
-        self.attempt = None;
+        let link_nonce = self
+            .attempt
+            .take()
+            .map(|attempt| attempt.nonce)
+            .unwrap_or_default();
 
         let challenge = self
             .api
@@ -318,7 +322,7 @@ impl<'a> Account<'a> {
             .api
             .device_token(
                 &code,
-                &challenge,
+                &link_nonce,
                 &self.key.public_key_spki_base64(),
                 &signature,
                 &self.hardware_id,

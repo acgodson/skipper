@@ -37,15 +37,36 @@ pub fn take(secrets: &SecretStore) -> Option<String> {
 }
 
 /// Opens the sign-in page in the user's own browser.
+///
+/// Not through `cmd /C start`: cmd reads every `&` in the query string as a
+/// command separator, so the browser never opened and the shell complained
+/// that `device` was not a command. `ShellExecuteW` hands the URL to the
+/// default browser with no shell in between.
+#[cfg(windows)]
 pub fn open_in_browser(url: &str) -> Result<(), String> {
-    #[cfg(windows)]
-    let mut command = {
-        // `start` is a cmd builtin, and its first quoted argument is taken as
-        // a window title — hence the empty one.
-        let mut command = std::process::Command::new("cmd");
-        command.args(["/C", "start", "", url]);
-        command
+    use windows::core::{w, HSTRING, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let target = HSTRING::from(url);
+    let handle = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(target.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
     };
+    match handle.0 as isize > 32 {
+        true => Ok(()),
+        false => Err(format!("the browser could not be opened (ShellExecute code {})", handle.0 as isize)),
+    }
+}
+
+#[cfg(not(windows))]
+pub fn open_in_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = std::process::Command::new("open");

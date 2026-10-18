@@ -128,6 +128,25 @@ fn print_banner(identity: &IdentityRecord) {
     println!("  Keep this window open. Closing it ends the host.\n");
 }
 
+/// The shell starts a second copy of this program to carry the browser's answer
+/// back, and that copy's window closes the instant it exits. On success that is
+/// right. On failure it would take the only explanation with it, so the window
+/// stays until Enter.
+fn deliver_callback(startup: &Startup, url: &str) -> Result<(), String> {
+    match rc_host::urlhandler::deliver(&startup.secrets, url) {
+        Ok(()) => {
+            println!("  Sign-in handed back to the SkipperDesk window. This one can close.");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("rc-host: the sign-in could not be handed back ({e})");
+            eprintln!("  Press Enter to close this window.");
+            let _ = std::io::stdin().read_line(&mut String::new());
+            Err(e)
+        }
+    }
+}
+
 /// The device line below the banner says the PC is online; this one says whether
 /// anyone is allowed to connect to it, because the two are easy to confuse.
 fn print_account_state(startup: &Startup) -> Result<(), String> {
@@ -162,7 +181,7 @@ fn config(backend: &Backend) -> HostConfig {
 
 /// How long `--sign-in` waits for the browser. The attempt itself expires at
 /// `ATTEMPT_LIFETIME_MS`; this is just how long the console stays blocked.
-const SIGN_IN_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+const SIGN_IN_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
 enum Command {
     Run { synthetic: bool },
@@ -211,7 +230,7 @@ async fn main() {
     };
 
     let outcome = match command {
-        Command::LinkCallback(url) => rc_host::urlhandler::deliver(&startup.secrets, &url),
+        Command::LinkCallback(url) => deliver_callback(&startup, &url),
         Command::SignIn => sign_in(&startup).await,
         Command::SignOut => sign_out(&startup).await,
         Command::Run { synthetic } => {

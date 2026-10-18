@@ -22,7 +22,7 @@ Do this BEFORE you extract the ZIP:
 
 If you prefer PowerShell, this does the same thing (change the path to match yours):
 
-    Unblock-File "$env:USERPROFILE\Downloads\SkipperDesk-win-x64-0.1.2.zip"
+    Unblock-File "$env:USERPROFILE\Downloads\SkipperDesk-win-x64-0.1.3.zip"
 
 You are only telling Windows that you trust this one file that you chose to download.
 You do not need to change any Windows or antivirus settings.

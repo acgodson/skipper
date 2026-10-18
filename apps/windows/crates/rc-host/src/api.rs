@@ -354,7 +354,7 @@ impl ApiClient {
     pub async fn device_token(
         &self,
         code: &str,
-        challenge: &Challenge,
+        link_nonce: &str,
         pubkey: &str,
         signature: &str,
         hardware_id: &str,
@@ -365,7 +365,7 @@ impl ApiClient {
                 .header(IDEMPOTENCY_HEADER, Self::idempotency_key())
                 .json(&TokenRequest {
                     code,
-                    nonce: &challenge.nonce,
+                    nonce: link_nonce,
                     pubkey,
                     sig: signature,
                     platform: PLATFORM,
