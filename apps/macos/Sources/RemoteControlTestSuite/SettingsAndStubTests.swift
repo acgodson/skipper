@@ -24,6 +24,7 @@ public let settingsSuite = TestSuite("AppSettings", [
             try expectEqual(settings.role, .host)
             try expectFalse(settings.hasSavedPeer)
             try expect(settings.installUpdatesAutomatically)
+            try expectFalse(settings.sessionToolbarHidden, "the session toolbar reveals on hover until the user hides it")
         }
     },
 
@@ -64,6 +65,7 @@ public let settingsSuite = TestSuite("AppSettings", [
             settings.role = .controller
             settings.rememberPeerCode = true
             settings.installUpdatesAutomatically = false
+            settings.sessionToolbarHidden = true
             settings.savePeer(label: "Studio Mac", deviceID: "482 719 351")
 
             let reloaded = AppSettings(defaults: defaults, secrets: secrets)
@@ -73,6 +75,7 @@ public let settingsSuite = TestSuite("AppSettings", [
             try expectEqual(reloaded.role, .controller)
             try expect(reloaded.rememberPeerCode)
             try expectFalse(reloaded.installUpdatesAutomatically)
+            try expect(reloaded.sessionToolbarHidden)
             try expectEqual(reloaded.savedPeerLabel, "Studio Mac")
             try expectEqual(reloaded.savedPeerDeviceID, "482719351")
             try expect(reloaded.hasSavedPeer)

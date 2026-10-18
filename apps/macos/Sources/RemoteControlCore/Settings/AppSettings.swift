@@ -50,6 +50,7 @@ public final class AppSettings: ObservableObject {
         public static let savedPeerDeviceID = "rc.savedPeer.deviceID"
         public static let rememberPeerCode = "rc.savedPeer.rememberCode"
         public static let installUpdatesAutomatically = "rc.installUpdatesAutomatically"
+        public static let sessionToolbarHidden = "rc.sessionToolbarHidden"
     }
 
     private let defaults: UserDefaults
@@ -66,6 +67,9 @@ public final class AppSettings: ObservableObject {
     @Published public var rememberPeerCode: Bool { didSet { defaults.set(rememberPeerCode, forKey: Key.rememberPeerCode) } }
     @Published public var installUpdatesAutomatically: Bool {
         didSet { defaults.set(installUpdatesAutomatically, forKey: Key.installUpdatesAutomatically) }
+    }
+    @Published public var sessionToolbarHidden: Bool {
+        didSet { defaults.set(sessionToolbarHidden, forKey: Key.sessionToolbarHidden) }
     }
 
     public init(defaults: UserDefaults? = nil, isExistingInstall: Bool = false, secrets: SecretStore? = nil) {
@@ -89,6 +93,7 @@ public final class AppSettings: ObservableObject {
             Key.savedPeerDeviceID: "",
             Key.rememberPeerCode: false,
             Key.installUpdatesAutomatically: true,
+            Key.sessionToolbarHidden: false,
         ])
         self.role = AppRole(rawValue: resolved.string(forKey: Key.role) ?? "") ?? .host
         self.unattendedAccess = Self.unattendedAccess(in: secrets, legacy: resolved,
@@ -99,6 +104,7 @@ public final class AppSettings: ObservableObject {
         self.savedPeerDeviceID = resolved.string(forKey: Key.savedPeerDeviceID) ?? ""
         self.rememberPeerCode = resolved.bool(forKey: Key.rememberPeerCode)
         self.installUpdatesAutomatically = resolved.bool(forKey: Key.installUpdatesAutomatically)
+        self.sessionToolbarHidden = resolved.bool(forKey: Key.sessionToolbarHidden)
     }
 
     private static func unattendedAccess(in secrets: SecretStore, legacy: UserDefaults,

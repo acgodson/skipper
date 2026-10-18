@@ -18,8 +18,10 @@ struct RemoteSessionView: View {
 
     private var hasPicture: Bool { videoSize.width > 0 && videoSize.height > 0 }
 
+    private var toolbarHidden: Bool { model.settings.sessionToolbarHidden }
+
     private var toolbarPinned: Bool {
-        pointerNearTop || hoveringToolbar || !hasPicture || model.isReconnecting
+        !hasPicture || model.isReconnecting || (!toolbarHidden && (pointerNearTop || hoveringToolbar))
     }
 
     var body: some View {
@@ -82,17 +84,34 @@ struct RemoteSessionView: View {
                 .offset(y: revealed ? 0 : -SkipperSpace.xl)
                 .allowsHitTesting(revealed)
                 .animation(SkipperMotion.toolbarReveal, value: revealed)
+
+            if toolbarHidden && !revealed {
+                HStack {
+                    Spacer()
+                    SessionCornerButton(symbol: "chevron.down", help: SessionToolbarVisibility.showHelp) {
+                        model.settings.sessionToolbarHidden = false
+                    }
+                    .localControlRegion()
+                }
+                .padding(SkipperSpace.m)
+                .transition(.opacity)
+            }
         }
         .sessionStage { localControlRegions = $0 }
         .frame(minWidth: 640, minHeight: 420)
         .animation(SkipperMotion.standard, value: model.isReconnecting)
+        .animation(SkipperMotion.toolbarReveal, value: toolbarHidden)
         .onChange(of: toolbarPinned) { pinned in
             if pinned { revealed = true } else { scheduleHide() }
+        }
+        .onChange(of: toolbarHidden) { hidden in
+            if !hidden { showToolbar() } else if !toolbarPinned { revealed = false }
         }
         .onAppear { scheduleHide() }
     }
 
     private func showToolbar() {
+        guard !toolbarHidden else { return }
         if !revealed { revealed = true }
         scheduleHide()
     }
@@ -140,6 +159,15 @@ private struct SessionToolbar: View {
             QualityMenu()
 
             SessionToolbarButton(
+                title: "Hide",
+                symbol: "chevron.up",
+                help: SessionToolbarVisibility.hideHelp
+            ) {
+                model.settings.sessionToolbarHidden.toggle()
+            }
+            .keyboardShortcut(SessionToolbarVisibility.shortcutKey, modifiers: [.control, .option, .command])
+
+            SessionToolbarButton(
                 title: "Disconnect",
                 symbol: "xmark.circle",
                 tone: .critical,
@@ -180,6 +208,12 @@ private struct SessionToolbar: View {
         }
         return "Connected"
     }
+}
+
+private enum SessionToolbarVisibility {
+    static let shortcutKey: KeyEquivalent = "t"
+    static let hideHelp = "Hide the toolbar. A small button in the top-right corner brings it back (\u{2303}\u{2325}\u{2318}T)."
+    static let showHelp = "Bring back the toolbar. It shows again when the pointer is near the top (\u{2303}\u{2325}\u{2318}T)."
 }
 
 private struct QualityMenu: View {

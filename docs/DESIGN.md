@@ -109,9 +109,12 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
   prompt is open, its menu style replaces the state line.
 - **Session chrome** — the remote desktop fills the window on `stage`. A floating capsule toolbar
   (ultra-thin material, `high` elevation) is centred at the top: peer name + state line, capture-mode
-  toggle (accent fill when keys go to the remote), quality menu, Disconnect (critical text, ⌘.).
-  It shows on entry, while the pointer is within 56 pt of the top edge or over the toolbar, while
-  waiting for video and while reconnecting; otherwise it hides after 2 s. The gesture palette is a
+  toggle (accent fill when keys go to the remote), quality menu, Hide (⌃⌥⌘T), Disconnect (critical
+  text, ⌘.). It shows on entry, while the pointer is within 56 pt of the top edge or over the toolbar,
+  while waiting for video and while reconnecting; otherwise it hides after 2 s. Hide keeps it away,
+  across sessions, except while waiting for video or reconnecting; a 28 pt material circle with a
+  down chevron sits in the top-right corner instead (faint at rest, full on hover), and it or ⌃⌥⌘T
+  brings the toolbar back to hover-reveal, showing it once. The gesture palette is a
   40 pt accent circle bottom-right that opens a material list of gestures. Keyboard capture draws a
   3 pt accent frame round the stage.
 - **Consent prompt** (`SkipperConsentPrompt`) — asks the host's owner whether a controller that

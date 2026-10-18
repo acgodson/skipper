@@ -127,3 +127,38 @@ public struct SessionToolbarButton: View {
         return Color.clear
     }
 }
+
+public struct SessionCornerButton: View {
+
+    private static let diameter: CGFloat = 28
+
+    private let symbol: String
+    private let help: String
+    private let action: () -> Void
+
+    @State private var hovering = false
+
+    public init(symbol: String, help: String, action: @escaping () -> Void) {
+        self.symbol = symbol
+        self.help = help
+        self.action = action
+    }
+
+    public var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(SkipperColor.textPrimary)
+                .frame(width: Self.diameter, height: Self.diameter)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(SkipperColor.onStage.opacity(hovering ? 0.22 : 0.10)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .opacity(hovering ? 1 : 0.55)
+        .skipperElevation(hovering ? .high : .low)
+        .onHover { hovering = $0 }
+        .help(help)
+        .animation(SkipperMotion.quick, value: hovering)
+    }
+}
