@@ -190,7 +190,7 @@ fn slow_scrolling_accumulates_instead_of_rounding_away_to_nothing() {
     let mut emitted = 0i64;
     let mut any = false;
     for _ in 0..60 {
-        if let Some(d) = acc.push(-0.5) {
+        if let Some(d) = acc.push(0.5) {
             emitted += i64::from(d);
             any = true;
         }
@@ -212,7 +212,7 @@ fn no_scroll_travel_is_lost_across_many_events() {
             total_out += i64::from(d);
         }
     }
-    let exact = -total_in;
+    let exact = total_in;
     let accounted = total_out as f64 + acc.banked();
     assert!(
         (exact - accounted).abs() < 1e-6,
@@ -223,19 +223,19 @@ fn no_scroll_travel_is_lost_across_many_events() {
 #[test]
 fn a_malformed_peer_cannot_poison_the_scroll_bank() {
     let mut acc = ScrollAccumulator::default();
-    acc.push(-60.0);
+    acc.push(60.0);
     let banked = acc.banked();
     assert_eq!(acc.push(f64::NAN), None);
     assert_eq!(acc.push(f64::INFINITY), None);
     assert_eq!(acc.banked(), banked, "bank must survive a NaN unchanged");
-    assert_eq!(acc.push(-60.0), Some(60));
+    assert_eq!(acc.push(60.0), Some(60));
 }
 
 /// Uses a fractional pixel delta, since whole pixels bank nothing at the default 1:1 pixels-per-unit ratio.
 #[test]
 fn reset_drops_the_banked_fraction() {
     let mut acc = ScrollAccumulator::default();
-    acc.push(-119.5);
+    acc.push(119.5);
     assert!(acc.banked() > 0.0, "expected a banked fraction, got {}", acc.banked());
     acc.reset();
     assert_eq!(acc.banked(), 0.0);
