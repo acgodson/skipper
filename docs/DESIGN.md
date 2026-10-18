@@ -68,7 +68,7 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
 | `quick` | ease-out 120 ms | Press, hover, focus ring, "Copied" |
 | `standard` | ease-in-out 200 ms | Pill text change, palette open, overlay fade |
 | `gentle` | ease-in-out 320 ms | Larger layout changes |
-| `toolbarReveal` | ease-out 200 ms, 24 pt slide | Session toolbar in/out; hides 2 s after the pointer leaves |
+| `toolbarReveal` | ease-out 200 ms, 24 pt slide | Session toolbar in/out; hides 3.5 s after the pointer leaves |
 
 ## 2. Components
 
@@ -111,7 +111,7 @@ Text wraps; it never truncates at the default window size. Only `codeHero` may s
   (ultra-thin material, `high` elevation) is centred at the top: peer name + state line, capture-mode
   toggle (accent fill when keys go to the remote), quality menu, Hide (⌃⌥⌘T), Disconnect (critical
   text, ⌘.). It shows on entry, while the pointer is within 56 pt of the top edge or over the toolbar,
-  while waiting for video and while reconnecting; otherwise it hides after 2 s. Hide keeps it away,
+  while waiting for video and while reconnecting; otherwise it hides after 3.5 s. Hide keeps it away,
   across sessions, except while waiting for video or reconnecting; a 28 pt material circle with a
   down chevron sits in the top-right corner instead (faint at rest, full on hover), and it or ⌃⌥⌘T
   brings the toolbar back to hover-reveal, showing it once. The gesture palette is a
