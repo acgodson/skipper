@@ -1,0 +1,471 @@
+{
+  "description": "Quality ladder and host gate (API.md 4.4). QualityProfile.swift and rc-host quality.rs must reproduce every value.",
+  "ladder": [
+    "smooth",
+    "auto",
+    "sharp"
+  ],
+  "framerate": 30,
+  "modes": [
+    {
+      "mode": "smooth",
+      "maxWidth": 1280,
+      "maxBitrateBps": 1000000,
+      "minBitrateBps": 250000
+    },
+    {
+      "mode": "auto",
+      "maxWidth": 1920,
+      "maxBitrateBps": 2000000,
+      "minBitrateBps": 400000
+    },
+    {
+      "mode": "sharp",
+      "maxWidth": 2560,
+      "maxBitrateBps": 8000000,
+      "minBitrateBps": 400000
+    }
+  ],
+  "wire": [
+    {
+      "wire": "sharp",
+      "mode": "sharp"
+    },
+    {
+      "wire": "auto",
+      "mode": "auto"
+    },
+    {
+      "wire": "smooth",
+      "mode": "smooth"
+    },
+    {
+      "wire": "SMOOTH",
+      "mode": "smooth"
+    },
+    {
+      "wire": "Sharp",
+      "mode": "sharp"
+    },
+    {
+      "wire": "turbo",
+      "mode": "auto"
+    },
+    {
+      "wire": "",
+      "mode": "auto"
+    }
+  ],
+  "profiles": [
+    {
+      "mode": "smooth",
+      "display": [
+        3840,
+        2160
+      ],
+      "encode": [
+        1280,
+        720
+      ]
+    },
+    {
+      "mode": "smooth",
+      "display": [
+        3024,
+        1964
+      ],
+      "encode": [
+        1280,
+        832
+      ]
+    },
+    {
+      "mode": "smooth",
+      "display": [
+        2560,
+        1440
+      ],
+      "encode": [
+        1280,
+        720
+      ]
+    },
+    {
+      "mode": "smooth",
+      "display": [
+        2049,
+        1153
+      ],
+      "encode": [
+        1280,
+        720
+      ]
+    },
+    {
+      "mode": "smooth",
+      "display": [
+        1920,
+        1080
+      ],
+      "encode": [
+        1280,
+        720
+      ]
+    },
+    {
+      "mode": "smooth",
+      "display": [
+        1365,
+        767
+      ],
+      "encode": [
+        1280,
+        720
+      ]
+    },
+    {
+      "mode": "smooth",
+      "display": [
+        1280,
+        800
+      ],
+      "encode": [
+        1280,
+        800
+      ]
+    },
+    {
+      "mode": "smooth",
+      "display": [
+        0,
+        0
+      ],
+      "encode": [
+        0,
+        0
+      ]
+    },
+    {
+      "mode": "auto",
+      "display": [
+        3840,
+        2160
+      ],
+      "encode": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "mode": "auto",
+      "display": [
+        3024,
+        1964
+      ],
+      "encode": [
+        1920,
+        1246
+      ]
+    },
+    {
+      "mode": "auto",
+      "display": [
+        2560,
+        1440
+      ],
+      "encode": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "mode": "auto",
+      "display": [
+        2049,
+        1153
+      ],
+      "encode": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "mode": "auto",
+      "display": [
+        1920,
+        1080
+      ],
+      "encode": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "mode": "auto",
+      "display": [
+        1365,
+        767
+      ],
+      "encode": [
+        1366,
+        768
+      ]
+    },
+    {
+      "mode": "auto",
+      "display": [
+        1280,
+        800
+      ],
+      "encode": [
+        1280,
+        800
+      ]
+    },
+    {
+      "mode": "auto",
+      "display": [
+        0,
+        0
+      ],
+      "encode": [
+        0,
+        0
+      ]
+    },
+    {
+      "mode": "sharp",
+      "display": [
+        3840,
+        2160
+      ],
+      "encode": [
+        2560,
+        1440
+      ]
+    },
+    {
+      "mode": "sharp",
+      "display": [
+        3024,
+        1964
+      ],
+      "encode": [
+        2560,
+        1662
+      ]
+    },
+    {
+      "mode": "sharp",
+      "display": [
+        2560,
+        1440
+      ],
+      "encode": [
+        2560,
+        1440
+      ]
+    },
+    {
+      "mode": "sharp",
+      "display": [
+        2049,
+        1153
+      ],
+      "encode": [
+        2050,
+        1154
+      ]
+    },
+    {
+      "mode": "sharp",
+      "display": [
+        1920,
+        1080
+      ],
+      "encode": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "mode": "sharp",
+      "display": [
+        1365,
+        767
+      ],
+      "encode": [
+        1366,
+        768
+      ]
+    },
+    {
+      "mode": "sharp",
+      "display": [
+        1280,
+        800
+      ],
+      "encode": [
+        1280,
+        800
+      ]
+    },
+    {
+      "mode": "sharp",
+      "display": [
+        0,
+        0
+      ],
+      "encode": [
+        0,
+        0
+      ]
+    }
+  ],
+  "permitted": [
+    {
+      "requested": "smooth",
+      "stated": "smooth",
+      "fresh": true,
+      "applied": "smooth"
+    },
+    {
+      "requested": "smooth",
+      "stated": "smooth",
+      "fresh": false,
+      "applied": "smooth"
+    },
+    {
+      "requested": "smooth",
+      "stated": "auto",
+      "fresh": true,
+      "applied": "smooth"
+    },
+    {
+      "requested": "smooth",
+      "stated": "auto",
+      "fresh": false,
+      "applied": "smooth"
+    },
+    {
+      "requested": "smooth",
+      "stated": "sharp",
+      "fresh": true,
+      "applied": "smooth"
+    },
+    {
+      "requested": "smooth",
+      "stated": "sharp",
+      "fresh": false,
+      "applied": "smooth"
+    },
+    {
+      "requested": "smooth",
+      "stated": null,
+      "fresh": true,
+      "applied": "smooth"
+    },
+    {
+      "requested": "smooth",
+      "stated": null,
+      "fresh": false,
+      "applied": "smooth"
+    },
+    {
+      "requested": "auto",
+      "stated": "smooth",
+      "fresh": true,
+      "applied": "smooth"
+    },
+    {
+      "requested": "auto",
+      "stated": "smooth",
+      "fresh": false,
+      "applied": "auto"
+    },
+    {
+      "requested": "auto",
+      "stated": "auto",
+      "fresh": true,
+      "applied": "auto"
+    },
+    {
+      "requested": "auto",
+      "stated": "auto",
+      "fresh": false,
+      "applied": "auto"
+    },
+    {
+      "requested": "auto",
+      "stated": "sharp",
+      "fresh": true,
+      "applied": "auto"
+    },
+    {
+      "requested": "auto",
+      "stated": "sharp",
+      "fresh": false,
+      "applied": "auto"
+    },
+    {
+      "requested": "auto",
+      "stated": null,
+      "fresh": true,
+      "applied": "auto"
+    },
+    {
+      "requested": "auto",
+      "stated": null,
+      "fresh": false,
+      "applied": "auto"
+    },
+    {
+      "requested": "sharp",
+      "stated": "smooth",
+      "fresh": true,
+      "applied": "smooth"
+    },
+    {
+      "requested": "sharp",
+      "stated": "smooth",
+      "fresh": false,
+      "applied": "auto"
+    },
+    {
+      "requested": "sharp",
+      "stated": "auto",
+      "fresh": true,
+      "applied": "auto"
+    },
+    {
+      "requested": "sharp",
+      "stated": "auto",
+      "fresh": false,
+      "applied": "auto"
+    },
+    {
+      "requested": "sharp",
+      "stated": "sharp",
+      "fresh": true,
+      "applied": "sharp"
+    },
+    {
+      "requested": "sharp",
+      "stated": "sharp",
+      "fresh": false,
+      "applied": "auto"
+    },
+    {
+      "requested": "sharp",
+      "stated": null,
+      "fresh": true,
+      "applied": "auto"
+    },
+    {
+      "requested": "sharp",
+      "stated": null,
+      "fresh": false,
+      "applied": "auto"
+    }
+  ]
+}

@@ -23,6 +23,7 @@ pub mod keepawake;
 pub mod media;
 pub mod pake;
 pub mod pump;
+pub mod quality;
 pub mod secrets;
 pub mod settings;
 pub mod urlhandler;
@@ -36,9 +37,12 @@ pub use backend::{Backend, BackendUrlError, BaseUrl};
 pub use host::{Host, HostConfig};
 pub use inject::{InjectError, InputDispatcher, InputOp, InputState, Injector, RecordingInjector};
 pub use media::{
-    fit_for_encode, CaptureBackend, CaptureStatus, FrameSource, Pacing, RawFrame,
-    SoftwareEncoder, SyntheticBackend, SyntheticSource, VideoEncoder,
+    fit_for_encode, resample, CaptureBackend, CaptureStatus, FrameSource, LoadResponse, LoadStep,
+    RawFrame, SoftwareEncoder, SyntheticBackend, SyntheticSource, VideoEncoder,
 };
 pub use pake::{ExchangeError, GuessStore, HostExchange};
-pub use pump::{CapturePump, EncoderFactory, PumpConfig, PumpEvent, VideoSink};
+pub use pump::{
+    CapturedFrame, CapturePump, EncoderFactory, FrameSlot, MediaStats, PumpConfig, PumpEvent, VideoSink,
+};
+pub use quality::{QualityCeiling, QualityProfile};
 pub use secrets::{SecretAccount, SecretError, SecretStore};

@@ -1,4 +1,5 @@
 use super::*;
+use rc_proto::ctrl::QualityMode;
 
 const PUBKEY: &str = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEa+b/Zm8wTUVTVEtFWTEyMzQ1Njc4OTBhYmNkZWZnaGlqa2xtbm9wcXJzdA==";
 
@@ -182,7 +183,7 @@ fn an_entitlement_from_a_newer_backend_is_read_conservatively() {
             "limits":{"maxQuality":"auto"},"refreshAfterSec":60}"#,
     );
     assert!(trial.may_connect());
-    assert_eq!(trial.max_quality(), "auto");
+    assert_eq!(trial.max_quality(), QualityMode::Auto);
     assert_eq!(trial.balance_cents, Some(50));
 
     let sparse = decode(r#"{"status":"active"}"#);
@@ -190,20 +191,20 @@ fn an_entitlement_from_a_newer_backend_is_read_conservatively() {
     assert_eq!(sparse.concurrency.max_active_pairs, 1);
     assert_eq!(sparse.refresh_after_sec, 60);
     assert_eq!(sparse.balance_cents, None, "absent is not zero");
-    assert_eq!(sparse.max_quality(), "auto");
+    assert_eq!(sparse.max_quality(), QualityMode::Auto);
 
     let unknown = decode(r#"{"status":"pending_review","limits":{"maxQuality":"ultra"}}"#);
     assert!(
         !unknown.may_connect(),
         "a status this build does not know must not open a session"
     );
-    assert_eq!(unknown.max_quality(), "auto");
+    assert_eq!(unknown.max_quality(), QualityMode::Auto);
 
     assert!(!decode(r#"{"status":"unlinked"}"#).may_connect());
     assert!(!decode(r#"{"status":"exhausted"}"#).may_connect());
     assert_eq!(
         decode(r#"{"status":"active","limits":{"maxQuality":"sharp"}}"#).max_quality(),
-        "sharp"
+        QualityMode::Sharp
     );
     assert!(
         decode(r#"{"status":"active","aFieldFromTheFuture":7}"#).may_connect(),

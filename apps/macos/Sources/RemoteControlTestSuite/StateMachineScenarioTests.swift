@@ -51,13 +51,7 @@ private func scenariosURL() -> URL {
     if let override = ProcessInfo.processInfo.environment["RC_SCENARIOS_PATH"] {
         return URL(fileURLWithPath: override)
     }
-    return URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .appendingPathComponent("protocol/vectors/session-scenarios.json")
+    return protocolVectorURL("session-scenarios.json")
 }
 
 private func string(_ obj: [String: JSONValue], _ key: String, _ ctx: String) throws -> String {

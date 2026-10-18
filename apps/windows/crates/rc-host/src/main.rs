@@ -16,12 +16,14 @@
 use std::path::PathBuf;
 
 use rc_host::account::{Account, AccountState};
-use rc_host::api::ApiClient;
+use rc_host::api::{ApiClient, DEFAULT_REFRESH_AFTER_SEC};
 use rc_host::inject::Injector;
 use rc_host::media::CaptureBackend;
 use rc_host::pump::PumpEvent;
 use rc_host::settings::{unattended_argument, unattended_line, unattended_override, HostSettings};
-use rc_host::{Backend, Host, HostConfig, RecordingInjector, SecretStore, SyntheticBackend};
+use rc_host::{
+    Backend, Host, HostConfig, QualityCeiling, RecordingInjector, SecretStore, SyntheticBackend,
+};
 use rc_identity::{access_code, DeviceKey, IdentityRecord};
 use tokio::sync::mpsc;
 
@@ -200,6 +202,7 @@ async fn host_online<I: Injector + Send + 'static, B: CaptureBackend>(
     host.ensure_registered().await?;
     print_banner(host.identity(), host.unattended_access());
     ensure_signed_in(backend, host.secrets(), host.key(), host.identity()).await?;
+    refresh_quality_ceiling(backend, host.identity(), host.quality_ceiling());
     host.run(events).await
 }
 
@@ -211,13 +214,32 @@ fn config(backend: &Backend) -> HostConfig {
             std::env::var("RC_UNATTENDED").ok().as_deref(),
         ),
         force_relay: std::env::var("RC_ICE_POLICY").map(|v| v == "relay").unwrap_or(false),
-        bitrate_bps: env_or("RC_BITRATE", "4000000").parse().unwrap_or(4_000_000),
-        fps: env_or("RC_FPS", "30").parse().unwrap_or(30.0),
-        max_dimension: std::env::var("RC_MAX_DIMENSION")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(rc_host::Pacing::DEFAULT_MAX_DIMENSION),
+        quality_ceiling: QualityCeiling::default(),
+        media_stats: env_or("RC_MEDIA_STATS", "0") == "1",
     }
+}
+
+/// The Mac's `AccountLinker.startRefreshing`: the entitlement is re-read every
+/// `refreshAfterSec`, as the last answer asked, and the host gate reads the
+/// ceiling and its age from the shared cell. It runs on its own store handle
+/// and key copy because the host owns the originals for its lifetime.
+fn refresh_quality_ceiling(backend: &Backend, identity: &IdentityRecord, ceiling: QualityCeiling) {
+    let secrets = SecretStore::open(identity_directory().join("secrets"));
+    let (Ok(secrets), Ok(key)) = (secrets, identity.device_key()) else {
+        eprintln!("rc-host: the account could not be read; quality stays at auto");
+        return;
+    };
+    let backend = backend.clone();
+    tokio::spawn(async move {
+        let Ok(mut account) = account(&backend, &secrets, &key) else { return };
+        loop {
+            let now = now_ms();
+            let entitlement = account.entitlement(now, true).await;
+            ceiling.record(entitlement, now);
+            let seconds = entitlement.map_or(DEFAULT_REFRESH_AFTER_SEC, |e| e.refresh_after_sec);
+            tokio::time::sleep(std::time::Duration::from_secs(seconds.max(1) as u64)).await;
+        }
+    });
 }
 
 /// How long `--sign-in` waits for the browser. The attempt itself expires at
@@ -416,6 +438,17 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// The synthetic screen's size: 1280x720, or `RC_SYNTHETIC_SIZE=WIDTHxHEIGHT`
+/// to load the encoder like a larger display does.
+fn synthetic_backend() -> SyntheticBackend {
+    let size = std::env::var("RC_SYNTHETIC_SIZE").ok().and_then(|v| {
+        let (w, h) = v.split_once('x')?;
+        Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+    });
+    let (width, height) = size.unwrap_or((1280, 720));
+    SyntheticBackend { width, height }
+}
+
 /// The diagnostic path: a synthetic screen and an injector that records instead
 /// of acting. Available on every OS, and the only configuration in which a
 /// synthetic screen is ever used.
@@ -426,7 +459,7 @@ async fn run_synthetic(startup: Startup) -> Result<(), String> {
         startup.identity,
         startup.key,
         RecordingInjector::default(),
-        SyntheticBackend { width: 1280, height: 720 },
+        synthetic_backend(),
         startup.secrets,
         Some(startup.identity_path),
     );

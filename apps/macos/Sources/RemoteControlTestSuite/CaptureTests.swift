@@ -177,7 +177,68 @@ public let videoGeometrySuite = TestSuite("VideoGeometry", [
     },
 ])
 
+private struct QualityVectors: Decodable {
+    struct Mode: Decodable {
+        let mode: String
+        let maxWidth: Int
+        let maxBitrateBps: Int
+        let minBitrateBps: Int
+    }
+    struct Wire: Decodable {
+        let wire: String
+        let mode: String
+    }
+    struct Profile: Decodable {
+        let mode: String
+        let display: [Int]
+        let encode: [Int]
+    }
+    struct Permitted: Decodable {
+        let requested: String
+        let stated: String?
+        let fresh: Bool
+        let applied: String
+    }
+    let ladder: [String]
+    let framerate: Int
+    let modes: [Mode]
+    let wire: [Wire]
+    let profiles: [Profile]
+    let permitted: [Permitted]
+
+    static func load() throws -> QualityVectors {
+        try JSONDecoder().decode(QualityVectors.self,
+                                 from: Data(contentsOf: protocolVectorURL("quality-vectors.json")))
+    }
+}
+
 public let qualitySuite = TestSuite("Quality", [
+
+    TestCase("the ladder, its numbers and the host gate match protocol/vectors/quality-vectors.json") {
+        let vectors = try QualityVectors.load()
+        try expectEqual(QualityWireMode.ladder.map(\.rawValue), vectors.ladder)
+        try expectEqual(QualityProfile.activeFramerate, vectors.framerate)
+        for row in vectors.modes {
+            let mode = try expectNotNil(QualityWireMode(rawValue: row.mode))
+            try expectEqual(QualityProfile.maximumWidth(for: mode), row.maxWidth, row.mode)
+            try expectEqual(QualityProfile.maximumBitrateBps(for: mode), row.maxBitrateBps, row.mode)
+            try expectEqual(QualityProfile.minimumBitrateBps(for: mode), row.minBitrateBps, row.mode)
+        }
+        for row in vectors.wire {
+            try expectEqual(QualityWireMode(wire: row.wire).rawValue, row.mode, row.wire)
+        }
+        for row in vectors.profiles {
+            let mode = try expectNotNil(QualityWireMode(rawValue: row.mode))
+            let profile = QualityProfile.profile(for: mode, displayWidth: row.display[0], displayHeight: row.display[1])
+            try expectEqual([profile.encodeWidth, profile.encodeHeight], row.encode, "\(row.mode) \(row.display)")
+        }
+        for row in vectors.permitted {
+            let requested = try expectNotNil(QualityWireMode(rawValue: row.requested))
+            let stated = row.stated.map(QualityWireMode.ceiling(wire:))
+            let applied = QualityWireMode.permitted(requested: requested, stated: stated, fresh: row.fresh)
+            try expectEqual(applied.rawValue, row.applied, "\(row)")
+        }
+    },
 
     TestCase("the UI's three labels map onto the protocol's three strategies") {
         try expectEqual(QualityMode.best.wireMode, .sharp)

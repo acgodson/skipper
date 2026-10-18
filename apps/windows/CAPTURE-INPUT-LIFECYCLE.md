@@ -112,10 +112,26 @@ are never compiled for macOS).
 between frames and inside every sleep, and hands the frame source back on exit so the next
 session can reuse it.
 
-**Encode envelope.** openh264 configured for screen content with bitrate rate control. The
-cap is 2560 on the longest edge; `Pacing` measures the real encode cost and steps the frame
-rate, then the resolution, down when it does not fit 80% of the frame budget. Measured on
-macOS/arm64, release, 30 synthetic desktop frames:
+**Quality.** The controller's `quality` message is honoured through the Mac's ladder and gate
+(`quality.rs`, pinned with the Mac by `protocol/vectors/quality-vectors.json`): `smooth` /
+`auto` / `sharp` cap the encode width at 1280 / 1920 / 2560 and the bitrate at 1 / 2 / 8 Mbps,
+30 fps, and the request is clamped to the account's `limits.maxQuality`, which a background
+loop re-reads every `refreshAfterSec`; no entitlement, or one older than that, clamps to `auto`.
+A change rebuilds the encoder at the new bitrate mid-session. Downscaling is separable area
+averaging to the exact ladder size.
+
+**Latency.** Capture and encode are separate threads with a one-frame slot between them; a new
+frame replaces one the encoder has not reached, so a slow encoder drops frames rather than
+queueing them. A frame openh264's rate control skips is offered again until it goes out or a
+newer one replaces it, so the screen's last state is never lost to a skip. RTP timestamps
+follow capture time (`RtpClock`), not a fixed per-frame duration. `RC_MEDIA_STATS=1` logs, each
+second: frames sent, skipped and dropped, encode time, and frame age at encode and at send.
+
+**Encode envelope.** openh264 configured for screen content with bitrate rate control. When
+the mean encode time over 30 frames exceeds the 33 ms budget, the encode size steps down one
+ladder rung (sharp → auto → smooth size, bitrate unchanged); it steps back up after three
+windows in which the measured cost scaled to the rung above would fit 80% of the budget.
+Measured on macOS/arm64, release, 30 synthetic desktop frames:
 
 | source | mean encode | fits 30 fps |
 |---|---|---|
@@ -156,10 +172,9 @@ exercised at all from macOS — not even smoke-tested — and this host's one pr
 with real Windows was a crash. The measured cap and step-down are what keep the software path
 from being the catastrophe in the meantime.
 
-**Bitrate adaptation.** The encoder's target bitrate is fixed from config. Nothing feeds a
-bandwidth estimate back into it, and the `quality` ctrl message (§5) is not handled. The
-entitlement's `limits.maxQuality` is therefore read and cached but not yet *enforced*: API.md
-§4.4 makes the host the enforcement point, and that lands with `quality` handling.
+**Bitrate adaptation.** The encoder's target bitrate is the permitted mode's ceiling. Nothing
+feeds a bandwidth estimate back into it, so unlike libwebrtc on the Mac it does not move
+between the mode's floor and ceiling under congestion.
 
 ---
 

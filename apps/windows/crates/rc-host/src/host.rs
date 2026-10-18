@@ -23,6 +23,7 @@ use std::time::Duration;
 use rc_identity::pake::PakeMessage;
 use rc_identity::{DeviceKey, IdentityRecord};
 use rc_proto::consts::{bye, ctrl as ctrl_msg, err, msg, role};
+use rc_proto::ctrl::QualityMode;
 use rc_proto::{ctrl as ctrlp, signaling as sig};
 use rc_session::{
     ConsentOutcome, IceLinkState, ResumeOk, Role, SessionAction, SessionGrant, SessionStateMachine,
@@ -34,9 +35,10 @@ use tokio::sync::mpsc;
 use crate::consent::{ConsentAnswer, ConsentPrompt};
 use crate::inject::{InputDispatcher, InputState, Injector};
 use crate::keepawake::{KeepAwake, StayAwake};
-use crate::media::{CaptureBackend, CaptureStatus, Pacing, SoftwareEncoder, VideoEncoder};
+use crate::media::{CaptureBackend, CaptureStatus, SoftwareEncoder, VideoEncoder};
 use crate::pake::{GuessStore, HostExchange};
 use crate::pump::{CapturePump, EncoderFactory, PumpConfig, PumpEvent, VideoSink};
+use crate::quality::QualityCeiling;
 use crate::secrets::{SecretAccount, SecretStore};
 use crate::settings::HostSettings;
 
@@ -56,10 +58,10 @@ pub struct HostConfig {
     /// diagnostic `RC_UNATTENDED` override for one run.
     pub unattended_override: Option<bool>,
     pub force_relay: bool,
-    pub bitrate_bps: u32,
-    pub fps: f32,
-    /// Longest edge the encoder is allowed. See [`Pacing`].
-    pub max_dimension: u32,
+    /// The account's stated `maxQuality` and its age: the host gate's input.
+    pub quality_ceiling: QualityCeiling,
+    /// The diagnostic `RC_MEDIA_STATS` line: encode time, skips and drops.
+    pub media_stats: bool,
 }
 
 /// §2.17 Consent 3: while the owner is being asked the host has no peer
@@ -93,9 +95,9 @@ struct PeerVideoSink {
 }
 
 impl VideoSink for PeerVideoSink {
-    fn write(&self, sample: bytes::Bytes, duration: Duration) -> Result<(), String> {
+    fn write(&self, sample: bytes::Bytes, captured_at: std::time::Instant) -> Result<(), String> {
         self.runtime
-            .block_on(self.peer.write_video_sample(sample, duration))
+            .block_on(self.peer.write_video_frame(sample, captured_at))
             .map_err(|e| e.to_string())
     }
 }
@@ -118,6 +120,10 @@ pub struct Host<I: Injector + Send + 'static, B: CaptureBackend> {
     encoders: EncoderFactory,
     identity_path: Option<std::path::PathBuf>,
     published_cursor: Option<ctrlp::CursorShapeName>,
+    /// What the controller last asked for, before the gate. Like the Mac it
+    /// starts at `auto` and outlives a session; the controller restates it
+    /// whenever its control channel opens.
+    requested_quality: QualityMode,
     secrets: SecretStore,
     /// The §2.17 exchange for the current session. Nothing is applied and no
     /// `sdp` is sent or accepted until this one is complete.
@@ -178,6 +184,7 @@ where
             }),
             identity_path,
             published_cursor: None,
+            requested_quality: QualityMode::Auto,
             secrets,
             exchange: None,
             expected_peer: None,
@@ -345,6 +352,11 @@ where
 
     pub fn identity(&self) -> &IdentityRecord {
         &self.identity
+    }
+
+    /// The cell the account refresher writes the stated ceiling into.
+    pub fn quality_ceiling(&self) -> QualityCeiling {
+        self.config.quality_ceiling.clone()
     }
 
     /// Whether a controller that proves the code connects without a prompt.
@@ -1079,13 +1091,31 @@ where
                 self.dispatcher.set_geometry(geometry, &mut self.injector);
                 self.publish_display(peer).await;
             }
-            PumpEvent::SteppedDown { fps, max_dimension, measured_encode } => {
-                let measured = measured_encode
-                    .map(|d| format!("{:.1} ms/frame", d.as_secs_f64() * 1000.0))
-                    .unwrap_or_else(|| "unmeasured".into());
+            PumpEvent::LoadStep { size_mode, mean_encode } => {
                 eprintln!(
-                    "rc-host: encode cost {measured} did not fit the budget — now {fps} fps, \
-                     longest edge {max_dimension}"
+                    "rc-host: encode cost {:.1} ms/frame — now encoding at the {} size",
+                    mean_encode.as_secs_f64() * 1000.0,
+                    size_mode.as_wire()
+                );
+            }
+            PumpEvent::Stats(stats) => {
+                eprintln!(
+                    "rc-host: media {}x{} ({}) over {:.1}s: {} sent, {} skipped by rate control, \
+                     {} dropped unencoded, encode mean {:.1} ms max {:.1} ms, frame age at \
+                     encode p50 {:.0} ms max {:.0} ms, at send p50 {:.0} ms max {:.0} ms",
+                    stats.width,
+                    stats.height,
+                    stats.size_mode.as_wire(),
+                    stats.interval.as_secs_f64(),
+                    stats.encoded,
+                    stats.skipped,
+                    stats.superseded,
+                    stats.mean_encode.as_secs_f64() * 1000.0,
+                    stats.max_encode.as_secs_f64() * 1000.0,
+                    stats.age_at_encode.p50.as_secs_f64() * 1000.0,
+                    stats.age_at_encode.max.as_secs_f64() * 1000.0,
+                    stats.age_at_send.p50.as_secs_f64() * 1000.0,
+                    stats.age_at_send.max.as_secs_f64() * 1000.0
                 );
             }
         }
@@ -1168,10 +1198,34 @@ where
                 }
             }
             ctrl_msg::INPUT_RESET => d.input_reset(inj),
-            // clipboard, quality, ping handled elsewhere / later.
+            ctrl_msg::QUALITY => {
+                if let Ok(q) = env.payload_as::<ctrlp::Quality>() {
+                    self.apply_quality(QualityMode::from_wire(&q.mode));
+                }
+            }
             _ => {}
         }
         self.log_injection_failure();
+    }
+
+    /// The gate, as on the Mac (`SessionCoordinator.applyQuality`): the request
+    /// is remembered as asked, clamped to the account's ceiling at the moment
+    /// it is applied, and only the clamped mode reaches the encoder.
+    pub fn apply_quality(&mut self, requested: QualityMode) {
+        self.requested_quality = requested;
+        let permitted = self.permitted_quality();
+        if let Some(pump) = &self.pump {
+            pump.set_quality(permitted);
+        }
+        eprintln!(
+            "rc-host: quality {} requested, {} applied",
+            requested.as_wire(),
+            permitted.as_wire()
+        );
+    }
+
+    pub fn permitted_quality(&self) -> QualityMode {
+        self.config.quality_ceiling.permitted(self.requested_quality, now_ms())
     }
 
     fn on_hi(&mut self, env: rc_proto::envelope::Envelope) {
@@ -1211,8 +1265,8 @@ where
             sink,
             self.pump_tx.clone(),
             PumpConfig {
-                bitrate_bps: self.config.bitrate_bps,
-                pacing: Pacing::new(self.config.fps, self.config.max_dimension),
+                quality: self.permitted_quality(),
+                diagnostics: self.config.media_stats,
             },
             self.encoders.clone(),
         ));
@@ -1505,3 +1559,6 @@ enum ConnLoopExit {
     Reconnect,
     Shutdown,
 }
+
+#[cfg(test)]
+mod tests;

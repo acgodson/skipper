@@ -10,10 +10,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use rc_host::pump::{CapturePump, EncoderFactory, PumpConfig, PumpEvent, VideoSink};
+use rc_host::pump::{CapturePump, CapturedFrame, EncoderFactory, FrameSlot, PumpConfig, PumpEvent, VideoSink};
 use rc_host::{
-    fit_for_encode, CaptureStatus, FrameSource, Pacing, RawFrame, SoftwareEncoder, VideoEncoder,
+    fit_for_encode, resample, CaptureStatus, FrameSource, LoadResponse, RawFrame, SoftwareEncoder,
+    VideoEncoder,
 };
+use rc_proto::ctrl::QualityMode;
 use rc_input::DisplayGeometry;
 use tokio::sync::mpsc;
 
@@ -67,7 +69,7 @@ struct CountingSink {
 }
 
 impl VideoSink for CountingSink {
-    fn write(&self, _sample: Bytes, _duration: Duration) -> Result<(), String> {
+    fn write(&self, _sample: Bytes, _captured_at: Instant) -> Result<(), String> {
         if !*self.open.lock().unwrap() {
             return Err("track closed".into());
         }
@@ -119,8 +121,8 @@ fn fake_encoders(cost: Duration, failures: u32) -> Fakes {
     Fakes { keyframes, builds, factory }
 }
 
-fn config(fps: f32, max_dimension: u32) -> PumpConfig {
-    PumpConfig { bitrate_bps: 1_000_000, pacing: Pacing::new(fps, max_dimension) }
+fn config() -> PumpConfig {
+    PumpConfig { quality: QualityMode::Auto, diagnostics: false }
 }
 
 async fn drain(rx: &mut mpsc::Receiver<PumpEvent>) -> Vec<PumpEvent> {
@@ -148,7 +150,7 @@ async fn three_sessions_in_a_row_each_get_the_source_back() {
         let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
         let (tx, mut rx) = mpsc::channel(32);
         let pump =
-            CapturePump::start(source, sink.clone(), tx, config(30.0, 1920), fakes.factory.clone());
+            CapturePump::start(source, sink.clone(), tx, config(), fakes.factory.clone());
 
         tokio::time::sleep(Duration::from_millis(80)).await;
         let returned = pump.stop(Duration::from_secs(2)).await;
@@ -175,9 +177,7 @@ async fn a_blocking_pump_stops_cooperatively_and_promptly() {
     let source = SlowSource::new(Duration::from_millis(25));
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, _rx) = mpsc::channel(32);
-    // One frame per second: if the pump slept the whole budget without checking
-    // the flag, stopping would take about a second.
-    let pump = CapturePump::start(source, sink, tx, config(1.0, 1920), fakes.factory.clone());
+    let pump = CapturePump::start(source, sink, tx, config(), fakes.factory.clone());
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     let started = Instant::now();
@@ -195,7 +195,7 @@ async fn nothing_is_encoded_after_the_pump_is_stopped() {
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, _rx) = mpsc::channel(64);
     let pump =
-        CapturePump::start(source, sink.clone(), tx, config(60.0, 1920), fakes.factory.clone());
+        CapturePump::start(source, sink.clone(), tx, config(), fakes.factory.clone());
     tokio::time::sleep(Duration::from_millis(60)).await;
     pump.stop(Duration::from_secs(2)).await.expect("source back");
 
@@ -213,7 +213,7 @@ async fn dropping_a_pump_without_stopping_it_still_ends_the_loop() {
     let frames = source.frames.clone();
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, _rx) = mpsc::channel(64);
-    drop(CapturePump::start(source, sink, tx, config(60.0, 1920), fakes.factory.clone()));
+    drop(CapturePump::start(source, sink, tx, config(), fakes.factory.clone()));
     tokio::time::sleep(Duration::from_millis(60)).await;
     let at_drop = frames.load(Ordering::Relaxed);
     tokio::time::sleep(Duration::from_millis(120)).await;
@@ -232,7 +232,7 @@ async fn a_closed_video_track_ends_the_pump() {
     let source = SlowSource::new(Duration::from_millis(1));
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(false)), ..Default::default() });
     let (tx, _rx) = mpsc::channel(32);
-    let pump = CapturePump::start(source, sink, tx, config(60.0, 1920), fakes.factory.clone());
+    let pump = CapturePump::start(source, sink, tx, config(), fakes.factory.clone());
     // No stop flag is set: the pump has to end itself.
     let returned = tokio::time::timeout(Duration::from_secs(2), pump.stop(Duration::from_secs(2)))
         .await
@@ -252,7 +252,7 @@ async fn a_protected_desktop_is_reported_and_nothing_is_sent() {
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, mut rx) = mpsc::channel(32);
     let pump =
-        CapturePump::start(source, sink.clone(), tx, config(60.0, 1920), fakes.factory.clone());
+        CapturePump::start(source, sink.clone(), tx, config(), fakes.factory.clone());
     tokio::time::sleep(Duration::from_millis(60)).await;
 
     let events = drain(&mut rx).await;
@@ -279,7 +279,7 @@ async fn availability_is_announced_before_the_geometry_that_unsuspends_input() {
     *source.status.lock().unwrap() = CaptureStatus::DesktopUnavailable;
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, mut rx) = mpsc::channel(32);
-    let pump = CapturePump::start(source, sink, tx, config(60.0, 1920), fakes.factory.clone());
+    let pump = CapturePump::start(source, sink, tx, config(), fakes.factory.clone());
     let events = drain(&mut rx).await;
     pump.stop(Duration::from_secs(2)).await.expect("source back");
 
@@ -298,7 +298,7 @@ async fn coming_back_from_unavailable_forces_a_keyframe() {
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, _rx) = mpsc::channel(64);
     let pump =
-        CapturePump::start(source, sink, tx, config(60.0, 1920), fakes.factory.clone());
+        CapturePump::start(source, sink, tx, config(), fakes.factory.clone());
     tokio::time::sleep(Duration::from_millis(40)).await;
     assert!(fakes.keyframes.lock().unwrap().is_empty(), "nothing encoded while unavailable");
 
@@ -321,7 +321,7 @@ async fn a_geometry_change_is_published_and_forces_a_keyframe() {
     let geometry = source.geometry.clone();
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, mut rx) = mpsc::channel(64);
-    let pump = CapturePump::start(source, sink, tx, config(60.0, 1920), fakes.factory.clone());
+    let pump = CapturePump::start(source, sink, tx, config(), fakes.factory.clone());
     tokio::time::sleep(Duration::from_millis(30)).await;
     let _ = drain(&mut rx).await;
     fakes.keyframes.lock().unwrap().clear();
@@ -349,7 +349,7 @@ async fn a_run_of_encoder_failures_becomes_unavailable_rather_than_a_hot_loop() 
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, mut rx) = mpsc::channel(64);
     let pump =
-        CapturePump::start(source, sink.clone(), tx, config(60.0, 1920), fakes.factory.clone());
+        CapturePump::start(source, sink.clone(), tx, config(), fakes.factory.clone());
     tokio::time::sleep(Duration::from_millis(80)).await;
     let events = drain(&mut rx).await;
     let returned = pump.stop(Duration::from_secs(2)).await;
@@ -368,7 +368,7 @@ async fn an_encoder_that_cannot_be_built_is_unavailable_not_a_panic() {
     let source = SlowSource::new(Duration::from_millis(1));
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, mut rx) = mpsc::channel(32);
-    let pump = CapturePump::start(source, sink, tx, config(30.0, 1920), factory);
+    let pump = CapturePump::start(source, sink, tx, config(), factory);
     let events = drain(&mut rx).await;
     assert!(pump.stop(Duration::from_secs(2)).await.is_some());
     assert!(events.iter().any(|e| matches!(e, PumpEvent::Status(CaptureStatus::Unavailable(_)))));
@@ -384,7 +384,7 @@ async fn the_first_frame_of_a_session_is_a_keyframe() {
     let source = SlowSource::new(Duration::from_millis(1));
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, _rx) = mpsc::channel(64);
-    let pump = CapturePump::start(source, sink, tx, config(60.0, 1920), fakes.factory.clone());
+    let pump = CapturePump::start(source, sink, tx, config(), fakes.factory.clone());
     tokio::time::sleep(Duration::from_millis(60)).await;
     pump.stop(Duration::from_secs(2)).await.expect("source back");
     let keyframes = fakes.keyframes.lock().unwrap().clone();
@@ -400,7 +400,7 @@ async fn a_keyframe_request_is_honoured_on_the_next_frame() {
     let source = SlowSource::new(Duration::from_millis(1));
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, _rx) = mpsc::channel(64);
-    let pump = CapturePump::start(source, sink, tx, config(60.0, 1920), fakes.factory.clone());
+    let pump = CapturePump::start(source, sink, tx, config(), fakes.factory.clone());
     tokio::time::sleep(Duration::from_millis(50)).await;
     fakes.keyframes.lock().unwrap().clear();
 
@@ -420,7 +420,7 @@ async fn a_keyframe_lost_to_an_encode_failure_is_asked_for_again() {
     let source = SlowSource::new(Duration::from_millis(1));
     let sink = Arc::new(CountingSink { open: Arc::new(Mutex::new(true)), ..Default::default() });
     let (tx, _rx) = mpsc::channel(64);
-    let pump = CapturePump::start(source, sink, tx, config(60.0, 1920), fakes.factory.clone());
+    let pump = CapturePump::start(source, sink, tx, config(), fakes.factory.clone());
     tokio::time::sleep(Duration::from_millis(60)).await;
     pump.stop(Duration::from_secs(2)).await.expect("source back");
 
@@ -430,88 +430,273 @@ async fn a_keyframe_lost_to_an_encode_failure_is_asked_for_again() {
 }
 
 // ---------------------------------------------------------------------------
-// Pacing: measured, not assumed
+// Latency: the newest frame wins, a slow encoder drops rather than delays
 // ---------------------------------------------------------------------------
 
+fn labelled(label: u32) -> RawFrame {
+    let mut rgb = vec![0u8; 16 * 16 * 3];
+    rgb[..4].copy_from_slice(&label.to_le_bytes());
+    RawFrame { width: 16, height: 16, rgb }
+}
+
+fn label_of(frame: &RawFrame) -> u32 {
+    u32::from_le_bytes(frame.rgb[..4].try_into().unwrap())
+}
+
 #[test]
-fn pacing_claims_nothing_until_it_has_measured_something() {
-    let pacing = Pacing::new(30.0, 1920);
-    assert_eq!(pacing.measured_encode_time(), None);
-    assert_eq!(pacing.frame_budget(), Duration::from_secs_f32(1.0 / 30.0));
+fn three_frames_captured_while_the_encoder_is_busy_leave_only_the_newest() {
+    let slot = FrameSlot::default();
+    for label in 1..=3 {
+        slot.put(CapturedFrame {
+            frame: labelled(label),
+            captured_at: Instant::now(),
+            source_size: (16, 16),
+        });
+    }
+    let taken = slot.take(Duration::ZERO).expect("a frame is waiting");
+    assert_eq!(label_of(&taken.frame), 3, "the encoder gets the newest frame");
+    assert!(slot.take(Duration::ZERO).is_none(), "and only that one");
+    assert_eq!(slot.superseded(), 2, "the two it never saw are counted as dropped");
+}
+
+/// A source that never blocks and stamps every frame with a counter.
+struct CountingSource {
+    next: u32,
+    stop_after: Option<u32>,
+}
+
+impl FrameSource for CountingSource {
+    fn next_frame(&mut self) -> Option<RawFrame> {
+        if self.stop_after.is_some_and(|last| self.next >= last) {
+            return None;
+        }
+        self.next += 1;
+        Some(labelled(self.next))
+    }
+
+    fn geometry(&self) -> Option<DisplayGeometry> {
+        Some(DisplayGeometry::single(16, 16, 1.0))
+    }
+}
+
+/// Encodes slowly, and declines the first `skips` frames the way openh264's
+/// rate control does: with an empty access unit.
+struct LabelEncoder {
+    cost: Duration,
+    skips: u32,
+    seen: Arc<Mutex<Vec<u32>>>,
+}
+
+impl VideoEncoder for LabelEncoder {
+    fn encode(&mut self, frame: &RawFrame, _keyframe: bool) -> Result<Bytes, String> {
+        std::thread::sleep(self.cost);
+        self.seen.lock().unwrap().push(label_of(frame));
+        if self.skips > 0 {
+            self.skips -= 1;
+            return Ok(Bytes::new());
+        }
+        Ok(Bytes::from(label_of(frame).to_le_bytes().to_vec()))
+    }
+
+    fn name(&self) -> &'static str {
+        "label"
+    }
+}
+
+fn label_encoders(cost: Duration, skips: u32) -> (EncoderFactory, Arc<Mutex<Vec<u32>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = seen.clone();
+    let factory: EncoderFactory = Arc::new(move |_, _| {
+        Ok(Box::new(LabelEncoder { cost, skips, seen: recorded.clone() }) as Box<dyn VideoEncoder>)
+    });
+    (factory, seen)
+}
+
+/// What reached the track, and how long after capture it got there.
+#[derive(Default)]
+struct TimingSink {
+    sent: Mutex<Vec<(u32, Duration)>>,
+}
+
+impl VideoSink for TimingSink {
+    fn write(&self, sample: Bytes, captured_at: Instant) -> Result<(), String> {
+        let label = u32::from_le_bytes(sample[..4].try_into().unwrap());
+        self.sent.lock().unwrap().push((label, captured_at.elapsed()));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_slow_encoder_drops_frames_and_never_falls_behind_the_screen() {
+    let cost = Duration::from_millis(80);
+    let (factory, _) = label_encoders(cost, 0);
+    let sink = Arc::new(TimingSink::default());
+    let (tx, _rx) = mpsc::channel(256);
+    let source = CountingSource { next: 0, stop_after: None };
+    let pump = CapturePump::start(source, sink.clone(), tx, config(), factory);
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    pump.stop(Duration::from_secs(2)).await.expect("source back");
+
+    let sent = sink.sent.lock().unwrap().clone();
+    assert!(sent.len() >= 4, "got {sent:?}");
+    assert!(sent.windows(2).all(|w| w[1].0 > w[0].0), "frames go out in capture order");
+    assert!(sent.windows(2).any(|w| w[1].0 > w[0].0 + 1), "frames the encoder could not reach are dropped");
+    let worst = sent.iter().map(|(_, lag)| *lag).max().unwrap();
+    assert!(
+        worst < cost * 2 + rc_host::media::frame_budget() * 2,
+        "every frame is at most one encode behind its capture, worst {worst:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_frame_the_rate_controller_skipped_is_sent_once_it_can_be() {
+    let (factory, seen) = label_encoders(Duration::ZERO, 3);
+    let sink = Arc::new(TimingSink::default());
+    let (tx, _rx) = mpsc::channel(256);
+    let source = CountingSource { next: 0, stop_after: Some(1) };
+    let pump = CapturePump::start(source, sink.clone(), tx, config(), factory);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    pump.stop(Duration::from_secs(2)).await.expect("source back");
+
+    assert_eq!(*seen.lock().unwrap(), vec![1, 1, 1, 1], "the one frame is offered until it goes");
+    let sent: Vec<u32> = sink.sent.lock().unwrap().iter().map(|(label, _)| *label).collect();
+    assert_eq!(sent, vec![1], "the screen's last state reaches the controller although nothing moved after it");
+}
+
+#[tokio::test]
+async fn a_quality_change_rebuilds_the_encoder_at_the_new_bitrate_mid_session() {
+    let bitrates = Arc::new(Mutex::new(Vec::new()));
+    let recorded = bitrates.clone();
+    let factory: EncoderFactory = Arc::new(move |bitrate, fps| {
+        recorded.lock().unwrap().push((bitrate, fps));
+        Ok(Box::new(LabelEncoder { cost: Duration::ZERO, skips: 0, seen: Default::default() })
+            as Box<dyn VideoEncoder>)
+    });
+    let sink = Arc::new(TimingSink::default());
+    let (tx, _rx) = mpsc::channel(256);
+    let source = CountingSource { next: 0, stop_after: None };
+    let pump = CapturePump::start(source, sink.clone(), tx, config(), factory);
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    pump.set_quality(QualityMode::Sharp);
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    pump.set_quality(QualityMode::Smooth);
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    pump.stop(Duration::from_secs(2)).await.expect("the session survived both changes");
+
+    assert_eq!(
+        *bitrates.lock().unwrap(),
+        vec![(2_000_000, 30.0), (8_000_000, 30.0), (1_000_000, 30.0)]
+    );
+    assert!(sink.sent.lock().unwrap().len() > 3, "frames kept flowing across the changes");
+}
+
+// ---------------------------------------------------------------------------
+// Load response: a rung down when the encoder cannot keep up, a rung back up
+// when the rung above would fit
+// ---------------------------------------------------------------------------
+
+fn window(load: &mut LoadResponse, cost: Duration) -> Option<rc_host::LoadStep> {
+    let mut step = None;
+    for _ in 0..LoadResponse::WINDOW {
+        step = step.or(load.observe(cost, 2560, 1440));
+    }
+    step
 }
 
 #[test]
 fn an_encode_that_fits_the_budget_changes_nothing() {
-    let mut pacing = Pacing::new(30.0, 1920);
-    for _ in 0..50 {
-        assert!(!pacing.observe(Duration::from_millis(5)));
+    let mut load = LoadResponse::new(QualityMode::Sharp);
+    assert_eq!(load.measured_encode_time(), None, "nothing is claimed before it is measured");
+    for _ in 0..5 {
+        assert_eq!(window(&mut load, Duration::from_millis(20)), None);
     }
-    assert_eq!(pacing.fps, 30.0);
-    assert_eq!(pacing.max_dimension, 1920);
-    assert!(pacing.measured_encode_time().is_some());
+    assert_eq!(load.size_mode(), QualityMode::Sharp);
+    assert_eq!(load.measured_encode_time(), Some(Duration::from_millis(20)));
 }
 
-/// The CPU trap, closed: an encode that cannot keep up drops the frame rate
-/// first and only then the resolution, and stops at a floor rather than
-/// collapsing to nothing.
 #[test]
-fn an_encode_that_does_not_fit_steps_down_frame_rate_then_resolution() {
-    let mut pacing = Pacing::new(30.0, 1920);
-    let mut steps = Vec::new();
-    for _ in 0..400 {
-        if pacing.observe(Duration::from_millis(90)) {
-            steps.push((pacing.fps, pacing.max_dimension));
-        }
+fn an_encode_over_budget_steps_down_one_rung_per_window_and_stops_at_the_bottom() {
+    let mut load = LoadResponse::new(QualityMode::Sharp);
+    let slow = Duration::from_millis(45);
+    assert_eq!(window(&mut load, slow).map(|s| s.size_mode), Some(QualityMode::Auto));
+    assert_eq!(window(&mut load, slow).map(|s| s.size_mode), Some(QualityMode::Smooth));
+    assert_eq!(window(&mut load, slow), None, "the ladder's floor holds");
+    assert_eq!(load.size_mode(), QualityMode::Smooth);
+}
+
+#[test]
+fn the_load_response_never_goes_above_the_permitted_mode() {
+    let mut load = LoadResponse::new(QualityMode::Auto);
+    for _ in 0..10 {
+        assert_eq!(window(&mut load, Duration::from_millis(1)), None);
     }
+    assert_eq!(load.size_mode(), QualityMode::Auto);
+}
+
+#[test]
+fn it_steps_back_up_only_when_the_rung_above_is_predicted_to_fit() {
+    let mut load = LoadResponse::new(QualityMode::Sharp);
+    window(&mut load, Duration::from_millis(45));
+    assert_eq!(load.size_mode(), QualityMode::Auto);
+
+    for _ in 0..6 {
+        assert_eq!(
+            window(&mut load, Duration::from_millis(20)),
+            None,
+            "20 ms at 1920 predicts ~36 ms at 2560, which would not fit"
+        );
+    }
+    assert_eq!(window(&mut load, Duration::from_millis(10)), None);
+    assert_eq!(window(&mut load, Duration::from_millis(10)), None);
     assert_eq!(
-        steps,
-        vec![(15.0, 1920), (15.0, 1280)],
-        "frame rate is free to change; resolution costs an IDR and a resize"
+        window(&mut load, Duration::from_millis(10)).map(|s| s.size_mode),
+        Some(QualityMode::Sharp),
+        "three calm windows in a row"
     );
-    for _ in 0..200 {
-        assert!(!pacing.observe(Duration::from_millis(90)), "the floor holds");
-    }
 }
 
+// ---------------------------------------------------------------------------
+// Sizing for the encoder
+// ---------------------------------------------------------------------------
+
 #[test]
-fn a_frame_larger_than_the_envelope_is_reduced_to_even_dimensions() {
+fn a_frame_wider_than_the_rung_is_resampled_to_the_ladder_size() {
     let frame = RawFrame { width: 3840, height: 2160, rgb: vec![0u8; 3840 * 2160 * 3] };
-    let fitted = fit_for_encode(frame, 1920);
+    let fitted = fit_for_encode(frame, QualityMode::Auto);
     assert_eq!((fitted.width, fitted.height), (1920, 1080));
     assert_eq!(fitted.rgb.len(), 1920 * 1080 * 3);
+
+    let frame = RawFrame { width: 2560, height: 1440, rgb: vec![200u8; 2560 * 1440 * 3] };
+    let fitted = fit_for_encode(frame, QualityMode::Auto);
+    assert_eq!((fitted.width, fitted.height), (1920, 1080), "a 4:3 ratio, not an integer one");
+    assert!(fitted.rgb.iter().all(|&v| v == 200), "a flat colour stays flat");
 }
 
 #[test]
-fn an_odd_sized_frame_is_cropped_even_when_it_is_already_small_enough() {
-    // 4:2:0 chroma is half-resolution, so an odd edge has no defined last
-    // chroma sample and encoders either refuse it or produce a green edge.
-    let frame = RawFrame { width: 801, height: 601, rgb: vec![0u8; 801 * 601 * 3] };
-    let fitted = fit_for_encode(frame, 1920);
+fn an_odd_sized_frame_is_cropped_even_rather_than_resampled() {
+    let frame = RawFrame { width: 801, height: 601, rgb: vec![9u8; 801 * 601 * 3] };
+    let fitted = fit_for_encode(frame, QualityMode::Sharp);
     assert_eq!((fitted.width, fitted.height), (800, 600));
 }
 
 #[test]
 fn reduction_averages_rather_than_dropping_pixels() {
-    // A 2x2 of 0, 255, 255, 0 must average to 127, not pick a corner: dropping
-    // pixels is what turns remote text into aliased noise.
-    let rgb = vec![
-        0, 0, 0, 255, 255, 255, //
-        255, 255, 255, 0, 0, 0,
-    ];
-    let fitted = fit_for_encode(RawFrame { width: 2, height: 2, rgb }, 1);
-    assert_eq!((fitted.width, fitted.height), (2, 2), "a 1-pixel target cannot be even; left as-is");
-
     let rgb = vec![
         0, 0, 0, 255, 255, 255, 0, 0, 0, 255, 255, 255, //
         255, 255, 255, 0, 0, 0, 255, 255, 255, 0, 0, 0, //
         0, 0, 0, 255, 255, 255, 0, 0, 0, 255, 255, 255, //
         255, 255, 255, 0, 0, 0, 255, 255, 255, 0, 0, 0,
     ];
-    let fitted = fit_for_encode(RawFrame { width: 4, height: 4, rgb }, 2);
+    let fitted = resample(RawFrame { width: 4, height: 4, rgb }, 2, 2);
     assert_eq!((fitted.width, fitted.height), (2, 2));
-    assert!(fitted.rgb.iter().all(|&v| v == 127), "got {:?}", fitted.rgb);
+    assert!(fitted.rgb.iter().all(|&v| v == 127 || v == 128), "got {:?}", fitted.rgb);
+
+    let rgb: Vec<u8> = [0u8, 90, 180].iter().flat_map(|&v| [v, v, v]).collect();
+    let fitted = resample(RawFrame { width: 3, height: 1, rgb }, 2, 1);
+    assert_eq!(fitted.rgb, vec![30, 30, 30, 150, 150, 150], "a 1.5:1 reduction weighs by coverage");
 }
 
+// ---------------------------------------------------------------------------
 /// The real encoder, on the real frames, producing a real Annex-B start code —
 /// so the seam is not only exercised by the fake.
 #[test]

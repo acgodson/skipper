@@ -15,6 +15,7 @@
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use rand_core::{OsRng, RngCore};
+use rc_proto::ctrl::QualityMode;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::BaseUrl;
@@ -160,8 +161,11 @@ pub struct Entitlement {
     pub refresh_after_sec: i32,
 }
 
+/// `Entitlement.defaultRefreshAfterSec` on the Mac.
+pub const DEFAULT_REFRESH_AFTER_SEC: i32 = 60;
+
 fn default_refresh() -> i32 {
-    60
+    DEFAULT_REFRESH_AFTER_SEC
 }
 
 impl Entitlement {
@@ -174,12 +178,8 @@ impl Entitlement {
 
     /// §4.4: the host is the enforcement point, and a value it does not
     /// recognise clamps to `auto` rather than to the most permissive mode.
-    pub fn max_quality(&self) -> &str {
-        match self.limits.max_quality.as_str() {
-            "smooth" => "smooth",
-            "sharp" => "sharp",
-            _ => "auto",
-        }
+    pub fn max_quality(&self) -> QualityMode {
+        QualityMode::from_wire(&self.limits.max_quality)
     }
 }
 

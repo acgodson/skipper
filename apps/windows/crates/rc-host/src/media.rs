@@ -1,4 +1,4 @@
-//! Frames, encoders, and the pacing that keeps encoding affordable.
+//! Frames, encoders, and the load response that keeps encoding on time.
 //!
 //! `FrameSource` is the seam between the platform capture (DXGI Desktop
 //! Duplication on Windows, a synthetic pattern elsewhere) and the encoder. It
@@ -8,10 +8,10 @@
 //! `VideoEncoder` is the second seam. `SoftwareEncoder` (openh264) is the
 //! baseline that works on every platform this binary compiles for; a Media
 //! Foundation hardware encoder slots in behind the same trait on Windows.
-//! Software H.264 at full monitor resolution is the CPU trap the Mac side fell
-//! into once, so [`Pacing`] exists to refuse to walk into it: the encode cost is
-//! measured, and the frame rate and then the resolution step down when it stops
-//! fitting in the frame budget.
+//! The encode size comes from the quality ladder ([`crate::quality`]), and
+//! [`LoadResponse`] steps it down a rung when the software encoder's measured
+//! cost does not fit the frame budget, so a slow machine gets a smaller picture
+//! on time rather than a full-size one late.
 
 use std::time::Duration;
 
@@ -20,6 +20,9 @@ use openh264::encoder::{Encoder, EncoderConfig, RateControlMode, UsageType};
 use openh264::formats::{RgbSliceU8, YUVBuffer};
 use openh264::OpenH264API;
 use rc_input::DisplayGeometry;
+use rc_proto::ctrl::QualityMode;
+
+use crate::quality::{encode_size, ACTIVE_FRAMERATE};
 
 /// One frame plus its geometry.
 pub struct RawFrame {
@@ -152,16 +155,22 @@ pub trait VideoEncoder: Send {
 
 /// openh264, the software baseline.
 ///
-/// Three settings differ from the defaults and each is load-bearing:
+/// Every setting is chosen for latency on a desktop, and these are all the
+/// knobs the crate exposes:
 ///
 /// * `ScreenContentRealTime` — the default is camera video, which tunes for
 ///   noisy continuous-tone input rather than for the large flat areas and sharp
 ///   text edges of a desktop.
 /// * `RateControlMode::Bitrate` with frame skipping — the default `Quality`
 ///   mode treats the target bitrate as advisory, which on a metered link is the
-///   wrong knob to leave loose.
+///   wrong knob to leave loose. A skipped frame comes back empty and the pump
+///   offers it again rather than losing the screen's final state.
 /// * `max_frame_rate` — the rate controller needs to know the cadence it is
 ///   budgeting for.
+/// * Threads are left to openh264's auto mode (one per core).
+///
+/// openh264 has no B-frames and no lookahead, so every frame out is the frame
+/// in; its default intra period is zero, so IDRs come only when asked for.
 pub struct SoftwareEncoder {
     encoder: Encoder,
 }
@@ -173,7 +182,8 @@ impl SoftwareEncoder {
             .max_frame_rate(fps.max(1.0))
             .usage_type(UsageType::ScreenContentRealTime)
             .rate_control_mode(RateControlMode::Bitrate)
-            .enable_skip_frame(true);
+            .enable_skip_frame(true)
+            .set_multiple_thread_idc(0);
         let encoder = Encoder::with_api_config(OpenH264API::from_source(), config)
             .map_err(|e| e.to_string())?;
         Ok(Self { encoder })
@@ -196,139 +206,218 @@ impl VideoEncoder for SoftwareEncoder {
     }
 }
 
-/// The resolution and frame-rate envelope the encoder is held to, and the
-/// measured step-down when it does not fit.
-///
-/// The step-down is one-way within a session. Stepping back up on a brief lull
-/// oscillates — resolution changes force an IDR and a controller-side resize,
-/// so paying for one repeatedly is worse than staying at the lower setting
-/// until the next session.
-#[derive(Debug, Clone, Copy)]
-pub struct Pacing {
-    pub fps: f32,
-    pub max_dimension: u32,
-    pub floor_fps: f32,
-    pub floor_dimension: u32,
-    encode_ema: Option<Duration>,
+/// The time one frame may take at the ladder's frame rate.
+pub fn frame_budget() -> Duration {
+    Duration::from_secs(1) / ACTIVE_FRAMERATE
 }
 
-impl Pacing {
-    /// 2560 on the longest edge, chosen from a measurement rather than a guess.
-    ///
-    /// openh264 in a release build on the development Mac (Apple Silicon),
-    /// mean over 30 synthetic desktop-like frames:
-    ///
-    /// | source | encode | with the reduction | fits 30 fps? |
-    /// |---|---|---|---|
-    /// | 3840x2160 | 46.6 ms | — | no, 21 fps ceiling |
-    /// | 2560x1440 | 20.4 ms | — | yes |
-    /// | 1920x1080 | 14.0 ms | 28 ms from 4K | yes / marginal |
-    /// | 1280x720 | 9.9 ms | 16 ms from 1440p | yes |
-    ///
-    /// So 1440p is affordable at native resolution and 4K is not at any
-    /// resolution above this, which is where the cap goes. These numbers are
-    /// macOS/arm64, **not** a claim about any Windows machine — a different CPU
-    /// moves every row. That is precisely why [`Pacing::observe`] measures the
-    /// real cost at runtime instead of trusting this constant.
-    pub const DEFAULT_MAX_DIMENSION: u32 = 2560;
+/// The encode size steps down a rung when the measured encode cost does not
+/// fit, and back up when the rung above would.
+///
+/// This is a load response, not a second ladder: it moves only between the
+/// ladder's own sizes, never above the permitted mode, and the bitrate stays
+/// the permitted mode's. A software encoder that falls behind would otherwise
+/// either lag or drop most frames; a smaller picture on time is the better of
+/// the three.
+///
+/// * Down: the mean encode time over a window of [`LoadResponse::WINDOW`]
+///   frames exceeds the frame budget (33 ms at 30 fps).
+/// * Up: for [`LoadResponse::RECOVERY_WINDOWS`] windows in a row, the mean
+///   scaled by the pixel ratio of the rung above stays under 80% of the budget.
+///   Predicting the cost above, rather than reacting to the cost here, is what
+///   keeps it from oscillating.
+#[derive(Debug, Clone)]
+pub struct LoadResponse {
+    ceiling: QualityMode,
+    steps: usize,
+    sum: Duration,
+    count: u32,
+    calm_windows: u32,
+    last_mean: Option<Duration>,
+}
 
-    pub fn new(fps: f32, max_dimension: u32) -> Self {
-        Self {
-            fps: fps.max(1.0),
-            max_dimension: max_dimension.max(320),
-            floor_fps: 15.0,
-            floor_dimension: 1280,
-            encode_ema: None,
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoadStep {
+    pub size_mode: QualityMode,
+    pub mean_encode: Duration,
+}
+
+impl LoadResponse {
+    pub const WINDOW: u32 = 30;
+    pub const RECOVERY_WINDOWS: u32 = 3;
+
+    pub fn new(ceiling: QualityMode) -> Self {
+        Self { ceiling, steps: 0, sum: Duration::ZERO, count: 0, calm_windows: 0, last_mean: None }
     }
 
-    pub fn frame_budget(&self) -> Duration {
-        Duration::from_secs_f32(1.0 / self.fps.max(1.0))
+    /// The ladder rung whose size the capture is encoded at.
+    pub fn size_mode(&self) -> QualityMode {
+        QualityMode::LADDER[self.ceiling.rank().saturating_sub(self.steps)]
     }
 
-    /// The smoothed encode cost so far, for logging. `None` until a frame has
-    /// been encoded — this type never guesses what it has not measured.
+    /// The mean of the last complete window, for logging. `None` until one
+    /// window has been measured.
     pub fn measured_encode_time(&self) -> Option<Duration> {
-        self.encode_ema
+        self.last_mean
     }
 
-    /// Feed one measured encode duration. Returns `true` when the envelope was
-    /// stepped down, which the caller logs and acts on.
-    ///
-    /// The threshold is 80% of the frame budget: at 100% the encoder is the only
-    /// thing the machine does, and capture, colour conversion and RTP still have
-    /// to fit in the same frame.
-    pub fn observe(&mut self, encode: Duration) -> bool {
-        self.encode_ema = Some(match self.encode_ema {
-            None => encode,
-            Some(previous) => previous.mul_f32(0.8) + encode.mul_f32(0.2),
-        });
-        let ema = self.encode_ema.unwrap_or(encode);
-        if ema.as_secs_f32() <= self.frame_budget().as_secs_f32() * 0.8 {
-            return false;
+    /// Feed one encode of a `width`×`height` capture.
+    pub fn observe(&mut self, cost: Duration, width: u32, height: u32) -> Option<LoadStep> {
+        self.sum += cost;
+        self.count += 1;
+        if self.count < Self::WINDOW {
+            return None;
         }
-        // Frame rate first: it is free to change and invisible next to a
-        // resolution drop, which costs an IDR and a window resize.
-        if self.fps > self.floor_fps {
-            self.fps = (self.fps / 2.0).max(self.floor_fps);
-            self.encode_ema = None;
-            return true;
+        let mean = self.sum / self.count;
+        self.sum = Duration::ZERO;
+        self.count = 0;
+        self.last_mean = Some(mean);
+        let budget = frame_budget();
+        let current = self.size_mode();
+
+        if mean > budget {
+            self.calm_windows = 0;
+            current.cheaper()?;
+            self.steps += 1;
+            return Some(LoadStep { size_mode: self.size_mode(), mean_encode: mean });
         }
-        if self.max_dimension > self.floor_dimension {
-            self.max_dimension = self.floor_dimension;
-            self.encode_ema = None;
-            return true;
+        if self.steps == 0 {
+            return None;
         }
-        false
+        let above = QualityMode::LADDER[current.rank() + 1];
+        let predicted = mean.mul_f64(pixel_ratio(width, height, above, current));
+        if predicted >= budget.mul_f64(0.8) {
+            self.calm_windows = 0;
+            return None;
+        }
+        self.calm_windows += 1;
+        if self.calm_windows < Self::RECOVERY_WINDOWS {
+            return None;
+        }
+        self.calm_windows = 0;
+        self.steps -= 1;
+        Some(LoadStep { size_mode: self.size_mode(), mean_encode: mean })
     }
 }
 
-/// Bring a frame inside the encode envelope: at most `max_dimension` on its
-/// longest edge, and even on both edges.
-///
-/// Even dimensions are not cosmetic — H.264 4:2:0 chroma is half-resolution, so
-/// an odd width has no defined last chroma column and encoders either reject it
-/// or quietly produce a green edge column.
-///
-/// The reduction is by an integer factor and averages the block it replaces.
-/// Dropping pixels instead is cheaper and looks it: text aliases into
-/// unreadability, which is the one thing a remote desktop must not do.
-pub fn fit_for_encode(frame: RawFrame, max_dimension: u32) -> RawFrame {
-    let longest = frame.width.max(frame.height) as u32;
-    let factor = if longest > max_dimension && max_dimension > 0 {
-        longest.div_ceil(max_dimension).max(1) as usize
-    } else {
-        1
+fn pixel_ratio(width: u32, height: u32, larger: QualityMode, smaller: QualityMode) -> f64 {
+    let pixels = |mode| {
+        let (w, h) = encode_size(width, height, mode);
+        (f64::from(w) * f64::from(h)).max(1.0)
     };
-    let out_w = ((frame.width / factor) / 2) * 2;
-    let out_h = ((frame.height / factor) / 2) * 2;
-    if factor == 1 && out_w == frame.width && out_h == frame.height {
-        return frame;
-    }
-    if out_w == 0 || out_h == 0 {
-        return frame;
-    }
+    pixels(larger) / pixels(smaller)
+}
 
-    let mut rgb = vec![0u8; out_w * out_h * 3];
-    let samples = (factor * factor) as u32;
-    for y in 0..out_h {
-        for x in 0..out_w {
-            let mut acc = [0u32; 3];
-            for dy in 0..factor {
-                let src_y = y * factor + dy;
-                for dx in 0..factor {
-                    let src_x = x * factor + dx;
-                    let i = (src_y * frame.width + src_x) * 3;
-                    acc[0] += frame.rgb[i] as u32;
-                    acc[1] += frame.rgb[i + 1] as u32;
-                    acc[2] += frame.rgb[i + 2] as u32;
+/// One output sample's footprint on a source axis, in 16-bit fixed point.
+struct Taps {
+    start: Vec<usize>,
+    len: Vec<usize>,
+    weights: Vec<u32>,
+    stride: usize,
+}
+
+const WEIGHT_ONE: u32 = 1 << 16;
+
+impl Taps {
+    /// Area weights: each output sample is the coverage-weighted mean of the
+    /// source samples under it. Downscaling averages, so text stays legible
+    /// rather than aliasing; an upscale degenerates to a near-copy.
+    fn area(src: usize, dst: usize) -> Self {
+        let scale = src as f64 / dst as f64;
+        let stride = scale.ceil() as usize + 2;
+        let mut start = Vec::with_capacity(dst);
+        let mut len = Vec::with_capacity(dst);
+        let mut weights = vec![0u32; dst * stride];
+        for i in 0..dst {
+            let from = i as f64 * scale;
+            let to = ((i + 1) as f64 * scale).min(src as f64);
+            let first = from.floor() as usize;
+            let last = (to.ceil() as usize).clamp(first + 1, src);
+            let row = &mut weights[i * stride..i * stride + stride];
+            let mut total = 0u32;
+            let mut heaviest = 0;
+            for (k, j) in (first..last).enumerate() {
+                let overlap = (to.min(j as f64 + 1.0) - from.max(j as f64)).max(0.0);
+                row[k] = (overlap / (to - from) * f64::from(WEIGHT_ONE)).round() as u32;
+                total += row[k];
+                if row[k] > row[heaviest] {
+                    heaviest = k;
                 }
             }
-            let o = (y * out_w + x) * 3;
-            rgb[o] = (acc[0] / samples) as u8;
-            rgb[o + 1] = (acc[1] / samples) as u8;
-            rgb[o + 2] = (acc[2] / samples) as u8;
+            row[heaviest] = (row[heaviest] + WEIGHT_ONE).saturating_sub(total);
+            start.push(first);
+            len.push(last - first);
+        }
+        Self { start, len, weights, stride }
+    }
+}
+
+/// Bring a capture to exactly `width`×`height` for the encoder.
+///
+/// A frame already that size is passed through, and one that only needs an odd
+/// edge dropped is cropped: resampling by a hair would soften every pixel. Any
+/// real resize is separable area averaging, never pixel dropping.
+pub fn resample(frame: RawFrame, width: usize, height: usize) -> RawFrame {
+    if width == 0 || height == 0 || (frame.width, frame.height) == (width, height) {
+        return frame;
+    }
+    if (width, height) == (frame.width & !1, frame.height & !1) {
+        return crop(frame, width, height);
+    }
+
+    let columns = Taps::area(frame.width, width);
+    let mut wide = vec![0u8; width * frame.height * 3];
+    for y in 0..frame.height {
+        let src = &frame.rgb[y * frame.width * 3..(y + 1) * frame.width * 3];
+        let dst = &mut wide[y * width * 3..(y + 1) * width * 3];
+        for x in 0..width {
+            let weights = &columns.weights[x * columns.stride..];
+            let mut acc = [WEIGHT_ONE / 2; 3];
+            for k in 0..columns.len[x] {
+                let i = (columns.start[x] + k) * 3;
+                let w = weights[k];
+                acc[0] += u32::from(src[i]) * w;
+                acc[1] += u32::from(src[i + 1]) * w;
+                acc[2] += u32::from(src[i + 2]) * w;
+            }
+            dst[x * 3] = (acc[0] >> 16) as u8;
+            dst[x * 3 + 1] = (acc[1] >> 16) as u8;
+            dst[x * 3 + 2] = (acc[2] >> 16) as u8;
         }
     }
-    RawFrame { width: out_w, height: out_h, rgb }
+
+    let rows = Taps::area(frame.height, height);
+    let row_bytes = width * 3;
+    let mut rgb = vec![0u8; row_bytes * height];
+    let mut acc = vec![0u32; row_bytes];
+    for y in 0..height {
+        acc.fill(WEIGHT_ONE / 2);
+        let weights = &rows.weights[y * rows.stride..];
+        for k in 0..rows.len[y] {
+            let w = weights[k];
+            let src = &wide[(rows.start[y] + k) * row_bytes..][..row_bytes];
+            for (a, &s) in acc.iter_mut().zip(src) {
+                *a += u32::from(s) * w;
+            }
+        }
+        for (d, a) in rgb[y * row_bytes..][..row_bytes].iter_mut().zip(&acc) {
+            *d = (a >> 16) as u8;
+        }
+    }
+    RawFrame { width, height, rgb }
+}
+
+fn crop(frame: RawFrame, width: usize, height: usize) -> RawFrame {
+    let mut rgb = Vec::with_capacity(width * height * 3);
+    for y in 0..height {
+        let row = y * frame.width * 3;
+        rgb.extend_from_slice(&frame.rgb[row..row + width * 3]);
+    }
+    RawFrame { width, height, rgb }
+}
+
+/// The frame the encoder is given for a capture under `size_mode`.
+pub fn fit_for_encode(frame: RawFrame, size_mode: QualityMode) -> RawFrame {
+    let (width, height) = encode_size(frame.width as u32, frame.height as u32, size_mode);
+    resample(frame, width as usize, height as usize)
 }

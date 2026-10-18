@@ -4,13 +4,7 @@ import RCTestKit
 import RemoteControlCore
 
 private func wireVectorsURL() -> URL {
-    URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .appendingPathComponent("protocol/vectors/vectors.json")
+    protocolVectorURL("vectors.json")
 }
 
 private func cursorShapeFrames() throws -> [Data] {

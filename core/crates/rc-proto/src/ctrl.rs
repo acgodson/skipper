@@ -219,11 +219,48 @@ pub enum QualityMode {
 }
 
 impl QualityMode {
+    /// The ladder, cheapest first. API.md §4.4 states a ceiling in these values.
+    pub const LADDER: [Self; 3] = [Self::Smooth, Self::Auto, Self::Sharp];
+
+    /// The answer for anything unrecognised, missing or stale: a value nobody
+    /// understands must never buy the top tier.
+    pub const FALLBACK_CEILING: Self = Self::Auto;
+
+    /// Case-insensitive, and an unknown value is `auto`, as on the Mac.
     pub fn from_wire(s: &str) -> Self {
-        match s {
+        match s.to_ascii_lowercase().as_str() {
             "sharp" => Self::Sharp,
             "smooth" => Self::Smooth,
             _ => Self::Auto,
+        }
+    }
+
+    pub fn rank(self) -> usize {
+        match self {
+            Self::Smooth => 0,
+            Self::Auto => 1,
+            Self::Sharp => 2,
+        }
+    }
+
+    /// One rung cheaper, or `None` at the bottom of the ladder.
+    pub fn cheaper(self) -> Option<Self> {
+        self.rank().checked_sub(1).map(|rank| Self::LADDER[rank])
+    }
+
+    /// This mode or `ceiling`, whichever is lower.
+    pub fn clamped(self, ceiling: Self) -> Self {
+        Self::LADDER[self.rank().min(ceiling.rank())]
+    }
+
+    /// The host's whole gate (API.md §4.4). The host owns the encoder, so a
+    /// controller may ask for anything and only this answer is configured.
+    /// `stated` is `None` without an entitlement and `fresh` is false once it
+    /// is older than `refreshAfterSec`; both fail closed to `auto`.
+    pub fn permitted(requested: Self, stated: Option<Self>, fresh: bool) -> Self {
+        match stated {
+            Some(ceiling) if fresh => requested.clamped(ceiling),
+            _ => requested.clamped(Self::FALLBACK_CEILING),
         }
     }
 

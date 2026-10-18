@@ -125,6 +125,7 @@ pub struct PeerSession {
     pc: Arc<RTCPeerConnection>,
     ctrl: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     video: Arc<TrackLocalStaticSample>,
+    video_clock: Mutex<RtpClock>,
     has_turn: bool,
 }
 
@@ -162,7 +163,7 @@ impl PeerSession {
                 // to 2560x1440 (14400). Advertising a level we exceed is the
                 // same dishonesty WINDOWS-HOST.md §4 warns about, pointing the
                 // other way. Level 5.0 allows 22080 macroblocks, which is
-                // exactly what `Pacing`'s cap permits.
+                // comfortably more than the sharp rung's widest frame (2560 wide).
                 //
                 // Safe to state: RFC 6184 §8.2.2 excludes the level part of
                 // profile-level-id from symmetric use, and webrtc-rs compares
@@ -295,7 +296,10 @@ impl PeerSession {
             .ice_servers
             .iter()
             .any(|s| !s.credential.is_empty() || !s.username.is_empty());
-        Ok((Self { pc, ctrl: ctrl_slot, video, has_turn }, rx))
+        Ok((
+            Self { pc, ctrl: ctrl_slot, video, video_clock: Mutex::new(RtpClock::default()), has_turn },
+            rx,
+        ))
     }
 
     /// Install the controller's offer. Also the path for ICE-restart offers.
@@ -384,7 +388,91 @@ impl PeerSession {
         Ok(())
     }
 
+    /// Feed one access unit whose picture was captured at `captured_at`, with
+    /// its RTP timestamp on the capture clock.
+    ///
+    /// `write_video_sample` stamps each sample with the running total of the
+    /// durations before it, so a fixed per-frame duration lets the RTP clock
+    /// fall seconds behind real time whenever the screen sits still or frames
+    /// are dropped, and the receiver's timing model is built from exactly that
+    /// relation between RTP time and arrival time. An empty
+    /// sample carries no packets but advances the timestamp, so it is used to
+    /// bring the clock up to `captured_at` before the frame goes out.
+    pub async fn write_video_frame(
+        &self,
+        data: Bytes,
+        captured_at: std::time::Instant,
+    ) -> Result<(), TransportError> {
+        let mut clock = self.video_clock.lock().await;
+        let gap = clock.advance_to(captured_at);
+        if !gap.is_zero() {
+            self.write_video_sample(Bytes::new(), gap).await?;
+        }
+        self.write_video_sample(data, std::time::Duration::ZERO).await
+    }
+
     pub async fn close(&self) {
         let _ = self.pc.close().await;
+    }
+}
+
+const VIDEO_CLOCK_RATE: u64 = 90_000;
+
+/// Keeps the video track's RTP timestamps on the capture clock: the first
+/// frame is tick zero and every later one sits at its capture time since then.
+/// Counted in whole ticks, so rounding in the packetiser never accumulates.
+#[derive(Debug, Default)]
+pub struct RtpClock {
+    origin: Option<std::time::Instant>,
+    ticks: u64,
+}
+
+impl RtpClock {
+    /// How far the RTP clock must move before a frame captured at `at` goes
+    /// out. Zero for the first frame and for one captured no later than the
+    /// clock already stands; the clock never runs backwards.
+    pub fn advance_to(&mut self, at: std::time::Instant) -> std::time::Duration {
+        let origin = *self.origin.get_or_insert(at);
+        let target = at.saturating_duration_since(origin).as_nanos() as u64 * VIDEO_CLOCK_RATE
+            / 1_000_000_000;
+        let step = target.saturating_sub(self.ticks);
+        self.ticks += step;
+        std::time::Duration::from_nanos((step * 1_000_000_000).div_ceil(VIDEO_CLOCK_RATE))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn ticks(d: Duration) -> u64 {
+        (d.as_secs_f64() * VIDEO_CLOCK_RATE as f64) as u64
+    }
+
+    #[test]
+    fn the_rtp_clock_follows_capture_time_across_a_still_screen() {
+        let mut clock = RtpClock::default();
+        let start = Instant::now();
+        assert_eq!(clock.advance_to(start), Duration::ZERO);
+        assert_eq!(ticks(clock.advance_to(start + Duration::from_millis(33))), 2970);
+        assert_eq!(
+            ticks(clock.advance_to(start + Duration::from_millis(5033))),
+            450_000,
+            "five idle seconds move the clock five seconds, not one frame"
+        );
+    }
+
+    #[test]
+    fn the_rtp_clock_does_not_drift_or_run_backwards() {
+        let mut clock = RtpClock::default();
+        let start = Instant::now();
+        clock.advance_to(start);
+        let mut total = 0;
+        for frame in 1..=108_000u64 {
+            total += ticks(clock.advance_to(start + Duration::from_nanos(frame * 33_333_333)));
+        }
+        assert_eq!(total, 108_000 * 33_333_333 * 90_000 / 1_000_000_000);
+        assert_eq!(clock.advance_to(start), Duration::ZERO);
     }
 }
