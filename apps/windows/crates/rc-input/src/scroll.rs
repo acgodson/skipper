@@ -1,10 +1,12 @@
 //! macOS pixel scroll -> Windows wheel deltas.
 //!
-//! Two conventions differ and both are silent failures if missed:
+//! Two things are easy to get wrong and both are silent failures if missed:
 //!
-//! * **Sign.** PROTOCOL.md §5: positive `dy` means content moves up. A positive
-//!   Windows wheel delta rotates the wheel *forward*, which moves content down.
-//!   The mapping is therefore a negation, not a scale.
+//! * **Sign.** PROTOCOL.md §5: `dy` carries AppKit's `scrollingDeltaY` sign,
+//!   positive = content moves down, which is also the sign of a Windows wheel
+//!   delta (positive = wheel forward = content moves down). The Mac host passes
+//!   it to `CGEvent` unchanged and so does this: a flip here inverted every
+//!   scroll in the first real Mac→Windows session.
 //! * **Granularity.** macOS sends pixel-precise deltas; Windows is quantised to
 //!   `WHEEL_DELTA` (120) per notch. Truncating each event independently makes
 //!   slow trackpad scrolling do nothing at all, because every delta rounds to
@@ -51,16 +53,14 @@ impl ScrollAccumulator {
     /// Feed one axis of a `scroll` message; returns the wheel delta to send, or
     /// `None` when the movement so far is under one unit and has been banked.
     ///
-    /// The returned value is in Windows wheel units and already sign-corrected.
+    /// The returned value is in Windows wheel units with the wire sign kept.
     ///
     /// A non-finite delta from a malformed peer is dropped so it cannot poison the bank.
-    ///
-    /// The sign is negated once here: this is the macOS-natural to Windows-wheel flip.
     pub fn push(&mut self, delta_pixels: f64) -> Option<i32> {
         if !delta_pixels.is_finite() {
             return None;
         }
-        let units = -delta_pixels * (WHEEL_DELTA / self.pixels_per_notch);
+        let units = delta_pixels * (WHEEL_DELTA / self.pixels_per_notch);
         self.remainder += units;
 
         let whole = self.remainder.trunc();

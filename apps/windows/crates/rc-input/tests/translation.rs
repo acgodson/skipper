@@ -168,19 +168,19 @@ fn text_injection_is_preferred_only_when_it_cannot_break_a_shortcut() {
     assert!(!should_inject_as_text("", KeyModifiers::default()));
 }
 
-/// PROTOCOL.md §5: positive dy = content moves up. A positive Windows wheel delta moves content down. Getting this backwards is invisible in code review and instantly obvious to a user.
+/// PROTOCOL.md §5: `dy` has the AppKit sign, positive = content moves down, which is the Windows wheel sign too. The Mac host passes it through unchanged; a flip here is invisible in review and instantly obvious to a user, and was.
 #[test]
-fn scroll_direction_is_inverted_relative_to_the_protocol() {
+fn scroll_direction_is_the_wire_direction() {
     let mut acc = ScrollAccumulator::default();
-    assert!(acc.push(120.0).unwrap() < 0, "positive protocol dy must give a negative wheel delta");
+    assert!(acc.push(120.0).unwrap() > 0, "positive wire dy must give a positive wheel delta");
     let mut acc = ScrollAccumulator::default();
-    assert!(acc.push(-120.0).unwrap() > 0);
+    assert!(acc.push(-120.0).unwrap() < 0);
 }
 
 #[test]
 fn one_notch_of_pixels_is_one_wheel_delta() {
     let mut acc = ScrollAccumulator::default();
-    assert_eq!(acc.push(-120.0), Some(120));
+    assert_eq!(acc.push(120.0), Some(120));
 }
 
 /// The real failure this prevents: 60 events of half a pixel each, every one of which truncates to zero, so a slow trackpad drag scrolls nothing at all.

@@ -294,7 +294,7 @@ fn slow_scroll_accumulates_across_dispatch_calls() {
             _ => None,
         })
         .sum();
-    assert_eq!(wheels, 30, "60 half-pixel events must integrate to 30 wheel units");
+    assert_eq!(wheels, -30, "60 half-pixel events must integrate to 30 wheel units, sign kept");
 }
 
 #[test]
@@ -302,8 +302,8 @@ fn horizontal_and_vertical_wheel_deltas_go_to_their_own_axis() {
     let ops = run(|d, i| {
         d.scroll(&Scroll { dx: -240.0, dy: 120.0, phase: "changed".into() }, i);
     });
-    assert!(ops.contains(&InputOp::MouseWheel { delta: -120, horizontal: false }));
-    assert!(ops.contains(&InputOp::MouseWheel { delta: 240, horizontal: true }));
+    assert!(ops.contains(&InputOp::MouseWheel { delta: 120, horizontal: false }));
+    assert!(ops.contains(&InputOp::MouseWheel { delta: -240, horizontal: true }));
 }
 
 #[test]
