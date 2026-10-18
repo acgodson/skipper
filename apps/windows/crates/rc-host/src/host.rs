@@ -33,11 +33,12 @@ use tokio::sync::mpsc;
 
 use crate::consent::{ConsentAnswer, ConsentPrompt};
 use crate::inject::{InputDispatcher, InputState, Injector};
-use crate::keepawake::KeepAwake;
+use crate::keepawake::{KeepAwake, StayAwake};
 use crate::media::{CaptureBackend, CaptureStatus, Pacing, SoftwareEncoder, VideoEncoder};
 use crate::pake::{GuessStore, HostExchange};
 use crate::pump::{CapturePump, EncoderFactory, PumpConfig, PumpEvent, VideoSink};
 use crate::secrets::{SecretAccount, SecretStore};
+use crate::settings::HostSettings;
 
 /// How long teardown waits for the blocking pump to notice the stop flag. Two
 /// frame budgets plus slack: the loop checks the flag every few milliseconds and
@@ -49,9 +50,11 @@ pub struct HostConfig {
     /// [`crate::backend`]. No compiled-in address, no certificate pin.
     pub signaling_url: String,
     pub label: String,
-    /// §2.17 Consent. **Off** by default: the code proves a controller *may*
-    /// connect, and whoever is at this PC decides whether it connects now.
-    pub unattended: bool,
+    /// §2.17 Consent. `None` uses the owner's persisted [`HostSettings`], which
+    /// is **off** on a new install: the code proves a controller *may* connect,
+    /// and whoever is at this PC decides whether it connects now. `Some` is the
+    /// diagnostic `RC_UNATTENDED` override for one run.
+    pub unattended_override: Option<bool>,
     pub force_relay: bool,
     pub bitrate_bps: u32,
     pub fps: f32,
@@ -129,7 +132,7 @@ pub struct Host<I: Injector + Send + 'static, B: CaptureBackend> {
     held_sdp: Option<sig::Sdp>,
     held_ice: Vec<sig::Ice>,
     prompt: Option<ConsentPrompt>,
-    _keep_awake: KeepAwake,
+    keep_awake: KeepAwake,
 }
 
 impl<I: Injector + Send, B: CaptureBackend> Host<I, B>
@@ -156,10 +159,12 @@ where
         secrets: SecretStore,
         identity_path: Option<std::path::PathBuf>,
     ) -> (Self, mpsc::Receiver<PumpEvent>) {
-        let keep = KeepAwake::enabled(config.unattended);
+        let unattended = config
+            .unattended_override
+            .unwrap_or_else(|| HostSettings::load(&secrets).unattended_access);
         let (pump_tx, pump_rx) = mpsc::channel::<PumpEvent>(32);
         let mut machine = SessionStateMachine::new(Role::Host);
-        machine.consent_required = !config.unattended;
+        machine.consent_required = !unattended;
         let host = Self {
             machine,
             dispatcher: InputDispatcher::default(),
@@ -184,7 +189,7 @@ where
             config,
             identity,
             key,
-            _keep_awake: keep,
+            keep_awake: KeepAwake::new(),
         };
         (host, pump_rx)
     }
@@ -261,6 +266,7 @@ where
             (!hello.active_session_id.is_empty()).then_some(hello.active_session_id.as_str()),
         );
         self.apply(&actions, &conn, peer, te_tx).await;
+        self.stay_awake(true);
 
         let mut heartbeat = tokio::time::interval(Duration::from_secs(hello.heartbeat_sec.max(1) as u64));
         let mut ticker = tokio::time::interval(Duration::from_millis(500));
@@ -317,7 +323,9 @@ where
                     break ConnLoopExit::Shutdown;
                 }
             }
+            self.stay_awake(true);
         };
+        self.stay_awake(false);
 
         // Nothing is torn down here: see §4.3 in `run`. A session that has
         // genuinely ended has already been cleared by whatever ended it.
@@ -337,6 +345,19 @@ where
 
     pub fn identity(&self) -> &IdentityRecord {
         &self.identity
+    }
+
+    /// Whether a controller that proves the code connects without a prompt.
+    pub fn unattended_access(&self) -> bool {
+        !self.machine.consent_required
+    }
+
+    /// Re-derived after every event the connection loop handles, so whatever
+    /// moved the session phase, the power state follows it. `online` is the
+    /// Mac's `signalingReady`: authenticated on the signalling connection.
+    fn stay_awake(&mut self, online: bool) {
+        let next = StayAwake::for_host(online, self.machine.phase());
+        self.keep_awake.update(next);
     }
 
     pub fn secrets(&self) -> &SecretStore {
@@ -724,16 +745,38 @@ where
     ) {
         let Some(prompt) = &self.prompt else { return };
         let prompt_id = prompt.prompt_id.clone();
-        let actions =
-            self.machine
-                .consent_answered(answer == ConsentAnswer::Allow, Some(&prompt_id), now_ms());
-        if actions.is_empty() && answer == ConsentAnswer::Allow {
+        let actions = self
+            .machine
+            .consent_answered(answer.allows(), Some(&prompt_id), now_ms());
+        if actions.is_empty() && answer.allows() {
             // §2.17 Consent 4: Allow inside the first 1.5 s is refused, not
             // queued. Saying so is the difference between a guard and a bug.
             println!("  Not yet — please answer again.");
             return;
         }
+        let allowed = actions.iter().any(|action| {
+            matches!(
+                action,
+                SessionAction::DismissConsentPrompt { outcome: ConsentOutcome::Allowed }
+            )
+        });
+        if allowed && answer.turns_on_unattended() {
+            self.turn_on_unattended_access();
+        }
         self.apply(&actions, conn, peer, te_tx).await;
+    }
+
+    /// The answer `t`: only once the state machine has really allowed, and
+    /// only in memory as well once it is saved, so the prompt never stops
+    /// appearing for a choice that will not survive a restart.
+    fn turn_on_unattended_access(&mut self) {
+        match (HostSettings { unattended_access: true }).save(&self.secrets) {
+            Ok(()) => {
+                self.machine.consent_required = false;
+                println!("  {}", crate::settings::unattended_line(true));
+            }
+            Err(e) => eprintln!("rc-host: {e}; unattended access stays off"),
+        }
     }
 
     /// §2.17 Consent 3 and §4.2: a signal for another session is dropped, one

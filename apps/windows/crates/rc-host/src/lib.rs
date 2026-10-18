@@ -24,6 +24,7 @@ pub mod media;
 pub mod pake;
 pub mod pump;
 pub mod secrets;
+pub mod settings;
 pub mod urlhandler;
 
 #[cfg(windows)]

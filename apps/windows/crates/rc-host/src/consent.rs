@@ -19,7 +19,21 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsentAnswer {
     Allow,
+    /// Allow, and turn unattended access on so the next controller that proves
+    /// the code is not asked either. The Mac's equivalent is allowing and then
+    /// switching the toggle in the host window; a console has one line to type.
+    AllowAndTurnOnUnattended,
     Decline,
+}
+
+impl ConsentAnswer {
+    pub fn allows(&self) -> bool {
+        !matches!(self, Self::Decline)
+    }
+
+    pub fn turns_on_unattended(&self) -> bool {
+        matches!(self, Self::AllowAndTurnOnUnattended)
+    }
 }
 
 pub struct ConsentPrompt {
@@ -54,7 +68,16 @@ impl ConsentPrompt {
         );
         let _ = writeln!(out, "  Fingerprint   {}", self.controller_fingerprint);
         let _ = writeln!(out, "  ---------------------------------------------");
-        let _ = writeln!(out, "  Type  y  to allow,  n  to decline. Declines in 30 s.");
+        let _ = writeln!(out, "  Type  y  to allow this once,");
+        let _ = writeln!(
+            out,
+            "        t  to allow and turn on unattended access (from now on anyone"
+        );
+        let _ = writeln!(
+            out,
+            "           with this PC's access code connects without asking),"
+        );
+        let _ = writeln!(out, "        n  to decline. Declines in 30 s.");
         let _ = out.flush();
     }
 
@@ -92,12 +115,13 @@ pub fn spawn_console_reader() -> mpsc::Receiver<ConsentAnswer> {
     rx
 }
 
-/// Only an unambiguous yes allows. Anything else that was clearly an answer is
-/// a decline; anything that was not an answer at all is ignored, so a stray
+/// Only an unambiguous yes, or `t`, allows. Anything else that was clearly an
+/// answer is a decline; anything that was not an answer at all is ignored, so a stray
 /// Enter neither allows nor declines.
 fn parse(line: &str) -> Option<ConsentAnswer> {
     match line.trim().to_ascii_lowercase().as_str() {
         "y" | "yes" | "allow" => Some(ConsentAnswer::Allow),
+        "t" => Some(ConsentAnswer::AllowAndTurnOnUnattended),
         "n" | "no" | "decline" | "d" => Some(ConsentAnswer::Decline),
         _ => None,
     }

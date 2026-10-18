@@ -4,6 +4,8 @@
 //!                               recording injector, on any OS
 //!   rc-host                     the real host (Windows: Desktop Duplication +
 //!                               SendInput)
+//!   rc-host --unattended on|off whether a controller that proves the access
+//!                               code connects without asking; persisted
 //!
 //! The two are never mixed. A synthetic screen with the real injector would put
 //! the controller's clicks onto whatever is actually on the host's desktop while
@@ -18,6 +20,7 @@ use rc_host::api::ApiClient;
 use rc_host::inject::Injector;
 use rc_host::media::CaptureBackend;
 use rc_host::pump::PumpEvent;
+use rc_host::settings::{unattended_argument, unattended_line, unattended_override, HostSettings};
 use rc_host::{Backend, Host, HostConfig, RecordingInjector, SecretStore, SyntheticBackend};
 use rc_identity::{access_code, DeviceKey, IdentityRecord};
 use tokio::sync::mpsc;
@@ -116,8 +119,9 @@ fn now_iso8601() -> String {
 }
 
 /// The at-a-glance panel the user reads to pair from their Mac: the Device ID
-/// and the access code, formatted the same way the Mac host window shows them.
-fn print_banner(identity: &IdentityRecord) {
+/// and the access code, formatted the same way the Mac host window shows them,
+/// and whether a connection will ask whoever is here, in the Mac's words.
+fn print_banner(identity: &IdentityRecord, unattended: bool) {
     let id = if identity.device_id.is_empty() {
         "registering…".to_string()
     } else {
@@ -128,8 +132,26 @@ fn print_banner(identity: &IdentityRecord) {
     println!("  Device ID     {id}");
     println!("  Access code   {}", access_code::formatted(&identity.access_code));
     println!("  ---------------------------------------------");
+    println!("  {}", unattended_line(unattended));
+    println!("  ---------------------------------------------");
     println!("  Enter these on your Mac's controller to connect.");
+    if !unattended {
+        println!("  Leaving this PC on its own? Run  rc-host.exe --unattended on");
+        println!("  so connections do not wait for someone to answer here.");
+    }
+    println!("  This PC will not fall asleep on its own while this window is open");
+    println!("  and online, and its screen stays on during a session.");
     println!("  Keep this window open. Closing it ends the host.\n");
+}
+
+/// `--unattended on|off`: the setting changes without a session, and says
+/// what it now means.
+fn set_unattended(startup: &Startup, on: bool) -> Result<(), String> {
+    HostSettings { unattended_access: on }
+        .save(&startup.secrets)
+        .map_err(|e| e.to_string())?;
+    println!("  {}", unattended_line(on));
+    Ok(())
 }
 
 /// The shell starts a second copy of this program to carry the browser's answer
@@ -176,7 +198,7 @@ async fn host_online<I: Injector + Send + 'static, B: CaptureBackend>(
     backend: &Backend,
 ) -> Result<(), String> {
     host.ensure_registered().await?;
-    print_banner(host.identity());
+    print_banner(host.identity(), host.unattended_access());
     ensure_signed_in(backend, host.secrets(), host.key(), host.identity()).await?;
     host.run(events).await
 }
@@ -185,10 +207,9 @@ fn config(backend: &Backend) -> HostConfig {
     HostConfig {
         signaling_url: backend.api.signaling_url(),
         label: env_or("RC_DEVICE_LABEL", "Windows Host"),
-        // §2.17 Consent: off on a new install. The access code says a
-        // controller *may* connect; whoever is at this PC says whether it
-        // connects now.
-        unattended: env_or("RC_UNATTENDED", "0") == "1",
+        unattended_override: unattended_override(
+            std::env::var("RC_UNATTENDED").ok().as_deref(),
+        ),
         force_relay: std::env::var("RC_ICE_POLICY").map(|v| v == "relay").unwrap_or(false),
         bitrate_bps: env_or("RC_BITRATE", "4000000").parse().unwrap_or(4_000_000),
         fps: env_or("RC_FPS", "30").parse().unwrap_or(30.0),
@@ -207,6 +228,7 @@ enum Command {
     Run { synthetic: bool },
     SignIn,
     SignOut,
+    Unattended(Result<bool, String>),
     /// The shell handing this process a `skipperdesk://link` URL.
     LinkCallback(String),
 }
@@ -233,6 +255,9 @@ fn command() -> Command {
     if args.iter().any(|a| a == "--sign-out") {
         return Command::SignOut;
     }
+    if let Some(choice) = unattended_argument(&args) {
+        return Command::Unattended(choice);
+    }
     Command::Run {
         synthetic: args.iter().any(|a| a == "--synthetic"),
     }
@@ -255,6 +280,7 @@ async fn main() {
             sign_in(&startup.backend, &startup.secrets, &startup.key, &startup.identity).await
         }
         Command::SignOut => sign_out(&startup).await,
+        Command::Unattended(choice) => choice.and_then(|on| set_unattended(&startup, on)),
         Command::Run { synthetic } => run(startup, synthetic).await,
     };
     if let Err(e) = outcome {

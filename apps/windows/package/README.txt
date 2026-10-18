@@ -42,11 +42,35 @@ Running it
    window says "Signed in as <your email>". Every later launch skips this.
 4. Leave that window open. Closing it stops sharing straight away.
 5. When they connect, that window asks you "Allow this computer to be controlled?" and
-   shows who is asking. Type y and press Enter to let them in, or n to refuse. If you do
-   not answer within 30 seconds the connection is declined, so keep the window where you
-   can see it.
+   shows who is asking. Type one letter and press Enter:
+     y   let them in, this time only
+     t   let them in, and stop asking from now on (this turns on unattended access,
+         explained below)
+     n   refuse
+   If you do not answer within 30 seconds the connection is declined, so keep the window
+   where you can see it.
 
 If the browser does not open by itself, the window prints the address to paste into it.
+
+While the window is open and online, this PC will not go to sleep on its own, and while
+someone is connected its screen stays on too. You can still put it to sleep yourself.
+
+Leaving the PC on its own
+-------------------------
+Normally every connection waits for someone at this PC to type y. If nobody will be
+there, turn on unattended access: then anyone who has this PC's Device ID and Access code
+connects straight away, without being asked. Only do this if you trust everyone who has
+the code.
+
+Typing t at the question above turns it on. To turn it on or off at any other time, open
+PowerShell in the extracted folder (as described under "Signing out" below) and run:
+
+    .\rc-host.exe --unattended on
+    .\rc-host.exe --unattended off
+
+The window says which one is on each time it starts, and it stays that way until you
+change it. If the SkipperDesk window is already open when you run one of these, close it
+and open it again so it picks up the change.
 
 Signing out
 -----------
