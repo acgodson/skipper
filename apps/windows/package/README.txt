@@ -22,7 +22,7 @@ Do this BEFORE you extract the ZIP:
 
 If you prefer PowerShell, this does the same thing (change the path to match yours):
 
-    Unblock-File "$env:USERPROFILE\Downloads\SkipperDesk-win-x64-0.1.3.zip"
+    Unblock-File "$env:USERPROFILE\Downloads\SkipperDesk-win-x64-0.1.4.zip"
 
 You are only telling Windows that you trust this one file that you chose to download.
 You do not need to change any Windows or antivirus settings.
@@ -37,24 +37,22 @@ Running it
 1. Open the extracted folder and double-click rc-host.exe.
 2. A window opens showing a Device ID and an Access code. Give both to the person who is
    connecting.
-3. Leave that window open. Closing it stops sharing straight away.
-4. When they connect, that window asks you "Allow this computer to be controlled?" and
+3. The first time only, your browser opens so you can sign in to the SkipperDesk account
+   that pays for the session. Sign in there; the page hands you back on its own, and the
+   window says "Signed in as <your email>". Every later launch skips this.
+4. Leave that window open. Closing it stops sharing straight away.
+5. When they connect, that window asks you "Allow this computer to be controlled?" and
    shows who is asking. Type y and press Enter to let them in, or n to refuse. If you do
    not answer within 30 seconds the connection is declined, so keep the window where you
    can see it.
 
-Signing in (once, before the first connection)
-----------------------------------------------
-This PC has to be signed in to the SkipperDesk account that is paying for the session, or
-the connection is refused before it starts.
+If the browser does not open by itself, the window prints the address to paste into it.
 
-1. Run the host once (step 1 above) so it can get its Device ID, then close it.
-2. Open the extracted folder, hold Shift and right-click an empty part of it, choose
-   "Open PowerShell window here", and run:  .\rc-host.exe --sign-in
-3. Your browser opens. Sign in. The page hands you back to the app automatically.
-4. It prints "Signed in as <your email>". You can close that window and go back to step 1.
-
-To sign this PC out again:  .\rc-host.exe --sign-out
+Signing out
+-----------
+Only if you want to stop this PC being connected to: open PowerShell in the extracted
+folder (hold Shift, right-click an empty part of it, "Open PowerShell window here") and
+run:  .\rc-host.exe --sign-out
 
 One limit worth knowing: SkipperDesk runs as you, not as an administrator, so it cannot
 click inside windows that Windows itself runs with administrator rights. Ordinary apps -

@@ -15,8 +15,12 @@ use std::path::PathBuf;
 
 use rc_host::account::{Account, AccountState};
 use rc_host::api::ApiClient;
+use rc_host::inject::Injector;
+use rc_host::media::CaptureBackend;
+use rc_host::pump::PumpEvent;
 use rc_host::{Backend, Host, HostConfig, RecordingInjector, SecretStore, SyntheticBackend};
 use rc_identity::{access_code, DeviceKey, IdentityRecord};
+use tokio::sync::mpsc;
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
@@ -138,27 +142,43 @@ fn deliver_callback(startup: &Startup, url: &str) -> Result<(), String> {
             println!("  Sign-in handed back to the SkipperDesk window. This one can close.");
             Ok(())
         }
-        Err(e) => {
-            eprintln!("rc-host: the sign-in could not be handed back ({e})");
-            eprintln!("  Press Enter to close this window.");
-            let _ = std::io::stdin().read_line(&mut String::new());
-            Err(e)
-        }
+        Err(e) => Err(format!("the sign-in could not be handed back ({e})")),
     }
 }
 
-/// The device line below the banner says the PC is online; this one says whether
-/// anyone is allowed to connect to it, because the two are easy to confuse.
-fn print_account_state(startup: &Startup) -> Result<(), String> {
-    match account(startup)?.state() {
+/// Nobody can connect to a PC that is not signed in, so a launch that finds no
+/// account goes straight to the browser rather than telling the user about a
+/// command. Every later launch just says who it is signed in as.
+async fn ensure_signed_in(
+    backend: &Backend,
+    secrets: &SecretStore,
+    key: &DeviceKey,
+    identity: &IdentityRecord,
+) -> Result<(), String> {
+    match account(backend, secrets, key)?.state() {
         AccountState::Linked { email } if !email.is_empty() => println!("  Signed in as {email}.\n"),
         AccountState::Linked { .. } => println!("  Signed in.\n"),
         AccountState::Linking | AccountState::Unlinked => {
-            println!("  This PC is NOT signed in, so no one can connect to it yet.");
-            println!("  Sign in once from PowerShell in this folder:   .\\rc-host.exe --sign-in\n");
+            println!("  This PC is not signed in yet, so nobody can connect to it.");
+            sign_in(backend, secrets, key, identity).await?;
+            println!();
         }
     }
     Ok(())
+}
+
+/// Register, show the panel, sign in if needed, then come online — in that
+/// order, because the sign-in binds to the Device ID and the user should read
+/// the panel while the browser is open.
+async fn host_online<I: Injector + Send + 'static, B: CaptureBackend>(
+    mut host: Host<I, B>,
+    events: mpsc::Receiver<PumpEvent>,
+    backend: &Backend,
+) -> Result<(), String> {
+    host.ensure_registered().await?;
+    print_banner(host.identity());
+    ensure_signed_in(backend, host.secrets(), host.key(), host.identity()).await?;
+    host.run(events).await
 }
 
 fn config(backend: &Backend) -> HostConfig {
@@ -231,29 +251,33 @@ async fn main() {
 
     let outcome = match command {
         Command::LinkCallback(url) => deliver_callback(&startup, &url),
-        Command::SignIn => sign_in(&startup).await,
-        Command::SignOut => sign_out(&startup).await,
-        Command::Run { synthetic } => {
-            print_banner(&startup.identity);
-            match print_account_state(&startup) {
-                Ok(()) => run(startup, synthetic).await,
-                Err(e) => Err(e),
-            }
+        Command::SignIn => {
+            sign_in(&startup.backend, &startup.secrets, &startup.key, &startup.identity).await
         }
+        Command::SignOut => sign_out(&startup).await,
+        Command::Run { synthetic } => run(startup, synthetic).await,
     };
     if let Err(e) = outcome {
+        // A double-clicked program's window closes with it, and would take the
+        // only explanation along.
         eprintln!("rc-host: {e}");
+        eprintln!("  Press Enter to close this window.");
+        let _ = std::io::stdin().read_line(&mut String::new());
         std::process::exit(1);
     }
 }
 
-fn account<'a>(startup: &'a Startup) -> Result<Account<'a>, String> {
-    let api = ApiClient::new(startup.backend.api.clone(), env!("CARGO_PKG_VERSION"))
+fn account<'a>(
+    backend: &Backend,
+    secrets: &'a SecretStore,
+    key: &'a DeviceKey,
+) -> Result<Account<'a>, String> {
+    let api = ApiClient::new(backend.api.clone(), env!("CARGO_PKG_VERSION"))
         .map_err(|e| e.to_string())?;
     Ok(Account::new(
         api,
-        &startup.secrets,
-        &startup.key,
+        secrets,
+        key,
         env_or("RC_DEVICE_LABEL", "Windows Host"),
         hardware_id(),
     ))
@@ -294,25 +318,28 @@ fn hardware_id() -> String {
 
 /// The browser leg. Registration comes first: `/v1/auth/device/token` refuses a
 /// key the device registry does not know, with the sign-in code left unspent.
-async fn sign_in(startup: &Startup) -> Result<(), String> {
+async fn sign_in(
+    backend: &Backend,
+    secrets: &SecretStore,
+    key: &DeviceKey,
+    identity: &IdentityRecord,
+) -> Result<(), String> {
     if let Ok(executable) = std::env::current_exe() {
         if let Err(e) = rc_host::urlhandler::register(&executable) {
             eprintln!("rc-host: the sign-in return handler could not be registered ({e})");
         }
     }
-    if startup.identity.device_id.is_empty() || !startup.identity.server_registered {
+    if identity.device_id.is_empty() || !identity.server_registered {
         return Err(
             "this PC has no Device ID yet. Start the host once so it can register, then sign in."
                 .into(),
         );
     }
     // A URL left over from an abandoned attempt must not be read as this one's.
-    let _ = rc_host::urlhandler::take(&startup.secrets);
+    let _ = rc_host::urlhandler::take(secrets);
 
-    let mut account = account(startup)?;
-    let url = account
-        .begin_sign_in(&startup.backend.web, now_ms())
-        .await?;
+    let mut account = account(backend, secrets, key)?;
+    let url = account.begin_sign_in(&backend.web, now_ms()).await?;
     println!("\n  Opening your browser to sign in.");
     println!("  If it does not open, paste this address into it:\n\n  {url}\n");
     if let Err(e) = rc_host::urlhandler::open_in_browser(&url) {
@@ -321,11 +348,11 @@ async fn sign_in(startup: &Startup) -> Result<(), String> {
 
     let deadline = std::time::Instant::now() + SIGN_IN_WAIT;
     let callback = loop {
-        if let Some(url) = rc_host::urlhandler::take(&startup.secrets) {
+        if let Some(url) = rc_host::urlhandler::take(secrets) {
             break url;
         }
         if std::time::Instant::now() >= deadline {
-            return Err("no answer came back from the browser; choose Sign in again".into());
+            return Err("no answer came back from the browser; open rc-host.exe again to retry".into());
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     };
@@ -343,7 +370,7 @@ async fn sign_in(startup: &Startup) -> Result<(), String> {
 }
 
 async fn sign_out(startup: &Startup) -> Result<(), String> {
-    let mut account = account(startup)?;
+    let mut account = account(&startup.backend, &startup.secrets, &startup.key)?;
     match account.state() {
         AccountState::Linked { .. } => {}
         _ => {
@@ -377,7 +404,7 @@ async fn run_synthetic(startup: Startup) -> Result<(), String> {
         startup.secrets,
         Some(startup.identity_path),
     );
-    host.run(events).await
+    host_online(host, events, &startup.backend).await
 }
 
 #[cfg(windows)]
@@ -406,7 +433,7 @@ async fn run(startup: Startup, synthetic: bool) -> Result<(), String> {
         startup.secrets,
         Some(startup.identity_path),
     );
-    host.run(events).await
+    host_online(host, events, &startup.backend).await
 }
 
 #[cfg(not(windows))]

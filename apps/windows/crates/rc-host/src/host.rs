@@ -324,6 +324,29 @@ where
         Ok(exit)
     }
 
+    /// Registers this PC on a connection used for nothing else, so the sign-in
+    /// that follows has a Device ID to bind to before the host comes online.
+    pub async fn ensure_registered(&mut self) -> Result<(), String> {
+        if !self.identity.device_id.is_empty() && self.identity.server_registered {
+            return Ok(());
+        }
+        let cfg = Config::new(&self.config.signaling_url);
+        let (conn, _pushes) = SignalConnection::connect(&cfg).await.map_err(|e| e.to_string())?;
+        self.register(&Arc::new(conn)).await
+    }
+
+    pub fn identity(&self) -> &IdentityRecord {
+        &self.identity
+    }
+
+    pub fn secrets(&self) -> &SecretStore {
+        &self.secrets
+    }
+
+    pub fn key(&self) -> &DeviceKey {
+        &self.key
+    }
+
     /// §2.2: register on first run, and again — once, with the same key — when
     /// `hello` says `unknown_device`. A stored certificate is what makes the
     /// second case keep this PC's Device ID; without one the registry mints a
