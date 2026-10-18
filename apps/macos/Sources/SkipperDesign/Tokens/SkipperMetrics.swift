@@ -52,7 +52,7 @@ public enum SkipperMotion {
     public static let standard = Animation.easeInOut(duration: 0.20)
     public static let gentle = Animation.easeInOut(duration: 0.32)
     public static let toolbarReveal = Animation.easeOut(duration: 0.20)
-    public static let toolbarHideDelaySeconds: Double = 2.0
+    public static let toolbarHideDelaySeconds: Double = 3.5
 }
 
 public enum SkipperLayout {

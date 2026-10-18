@@ -33,9 +33,11 @@ struct RemoteSessionView: View {
                     localControlRegions: LocalControlRegions(localControlRegions),
                     onVideoSizeChange: { videoSize = $0 },
                     onPointerSample: { sample, _ in
+                        let moved = sample.viewPoint != lastPointer?.viewPoint
                         lastPointer = sample
                         let near = sample.viewPoint.y < Self.revealBand
                         if near != pointerNearTop { pointerNearTop = near }
+                        if moved { showToolbar() }
                     })
             }
 
@@ -88,6 +90,11 @@ struct RemoteSessionView: View {
             if pinned { revealed = true } else { scheduleHide() }
         }
         .onAppear { scheduleHide() }
+    }
+
+    private func showToolbar() {
+        if !revealed { revealed = true }
+        scheduleHide()
     }
 
     private func scheduleHide() {
@@ -216,6 +223,7 @@ private struct KeyboardCaptureToggle: View {
         ) {
             model.captureKeyboard.toggle()
         }
+        .keyboardShortcut("k", modifiers: [.control, .option, .command])
     }
 
     private var helpText: String {
@@ -223,6 +231,6 @@ private struct KeyboardCaptureToggle: View {
         if model.keyboardCaptureActive {
             return "\u{2318}Space, \u{2318}Tab and other shortcuts go to the remote Mac. Press \u{2303}\u{2325}\u{2318}K to stop."
         }
-        return "Turn this on to send shortcuts like \u{2318}Space and \u{2318}Tab to \(model.otherMacLabel) instead of this Mac."
+        return "Send shortcuts like \u{2318}Space and \u{2318}Tab to \(model.otherMacLabel) instead of this Mac. \u{2303}\u{2325}\u{2318}K turns this on and off."
     }
 }
