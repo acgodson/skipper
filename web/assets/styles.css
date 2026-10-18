@@ -477,6 +477,92 @@ footer nav a {
 .hidden {
   display: none !important;
 }
+.downloads {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+.dl-option .caption {
+  margin-top: 14px;
+}
+html[data-os="windows"] .dl-win {
+  order: -1;
+}
+html[data-os] .dl-option:not(.is-match) .button {
+  background: var(--surface-muted);
+  color: var(--text-primary);
+}
+html[data-os] .dl-option:not(.is-match) .button:hover {
+  background: var(--accent-soft);
+}
+.compare {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 36px;
+  font-size: 16px;
+  line-height: 1.5;
+}
+.compare caption {
+  text-align: left;
+  color: var(--text-secondary);
+  font-size: 14px;
+  padding-bottom: 14px;
+}
+.compare th,
+.compare td {
+  text-align: left;
+  vertical-align: top;
+  padding: 18px 16px 18px 0;
+  border-bottom: 1px solid var(--surface-muted);
+}
+.compare thead th {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.compare tbody th {
+  font-weight: 600;
+}
+.compare tbody th span {
+  display: block;
+  font-weight: 400;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.state {
+  display: block;
+  font-weight: 600;
+}
+.state .glyph {
+  display: inline-block;
+  width: 1.4em;
+}
+.state.shipped {
+  color: var(--positive);
+}
+.state.pending {
+  color: var(--attention);
+}
+.state.none {
+  color: var(--text-secondary);
+}
+@media (max-width: 700px) {
+  .compare th,
+  .compare td {
+    padding: 14px 10px 14px 0;
+    font-size: 15px;
+  }
+  .compare thead th {
+    font-size: 11px;
+    letter-spacing: 0.02em;
+  }
+  .state .glyph {
+    display: block;
+    width: auto;
+  }
+}
 @media (max-width: 700px) {
   .site,
   main {
