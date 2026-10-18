@@ -128,6 +128,20 @@ fn print_banner(identity: &IdentityRecord) {
     println!("  Keep this window open. Closing it ends the host.\n");
 }
 
+/// The device line below the banner says the PC is online; this one says whether
+/// anyone is allowed to connect to it, because the two are easy to confuse.
+fn print_account_state(startup: &Startup) -> Result<(), String> {
+    match account(startup)?.state() {
+        AccountState::Linked { email } if !email.is_empty() => println!("  Signed in as {email}.\n"),
+        AccountState::Linked { .. } => println!("  Signed in.\n"),
+        AccountState::Linking | AccountState::Unlinked => {
+            println!("  This PC is NOT signed in, so no one can connect to it yet.");
+            println!("  Sign in once from PowerShell in this folder:   .\\rc-host.exe --sign-in\n");
+        }
+    }
+    Ok(())
+}
+
 fn config(backend: &Backend) -> HostConfig {
     HostConfig {
         signaling_url: backend.api.signaling_url(),
@@ -202,7 +216,10 @@ async fn main() {
         Command::SignOut => sign_out(&startup).await,
         Command::Run { synthetic } => {
             print_banner(&startup.identity);
-            run(startup, synthetic).await
+            match print_account_state(&startup) {
+                Ok(()) => run(startup, synthetic).await,
+                Err(e) => Err(e),
+            }
         }
     };
     if let Err(e) = outcome {
