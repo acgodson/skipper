@@ -186,7 +186,7 @@ pub fn hardware_or_software(
     if request.hardware {
         match hardware(&request) {
             Ok(encoder) => return Ok(encoder),
-            Err(reason) => eprintln!("rc-host: no hardware encoder ({reason}) — using openh264"),
+            Err(reason) => crate::report!("no hardware encoder ({reason}) — using openh264"),
         }
     }
     software(&request)

@@ -22,7 +22,7 @@ Do this BEFORE you extract the ZIP:
 
 If you prefer PowerShell, this does the same thing (change the path to match yours):
 
-    Unblock-File "$env:USERPROFILE\Downloads\SkipperDesk-win-x64-0.1.8.zip"
+    Unblock-File "$env:USERPROFILE\Downloads\SkipperDesk-win-x64-0.2.0.zip"
 
 You are only telling Windows that you trust this one file that you chose to download.
 You do not need to change any Windows or antivirus settings.
@@ -35,50 +35,67 @@ If you see the blue "Windows protected your PC" screen anyway
 Running it
 ----------
 1. Open the extracted folder and double-click rc-host.exe.
-2. A window opens showing a Device ID and an Access code. Give both to the person who is
-   connecting.
+2. The SkipperDesk window opens. Under "This PC" it shows a Device ID and an Access Code,
+   each with a Copy button. Give both to the person who is connecting. The pill in the
+   top-right corner says "Online" once this PC can be reached.
 3. The first time only, your browser opens so you can sign in to the SkipperDesk account
    that pays for the session. Sign in there; the page hands you back on its own, and the
-   window says "Signed in as <your email>". Every later launch skips this.
-4. Leave that window open. Closing it stops sharing straight away.
-   Do not click inside the window: a click starts a text selection that pauses the
-   whole program. If the title bar ever says "Select", press Esc.
-5. When they connect, that window asks you "Allow this computer to be controlled?" and
-   shows who is asking. Type one letter and press Enter:
-     y   let them in, this time only
-     t   let them in, and stop asking from now on (this turns on unattended access,
-         explained below)
-     n   refuse
-   If you do not answer within 30 seconds the connection is declined, so keep the window
-   where you can see it.
+   window shows your email under Access. Every later launch skips this. If the browser
+   does not open, the window shows the address to paste into it, and "Open Browser Again"
+   tries once more.
+4. When someone connects, a separate SkipperDesk window pops up on top of everything,
+   beeps, and asks "Allow this computer to be controlled?", showing the Device ID of the
+   computer that is asking. Click one of:
+     Allow                       let them in, this time only
+     Allow and Don't Ask Again   let them in, and stop asking from now on (this turns on
+                                 unattended access, explained below)
+     Decline                     refuse (closing that window or pressing Esc does the same)
+   The Allow buttons wake up a moment after the question appears, so a stray click cannot
+   let anyone in. If nobody answers within 30 seconds the connection is declined.
 
-If the browser does not open by itself, the window prints the address to paste into it.
+The tray icon
+-------------
+SkipperDesk keeps an icon in the notification area at the bottom-right of the screen (if
+you do not see it, click the small ^ arrow there). Closing the window does NOT stop
+SkipperDesk: the window just hides, this PC stays reachable, and the icon stays. Click the
+icon to bring the window back, or right-click it for a menu: Show window, Sign in or Sign
+out, Unattended access, Copy device ID, Copy access code, Open log, and Quit.
 
-While the window is open and online, this PC will not go to sleep on its own, and while
-someone is connected its screen stays on too. You can still put it to sleep yourself.
+To stop sharing, right-click the icon and choose Quit. SkipperDesk ends any session
+cleanly (the other computer is told, and any key it was holding down is released) and
+then closes. Starting rc-host.exe again while it is already running just brings the
+window back.
+
+While SkipperDesk is running and online, this PC will not go to sleep on its own, and
+while someone is connected its screen stays on too. You can still put it to sleep
+yourself.
 
 Leaving the PC on its own
 -------------------------
-Normally every connection waits for someone at this PC to type y. If nobody will be
-there, turn on unattended access: then anyone who has this PC's Device ID and Access code
+Normally every connection waits for someone at this PC to click Allow. If nobody will be
+there, turn on unattended access: then anyone who has this PC's Device ID and Access Code
 connects straight away, without being asked. Only do this if you trust everyone who has
 the code.
 
-Typing t at the question above turns it on. To turn it on or off at any other time, open
-PowerShell in the extracted folder (as described under "Signing out" below) and run:
-
-    .\rc-host.exe --unattended on
-    .\rc-host.exe --unattended off
-
-The window says which one is on each time it starts, and it stays that way until you
-change it. If the SkipperDesk window is already open when you run one of these, close it
-and open it again so it picks up the change.
+Use the "Unattended access" switch in the window (or in the tray icon's menu), or answer
+a request with "Allow and Don't Ask Again". It takes effect straight away and stays that
+way until you change it.
 
 Signing out
 -----------
-Only if you want to stop this PC being connected to: open PowerShell in the extracted
-folder (hold Shift, right-click an empty part of it, "Open PowerShell window here") and
-run:  .\rc-host.exe --sign-out
+Only if you want to stop this PC being connected to: click "Sign Out..." in the window
+(or Sign out in the tray icon's menu) and confirm. The Device ID and Access Code stay the
+same; sign in again from the same place.
+
+The log
+-------
+The window's Activity box shows what SkipperDesk is doing. A fuller record is kept in
+
+    %LOCALAPPDATA%\SkipperDesk\rc-host.log
+
+("Open Log" in the window, or Open log in the tray menu, opens it in Notepad). If
+something goes wrong, sending that file to the person who gave you this build helps a
+lot. It never contains your access code.
 
 One limit worth knowing: SkipperDesk runs as you, not as an administrator, so it cannot
 click inside windows that Windows itself runs with administrator rights. Ordinary apps -
@@ -94,7 +111,8 @@ Cancel, sharing will start but the other person will never see your screen.
 
 Removing it
 -----------
-Nothing is installed. Close the window and delete the folder. That is all.
+Nothing is installed. Quit SkipperDesk from the tray icon and delete the folder. If you
+also want to forget this PC's Device ID, delete the folder %LOCALAPPDATA%\SkipperDesk too.
 
 Trouble?
 --------

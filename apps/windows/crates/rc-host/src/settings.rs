@@ -24,7 +24,7 @@ impl HostSettings {
         match secrets.load(SecretAccount::HostSettings) {
             Ok(stored) => stored.unwrap_or_default(),
             Err(e) => {
-                eprintln!("rc-host: {e}; asking before each connection");
+                crate::report!("{e}; asking before each connection");
                 Self::default()
             }
         }
@@ -33,6 +33,14 @@ impl HostSettings {
     pub fn save(self, secrets: &SecretStore) -> Result<(), SecretError> {
         secrets.save(SecretAccount::HostSettings, &self)
     }
+}
+
+/// Every surface that changes the setting saves it here: `--unattended`, the
+/// window, and the consent answer that turns it on.
+pub fn save_unattended(secrets: &SecretStore, on: bool) -> Result<(), String> {
+    HostSettings { unattended_access: on }
+        .save(secrets)
+        .map_err(|e| e.to_string())
 }
 
 /// `RC_UNATTENDED=1|0`, a diagnostic override of the persisted setting for one
@@ -56,6 +64,17 @@ pub fn unattended_argument(args: &[String]) -> Option<Result<bool, String>> {
         _ => Err("use  --unattended on  or  --unattended off".to_string()),
     })
 }
+
+/// The window's toggle detail, in the Mac's words.
+pub fn unattended_detail(on: bool) -> &'static str {
+    match on {
+        true => "Anyone with the code can connect without being asked here.",
+        false => "You will be asked to allow each connection.",
+    }
+}
+
+/// Shown in the window while unattended access is off, as on the Mac.
+pub const UNATTENDED_OFF_NOTE: &str = "Leaving this PC on its own? Turn on Unattended access below so connections do not wait for someone to click Allow.";
 
 /// The one sentence every surface uses for the setting: the launch panel, the
 /// `--unattended` command, and the answer `t` to a consent prompt.

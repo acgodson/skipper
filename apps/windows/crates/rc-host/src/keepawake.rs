@@ -67,7 +67,7 @@ impl KeepAwake {
                 }
                 set_execution_state(StayAwake::Idle);
             })
-            .map_err(|e| eprintln!("rc-host: this PC may sleep during a session ({e})"))
+            .map_err(|e| crate::report!("this PC may sleep during a session ({e})"))
             .ok();
         Self {
             state: StayAwake::Idle,

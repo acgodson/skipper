@@ -2,18 +2,23 @@
 //! by default, so the normal case is that a controller which proved the code
 //! still waits for whoever is at this PC.
 //!
-//! The Mac shows a window; this host is a console, so the prompt is the console
-//! and the answer is a line of input. What matters is that the rules are the
-//! same ones, and all of them live in the shared core: the 30-second deadline
-//! and the 1.5-second guard against a reflexive Enter are the session state
-//! machine's, the per-key and host-wide prompt budgets are
-//! `rc_identity::consent`, and this file only renders and reads.
+//! The Mac shows a window, and so does the Windows host (`crate::ui`, which
+//! answers through the same channel). The diagnostic build is a terminal, so
+//! there the prompt is printed and the answer is a line of input. What matters
+//! is that the rules are the same ones, and all of them live in the shared
+//! core: the 30-second deadline and the 1.5-second guard against a reflexive
+//! click are the session state machine's, the per-key and host-wide prompt
+//! budgets are `rc_identity::consent`, and this file only renders and reads.
 
-use std::io::Write;
-
+#[cfg(not(windows))]
 use tokio::sync::mpsc;
 
-/// What the owner typed, or that they walked away. A deadline is **not** read
+use crate::status::{ConsentRequest, HostEvent};
+use crate::report;
+#[cfg(not(windows))]
+use crate::say;
+
+/// What the owner chose, or that they walked away. A deadline is **not** read
 /// here: the state machine's own `tick` times the prompt out, so a prompt
 /// survives a signalling flap exactly as §4.2 requires.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,7 +26,7 @@ pub enum ConsentAnswer {
     Allow,
     /// Allow, and turn unattended access on so the next controller that proves
     /// the code is not asked either. The Mac's equivalent is allowing and then
-    /// switching the toggle in the host window; a console has one line to type.
+    /// switching the toggle in the host window.
     AllowAndTurnOnUnattended,
     Decline,
 }
@@ -48,47 +53,50 @@ impl ConsentPrompt {
     /// the other machine also shows, as its own: the owner can compare them.
     /// Nothing here names the access code.
     pub fn render(&self) {
-        let mut out = std::io::stdout().lock();
-        let _ = writeln!(out);
-        let _ = writeln!(out, "  ---------------------------------------------");
-        let _ = writeln!(out, "  Allow this computer to be controlled?");
+        let device_id = rc_identity::access_code::formatted_device_id(&self.controller_device_id);
+        report::event(HostEvent::ConsentOpened(ConsentRequest {
+            device_id: device_id.clone(),
+            fingerprint: self.controller_fingerprint.clone(),
+            replaces_previous: self.replaces_previous,
+        }));
+        #[cfg(windows)]
+        report!("asking whoever is at this PC to allow {device_id}");
+        #[cfg(not(windows))]
+        self.print(&device_id);
+    }
+
+    #[cfg(not(windows))]
+    fn print(&self, device_id: &str) {
+        say!();
+        say!("  ---------------------------------------------");
+        say!("  Allow this computer to be controlled?");
         if self.replaces_previous {
-            let _ = writeln!(out, "  A different request replaced the previous one.");
+            say!("  A different request replaced the previous one.");
         }
-        let _ = writeln!(
-            out,
-            "  It entered this PC's access code. If you do not answer,"
-        );
-        let _ = writeln!(out, "  the connection is declined.");
-        let _ = writeln!(out);
-        let _ = writeln!(
-            out,
-            "  Device ID     {}",
-            rc_identity::access_code::formatted_device_id(&self.controller_device_id)
-        );
-        let _ = writeln!(out, "  Fingerprint   {}", self.controller_fingerprint);
-        let _ = writeln!(out, "  ---------------------------------------------");
-        let _ = writeln!(out, "  Type  y  to allow this once,");
-        let _ = writeln!(
-            out,
-            "        t  to allow and turn on unattended access (from now on anyone"
-        );
-        let _ = writeln!(
-            out,
-            "           with this PC's access code connects without asking),"
-        );
-        let _ = writeln!(out, "        n  to decline. Declines in 30 s.");
-        let _ = out.flush();
+        say!("  It entered this PC's access code. If you do not answer,");
+        say!("  the connection is declined.");
+        say!();
+        say!("  Device ID     {device_id}");
+        say!("  Fingerprint   {}", self.controller_fingerprint);
+        say!("  ---------------------------------------------");
+        say!("  Type  y  to allow this once,");
+        say!("        t  to allow and turn on unattended access (from now on anyone");
+        say!("           with this PC's access code connects without asking),");
+        say!("        n  to decline. Declines in 30 s.");
     }
 
     pub fn dismissed(outcome: rc_session::ConsentOutcome) {
+        report::event(HostEvent::ConsentClosed);
         let said = match outcome {
             rc_session::ConsentOutcome::Allowed => "allowed",
             rc_session::ConsentOutcome::Declined => "declined",
             rc_session::ConsentOutcome::TimedOut => "declined — nobody answered",
             rc_session::ConsentOutcome::Cancelled => "withdrawn",
         };
-        println!("  Request {said}.");
+        #[cfg(windows)]
+        report!("request {said}");
+        #[cfg(not(windows))]
+        say!("  Request {said}.");
     }
 }
 
@@ -96,6 +104,7 @@ impl ConsentPrompt {
 /// prompt. One reader for the whole process: a prompt is answered by whatever
 /// is typed while it is open, and anything typed while none is open is ignored
 /// by the caller rather than queued into the next prompt.
+#[cfg(not(windows))]
 pub fn spawn_console_reader() -> mpsc::Receiver<ConsentAnswer> {
     let (tx, rx) = mpsc::channel::<ConsentAnswer>(4);
     std::thread::spawn(move || {
@@ -118,6 +127,7 @@ pub fn spawn_console_reader() -> mpsc::Receiver<ConsentAnswer> {
 /// Only an unambiguous yes, or `t`, allows. Anything else that was clearly an
 /// answer is a decline; anything that was not an answer at all is ignored, so a stray
 /// Enter neither allows nor declines.
+#[cfg(not(windows))]
 fn parse(line: &str) -> Option<ConsentAnswer> {
     match line.trim().to_ascii_lowercase().as_str() {
         "y" | "yes" | "allow" => Some(ConsentAnswer::Allow),
@@ -127,5 +137,5 @@ fn parse(line: &str) -> Option<ConsentAnswer> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 mod tests;

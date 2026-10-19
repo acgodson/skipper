@@ -374,7 +374,7 @@ impl<'a> Account<'a> {
                 self.entitlement = Some((value, now_ms));
             }
             Err(e) => {
-                eprintln!("rc-host: the account's entitlement could not be read: {e}");
+                crate::report!("the account's entitlement could not be read: {e}");
                 let _ = self.on_failure(e);
             }
         }
@@ -418,7 +418,7 @@ impl<'a> Account<'a> {
             Err(e) if unlink_is_done(&e) => {
                 let _ = self.finish_unlink();
             }
-            Err(e) => eprintln!("rc-host: a pending sign-out is still owed: {e}"),
+            Err(e) => crate::report!("a pending sign-out is still owed: {e}"),
         }
     }
 
@@ -444,7 +444,7 @@ impl<'a> Account<'a> {
         if failure.code() == "unauthenticated" || failure.means_signed_out() {
             self.entitlement = None;
             if let Err(e) = self.secrets.remove(SecretAccount::DeviceToken) {
-                eprintln!("rc-host: {e}");
+                crate::report!("{e}");
             }
         }
         failure.to_string()

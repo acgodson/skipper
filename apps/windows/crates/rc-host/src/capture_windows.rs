@@ -130,8 +130,8 @@ impl DxgiCaptureSource {
 
             match first_attached {
                 Some((adapter, output_index, monitor)) => {
-                    eprintln!(
-                        "rc-host: no display reported itself as primary; capturing output \
+                    crate::report!(
+                        "no display reported itself as primary; capturing output \
                          {output_index}"
                     );
                     Self::with_output(adapter, output_index, monitor)

@@ -30,9 +30,10 @@ use rc_session::{
 };
 use rc_signal_client::{Config, Push, SignalConnection};
 use rc_transport::{IceState, PeerConfig, PeerSession, TransportEvent};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::consent::{ConsentAnswer, ConsentPrompt};
+use crate::report;
 use crate::inject::{InputDispatcher, InputState, Injector};
 use crate::keepawake::{KeepAwake, StayAwake};
 use crate::media::{
@@ -44,6 +45,7 @@ use crate::pump::{CapturePump, EncoderFactory, PumpConfig, PumpEvent, VideoSink}
 use crate::quality::QualityCeiling;
 use crate::secrets::{SecretAccount, SecretStore};
 use crate::settings::HostSettings;
+use crate::status::{HostEvent, HostStatus, Screen};
 
 /// How long teardown waits for the blocking pump to notice the stop flag. Two
 /// frame budgets plus slack: the loop checks the flag every few milliseconds and
@@ -68,6 +70,46 @@ pub struct HostConfig {
     /// The diagnostic `RC_ENCODER=software`: openh264 even where a hardware
     /// encoder is available.
     pub software_encoder: bool,
+}
+
+/// How the owner reaches a running host: stop it, answer a consent prompt, or
+/// say the persisted settings changed. The host only reads these; whoever holds
+/// the other ends never waits on it.
+pub struct HostControls {
+    /// Set to `true` to stop. A dropped sender also stops the host: nobody is
+    /// left who could answer a prompt or ask it to stop later.
+    ///
+    /// Stopping goes through here rather than through process exit because a
+    /// host that exits with a modifier still down leaves it down: `SendInput`
+    /// injects into the system input queue and process exit sends no key-up.
+    pub shutdown: watch::Receiver<bool>,
+    pub answers: mpsc::Receiver<ConsentAnswer>,
+    pub settings_changed: mpsc::Receiver<()>,
+}
+
+impl HostControls {
+    /// The terminal host of the diagnostic build: typed lines answer, and
+    /// nothing else changes underneath it. Its injector only records, so
+    /// there is no held key to release on the way out and no stop signal.
+    #[cfg(not(windows))]
+    pub fn console() -> Self {
+        let (stop_tx, shutdown) = watch::channel(false);
+        tokio::spawn(async move {
+            let _held = stop_tx;
+            std::future::pending::<()>().await
+        });
+        let (_, settings_changed) = mpsc::channel(1);
+        Self {
+            shutdown,
+            answers: crate::consent::spawn_console_reader(),
+            settings_changed,
+        }
+    }
+}
+
+/// Resolves once the host has been asked to stop.
+pub async fn stopped(shutdown: &mut watch::Receiver<bool>) {
+    let _ = shutdown.wait_for(|stop| *stop).await;
 }
 
 /// §2.17 Consent 3: while the owner is being asked the host has no peer
@@ -155,6 +197,8 @@ pub struct Host<I: Injector + Send + 'static, B: CaptureBackend> {
     held_ice: Vec<sig::Ice>,
     prompt: Option<ConsentPrompt>,
     keep_awake: KeepAwake,
+    screen: Screen,
+    status: Option<HostStatus>,
 }
 
 impl<I: Injector + Send, B: CaptureBackend> Host<I, B>
@@ -211,6 +255,8 @@ where
             identity,
             key,
             keep_awake: KeepAwake::new(),
+            screen: Screen::Live,
+            status: None,
         };
         (host, pump_rx)
     }
@@ -222,32 +268,35 @@ where
     /// §4.3 step 1: losing the signalling socket is a *control-plane* outage. Media over an already-established WebRTC path is unaffected, so the peer connection, its event stream and the capture pump outlive any one connection attempt. Tearing them down on a reconnect is how a session used to die of a moment's network flutter: the controller restarts ICE after its resume, and the host has to still be there to answer.
     ///
     /// The reconnect backoff is interruptible: asking the host to stop must not wait out a 15-second sleep with a modifier still held down on the machine.
-    pub async fn run(mut self, mut pump_rx: mpsc::Receiver<PumpEvent>) -> Result<(), String> {
-        let mut shutdown_rx = spawn_shutdown_watch();
-        let mut answers = crate::consent::spawn_console_reader();
+    pub async fn run(
+        mut self,
+        mut pump_rx: mpsc::Receiver<PumpEvent>,
+        mut controls: HostControls,
+    ) -> Result<(), String> {
         let (te_tx, mut te_rx) = mpsc::channel::<TransportEvent>(256);
         let mut peer: Option<Arc<PeerSession>> = None;
         let mut backoff = Duration::from_millis(500);
         loop {
             let attempt = self
-                .run_one_connection(
-                    &mut pump_rx,
-                    &mut shutdown_rx,
-                    &mut answers,
-                    &mut peer,
-                    &te_tx,
-                    &mut te_rx,
-                )
+                .run_one_connection(&mut pump_rx, &mut controls, &mut peer, &te_tx, &mut te_rx)
                 .await;
             match attempt {
                 Ok(ConnLoopExit::Shutdown) => {
+                    self.publish_status(HostStatus::Stopping);
                     self.teardown(&mut peer).await;
                     return Ok(());
                 }
                 Ok(ConnLoopExit::Reconnect) | Err(_) => {
+                    if let Err(e) = attempt {
+                        report!("signalling unavailable ({e}) — trying again");
+                    }
+                    self.follow_phase(false);
+                    self.publish_status(HostStatus::Offline);
                     tokio::select! {
                         _ = tokio::time::sleep(backoff) => {}
-                        _ = shutdown_rx.recv() => {
+                        _ = stopped(&mut controls.shutdown) => {
+                            report!("stopping - releasing all remote input");
+                            self.publish_status(HostStatus::Stopping);
                             self.teardown(&mut peer).await;
                             return Ok(());
                         }
@@ -260,14 +309,13 @@ where
 
     /// The 10-second exchange timer is the host's, not the state machine's: an exchange that stalls must end the session rather than sit there holding the 1:1 slot.
     ///
-    /// A `None` answer is the console closing. A host that can no longer be asked must not fall through to answering for its owner.
+    /// A closed answer channel is the prompt's surface going away. A host that can no longer be asked must not fall through to answering for its owner, so that branch simply stops being polled.
     ///
     /// Nothing is torn down on exit: see §4.3 in `run`. A session that has genuinely ended has already been cleared by whatever ended it.
     async fn run_one_connection(
         &mut self,
         pump_rx: &mut mpsc::Receiver<PumpEvent>,
-        shutdown_rx: &mut mpsc::Receiver<()>,
-        answers: &mut mpsc::Receiver<ConsentAnswer>,
+        controls: &mut HostControls,
         peer: &mut Option<Arc<PeerSession>>,
         te_tx: &mpsc::Sender<TransportEvent>,
         te_rx: &mut mpsc::Receiver<TransportEvent>,
@@ -277,8 +325,8 @@ where
         let conn = Arc::new(conn);
         let registered = self.authenticate(&conn).await?;
         let hello = self.hello(&conn, registered).await?;
-        eprintln!(
-            "rc-host: authenticated as {} — online and waiting for a controller",
+        report!(
+            "authenticated as {} — online and waiting for a controller",
             self.identity.device_id
         );
         self.base_ice_servers = hello.ice_servers.clone();
@@ -287,7 +335,7 @@ where
             (!hello.active_session_id.is_empty()).then_some(hello.active_session_id.as_str()),
         );
         self.apply(&actions, &conn, peer, te_tx).await;
-        self.stay_awake(true);
+        self.follow_phase(true);
 
         let mut heartbeat = tokio::time::interval(Duration::from_secs(hello.heartbeat_sec.max(1) as u64));
         let mut ticker = tokio::time::interval(Duration::from_millis(500));
@@ -317,10 +365,11 @@ where
                         break exit;
                     }
                 }
-                answer = answers.recv() => {
-                    if let Some(answer) = answer {
-                        self.on_consent_answer(answer, &conn, peer, te_tx).await;
-                    }
+                Some(answer) = controls.answers.recv() => {
+                    self.on_consent_answer(answer, &conn, peer, te_tx).await;
+                }
+                Some(()) = controls.settings_changed.recv() => {
+                    self.reload_settings();
                 }
                 event = te_rx.recv() => {
                     if let Some(event) = event {
@@ -332,16 +381,16 @@ where
                         self.on_pump_event(event, peer).await;
                     }
                 }
-                _ = shutdown_rx.recv() => {
-                    eprintln!("rc-host: stopping - releasing all remote input");
+                _ = stopped(&mut controls.shutdown) => {
+                    report!("stopping - releasing all remote input");
                     let actions = self.machine.user_ended(bye::SHUTDOWN);
                     self.apply(&actions, &conn, peer, te_tx).await;
                     break ConnLoopExit::Shutdown;
                 }
             }
-            self.stay_awake(true);
+            self.follow_phase(true);
         };
-        self.stay_awake(false);
+        self.follow_phase(false);
 
         Ok(exit)
     }
@@ -372,11 +421,30 @@ where
     }
 
     /// Re-derived after every event the connection loop handles, so whatever
-    /// moved the session phase, the power state follows it. `online` is the
-    /// Mac's `signalingReady`: authenticated on the signalling connection.
-    fn stay_awake(&mut self, online: bool) {
-        let next = StayAwake::for_host(online, self.machine.phase());
-        self.keep_awake.update(next);
+    /// moved the session phase, the power state and the status the owner sees
+    /// follow it. `online` is the Mac's `signalingReady`: authenticated on the
+    /// signalling connection.
+    fn follow_phase(&mut self, online: bool) {
+        let phase = self.machine.phase();
+        self.keep_awake.update(StayAwake::for_host(online, phase));
+        let status = HostStatus::derive(online, phase, self.machine.peer_device_id(), self.screen);
+        self.publish_status(status);
+    }
+
+    fn publish_status(&mut self, status: HostStatus) {
+        if self.status.as_ref() != Some(&status) {
+            self.status = Some(status.clone());
+            report::event(HostEvent::Status(status));
+        }
+    }
+
+    /// Someone changed the persisted setting outside the session: the window's
+    /// checkbox or `--unattended`. It applies from the next connection request.
+    fn reload_settings(&mut self) {
+        let unattended = HostSettings::load(&self.secrets).unattended_access;
+        self.machine.consent_required = !unattended;
+        report!("{}", crate::settings::unattended_line(unattended));
+        report::event(HostEvent::Unattended(unattended));
     }
 
     pub fn secrets(&self) -> &SecretStore {
@@ -416,8 +484,8 @@ where
             .await
             .map_err(|e| e.to_string())?;
         if !self.identity.device_id.is_empty() && registered.device_id != self.identity.device_id {
-            eprintln!(
-                "rc-host: this PC's Device ID changed from {} to {}; any computer that saved the \
+            report!(
+                "this PC's Device ID changed from {} to {}; any computer that saved the \
                  old one must be given the new one",
                 self.identity.device_id, registered.device_id
             );
@@ -430,7 +498,8 @@ where
                 return Err(format!("the identity could not be saved: {e}"));
             }
         }
-        eprintln!("rc-host: registered as device {}", self.identity.device_id);
+        report!("registered as device {}", self.identity.device_id);
+        report::event(HostEvent::identity(&self.identity));
         Ok(())
     }
 
@@ -450,7 +519,7 @@ where
         let hello = match first {
             Ok(hello) => hello,
             Err(e) if e.code() == Some(err::UNKNOWN_DEVICE) && !already_registered => {
-                eprintln!("rc-host: the backend does not know this device; re-registering");
+                report!("the backend does not know this device; re-registering");
                 self.register(conn).await?;
                 conn.hello(&self.identity.device_id, &self.key, role::HOST)
                     .await
@@ -466,7 +535,7 @@ where
         match self.secrets.map(SecretAccount::DeviceIdCertificates) {
             Ok(book) => book,
             Err(e) => {
-                eprintln!("rc-host: {e}");
+                report!("{e}");
                 std::collections::BTreeMap::new()
             }
         }
@@ -488,7 +557,7 @@ where
             .secrets
             .save(SecretAccount::DeviceIdCertificates, &book)
         {
-            eprintln!("rc-host: {e}; this PC may not keep its Device ID across a backend reset");
+            report!("{e}; this PC may not keep its Device ID across a backend reset");
         }
     }
 
@@ -520,8 +589,8 @@ where
                     .count();
                 self.session_ice_servers = servers.ice_servers;
                 if relays > 0 && peer.as_ref().is_some_and(|p| !p.gathers_relay_candidates()) {
-                    eprintln!(
-                        "rc-host: this session's relay credentials arrived after the connection \
+                    report!(
+                        "this session's relay credentials arrived after the connection \
                          was built; they apply from the next ICE generation"
                     );
                 }
@@ -535,18 +604,19 @@ where
                 self.on_remote_ice(ice, peer).await;
             }
             Push::Bye(ended) => {
-                eprintln!("rc-host: session ended ({})", ended.reason);
+                report!("session ended ({})", ended.reason);
                 let actions = self.machine.close_locally(&ended.reason);
                 self.clear_session();
                 self.teardown(peer).await;
                 self.apply(&actions, conn, peer, te_tx).await;
             }
             Push::ServerError(e) if e.code == err::DISPLACED => {
+                report!("another copy of this host came online as this PC; this one is stopping");
                 return Some(ConnLoopExit::Shutdown);
             }
             Push::ServerError(e) if e.code == err::ENTITLEMENT => {
-                eprintln!(
-                    "rc-host: the backend refused a session for this PC's account ({}): {}",
+                report!(
+                    "the backend refused a session for this PC's account ({}): {}",
                     e.reason, e.message
                 );
             }
@@ -581,8 +651,8 @@ where
         if self.machine.take_rejection().is_some() {
             return;
         }
-        eprintln!(
-            "rc-host: connection request from {}",
+        report!(
+            "connection request from {}",
             rc_identity::access_code::formatted_device_id(&grant.session.controller_device_id)
         );
         self.clear_session();
@@ -661,7 +731,7 @@ where
         };
         if let Some(reply) = reply {
             if let Err(e) = conn.send_pake(&session_id, &reply).await {
-                eprintln!("rc-host: the access-code exchange could not be sent: {e}");
+                report!("the access-code exchange could not be sent: {e}");
             }
         }
         if self.exchange.as_ref().is_some_and(|e| e.is_complete()) {
@@ -679,7 +749,7 @@ where
         te_tx: &mpsc::Sender<TransportEvent>,
     ) {
         let Some(exchange) = &self.exchange else { return };
-        eprintln!("rc-host: access code verified");
+        report!("access code verified");
         let controller = exchange.controller_pubkey().to_string();
         self.expected_peer = Some(controller.clone());
         self.record_trusted_controller(&controller);
@@ -691,8 +761,8 @@ where
                 .as_ref()
                 .map(|ledger| rc_identity::consent::admit(ledger, now));
             if !admitted.as_ref().is_ok_and(|d| d.should_prompt()) {
-                eprintln!(
-                    "rc-host: declined without asking — the consent budget for this controller \
+                report!(
+                    "declined without asking — the consent budget for this controller \
                      or this PC is spent"
                 );
                 let actions = self.machine.user_ended(bye::DECLINED);
@@ -715,7 +785,7 @@ where
         peer: &mut Option<Arc<PeerSession>>,
         te_tx: &mpsc::Sender<TransportEvent>,
     ) {
-        eprintln!("rc-host: access-code exchange failed: {error}");
+        report!("access-code exchange failed: {error}");
         let actions = self.machine.user_ended(error.bye_reason());
         self.clear_session();
         self.teardown(peer).await;
@@ -730,7 +800,7 @@ where
             match self.secrets.map(SecretAccount::TrustedControllers) {
                 Ok(known) => known,
                 Err(e) => {
-                    eprintln!("rc-host: {e}");
+                    report!("{e}");
                     return;
                 }
             };
@@ -751,7 +821,7 @@ where
             .secrets
             .save(SecretAccount::TrustedControllers, &known)
         {
-            eprintln!("rc-host: {e}");
+            report!("{e}");
         }
     }
 
@@ -769,7 +839,7 @@ where
             .machine
             .consent_answered(answer.allows(), Some(&prompt_id), now_ms());
         if actions.is_empty() && answer.allows() {
-            println!("  Not yet — please answer again.");
+            crate::say!("  Not yet — please answer again.");
             return;
         }
         let allowed = actions.iter().any(|action| {
@@ -788,12 +858,13 @@ where
     /// only in memory as well once it is saved, so the prompt never stops
     /// appearing for a choice that will not survive a restart.
     fn turn_on_unattended_access(&mut self) {
-        match (HostSettings { unattended_access: true }).save(&self.secrets) {
+        match crate::settings::save_unattended(&self.secrets, true) {
             Ok(()) => {
                 self.machine.consent_required = false;
-                println!("  {}", crate::settings::unattended_line(true));
+                crate::say!("  {}", crate::settings::unattended_line(true));
+                report::event(HostEvent::Unattended(true));
             }
-            Err(e) => eprintln!("rc-host: {e}; unattended access stays off"),
+            Err(e) => report!("{e}; unattended access stays off"),
         }
     }
 
@@ -830,15 +901,15 @@ where
             return;
         }
         let (Some(exchange), Some(expected)) = (&self.exchange, self.expected_peer.clone()) else {
-            eprintln!("rc-host: dropped an sdp that arrived before the access code was proved");
+            report!("dropped an sdp that arrived before the access code was proved");
             return;
         };
         if !exchange.is_complete() || exchange.session_id() != sdp.session_id {
-            eprintln!("rc-host: dropped an sdp that arrived before the access code was proved");
+            report!("dropped an sdp that arrived before the access code was proved");
             return;
         }
         let Ok(mac_key) = exchange.sdp_mac_key() else {
-            eprintln!("rc-host: dropped an sdp that arrived before the access code was proved");
+            report!("dropped an sdp that arrived before the access code was proved");
             return;
         };
 
@@ -889,7 +960,7 @@ where
             }
         };
         if let Err(e) = p.set_remote_offer(&body).await {
-            eprintln!("rc-host: remote {} failed: {e}", sdp.sdp_type);
+            report!("remote {} failed: {e}", sdp.sdp_type);
             return;
         }
 
@@ -915,7 +986,7 @@ where
         let answer = match p.answer().await {
             Ok(answer) => answer,
             Err(e) => {
-                eprintln!("rc-host: answer failed: {e}");
+                report!("answer failed: {e}");
                 return;
             }
         };
@@ -923,10 +994,10 @@ where
             .send_signed_sdp(&sdp.session_id, "answer", &answer, sdp.restart, mac_key, conn)
             .await
         {
-            eprintln!("rc-host: the answer could not be sent: {e}");
+            report!("the answer could not be sent: {e}");
             return;
         }
-        eprintln!("rc-host: answering the controller");
+        report!("answering the controller");
         self.release_held_candidates(peer).await;
     }
 
@@ -1004,7 +1075,7 @@ where
         peer: &mut Option<Arc<PeerSession>>,
         te_tx: &mpsc::Sender<TransportEvent>,
     ) {
-        eprintln!("rc-host: the other computer could not be verified: {reason}");
+        report!("the other computer could not be verified: {reason}");
         let actions = self.machine.user_ended(bye::PEER_AUTH_FAILED);
         self.clear_session();
         self.teardown(peer).await;
@@ -1019,7 +1090,9 @@ where
         self.expected_peer = None;
         self.held_sdp = None;
         self.held_ice.clear();
-        self.prompt = None;
+        if self.prompt.take().is_some() {
+            report::event(HostEvent::ConsentClosed);
+        }
         self.session_ice_servers.clear();
     }
 
@@ -1033,7 +1106,7 @@ where
         match event {
             TransportEvent::IceState(s) => {
                 if s == IceState::Connected {
-                    eprintln!("rc-host: link up");
+                    report!("link up");
                 }
                 let closed = matches!(s, IceState::Closed | IceState::Failed);
                 let actions = self.machine.ice_state_changed(ice_from_transport(s), now_ms());
@@ -1080,14 +1153,17 @@ where
     async fn on_pump_event(&mut self, event: PumpEvent, peer: &Option<Arc<PeerSession>>) {
         match event {
             PumpEvent::Status(CaptureStatus::Live) => {
+                self.screen = Screen::Live;
                 self.dispatcher.resume();
             }
             PumpEvent::Status(CaptureStatus::DesktopUnavailable) => {
-                eprintln!("rc-host: the desktop is locked or protected — remote input suspended");
+                self.screen = Screen::Locked;
+                report!("the desktop is locked or protected — remote input suspended");
                 self.dispatcher.suspend(InputState::DesktopUnavailable, &mut self.injector);
             }
             PumpEvent::Status(CaptureStatus::Unavailable(detail)) => {
-                eprintln!("rc-host: capture unavailable ({detail}) — remote input suspended");
+                self.screen = Screen::Unavailable;
+                report!("capture unavailable ({detail}) — remote input suspended");
                 self.dispatcher.suspend(InputState::NoPicture, &mut self.injector);
             }
             PumpEvent::Geometry(geometry) => {
@@ -1095,21 +1171,21 @@ where
                 self.publish_display(peer).await;
             }
             PumpEvent::LoadStep { size_mode, mean_encode } => {
-                eprintln!(
-                    "rc-host: encode cost {:.1} ms/frame — now encoding at the {} size",
+                report!(
+                    "encode cost {:.1} ms/frame — now encoding at the {} size",
                     mean_encode.as_secs_f64() * 1000.0,
                     size_mode.as_wire()
                 );
             }
             PumpEvent::EncoderFallback { from, detail } => {
-                eprintln!(
-                    "rc-host: {from} failed ({detail}) — encoding with openh264 for the rest of \
+                report!(
+                    "{from} failed ({detail}) — encoding with openh264 for the rest of \
                      this session"
                 );
             }
             PumpEvent::Stats(stats) => {
-                eprintln!(
-                    "rc-host: media {}x{} ({}) via {} over {:.1}s: {} sent, {} skipped by the encoder, \
+                report!(
+                    "media {}x{} ({}) via {} over {:.1}s: {} sent, {} skipped by the encoder, \
                      {} dropped unencoded, encode mean {:.1} ms max {:.1} ms, frame age at \
                      encode p50 {:.0} ms max {:.0} ms, at send p50 {:.0} ms max {:.0} ms",
                     stats.width,
@@ -1171,7 +1247,7 @@ where
 
     fn log_injection_failure(&mut self) {
         if let Some(err) = self.dispatcher.take_last_error() {
-            eprintln!("rc-host: input not applied — {}", err.detail);
+            report!("input not applied — {}", err.detail);
         }
     }
 
@@ -1227,8 +1303,8 @@ where
         if let Some(pump) = &self.pump {
             pump.set_quality(permitted);
         }
-        eprintln!(
-            "rc-host: quality {} requested, {} applied",
+        report!(
+            "quality {} requested, {} applied",
             requested.as_wire(),
             permitted.as_wire()
         );
@@ -1250,20 +1326,22 @@ where
     /// back, or open a new one. A failure here is reported as *unavailable* and
     /// suspends input; it never substitutes a picture that is not the screen.
     async fn start_capture(&mut self, peer: Arc<PeerSession>) {
+        self.screen = Screen::Live;
         let source = match self.frame_source.take() {
             Some(source) => Some(source),
             None => match self.backend.open() {
                 Ok(source) => {
-                    eprintln!("rc-host: capture started ({})", self.backend.describe());
+                    report!("capture started ({})", self.backend.describe());
                     Some(source)
                 }
                 Err(e) => {
-                    eprintln!("rc-host: capture unavailable ({e}) — remote input suspended");
+                    report!("capture unavailable ({e}) — remote input suspended");
                     None
                 }
             },
         };
         let Some(source) = source else {
+            self.screen = Screen::Unavailable;
             self.dispatcher.suspend(InputState::NoPicture, &mut self.injector);
             self.publish_cursor(&Some(peer)).await;
             return;
@@ -1288,7 +1366,7 @@ where
         if let Some(pump) = self.pump.take() {
             self.frame_source = pump.stop(PUMP_STOP_GRACE).await;
             if self.frame_source.is_none() {
-                eprintln!("rc-host: capture did not stop in time; a fresh source will be opened");
+                report!("capture did not stop in time; a fresh source will be opened");
             }
         }
         self.dispatcher.suspend(InputState::NoPicture, &mut self.injector);
@@ -1310,7 +1388,7 @@ where
         te_tx: &mpsc::Sender<TransportEvent>,
     ) {
         if !self.exchange.as_ref().is_some_and(|e| e.is_complete()) {
-            eprintln!("rc-host: refused to start a peer before the access code was proved");
+            report!("refused to start a peer before the access code was proved");
             return;
         }
         self.teardown(peer).await;
@@ -1326,7 +1404,7 @@ where
         let (new_peer, mut events) = match started {
             Ok(started) => started,
             Err(e) => {
-                eprintln!("rc-host: the peer connection could not be created: {e}");
+                report!("the peer connection could not be created: {e}");
                 return;
             }
         };
@@ -1466,7 +1544,7 @@ where
         if let Ok(ledger) = guesses.ledger(&pubkey) {
             let charged = rc_identity::consent::prompted(&ledger, now_ms());
             if let Err(e) = guesses.save(&charged, &pubkey, now_ms()) {
-                eprintln!("rc-host: {e}");
+                report!("{e}");
             }
         }
         let prompt = ConsentPrompt {
@@ -1492,7 +1570,7 @@ where
                 if let Ok(ledger) = guesses.ledger(&pubkey) {
                     let refunded = rc_identity::consent::allowed(&ledger, now_ms());
                     if let Err(e) = guesses.save(&refunded, &pubkey, now_ms()) {
-                        eprintln!("rc-host: {e}");
+                        report!("{e}");
                     }
                 }
             }
@@ -1520,43 +1598,6 @@ struct TrustedController {
     first_seen_ms: i64,
     #[serde(default, rename = "lastSeenMs")]
     last_seen_ms: i64,
-}
-
-/// Watches for the ways a user ends this host, so the keys the controller is
-/// holding are released before the process goes.
-///
-/// A host that exits with a modifier still down leaves it down: `SendInput`
-/// injects into the system input queue and process exit sends no key-up, so the
-/// machine is left with a stuck Ctrl until something presses it again. The
-/// console window's close button matters as much as Ctrl-C here, because the
-/// launch banner tells the user that closing the window is how to stop.
-fn spawn_shutdown_watch() -> mpsc::Receiver<()> {
-    let (tx, rx) = mpsc::channel::<()>(1);
-    tokio::spawn(async move {
-        wait_for_shutdown().await;
-        let _ = tx.send(()).await;
-    });
-    rx
-}
-
-#[cfg(windows)]
-async fn wait_for_shutdown() {
-    let Ok(mut close) = tokio::signal::windows::ctrl_close() else {
-        let _ = tokio::signal::ctrl_c().await;
-        return;
-    };
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = close.recv() => {}
-    }
-}
-
-/// The non-Windows build is the diagnostic one: its injector records input
-/// rather than applying it, so nothing can be left held and there is no reason
-/// to pull a unix signal backend into the Mac product's dependency graph for it.
-#[cfg(not(windows))]
-async fn wait_for_shutdown() {
-    std::future::pending().await
 }
 
 enum ConnLoopExit {

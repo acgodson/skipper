@@ -18,17 +18,19 @@ pub mod annexb;
 pub mod api;
 pub mod backend;
 pub mod consent;
-pub mod console;
 pub mod host;
 pub mod inject;
 pub mod keepawake;
 pub mod media;
 pub mod nv12;
 pub mod pake;
+pub mod paths;
 pub mod pump;
 pub mod quality;
+pub mod report;
 pub mod secrets;
 pub mod settings;
+pub mod status;
 pub mod urlhandler;
 
 #[cfg(windows)]
@@ -37,9 +39,11 @@ pub mod inject_windows;
 pub mod capture_windows;
 #[cfg(windows)]
 pub mod media_windows;
+#[cfg(windows)]
+pub mod ui;
 
 pub use backend::{Backend, BackendUrlError, BaseUrl};
-pub use host::{Host, HostConfig};
+pub use host::{Host, HostConfig, HostControls};
 pub use inject::{InjectError, InputDispatcher, InputOp, InputState, Injector, RecordingInjector};
 pub use media::{
     fit_for_encode, hardware_or_software, resample, CaptureBackend, CaptureStatus, EncoderRequest,

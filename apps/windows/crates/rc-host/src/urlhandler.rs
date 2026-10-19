@@ -30,20 +30,21 @@ pub fn take(secrets: &SecretStore) -> Option<String> {
     let blob = secrets.load_blob(SecretAccount::LinkCallback).ok().flatten();
     if blob.is_some() {
         if let Err(e) = secrets.remove(SecretAccount::LinkCallback) {
-            eprintln!("rc-host: {e}");
+            crate::report!("{e}");
         }
     }
     String::from_utf8(blob?).ok()
 }
 
-/// Opens the sign-in page in the user's own browser.
+/// Opens a URL in the user's own browser, or a file in the app the shell
+/// associates with it (the log opens in Notepad).
 ///
 /// Not through `cmd /C start`: cmd reads every `&` in the query string as a
 /// command separator, so the browser never opened and the shell complained
 /// that `device` was not a command. `ShellExecuteW` hands the URL to the
 /// default browser with no shell in between.
 #[cfg(windows)]
-pub fn open_in_browser(url: &str) -> Result<(), String> {
+pub fn open_externally(url: &str) -> Result<(), String> {
     use windows::core::{w, HSTRING, PCWSTR};
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -66,7 +67,7 @@ pub fn open_in_browser(url: &str) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-pub fn open_in_browser(url: &str) -> Result<(), String> {
+pub fn open_externally(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = std::process::Command::new("open");
